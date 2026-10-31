@@ -3,8 +3,8 @@
 Repo: this navidrome fork (Go server, GPL-3.0). Companion doc: `docs/rust-port/component-map.md`
 (component graph, IDs `C01`–`C33`). This file is the build-order issue list: 4 design issues
 (`#S1`–`#S4`) that freeze shared contracts, then the numbered implementation issues `#01`–`#34`
-(of which #25 Subsonic shim, #29 plugin host, #31 sonic similarity are CANCELLED and #34 backgrounds
-is DROPPED — 30 live issues), in build order. Every claim is a path/line citation from a read-only pass
+(of which #25 Subsonic shim, #29 plugin host, #30 Jellyfin API, #31 sonic similarity are CANCELLED and #34 backgrounds
+is DROPPED — 29 live issues), in build order. Every claim is a path/line citation from a read-only pass
 over this checkout; nothing here has been executed, so "test strategy" names the Go oracle, not a passed test.
 
 ## Revision (post-milestone-0) — settled decisions
@@ -13,7 +13,9 @@ over this checkout; nothing here has been executed, so "test strategy" names the
 2. **Subsonic wire layer CANCELLED — clean API break** (#25). The canonical API is *inspired by* Subsonic, not bound to it: keep its sound semantics (typed-ID prefixes `al-`/`mf-`/`pl-`, artwork-ID composition, transcode-decision split), drop the wire anachronisms (XML, auth-in-query, `u/t/s`, `.view`, camelCase verbs). Reason: a faithful `t = md5(password+salt)` shim requires the reversible password store back — re-importing model B's removed debt — and the `apiKey` alternative works only for clients that can send `apiKey`, which major Subsonic clients cannot. Third-party Subsonic clients will not work against this server; that is a deliberate product decision. The 126 goldens become reference data only, and a future community adapter would consume the published OpenAPI spec, not server internals.
 3. **WASM plugin host cancelled** (#29). Reason: the Extism/wazero host ABI is the largest single lane and delivers nothing the canonical API or clients need; `plugins/capabilities/*.yaml` remain as the trait spec for a future Rust-native layer.
 4. **Credential model B is the settled default** (#S4): hashed passwords (argon2id) + long-lived hashed API keys + JWT sessions with `user.token_epoch` revocation. There is no reversible AES-GCM store anywhere on the trunk; decryption exists only inside the one-time `migrate-credentials` path, then is deleted. With #25 cancelled, model A has no host at all.
-5. **JS UI drop-by-default** (#28): the bundled react-admin UI is dropped (a Flutter client replaces it); only the share-page HTML contract survives.
+5. **JS UI dropped unconditionally** (#28): the bundled react-admin UI is deleted (the Flutter client comes after the server translation); only the share-page HTML contract survives.
+6. **No upgrade path, fresh service**: there are NO existing installs to migrate. The trunk ships argon2id from day one; no `migrate-credentials` exists — first-run bootstrap (initial admin creation, `server/initial_setup.go` pattern) replaces it. The whole byte-compat apparatus is dropped: DB schema is a free set (one fresh migration, edited as the schema evolves), config keys are free (clean TOML, no deprecation table), and the ID scheme inherits the 22-char base62 + typed-prefixes shape because it is good design, not for compat.
+7. **Jellyfin API dropped** (#30 CANCELLED): `server/jellyfin/**` and the `jellyfin` JWT audience are not ported; Quick-Connect survives re-owned by #27 (device pairing, not Jellyfin-specific).
 
 Fields per issue: **Build** (what to write, in order) · **Test** (strategy + Go oracle) · **Risk**
 (`CRITICAL` byte-exact wire oracle; `HIGH` compat/process/FFI/ABI; `MED` behavior-preserving;
@@ -25,7 +27,7 @@ Global rules:
   path, you are consuming it — file a dependency, do not edit.
 - Every crate is GPL-3.0 (`LICENSE:1-4`). Third-party license planes stay separate. The extism/wazero plane (`extism-pdk = "1.2"` at `plugins/pdk/rust/nd-pdk/Cargo.toml:17`, `go.mod:20,58`) is no longer ported at all — #29 is CANCELLED; the taglib fork stays pinned at `go.mod:6`.
 - Wire goldens are **data** and, post-clean-break, gate **nothing** (#25 is CANCELLED): `server/subsonic/responses/.snapshots/` stays in-tree as reference data — a recorded behavioral spec (field shapes, streaming/Range/ETag semantics) to consult while authoring the canonical API. Regeneration stays Go-only (`Makefile:167-169`).
-- The trunk's oracle is **native-API response-shape goldens captured from the Go binary before the issue opens** (#27, and likewise #28/#30). Nothing on the trunk is gated by the Subsonic goldens.
+- The trunk's oracle is **native-API response-shape goldens captured from the Go binary before the issue opens** (#27, and likewise #28); nothing on the trunk is gated by the Subsonic goldens.
 - Gate #S1–#S4 with an approval step: they change contracts nothing else absorbs.
 
 ---
@@ -37,11 +39,11 @@ Global rules:
 - **Build**: one `nd-*` workspace member per owning issue below: `nd-utils nd-id nd-conf nd-dbschema
   nd-db nd-model nd-ffmpeg nd-tagreader nd-lyrics nd-playlists nd-events nd-sched nd-auth nd-stream
   nd-mapping nd-scanner nd-artwork nd-public nd-api nd-players nd-ui-contract
-  nd-jellyfin nd-cli nd-metrics nd-agents nd-http nd-scrobbler` — **27 owned crates** after the
-  post-milestone-0 revision and the clean-break cancellation (`nd-native-api` → `nd-api`; `nd-subsonic-compat`, `nd-sonic`, `nd-plugin-host`, `nd-backgrounds` all removed).
-  Crate-vs-issue arithmetic, frozen here: 34 numbered issues − #25/#29/#31 CANCELLED − #34 DROPPED = 30 live issues,
-  and 27 crates because three pairs share a crate: #14 inside `nd-stream` (#15), #09 inside `nd-lyrics` (#22), #10 inside
-  `nd-playlists` (#23). 30 − 3 = 27. ✓
+  nd-cli nd-metrics nd-agents nd-http nd-scrobbler` — **26 owned crates** after the
+  clean break and no-upgrade-path decisions (`nd-native-api` → `nd-api`; `nd-subsonic-compat`, `nd-sonic`, `nd-plugin-host`, `nd-backgrounds`, `nd-jellyfin` all removed).
+  Crate-vs-issue arithmetic, frozen here: 34 numbered issues − #25/#29/#30/#31 CANCELLED − #34 DROPPED = 29 live issues,
+  and 26 crates because three pairs share a crate: #14 inside `nd-stream` (#15), #09 inside `nd-lyrics` (#22), #10 inside
+  `nd-playlists` (#23). 29 − 3 = 26. ✓
   `nd-mcp` is deliberately NOT a workspace member — it is a separate client artifact talking to the documented canonical API (see "Not ported"). Freeze the DI replacement
   once: Go builds its graph in `cmd/wire_gen.go` / `cmd/wire_injectors.go`, with the datastore
   singleton at `model/datastore.go` and provider selection at `core/wire_providers.go`
@@ -72,24 +74,24 @@ Global rules:
   `ix_artwork_queue_drain(item_kind, priority DESC, enqueued_at, retry_at)`
   (`db/migrations/20260722023032_add_artwork_tables.sql:1-46`); canonical-id column set
   (`20260720015443_uniform_canonical_ids.go:55`); `property` keys
-  (`consts/consts.go:15-29,33-34,49-51,65-67,162`). Registered funcs are compat-critical and must be
-  re-registered per connection in the Rust SQLite binding: `SEEDEDRAND` (`db/db.go:46`, from
-  `utils/hasher`), `NATSORT` (`db/db.go:49`, `utils/natural.CompareFold`). Free set: migration
-  *history* (`.go` migrations carry Go logic, `20241026183640.go:106`, no 1:1 Rust analogue;
-  `db/db.go:32-35` embeds only `migrations/*.sql`), internal PK/column names no golden asserts,
-  ANALYZE scheduling (`db/optimize.go:19-40`), `db/backup.go` file naming.
-- **Test**: none — the artifact must cite every table to a `db/migrations/*` file and split
-  compat-vs-free so #04 can act on it.
-- **Credential columns this decision touches** (#S4, settled): `user.password varchar(255)`
-  (`db/migrations/20241024125533_fix_sort_tags_collation_and_index.sql:479`), `user.token_epoch`
-  (`db/migrations/20260822062750_add_user_token_epoch.sql`), `player.api_key_hash` + unique index
-  (`db/migrations/20260924010054_add_player_api_key_hash.sql`). All three must stay byte-compatible
-  for existing installs. Post-clean-break there is no shim: after `migrate-credentials` runs, `user.password` becomes a write-only
-  argon2/bcrypt hash (the reversible AES-GCM `enc:` payload and `PasswordsEncryptedKey` are dead),
-  while `token_epoch` and `player.api_key_hash` become load-bearing.
-- **Risk**: design issue, HIGH stakes (decides whether #04 is a port or a regeneration).
+  (`consts/consts.go:15-29,33-34,49-51,65-67,162`). Registered SQL funcs must be re-registered per
+  connection in the Rust SQLite binding: `SEEDEDRAND` (`db/db.go:46`, from `utils/hasher`), `NATSORT`
+  (`db/db.go:49`, `utils/natural.CompareFold`).
+- **Fresh service — no compat set**: there are NO existing installs, so nothing is byte-frozen. The
+  Go schema's FINAL shape is the starting point (derive from the repos + the last schema-shaping
+  migrations, not the 138-file history: `.go` migrations carry Go logic, `20241026183640.go:106`,
+  `db/db.go:32-35` embeds only `migrations/*.sql`); edit freely from there. Exactly ONE fresh Rust
+  migration ships as the basis and is edited in place as the schema evolves. Internal PK/column
+  names, ANALYZE scheduling (`db/optimize.go:19-40`), backup naming (`db/backup.go`) are all free.
+- **Credential columns** (#S4, settled): `user.password` is argon2id from day one (no reversible
+  `enc:` payload, no `PasswordsEncryptedKey`); `user.token_epoch`
+  (`db/migrations/20260822062750_add_user_token_epoch.sql`) and `player.api_key_hash` + unique index
+  (`db/migrations/20260924010054_add_player_api_key_hash.sql`) are load-bearing.
+- **Test**: none — the artifact must cite every table to its source (Go schema or explicit change)
+  so #04 can act on it.
+- **Risk**: design issue, MED (a regeneration, not a compat port).
 - **dependsOn**: #S1 · **Owns**: `docs/rust-port/schema.md` · **Replaces**: — (consumed by
-  #04, #05, #16, #17, #18, #20, #23, #30)
+  #04, #05, #16, #17, #18, #20, #23)
 
 ### #S3 — Freeze the config-format contract
 
@@ -125,18 +127,18 @@ Global rules:
 - **Build**: a settled decision record — model B is the trunk credential model; there is no open A-vs-B question left.
   - **Trunk credentials (B)**: long-lived hashed API keys + JWT session tokens, revoked per user through `token_epoch` (`db/migrations/20260822062750_add_user_token_epoch.sql`, `persistence/user_repository.go:129-146`, `server/auth.go:320`).
   - Passwords are hashed (argon2id) by default. There is **no reversible AES-GCM password store on the trunk**.
-  - **Nothing of model A is ported.** With #25 CANCELLED there is no host for `t = md5(password+salt)` (`server/subsonic/middlewares.go:281`), `enc:` passwords (`:243`), the `subsonic` JWT audience, or the AES-GCM reversible store keyed `sha256(PasswordEncryptionKey | "just for obfuscation")` (`utils/encrypt.go:15,40`, `core/auth/auth.go:198-205`, `consts/consts.go:47-50`, `persistence/user_repository.go:389,394-450,453,464`). Decryption of the legacy store exists **only** inside a one-time `nd-cli migrate-credentials` command (see #33/#02 scope): it decrypts with the configured key or the fallback constant, re-hashes to argon2id, prompts a DB backup first, and prints a clear failure message naming the command when the key is missing; the decryption code is then **deleted**, not shim-scoped.
-  - **Settled trade-off**: third-party Subsonic clients will not work (deliberate, see Revision item 2); existing installs' stored ciphertext is un-migratable without the key, so `migrate-credentials` is mandatory before the trunk starts (refuse-to-start on remaining ciphertext, with a message naming the command).
+  - **Nothing of model A exists.** With #25 CANCELLED and a fresh service (no existing installs), `t = md5(password+salt)` (`server/subsonic/middlewares.go:281`), `enc:` passwords (`:243`), the `subsonic`/`jellyfin` JWT audiences, and the AES-GCM reversible store keyed `sha256(PasswordEncryptionKey | "just for obfuscation")` (`utils/encrypt.go:15,40`, `core/auth/auth.go:198-205`, `consts/consts.go:47-50`, `persistence/user_repository.go:389,394-450,453,464`) are **never ported**. Passwords are argon2id from day one; no migration command exists. Prefer vetted Rust crates over hand-rolled crypto (`argon2`, `jsonwebtoken`/`jose`, `rand`/`getrandom`) — nothing here is novel cryptography.
+  - **First-run bootstrap** replaces any migration: initial admin creation follows the `server/initial_setup.go` pattern. There is no upgrade path and no stored-ciphertext question.
   - Sub-decisions that are not A-specific and must not be silently relaxed: property keys `JWTSecret/JWTPublicSecret/PasswordsEncryptedKey` (`consts/consts.go:33,34,50`); two signing secrets — `TokenAuth` rotation vs `PublicTokenAuth` survival (`core/auth/auth.go:23-29,50,172`); audiences `jellyfin|subsonic|native` (`core/auth/auth.go:33-36`); claim shape (`core/auth/claims.go:11,31-70`); `ExtAuth.TrustedSources` CIDR + unix-`@` case (`server/auth.go:212,418,427`); rate-limit semantics (`server/auth.go:100` 8KiB body, `server/server.go:212`, `server/subsonic/auth_limiter.go:15`, form-body cap 10MB `middlewares.go:34`).
-  - `PasswordEncryptionKey` (config) must survive **only until migration**: existing `property` rows/ciphertext become undecryptable without it (`persistence/user_repository.go:394-414` warns on key change). Post-migration it is dead config, removed with the decryption code.
+  - `PasswordEncryptionKey` (`consts/consts.go:50`) is dead config — not carried into the fresh TOML.
 - **Test**: none (decision record) — but it must name the gated consumers so the tracker can block them.
-- **Risk**: design issue, HIGH — gates #13, #14, #18, #19, #24, #26, #27, #28, #30 and DB import (#25/#29/#31 are cancelled and own nothing).
+- **Risk**: design issue, HIGH — gates #13, #14, #18, #19, #24, #26, #27, #28 and DB import (#25/#29/#30/#31 cancelled and own nothing).
 - **dependsOn**: #S1 · **Owns**: `docs/rust-port/credentials.md` · **Replaces**: —
 
 Already-fixed shared artifacts needing no design issue: the **ID scheme** (`model/id/id.go` byte-exact
 base62/MD5, sentinels `consts/consts.go:214,218`, PID rules `consts/consts.go:157-159`) — owned by
 #02; **wire fixtures** (126 goldens, 63 shape variants × JSON/XML, `.gitattributes:1 * eol=lf`) —
-reference data only — nothing gates on them (#25 is CANCELLED); #27, #28, #30 capture their own goldens from the Go binary; **tag vocabulary** (`resources/mappings.yaml`, `model/tag_mappings.go`)
+reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 capture their own goldens from the Go binary; **tag vocabulary** (`resources/mappings.yaml`, `model/tag_mappings.go`)
 — shipped with #03/#16; **test mocks as spec** (`tests/mock_ffmpeg.go`, `tests/mock_*_repo.go`,
 `tests/test_helpers.go`, `tests/navidrome-test.toml`) — consumed by #07, #05, #15.
 
@@ -272,13 +274,16 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27, #28, #30 
 
 ### #13 — Credential and claim model (`nd-auth`)
 - **Build**: implement #S4's settled choice (model B; the `p`/`t+s`/`enc:` arms of the Go credential switch are NOT ported at all — #25 is CANCELLED). `core/auth/auth.go`, `core/auth/claims.go:11,31-70`,
-  `server/auth.go`, `server/initial_setup.go`, the auth slice of `server/subsonic/middlewares.go`
-  (`:243,269-289,281`), `server/subsonic/auth_limiter.go:15`, `core/publicurl/publicurl.go`. Preserve dual
-  secrets (`core/auth/auth.go:23-29,50,172`), audiences `jellyfin|subsonic|native` (`:33-36`), epoch revocation
-  (`persistence/user_repository.go:129-144`), the 5-way credential switch (`p / t+s / jwt / apiKey / internal`),
+  `server/auth.go`, `server/initial_setup.go`, the `apiKey`-JWT-internal arms of the credential switch in
+  `server/subsonic/middlewares.go` (the `p` and `t+s` arms are NOT ported — #25 CANCELLED), `server/subsonic/auth_limiter.go:15`
+  (fail-closed limiter), `core/publicurl/publicurl.go`. Modern-Rust auth: vetted crates only (`argon2`, `jsonwebtoken`/`jose`,
+  `rand`/`getrandom`) — dual signing secrets (`core/auth/auth.go:23-29,50,172`), epoch revocation
+  (`persistence/user_repository.go:129-144`), audience discipline `native` only (Part C #10; `jellyfin` audience removed with #30,
+  `subsonic` never minted), the 3-way credential switch (jwt / apiKey / internal),
   `X-ND-Authorization` (`consts/consts.go:31`), `ExtAuth.TrustedSources` CIDR + unix-`@`
   (`server/auth.go:212,418,427`), body caps (`server/auth.go:100` 8KiB, `middlewares.go:34` 10MB).
-- **Test**: claim/verdict table across all 5 credential forms; cross-audience rejection cases; epoch
+- **Test**: claim/verdict table across the 3 credential forms (aud-less tokens REJECTED once the
+  discipline settles); cross-audience rejection cases; epoch
   invalidation; rate-limit window tests; initial-setup flow driven from `conf/testdata`.
 - **Risk**: HIGH (security) — blocks every wire surface.
 - **dependsOn**: #05, #03, #01, #S4 · **Owns**: `nd-auth/**` · **Replaces**: `core/auth/**`, `server/auth.go`,
@@ -429,12 +434,9 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27, #28, #30 
 - **Cancelled**: the Extism/wazero host ABI + sandbox (`plugins/{manager,manager_loader,manager_call}.go`, `capabilities*`, `host*`, `sandbox_fs.go`, `host_netguard.go`, `manifest*`, `package.go`, `plugins/cmd/ndpgen/*` codegen, `go.mod:20,58` — 14 host services, ~250 files) was the largest single lane and serves nothing the canonical API (#27) or the clients need. The capability model survives only as data: `plugins/capabilities/*.yaml` is a trait spec for a future Rust-native provider layer. The `PluginLoader`/`PluginManager` DI binds in `cmd/wire_gen.go:271` are simply absent. The GPL-3.0 Rust PDK crates `plugins/pdk/rust/nd-pdk*` and the `plugins/cmd/ndpgen` codegen are not ported.
 - **Owns**: — (no crate) · **dependsOn**: — · **Replaces**: — (server-side plugin routes are handled by #27 as 404)
 
-### #30 — Jellyfin API (DEFERRABLE) (`nd-jellyfin`)
-- **Build**: `server/jellyfin/**` (~22 handlers + `dto/`, `socket.go`), `core/quickconnect/quickconnect.go`: `/jellyfin` router, websocket, Quick-Connect. In/out is a
-  MUST-RESOLVE. If dropped: stub the router and keep the `jellyfin` JWT audience from #13.
-- **Test**: capture DTO-shape goldens from the Go binary **before** deletion; websocket frame contract; Quick-Connect polling matrix.
-- **Risk**: HIGH, DEFERRABLE — must not block the spine.
-- **dependsOn**: #05, #13, #15, #20, #21, #22, #23 · **Owns**: `nd-jellyfin/**` · **Replaces**: `server/jellyfin/**`, `core/quickconnect/quickconnect.go`
+### #30 — Jellyfin API — CANCELLED (not ported) (`nd-jellyfin`)
+- **Cancelled** (user decision, Part C #15 resolved): the Jellyfin-compatible surface is not ported. Rationale: it serves only third-party Jellyfin clients — the same ecosystem argument as the cancelled Subsonic shim — and its in/out flow was always DEFERRABLE, never on the spine. The `jellyfin` JWT audience is removed from #13/#S4 (mint and accept `native` only). **Quick-Connect survives**: `core/quickconnect/**` is not Jellyfin-specific and is re-owned by #27 (`nd-api`), which implements `/api/quickconnect` (`server/nativeapi/quickconnect.go:24-33` lookup/authorize device-pairing flow) with its own recorded fixtures.
+- **Owns**: nothing · **Replaces**: — (`server/jellyfin/**` not ported; `core/quickconnect/**` → #27)
 
 ### #31 — Sonic similarity — CANCELLED (not ported) (`nd-sonic`)
 
@@ -466,12 +468,12 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27, #28, #30 
 - **Spine gate**: #S1 → {#S2,#S3,#S4} → #04 → #05. ~20 issues are `blockedBy` #05; nothing runtime-bearing compiles before it lands.
 - **Leaf lane** (parallel with the spine): #01, #02, #03, #06, #11, #12, #09, #10 — no DB writes.
 - **Media adapters** (parallel with the spine): #07, #08, #09 — consume #01 only.
-- **Auth**: #13 gates #14, #15, #19, #24, #25, #26, #27, #28, #30 (#29 is cancelled and owns nothing).
+- **Auth**: #13 gates #14, #15, #19, #24, #26, #27, #28 (#25/#29/#30 cancelled and own nothing).
 - **Stream chain** (strict): #07 → #14 → #15 → (#19, #26). Streaming reaches the wire only through #27's canonical endpoints.
 - **Scan pipeline**: #08 → #16 → #17 → #18. #17 feeds the `artwork_queue` drain in #18 and the FTS5 triggers in #04.
-- **Wire lane** (last): #24 → #27 → #28, #30 — canonical surface only.
+- **Wire lane** (last): #24 → #27 → #28 — canonical surface only.
 - **Satellites** (last, concurrent): #20, #21, #22, #23, #32, #33.
-- **Deferred tail**: #30 (jellyfin, if kept at all).
+- **Deferred tail**: none (#30 CANCELLED).
 
 ## Not ported
 
@@ -482,24 +484,24 @@ MCP is a separate client artifact, not part of this Rust workspace: it speaks th
 
 ---
 
-## Part C — Decisions needed before implementation opens (open at #S1)
+## Part C — Contract decisions (settled at #S1; only item 5 remains open)
 
 These are the open contract questions the revision did not settle. Each names the issues it blocks; none of them may be resolved silently inside a later issue.
 
-1. **Canonical API KEEP/DROP per route** — `server/nativeapi/native_api.go:59-104` (~28 families, 6 conditional on config: `/share`, `/transcoding`, `/inspect`, `/config/*`, `/plugin`, admin group) — blocks #27.
-2. **Native equivalents for Subsonic-only features** — bookmarks (`server/subsonic/bookmarks.go`, zero native counterpart), radio (`server/subsonic/radio.go`), play queues, lyrics (`server/subsonic/lyrics.go`), transcode negotiation (`/rest/getTranscodeDecision`+`getTranscodeStream`, `core/stream/token.go:106,111`) — with #25 CANCELLED, playback itself has no canonical path; this is now the FIRST-priority gap, not one of several. Blocks #27, #15.
-3. **Streaming URL contract the Flutter client speaks** — today `/rest/stream?u&t&s` (`ui/src/subsonic/index.js:17-22`), `/rest/getTranscodeStream?...transcodeParams=<jwt>&offset=` (`ui/src/transcode/decisionService.js:73-83`), `/share/s|d|img` (`ui/src/utils/urls.js:28-40`). Decide canonical forms BEFORE #27/#15/#19.
-4. **API-key issuance/management on the canonical surface** — implementation today sits in the Subsonic middleware (`server/subsonic/middlewares.go:191-222`) and `persistence/player_repository.go:120,127,154-158,200-207`; the native `/player` route exists (`server/nativeapi/native_api.go:75`) but nothing owns key creation. Blocks #27, #13, #26.
-5. **Per-key scopes/labels** — keys are one-hash-per-`player` with a unique index (`db/migrations/20260924010054_add_player_api_key_hash.sql:3,4`); scoped keys need a new table → a #S2 schema delta.
-6. **Existing-install password migration** — stored AES-GCM ciphertext is only decryptable with `PasswordEncryptionKey`/fallback (`utils/encrypt.go:15,40`, `core/auth/auth.go:198-205`, `consts/consts.go:47-50`, rotation warning `persistence/user_repository.go:394-414`); decide migrate-once-with-key vs keep the config key vs leave legacy installs on A.
-7. **`subsonicSalt`/`subsonicToken` in the NATIVE login payload** — `server/auth.go:84-97 buildAuthPayload` (called `:68`, `:415`) is NOT under `/rest`: it hands out `md5(stored+client-salt)` regardless of the shim. Gate or drop when OFF. Blocks #13, #27.
-8. **Public-token surface survives clean-break** — `JWTPublicSecret` + `ValidatePublic` (`core/auth/auth.go:23-29,125-131`) key share/img (`server/public/handle_images.go:77,109`, `handle_shares.go:123`, `core/publicurl/publicurl.go:23`); note `handle_images.go:76-93` calls `PublicTokenAuth.Decode` (signature-bypassing) while running `IsAdmin:true` (`:42-44`) — the Rust port MUST use verify, not decode.
-9. **Auth limiter for the trunk** — per-IP ∧ per-key; today the per-credential limiter exists only inside the Subsonic router (`server/subsonic/middlewares.go:102,145,201`) and `newAuthLimiter` allows-all when `limit<=0` (`server/subsonic/auth_limiter.go:39-48,54-56`); the per-key slot axis gives N× budget per IP. Blocks #27, #13.
-10. **JWT audience discipline** — audiences are `jellyfin|subsonic|native` (`core/auth/auth.go:33-36`) and a token with NO audience is accepted anywhere (`:31,150`); trunk must mint `["native"]` explicitly; the `subsonic` audience is not minted anywhere (#25 CANCELLED) and aud-less acceptance must eventually be rejected (sequence it: mint correctly first, reject in a later release).
-11. **Per-key revocation** — `token_epoch` bumps only on a password UPDATE (`persistence/user_repository.go:129-146`, compared `core/auth/auth.go:147-149`); nulling `player.api_key_hash` revokes a player key (`persistence/player_repository.go:37-39,209+`). Decide revoke semantics that do not kill a user's whole session set.
-12. **Config contract deltas** — post-clean-break there is NO compat toggle (nothing to gate, #25 CANCELLED). Remaining: unknown-key policy — warn, don't error (existing TOMLs pin keys verbatim, `release/linux/navidrome.toml`, `Dockerfile:208`); `Subsonic.*` (`conf/configuration.go:188-196`), `Plugins.*` (`:115`, `:284-290`) and `Jukebox.*` (`:119`, `:259-264`) keys in user TOMLs are parse-and-ignore with a deprecation warning (`conf/configuration.go:676-690` reports unknown keys today). Blocks #S3, #03.
-13. **Root path once the JS UI is dropped** — `server/server.go:161-167`, `server/serve_index.go:122-136`, payloads `ui/index.html:35,38`; share pages reuse the same template (`:183 ShareInfo`). Blocks #28, #24, #19.
-14. **`/api/plugin*` behavior with the host cancelled** — `server/nativeapi/plugin.go:16-30` + DI `cmd/wire_gen.go:271` + `persistence/plugin_cleanup.go`: 404 vs empty-repository vs route removed. Blocks #27.
-15. **Jellyfin drop is not clean** — `core/quickconnect/quickconnect.go` backs the canonical `/api/quickconnect` (`server/nativeapi/quickconnect.go:24-33`); if #30 is dropped, quickconnect must be re-owned by #27, and the `jellyfin` JWT audience kept or removed deliberately.
-16. **DB migration strategy (replay vs regenerate) still has no owner** — `.go` migrations carry executable logic (`db/migrations/20241026183640_support_new_scanner.go:106`); if replay is chosen, a per-migration analogue list is required. Blocks #S2, #04.
-17. **Zero-consumer crates post-revision** — RESOLVED: `nd-backgrounds` (#34) and `nd-sonic` (#31) are both out of the workspace (DROPPED/CANCELLED); re-open individually if a Flutter need appears.
+1. **Canonical API KEEP/DROP per route — DECIDED**: keep CRUD + `search` + share + admin/account + `quickconnect` (re-owned per item 15); drop `/inspect`, `/config/*`, `/plugin*` (item 14), `/transcoding` config editor (#32 dropped); `/share` kept only as share-page HTML (#28). Blocks #27.
+2. **Native equivalents for Subsonic-only features — DECIDED (PRIORITY #1: add them to the canonical surface)** — with #25 CANCELLED, playback has no path at all. Decisions (endpoint proposals, not validated designs): `GET /api/stream`, `GET /api/download`, `GET /api/artwork`, `GET /api/search` modelled on the Go `/rest` implementations (`server/subsonic/stream.go`, `download.go`, `artwork.go`, `search3.go`) and the native CRUD shapes in `server/nativeapi/native_api.go:59-104`; bookmarks/radio/play-queues/lyrics keep their semantics (they are Subsonic-only *features* in the code, not a wire contract). Their fixtures are **authored by transcribing the Go `/rest` behavior** (Range/ETag headers, `server/subsonic/stream.go` + `core/stream/token.go:106,111` transcode decision) BEFORE #27/#15 open. Blocks #27, #15, #19.
+3. **Streaming URL contract — DECIDED (PRIORITY #2: canonical `GET /api/stream?...` forms)** — the Flutter client (built after the server translation) speaks the canonical forms from item 2, not `/rest/stream?u&t&s` (`ui/src/subsonic/index.js:17-22`) or `getTranscodeStream?...transcodeParams=<jwt>&offset=` (`ui/src/transcode/decisionService.js:73-83`). Share URLs keep the share-page HTML contract (#28, `ui/src/utils/urls.js:28-40`).
+4. **API-key issuance on the canonical surface — DECIDED (PRIORITY #3: first-class `POST /api/player/:id/key`)** (re-issue rotates the hash; owner is the player). Implementation moves from the Subsonic middleware (`server/subsonic/middlewares.go:191-222`) into #27's route, hashing per `persistence/player_repository.go:120,127,154-158,200-207` (`^nds_[0-9A-Za-z]{22}$`). Blocks #27, #13, #26.
+5. **Per-key scopes/labels — OPEN (only remaining open item)**: keep one-hash-per-`player` (unique index `db/migrations/20260924010054_add_player_api_key_hash.sql:3,4`); adding scopes means a new table → a deliberate #S2 schema delta. Decide before #13/#26 open.
+6. **Existing-install password migration — MOOT (fresh service, no upgrade path)**: no legacy installs exist; passwords are argon2id from day one; the AES-GCM code and `PasswordEncryptionKey` config key are never ported. Blocks nothing.
+7. **`subsonicSalt`/`subsonicToken` in the NATIVE login payload — DECIDED: drop entirely** — `server/auth.go:84-97 buildAuthPayload` (called `:68`, `:415`) is removed from the login payload; its only consumers are the dropped legacy JS player (`ui/src/utils/tokens.js:14-17`, `ui/src/subsonic/index.js:5-9`, `ui/src/subsonic/albumList.js:105-109`, `ui/src/multipleInheritance.js:26`). Blocks #13, #27.
+8. **Public-token surface — DECIDED: keep** (share pages are the only HTML surface). SECURITY-CRITICAL: Go verifies with HMAC (`core/auth/auth.go:125-131`); the Rust port must verify signatures, never decode — `server/public/handle_images.go:76-93` calls `PublicTokenAuth.Decode` (signature-bypassing) while granting `IsAdmin:true` (`:42-44`), a real bug to fix not copy. Blocks #19, #28.
+9. **Auth limiter for the trunk — DECIDED: apply on login + key-issuance paths, fail-closed** (unmatched route = rate-limited); do NOT copy the `newAuthLimiter` allows-all at `limit<=0` (`server/subsonic/auth_limiter.go:39-48,54-56`) — `limit<=0` means misconfigured, not unguarded. Blocks #27, #13.
+10. **JWT audience discipline — DECIDED: mint and accept only `native`** — `jellyfin`/`subsonic` audiences are never minted or accepted; aud-less acceptance is closed from day one (no legacy tokens to preserve). Use a vetted Rust JWT crate (`jsonwebtoken`) with explicit aud/exp checks plus token_epoch. Blocks #13.
+11. **Per-key revocation — DECIDED: `token_epoch` bump revokes all of a user's sessions; nulling `player.api_key_hash` revokes only that key** (`persistence/user_repository.go:129-146`, `core/auth/auth.go:147-149`, `persistence/player_repository.go:37-39,209+`), with a user-visible `POST /api/sessions/revoke`. Blocks #13.
+12. **Config contract — DECIDED: clean TOML, no deprecation table** — fresh service, so no user TOML exists to pin: `Subsonic.*`, `Plugins.*`, `Jukebox.*` (`conf/configuration.go:188-196`, `:115`, `:119`) and the compat toggle are simply absent from the fresh TOML; unknown keys in a config file are a startup **error**, not a warning (`conf/configuration.go:676-690`). Blocks #S3, #03.
+13. **Root path once the JS UI is dropped — DECIDED: `GET /` → 404** — `server/server.go:161-167`, `server/serve_index.go:122-136`, `ui/index.html:35,38` are not ported; the share-page HTML (#28, share template `serve_index.go:183 ShareInfo`) is the only HTML surface. Blocks #28, #24, #19.
+14. **`/api/plugin*` with the host cancelled — DECIDED: route removed, 404** — `server/nativeapi/plugin.go:16-30`, DI `cmd/wire_gen.go:271`, `persistence/plugin_cleanup.go` are not ported. Blocks #27.
+15. **Jellyfin drop — DECIDED: drop** (user decision). `server/jellyfin/**` is not ported (#30 CANCELLED); the `jellyfin` JWT audience is removed (mint/accept `native` only, item 10). Quick-Connect is NOT Jellyfin-specific: `core/quickconnect/**` is re-owned by #27 (`nd-api`) and kept, backing `/api/quickconnect` (`server/nativeapi/quickconnect.go:24-33`).
+16. **DB migration strategy — DECIDED: regenerate** (no-upgrade-path decision). One fresh Rust migration is the basis, edited in place as the schema evolves; the 138-file Go migration history is never replayed. Blocks nothing.
+17. **Zero-consumer crates — DECIDED**: `nd-backgrounds` (#34) and `nd-sonic` (#31) are out of the workspace; re-open individually if a Flutter need appears.
