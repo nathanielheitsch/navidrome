@@ -1,0 +1,75 @@
+# Navidrome Rust port — workspace manifest (#S1: fix the workspace and crate graph).
+#
+# Design freeze decided here once; later issues inherit and may not diverge:
+#   error type        -> thiserror in libraries, anyhow at the nd-cli binary boundary
+#   async runtime     -> tokio v1
+#   DI replacement    -> explicit construction: typed service structs per crate, wired in nd-cli/src/main.rs
+#   crate granularity -> one nd-* member per owning issue (26 crates; #14 lives inside nd-stream,
+#                        #09/#22 inside nd-lyrics, #10/#23 inside nd-playlists)
+#   not a member      -> nd-mcp (separate client artifact, talks to the documented canonical API)
+[workspace]
+resolver = "2"
+members = [
+    "crates/nd-utils",
+    "crates/nd-id",
+    "crates/nd-conf",
+    "crates/nd-dbschema",
+    "crates/nd-db",
+    "crates/nd-model",
+    "crates/nd-ffmpeg",
+    "crates/nd-tagreader",
+    "crates/nd-lyrics",
+    "crates/nd-playlists",
+    "crates/nd-events",
+    "crates/nd-sched",
+    "crates/nd-auth",
+    "crates/nd-stream",
+    "crates/nd-mapping",
+    "crates/nd-scanner",
+    "crates/nd-artwork",
+    "crates/nd-public",
+    "crates/nd-api",
+    "crates/nd-players",
+    "crates/nd-ui-contract",
+    "crates/nd-cli",
+    "crates/nd-metrics",
+    "crates/nd-agents",
+    "crates/nd-http",
+    "crates/nd-scrobbler",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+
+[workspace.dependencies]
+# Declared now, consumed later: no crate depends on these at the scaffold stage.
+tokio = { version = "^1", features = ["full"] }
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
+thiserror = "^1"
+anyhow = "^1"
+sqlx = { version = "^0.2", features = ["sqlite", "runtime-tokio"] }
+argon2 = "^1"
+jsonwebtoken = "^9"
+rand = { version = "^0.9", features = ["os_random"] }
+tracing = "^0.5"
+tracing-subscriber = "^0.1"
+reqwest = { version = "^1", features = ["json"] }
+axum = "^0.7"
+tower = "^0.5"
+tower-http = { version = "^0.5", features = ["cors", "gzip", "range"] }
+chrono = "^2"
+uuid = { version = "^1", features = ["v4"] }
+base64 = "^0.8"
+md5 = "^0.1"
+
+# Shared lint policy: every crate opts in with `[lints] workspace = true`.
+[workspace.lints.rust]
+unsafe_ops = "deny"
+missing_docs = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+bad_practices = "deny"

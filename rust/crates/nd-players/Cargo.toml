@@ -1,0 +1,9 @@
+[package]
+name = "nd-players"
+description = "Rust port scaffold: nd-players is owned by #26 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

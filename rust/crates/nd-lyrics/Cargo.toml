@@ -1,0 +1,9 @@
+[package]
+name = "nd-lyrics"
+description = "Rust port scaffold: nd-lyrics is owned by #09 / #22 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

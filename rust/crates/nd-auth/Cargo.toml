@@ -1,0 +1,9 @@
+[package]
+name = "nd-auth"
+description = "Rust port scaffold: nd-auth is owned by #13 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "nd-artwork"
+description = "Rust port scaffold: nd-artwork is owned by #18 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

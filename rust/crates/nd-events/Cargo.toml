@@ -1,0 +1,9 @@
+[package]
+name = "nd-events"
+description = "Rust port scaffold: nd-events is owned by #11 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

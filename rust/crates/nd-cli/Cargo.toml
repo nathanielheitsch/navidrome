@@ -1,0 +1,14 @@
+[package]
+name = "nd-cli"
+description = "Rust port scaffold: nd-cli is owned by #33 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+# Binary entrypoint: the service graph (DI replacement) is constructed here by #33.
+[[bin]]
+name = "nd-cli"
+path = "src/main.rs"
