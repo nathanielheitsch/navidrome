@@ -1,9 +1,19 @@
 [package]
 name = "nd-id"
-description = "Rust port scaffold: nd-id is owned by #02 (docs/rust-port/issues.md Part B)"
+description = "ID scheme port: 22-char base62 ids, MD5 hashes, artwork ids, participants, PID rules and sentinels (Go model/id, model/artwork_id, model/participants, consts)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+num-bigint = "0.4"
+num-traits = "0.2"
+md-5 = "0.10"
+thiserror = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+rand = "0.9"
+
+[dev-dependencies]

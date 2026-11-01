@@ -1,25 +1,28 @@
-// nd-conf: owned by #03 (docs/rust-port/issues.md Part B)
+//! `nd-conf` — Rust port of `conf/**` and the `consts/consts.go` defaults
+//! (issue #03, docs/rust-port/issues.md Part B), honoring the frozen
+//! fresh-service config contract (docs/rust-port/config-contract.md).
+//!
+//! Layout:
+//! * [`Config`] — the typed config struct (`configOptions`) plus its nested
+//!   sections, loaded from TOML with the `ND_*` env precedence ladder;
+//! * [`keys`] — the fresh key set registry (types + defaults) used for the
+//!   case-insensitive acceptance check and unknown-key fatality;
+//! * [`consts`] — the migrated defaults table;
+//! * [`Dir`], [`ByteSizeField`], [`DurationField`] — the value types the
+//!   contract pins (lazy MkdirAll, byte sizes, Go durations);
+//! * crontab validation compatible with `scheduler.ParseCrontab`.
 
-//! Scaffold stage for nd-conf: this crate instantiates empty so later issues
-//! (#03) can fill it without pulling the world in (#S1 test contract).
+pub mod bytes;
+pub mod config;
+pub mod consts;
+pub mod crontab;
+pub mod dir;
+pub mod duration;
+pub mod keys;
 
-/// Scaffold marker: the public surface authored by #03 replaces this constant.
-pub const OWNED_BY_ISSUE: u8 = 3;
-
-#[cfg(test)]
-mod scaffold_tests {
-    use super::*;
-
-    #[test]
-    fn nd_conf_instantiates() {
-        // Arrange: the owning-issue number this crate must expose.
-        let expected: u8 = 3;
-        // Act: read the crate's own scaffold marker.
-        let actual: u8 = OWNED_BY_ISSUE;
-        // Assert
-        assert_eq!(
-            actual, expected,
-            "nd-conf instantiates without pulling in the world"
-        );
-    }
-}
+pub use config::{
+    parse_bytes, BackupConfig, Config, ConfigError, DeezerConfig, ExtAuthConfig, HttpHeadersConfig,
+    InspectConfig, JellyfinConfig, LastFmConfig, ListenBrainzConfig, MatcherConfig, PidConfig,
+    PrometheusConfig, ScannerConfig, SearchConfig, TagConf, TranscodingConfig,
+};
+pub use dir::Dir;

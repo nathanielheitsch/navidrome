@@ -1,9 +1,18 @@
 [package]
 name = "nd-utils"
-description = "Rust port scaffold: nd-utils is owned by #01 (docs/rust-port/issues.md Part B)"
+description = "Rust port of utils/** primitives (issue #01, docs/rust-port/issues.md Part B)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+sha2 = "^0.10"
+rand = { version = "^0.9", features = ["std_rng", "os_rng", "thread_rng"] }
+regex = "^1"
+hex = "^0.4"
+
+[dev-dependencies]
+tempfile = "^3"
