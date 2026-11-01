@@ -236,6 +236,14 @@ fn sanitize_html_policy(input: &str) -> String {
         };
         let tag_end = close + 1;
         let inner = &after[1..close];
+        // Not a tag unless the name starts with a letter (HTML markup rule;
+        // e.g. Enhanced-LRC markers <00:01.00> pass through as text).
+        let name_start: &str = inner.strip_prefix('/').unwrap_or(inner);
+        if !name_start.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            out.push('<');
+            rest = &after[1..];
+            continue;
+        }
         let name = tag_name(inner).to_ascii_lowercase();
         let is_closing = inner.starts_with('/');
         if drop_depth > 0 {

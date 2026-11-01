@@ -1,9 +1,17 @@
 [package]
 name = "nd-sched"
-description = "Rust port scaffold: nd-sched is owned by #12 (docs/rust-port/issues.md Part B)"
+description = "Rust port of scheduler/**, log/** and core/maintenance.go semantics (issue #12, docs/rust-port/issues.md Part B)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+nd-conf = { path = "../nd-conf" }
+chrono = "0.4"
+chrono-tz = "0.10"
+rand = { workspace = true }
+regex = "1"
+thiserror = { workspace = true }

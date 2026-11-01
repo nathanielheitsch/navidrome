@@ -53,7 +53,7 @@ anyhow = "^1"
 sqlx = { version = "^0.2", features = ["sqlite", "runtime-tokio"] }
 argon2 = "^1"
 jsonwebtoken = "^9"
-rand = { version = "^0.9", features = ["os_random"] }
+rand = { version = "^0.9" }
 tracing = "^0.5"
 tracing-subscriber = "^0.1"
 reqwest = { version = "^1", features = ["json"] }
@@ -72,4 +72,3 @@ missing_docs = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
-bad_practices = "deny"
