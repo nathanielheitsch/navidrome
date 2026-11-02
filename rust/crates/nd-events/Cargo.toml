@@ -1,9 +1,24 @@
 [package]
 name = "nd-events"
-description = "Rust port scaffold: nd-events is owned by #11 (docs/rust-port/issues.md Part B)"
+description = "Rust port of server/events/*: Event types, broadcast Broker, and the /api/events SSE endpoint (issue #11)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+axum = { workspace = true }
+futures-util = "^0.3"
+chrono = { version = "0.4", features = ["serde"] }
+# Random client ids (`id.NewRandom()` in `subscribe`, `sse.go:173`).
+nd-id = { path = "../nd-id" }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "test-util"] }
+tower = { workspace = true, features = ["util"] }
