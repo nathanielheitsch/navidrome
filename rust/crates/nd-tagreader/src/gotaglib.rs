@@ -9,22 +9,21 @@
 //! ported byte-exactly: key lowercasing, raw-tag merging per format,
 //! track/disc tuple split, lyrics/TIPL handling, `has_picture`.
 
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::from_str;
+use std::collections::BTreeMap;
 
 use crate::info::{AudioProperties, Info};
 
 /// Pinned go-taglib fork version (`go.mod:6`), replacing Go's
 /// `debug.ReadBuildInfo()` lookup (`gotaglib.go:26-36`).
-pub const PINNED_TAGLIB_VERSION: &'static str =
-    "v0.0.0-20260913142955-d55e0c9353cb";
+pub const PINNED_TAGLIB_VERSION: &str = "v0.0.0-20260913142955-d55e0c9353cb";
 
 /// `gotaglib.go:194` — iTunes atom prefix.
-const ITUNES_KEY_PREFIX: &'static str = "----:com.apple.iTunes:";
+const ITUNES_KEY_PREFIX: &str = "----:com.apple.iTunes:";
 
 /// `tiplMapping` (`gotaglib.go:223-229`) — Picard's supported roles only.
-const TIPL_MAPPING: &'static [(&'static str, &'static str)] = &[
+const TIPL_MAPPING: &[(&str, &str)] = &[
     ("arranger", "arranger"),
     ("engineer", "engineer"),
     ("producer", "producer"),
@@ -51,20 +50,20 @@ pub enum Format {
 
 fn format_of(name: String) -> Format {
     let lower = name.to_lowercase();
-    if lower == "mpeg".to_string() || lower == "mp3".to_string() {
-        return Format::MPEG
+    if lower == "mpeg" || lower == "mp3" {
+        return Format::MPEG;
     }
-    if lower == "wav".to_string() {
-        return Format::WAV
+    if lower == "wav" {
+        return Format::WAV;
     }
-    if lower == "aiff".to_string() || lower == "aif".to_string() {
-        return Format::AIFF
+    if lower == "aiff" || lower == "aif" {
+        return Format::AIFF;
     }
-    if lower == "mp4".to_string() || lower == "m4a".to_string() {
-        return Format::MP4
+    if lower == "mp4" || lower == "m4a" {
+        return Format::MP4;
     }
-    if lower == "asf".to_string() || lower == "wma".to_string() {
-        return Format::ASF
+    if lower == "asf" || lower == "wma" {
+        return Format::ASF;
     }
     Format::MPEG
 }
@@ -100,11 +99,10 @@ pub struct RawTags {
     pub codec: String,
 }
 
-
 /// `gotaglib.go:37-133` minus the file-open: pure transform over RawTags.
 pub fn extract_metadata(raw: &RawTags) -> Info {
-    let tags = normalize_tags(&raw);
-    let mut tags = process_raw_tags(&raw, tags);
+    let tags = normalize_tags(raw);
+    let mut tags = process_raw_tags(raw, tags);
     tags = parse_tuple(tags, "track".to_string());
     tags = parse_tuple(tags, "disc".to_string());
     tags = parse_lyrics(tags);
@@ -118,7 +116,12 @@ pub fn extract_metadata(raw: &RawTags) -> Info {
         bit_depth: raw.bits_per_sample,
         codec: raw.codec.clone(),
     };
-    Info { tags: tags, audio_properties: ap, has_picture: raw.image_count > 0 }
+    let has_picture = raw.image_count > 0;
+    Info {
+        tags,
+        audio_properties: ap,
+        has_picture,
+    }
 }
 
 /// `gotaglib.go:102-107` — lowercase every PropertyMap key.
@@ -137,7 +140,10 @@ fn round_10ms(d: f64) -> f64 {
 
 /// `processRawTags` (`gotaglib.go:152-165`).
 /// `processRawTags` (`gotaglib.go:152-165`) — returns the merged tag map.
-fn process_raw_tags(raw: &RawTags, tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+fn process_raw_tags(
+    raw: &RawTags,
+    tags: BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, Vec<String>> {
     match format_of(raw.format.clone()) {
         Format::MPEG | Format::WAV | Format::AIFF => parse_id3v2_frames(raw, tags),
         Format::MP4 => parse_mp4_atoms(raw, tags),
@@ -147,7 +153,10 @@ fn process_raw_tags(raw: &RawTags, tags: BTreeMap<String, Vec<String>>) -> BTree
 
 /// `parseID3v2Frames` (`gotaglib.go:167-192`): language-coded USLT/SYLT
 /// frames become `lyrics:<lang>`; coded lyrics supersede the generic key.
-fn parse_id3v2_frames(raw: &RawTags, mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+fn parse_id3v2_frames(
+    raw: &RawTags,
+    mut tags: BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, Vec<String>> {
     for (key, values) in raw.raw.iter() {
         let lower = key.to_lowercase();
         let is_uslt = lower.starts_with("uslt:");
@@ -158,12 +167,14 @@ fn parse_id3v2_frames(raw: &RawTags, mut tags: BTreeMap<String, Vec<String>>) ->
         match lower.split_once(":") {
             None => (),
             Some((_, lang)) => {
-                if lang.len() == 0 {
+                if lang.is_empty() {
                     continue;
                 }
                 let lyrics_key = format!("lyrics:{}", lang);
-                tags.entry(lyrics_key).or_default().extend(values.iter().map(|v| v.to_string()));
-            },
+                tags.entry(lyrics_key)
+                    .or_default()
+                    .extend(values.iter().map(|v| v.to_string()));
+            }
         }
     }
     let mut coded = false;
@@ -180,12 +191,13 @@ fn parse_id3v2_frames(raw: &RawTags, mut tags: BTreeMap<String, Vec<String>>) ->
 }
 
 /// `parseMP4Atoms` (`gotaglib.go:196-207`).
-fn parse_mp4_atoms(raw: &RawTags, mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+fn parse_mp4_atoms(
+    raw: &RawTags,
+    mut tags: BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, Vec<String>> {
     for (key, values) in raw.raw.iter() {
         let normalized = strip_itunes_prefix(key.to_string()).to_lowercase();
-        if !tags.contains_key(&normalized) {
-            tags.insert(normalized, values.clone());
-        }
+        tags.entry(normalized).or_insert_with(|| values.clone());
     }
     tags
 }
@@ -198,18 +210,22 @@ fn strip_itunes_prefix(key: String) -> String {
 }
 
 /// `parseASFAttributes` (`gotaglib.go:211-221`).
-fn parse_asf_attributes(raw: &RawTags, mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+fn parse_asf_attributes(
+    raw: &RawTags,
+    mut tags: BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, Vec<String>> {
     for (key, values) in raw.raw.iter() {
         let normalized = key.to_lowercase();
-        if !tags.contains_key(&normalized) {
-            tags.insert(normalized, values.clone());
-        }
+        tags.entry(normalized).or_insert_with(|| values.clone());
     }
     tags
 }
 
 /// `parseTuple` (`gotaglib.go:111-127`): "2/10" -> track=2, tracktotal=10.
-fn parse_tuple(mut tags: BTreeMap<String, Vec<String>>, prop: String) -> BTreeMap<String, Vec<String>> {
+fn parse_tuple(
+    mut tags: BTreeMap<String, Vec<String>>,
+    prop: String,
+) -> BTreeMap<String, Vec<String>> {
     let tag_name = prop.to_string() + "number";
     let tag_total = prop.to_string() + "total";
     match tags.get(&tag_name) {
@@ -221,17 +237,15 @@ fn parse_tuple(mut tags: BTreeMap<String, Vec<String>>, prop: String) -> BTreeMa
                     match vs[0].split_once("/") {
                         None => (),
                         Some(pair) => {
-                            let mut n: Vec<String> = Vec::new();
-                            n.push(pair.0.to_string());
-                            let mut t: Vec<String> = Vec::new();
-                            t.push(pair.1.to_string());
+                            let n = [pair.0.to_string()].to_vec();
+                            let t = [pair.1.to_string()].to_vec();
                             tags.insert(tag_name, n);
                             tags.insert(tag_total, t);
-                        },
+                        }
                     };
-                },
+                }
             };
-        },
+        }
     }
     tags
 }
@@ -243,7 +257,7 @@ fn parse_lyrics(mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec
         Some(lyrics) => {
             tags.insert("lyrics:xxx".to_string(), lyrics.clone());
             tags.remove("lyrics");
-        },
+        }
     }
     tags
 }
@@ -253,7 +267,9 @@ fn parse_tipl(mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<S
     match tags.get("tipl") {
         None => return tags,
         Some(v) => {
-            match v.len() { 0 => return tags, _ => () };
+            if v.is_empty() {
+                return tags;
+            }
         }
     }
     let mut role: String = "".to_string();
@@ -261,7 +277,7 @@ fn parse_tipl(mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<S
     let tipl_key = "tipl".to_string();
     let tipl0 = tags.get(&tipl_key).unwrap()[0].clone();
     for part in tipl0.split(" ") {
-        if tipl_is_role(part) {
+        if tipl_is_role(part.to_string()) {
             tags = tipl_flush(role.clone(), &names, tags);
             role = part.to_string();
             names.clear();
@@ -274,18 +290,22 @@ fn parse_tipl(mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<S
     tags
 }
 
-fn tipl_is_role(part: &str) -> bool {
+fn tipl_is_role(part: String) -> bool {
     for (k, _) in TIPL_MAPPING {
-        if k.to_string() == part.to_string() {
+        if part == *k {
             return true;
         }
     }
     false
 }
 
-fn tipl_flush(role: String, names: &[String], mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+fn tipl_flush(
+    role: String,
+    names: &[String],
+    mut tags: BTreeMap<String, Vec<String>>,
+) -> BTreeMap<String, Vec<String>> {
     for (k, mapped) in TIPL_MAPPING {
-        if k.to_string() == role.to_string() && names.len() > 0 {
+        if !names.is_empty() && role == *k {
             let joined = names.join(" ");
             tags.entry(mapped.to_string()).or_default().extend([joined]);
             break;
@@ -296,7 +316,6 @@ fn tipl_flush(role: String, names: &[String], mut tags: BTreeMap<String, Vec<Str
 
 /// `extractMetadata`'s return type (`gotaglib.go:38` returns `metadata.Info`).
 pub type ExtractMetadataResult = Info;
-
 
 /// Shim loader: reads the `<file>.tags.json` sidecar emitted by the pinned
 /// go-taglib binary (shim backend, #08). Missing sidecar = Go's open failure

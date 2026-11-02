@@ -14,12 +14,12 @@
 //! `Info` map shape, and every gotaglib post-transform. The raw-tag surface
 //! itself stays owned by the pinned fork boundary, not reimplemented here.
 
-pub mod info;
-pub mod storage;
 pub mod extractors;
 pub mod gotaglib;
+pub mod info;
+pub mod storage;
 
-pub use info::{Info, AudioProperties};
-pub use storage::{storage_for, local_path_to_url, register, Storage, LOCAL_SCHEMA_ID};
-pub use extractors::{Extractor, register_extractor, get_extractor};
-pub use gotaglib::{RawTags, ExtractMetadataResult};
+pub use extractors::{get_extractor, register_extractor, Extractor};
+pub use gotaglib::{ExtractMetadataResult, RawTags};
+pub use info::{AudioProperties, Info};
+pub use storage::{local_path_to_url, register, storage_for, Storage, LOCAL_SCHEMA_ID};

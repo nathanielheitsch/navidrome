@@ -6,7 +6,9 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use crate::gotaglib::{extract_metadata, load_shim_raw_tags, ExtractMetadataResult, PINNED_TAGLIB_VERSION};
+use crate::gotaglib::{
+    extract_metadata, load_shim_raw_tags, ExtractMetadataResult, PINNED_TAGLIB_VERSION,
+};
 
 /// `extractors.go:13-16` — map id -> extractorConstructor, RWMutex-guarded.
 static EXTRACTORS: OnceLock<RwLock<HashMap<String, ExtractorConstructor>>> = OnceLock::new();
@@ -17,18 +19,22 @@ static EXTRACTORS: OnceLock<RwLock<HashMap<String, ExtractorConstructor>>> = Onc
 pub type ExtractorConstructor = fn(fs_root: String, base_dir: String) -> Extractor;
 
 /// `RegisterExtractor` (`extractors.go:23-29`).
-pub fn register_extractor(id: String, f: ExtractorConstructor) {
-    EXTRACTORS.get_or_init(|| RwLock::new(HashMap::new())).write()
+pub fn register_extractor(id: &str, f: ExtractorConstructor) {
+    EXTRACTORS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .write()
         .expect("extractor registry lock poisoned")
         .insert(id.to_string(), f);
 }
 
 /// Looks up a registered extractor by id — used by the local storage to pick
 /// the one configured by `Scanner.Extractor` (`local.go` `MusicFS::ReadTags`).
-pub fn get_extractor(id: String) -> Result<ExtractorConstructor, String> {
-    let reg = EXTRACTORS.get_or_init(|| RwLock::new(HashMap::new())).read()
+pub fn get_extractor(id: &str) -> Result<ExtractorConstructor, String> {
+    let reg = EXTRACTORS
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
         .expect("extractor registry lock poisoned");
-    match reg.get(&id) {
+    match reg.get(&id.to_string()) {
         Some(c) => Ok(*c),
         None => Err(format!("extractor '{}' not registered", id)),
     }
@@ -56,7 +62,7 @@ impl Extractor {
                 Ok(raw) => {
                     let info = extract_metadata(&raw);
                     results.insert(path.to_string(), info);
-                },
+                }
             }
         }
         results

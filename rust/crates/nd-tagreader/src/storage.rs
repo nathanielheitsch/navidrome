@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
 /// `storage.go:8` — `LocalSchemaID = "file"`.
-pub const LOCAL_SCHEMA_ID: &'static str = "file";
+pub const LOCAL_SCHEMA_ID: &str = "file";
 
 /// `core/storage/interface.go:10-13` — Storage implementation carrying the
 /// parsed URL (`storage_test.go` asserts Scheme/Path).
@@ -41,39 +41,53 @@ pub type StorageConstructor = fn(scheme: String, path: String) -> Storage;
 static REGISTRY: OnceLock<RwLock<HashMap<String, StorageConstructor>>> = OnceLock::new();
 
 /// `Register` (`storage.go:19-25`).
-pub fn register(schema: String, c: StorageConstructor) {
-    REGISTRY.get_or_init(|| RwLock::new(HashMap::new())).write().expect("registry lock poisoned")
-        .insert(schema, c);
+pub fn register(schema: &str, c: StorageConstructor) {
+    REGISTRY
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .write()
+        .expect("registry lock poisoned")
+        .insert(schema.to_string(), c);
 }
 
 /// `storage.go:32-51` — absolutize, then keep the path (see shortcut note).
-pub fn local_path_to_url(os_path: String) -> Storage {
-    let abs = if os_path.starts_with("/") {
-        os_path
-    } else {
-        let cwd = std::env::var("PWD").unwrap_or(".".to_string());
-        format!("{}/{}", cwd, os_path)
+pub fn local_path_to_url(os_path: &str) -> Storage {
+    let abs = match os_path.starts_with("/") {
+        true => os_path.to_string(),
+        false => {
+            let cwd = std::env::var("PWD").unwrap_or(".".to_string());
+            format!("{}/{}", cwd, os_path)
+        }
     };
-    Storage { scheme: LOCAL_SCHEMA_ID.to_string(), path: abs }
+    Storage {
+        scheme: LOCAL_SCHEMA_ID.to_string(),
+        path: abs,
+    }
 }
 
 /// `storage.go:53-84` — bare path → file://; schema selects the registered
 /// constructor; unregistered schema → error.
-pub fn storage_for(uri: String) -> Result<Storage, StorageError> {
+pub fn storage_for(uri: &str) -> Result<Storage, StorageError> {
     let u = match uri.split_once("://") {
-        Some((scheme, rest)) =>
+        Some((scheme, rest)) => {
             if scheme.is_empty() || rest.is_empty() {
-                return Err(StorageError::InvalidUrl(uri));
+                return Err(StorageError::InvalidUrl(uri.to_string()));
             } else {
-                Storage { scheme: scheme.to_string(), path: rest.to_string() }
-            },
+                Storage {
+                    scheme: scheme.to_string(),
+                    path: rest.to_string(),
+                }
+            }
+        }
         None => local_path_to_url(uri),
     };
 
-    let reg = REGISTRY.get_or_init(|| RwLock::new(HashMap::new())).read().expect("registry lock poisoned");
+    let reg = REGISTRY
+        .get_or_init(|| RwLock::new(HashMap::new()))
+        .read()
+        .expect("registry lock poisoned");
     let ctor = match reg.get(&u.scheme) {
         Some(c) => c,
-        None => return Err(StorageError::UnknownScheme(u.scheme)),
+        None => return Err(StorageError::UnknownScheme(u.scheme.to_string())),
     };
     Ok(ctor(u.scheme, u.path))
 }
