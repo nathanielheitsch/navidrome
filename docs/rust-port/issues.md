@@ -40,7 +40,7 @@ Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-t
 | issue | crate | state |
 |---|---|---|
 | #S1–#S4 (contracts) | workspace manifest + docs | DONE |
-| #01 | `nd-utils` (23 modules) | DONE |
+| #01 | `nd-utils` (22 modules) | DONE |
 | #02 | `nd-id` (id/artwork/participants) | DONE |
 | #03 | `nd-conf` (keys/config/dir/bytes/duration/crontab/consts) | DONE |
 | #04 | `nd-dbschema` (fresh schema DDL + open/init + `SEEDEDRAND`/`NATSORT` per-connection registration; fresh-schema goldens) | **PARTIAL** — fresh-schema half done; migration runner, optimize/backup/repair pending |
@@ -49,7 +49,7 @@ Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-t
 | #10 | `nd-playlists/src/parsers` (m3u/nsp/import + playlist DTO) | DONE (parsers half; #23 store/import stubbed) |
 | #11 | `nd-events` (broker/event/sse) | DONE |
 | #12 | `nd-sched` | **PARTIAL** — only `crontab.rs`; logging/maintenance pending |
-| #05, #06, #07, #13–#24, #26–#33 (all remaining live issues) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
+| #05, #06, #07, #13–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
 
 Next in build order: **#07 `nd-ffmpeg`** (deps #S1, #01 — both green), then #05/#06 unblock the repository/model spine.
 
