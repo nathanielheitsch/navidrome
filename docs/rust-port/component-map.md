@@ -16,6 +16,8 @@ Read this way:
 - **Lanes** (§3) are the parallel execution plan; §4 lists the artifacts several lanes need *designed before* they start.
 - Unresolved product decisions are **not** in this file — they are in `docs/rust-port/issues.md`, Part C.
 
+Progress state lives in `docs/rust-port/issues.md` ("Progress ledger"); this file stays the ownership/dependency contract only.
+
 Everything here is tied to exact Go paths in this checkout. Size classes are shard-reported estimates (the explorer lanes had no shell, so nothing was measured with `wc`); treat them as ordering hints, not budgets.
 
 ---

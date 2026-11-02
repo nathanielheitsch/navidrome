@@ -5,7 +5,7 @@ Repo: this navidrome fork (Go server, GPL-3.0). Companion doc: `docs/rust-port/c
 (`#S1`–`#S4`) that freeze shared contracts, then the numbered implementation issues `#01`–`#34`
 (of which #25 Subsonic shim, #29 plugin host, #30 Jellyfin API, #31 sonic similarity are CANCELLED and #34 backgrounds
 is DROPPED — 29 live issues), in build order. Every claim is a path/line citation from a read-only pass
-over this checkout; nothing here has been executed, so "test strategy" names the Go oracle, not a passed test.
+over this checkout; the Progress ledger below records what has since been executed and gate-verified.
 
 ## Revision (post-milestone-0) — settled decisions
 
@@ -32,6 +32,28 @@ Global rules:
 
 ---
 
+## Progress ledger (updated 2026-11-02 — this is the port's live state, not the plan)
+
+Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features`
+(last run: fmt 0 diffs, clippy 0 errors, 32 test groups / 0 failures).
+
+| issue | crate | state |
+|---|---|---|
+| #S1–#S4 (contracts) | workspace manifest + docs | DONE |
+| #01 | `nd-utils` (23 modules) | DONE |
+| #02 | `nd-id` (id/artwork/participants) | DONE |
+| #03 | `nd-conf` (keys/config/dir/bytes/duration/crontab/consts) | DONE |
+| #04 | `nd-dbschema` (fresh schema DDL + open/init + `SEEDEDRAND`/`NATSORT` per-connection registration; fresh-schema goldens) | **PARTIAL** — fresh-schema half done; migration runner, optimize/backup/repair pending |
+| #08 | `nd-tagreader` (storage registry, extractors, gotaglib transforms, shim `RawTags` sidecars + 12 tests) | DONE — **shim backend** chosen (pure-Rust taglib unavailable offline; C binding would fork the pinned go-taglib raw surface). Goldens emitted by the Go oracle harness `adapters/gotaglib/golden_dump_test.go` (`ND_GOLDEN_DUMP=1 go test ./adapters/gotaglib/ -run TestGoldenDump -v` → sidecars under `rust/crates/nd-tagreader/tests/fixtures/`); regenerate if the pinned fork bumps |
+| #09 | `nd-lyrics/src` (lrc/srt/ttml/normalize/parse/lyricsfile/model DTOs) | DONE (parsers half; #22 fetch/merge is stubbed inside the crate) |
+| #10 | `nd-playlists/src/parsers` (m3u/nsp/import + playlist DTO) | DONE (parsers half; #23 store/import stubbed) |
+| #11 | `nd-events` (broker/event/sse) | DONE |
+| #12 | `nd-sched` | **PARTIAL** — only `crontab.rs`; logging/maintenance pending |
+| #05, #06, #07, #13–#24, #26–#33 (all remaining live issues) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
+
+Next in build order: **#07 `nd-ffmpeg`** (deps #S1, #01 — both green), then #05/#06 unblock the repository/model spine.
+
+---
 ## Part A — shared artifacts first (design issues, blocking)
 
 ### #S1 — Fix the Rust workspace and crate graph
