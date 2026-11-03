@@ -23,3 +23,7 @@ mod scaffold_tests {
         );
     }
 }
+pub mod album;
+pub mod annotation;
+pub mod entity;
+pub mod wire;

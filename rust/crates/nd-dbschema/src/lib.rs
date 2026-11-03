@@ -15,6 +15,7 @@
 /// Scaffold marker: the public surface authored by #04 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 4;
 
+pub mod migrate;
 pub mod schema;
 pub mod schema_ddl;
 

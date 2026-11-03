@@ -271,4 +271,30 @@ mod tests {
         assert_eq!(r.bit_depth, 16);
         assert_eq!(r.bit_rate, 249);
     }
+
+    /// Live pins for every repo container fixture: probe must parse, codec
+    /// non-empty, bit_rate positive. Skipped when ffprobe is unresolved
+    /// (house skip-if-missing). Unparsable containers must fail as launch
+    /// errors, never parse errors (Go scanner logs and skips).
+    #[tokio::test]
+    async fn probe_live_container_fixtures() {
+        if !is_probe_available() {
+            return;
+        }
+
+        let root =
+            "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn";
+        for ext in ["mp3", "ogg", "opus", "wav", "m4a", "wma", "aiff"] {
+            let media = format!("{}/tests/fixtures/test.{}", root, ext);
+            let res = probe_audio_stream(media.to_string()).await;
+            if res.is_err() {
+                let err = res.unwrap_err();
+                assert!(!err.reason.contains("parsing ffprobe output"));
+                continue;
+            }
+            let r = res.unwrap();
+            assert!(!r.codec.is_empty());
+            assert!(r.bit_rate > 0);
+        }
+    }
 }

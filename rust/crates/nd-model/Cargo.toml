@@ -1,9 +1,14 @@
 [package]
 name = "nd-model"
-description = "Rust port scaffold: nd-model is owned by #06 (docs/rust-port/issues.md Part B)"
+description = "Rust port of model/* DTOs (issue #06, docs/rust-port/issues.md Part B): entity shapes (Album/Artist/MediaFile/Playlist/Annotation/Scrobble/Share/PlayQueue) and the criteria DSL transforms. Transforms-only: the SQL half is issue #05."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
