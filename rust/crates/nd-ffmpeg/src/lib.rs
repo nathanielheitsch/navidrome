@@ -12,6 +12,7 @@
 pub mod args;
 pub mod encoder_probe;
 pub mod errors;
+pub mod ffcmd;
 pub mod ffmpeg_cmd;
 pub mod flac_patcher;
 pub mod probe;
@@ -21,6 +22,7 @@ pub use args::{
     ffprobe_path, fix_cmd, inject_before_output, inject_dynamic_audio_flags, is_default_command,
     is_lossless_output_format, TranscodeOptions,
 };
+pub use ffcmd::{go_error_message, new_ffmpeg_cmd, ExitInfo, FFCmd, STDERR_CAP};
 pub use flac_patcher::{
     patch_flac_duration, set_flac_total_samples, FLAC_MAX_TOTAL_SAMPLES, FLAC_PREFIX_LEN,
 };
