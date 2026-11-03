@@ -16,6 +16,8 @@ pub mod ffcmd;
 pub mod ffmpeg_cmd;
 pub mod flac_patcher;
 pub mod probe;
+pub mod probe_exec;
+pub mod transcode;
 
 pub use args::{
     bit_depth_to_sample_fmt, build_dynamic_args, build_template_args, create_ffmpeg_command,
@@ -29,4 +31,12 @@ pub use flac_patcher::{
 pub use probe::{
     parse_probe_output, probe_client_reason, probe_detail, AudioProbeResult, ProbeFormat,
     ProbeOutput, ProbeStream,
+};
+pub use probe_exec::{
+    probe_argv, probe_audio_stream, probe_audio_stream_with, run_probe, PROBE_AUDIO_STREAM_CMD,
+    PROBE_TIMEOUT_MS,
+};
+pub use transcode::{
+    check_media_file, convert_animated_image_argv, drain_to_bytes, extract_image,
+    format_exit_message, transcode, EXTRACT_IMAGE_CMD,
 };
