@@ -618,6 +618,13 @@ dependencies = [
 [[package]]
 name = "nd-ffmpeg"
 version = "0.1.0"
+dependencies = [
+ "nd-conf",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "nd-http"
