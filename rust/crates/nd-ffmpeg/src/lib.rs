@@ -1,25 +1,29 @@
-// nd-ffmpeg: owned by #07 (docs/rust-port/issues.md Part B)
+//! `nd-ffmpeg` — Rust port of `core/ffmpeg/**` (issue #07, docs/rust-port/issues.md
+//! Part B): the ffmpeg/ffprobe process adapter plus the FLAC STREAMINFO patcher.
+//!
+//! Design divergence from Go (frozen here): Go's `FFmpeg` interface threads an
+//! ambient `context.Context` through every call and cancels the child when that
+//! context is cancelled. Rust has no ambient context — the returned stream
+//! ([`FFCmd`], after Go's `ffCmd` struct) owns the tokio child handle, and an
+//! explicit `close()`/cancellation SIGKILLS the whole process group
+//! (`process_group(1)` on unix) and reaps the child: no zombies, no orphaned
+//! stdout — the hard requirement of #07.
 
-//! Scaffold stage for nd-ffmpeg: this crate instantiates empty so later issues
-//! (#07) can fill it without pulling the world in (#S1 test contract).
+pub mod args;
+pub mod errors;
+pub mod ffmpeg_cmd;
+pub mod flac_patcher;
+pub mod probe;
 
-/// Scaffold marker: the public surface authored by #07 replaces this constant.
-pub const OWNED_BY_ISSUE: u8 = 7;
-
-#[cfg(test)]
-mod scaffold_tests {
-    use super::*;
-
-    #[test]
-    fn nd_ffmpeg_instantiates() {
-        // Arrange: the owning-issue number this crate must expose.
-        let expected: u8 = 7;
-        // Act: read the crate's own scaffold marker.
-        let actual: u8 = OWNED_BY_ISSUE;
-        // Assert
-        assert_eq!(
-            actual, expected,
-            "nd-ffmpeg instantiates without pulling in the world"
-        );
-    }
-}
+pub use args::{
+    bit_depth_to_sample_fmt, build_dynamic_args, build_template_args, create_ffmpeg_command,
+    ffprobe_path, fix_cmd, inject_before_output, inject_dynamic_audio_flags, is_default_command,
+    is_lossless_output_format, TranscodeOptions,
+};
+pub use flac_patcher::{
+    patch_flac_duration, set_flac_total_samples, FLAC_MAX_TOTAL_SAMPLES, FLAC_PREFIX_LEN,
+};
+pub use probe::{
+    parse_probe_output, probe_client_reason, probe_detail, AudioProbeResult, ProbeFormat,
+    ProbeOutput, ProbeStream,
+};
