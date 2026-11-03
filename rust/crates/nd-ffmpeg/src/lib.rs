@@ -10,6 +10,7 @@
 //! stdout — the hard requirement of #07.
 
 pub mod args;
+pub mod encoder_probe;
 pub mod errors;
 pub mod ffmpeg_cmd;
 pub mod flac_patcher;
