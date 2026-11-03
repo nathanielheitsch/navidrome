@@ -15,6 +15,7 @@ pub mod errors;
 pub mod ffcmd;
 pub mod ffmpeg_cmd;
 pub mod flac_patcher;
+pub mod mock_ffmpeg;
 pub mod probe;
 pub mod probe_exec;
 pub mod transcode;
@@ -28,6 +29,7 @@ pub use ffcmd::{go_error_message, new_ffmpeg_cmd, ExitInfo, FFCmd, STDERR_CAP};
 pub use flac_patcher::{
     patch_flac_duration, set_flac_total_samples, FLAC_MAX_TOTAL_SAMPLES, FLAC_PREFIX_LEN,
 };
+pub use mock_ffmpeg::{new_mock_ffmpeg, MockFFmpeg};
 pub use probe::{
     parse_probe_output, probe_client_reason, probe_detail, AudioProbeResult, ProbeFormat,
     ProbeOutput, ProbeStream,
