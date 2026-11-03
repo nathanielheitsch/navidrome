@@ -32,10 +32,10 @@ Global rules:
 
 ---
 
-## Progress ledger (updated 2026-11-02 — this is the port's live state, not the plan)
+## Progress ledger (updated 2026-11-03 — this is the port's live state, not the plan)
 
 Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features`
-(last run: fmt 0 diffs, clippy 0 errors, 59 test groups / 0 failures — nd-ffmpeg crate now 50 lib + 2 golden tests).
+(last run: fmt 0 diffs, clippy 0 errors, 60 test groups / 0 failures — nd-ffmpeg 51 lib + 2 golden, nd-dbschema 3 lib + 7 golden, nd-model 5 lib).
 
 | issue | crate | state |
 |---|---|---|
@@ -43,16 +43,17 @@ Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-t
 | #01 | `nd-utils` (22 modules) | DONE |
 | #02 | `nd-id` (id/artwork/participants) | DONE |
 | #03 | `nd-conf` (keys/config/dir/bytes/duration/crontab/consts) | DONE |
-| #04 | `nd-dbschema` (fresh schema DDL + open/init + `SEEDEDRAND`/`NATSORT` per-connection registration; fresh-schema goldens) | **PARTIAL** — fresh-schema half done; migration runner, optimize/backup/repair pending |
+| #04 | `nd-dbschema` (fresh schema DDL + open/init + `SEEDEDRAND`/`NATSORT` + marker-guard migration runner + `goose_db_version`/full-scan property + 3 idempotence tests) | **PARTIAL** — fresh schema + runner green (10 tests); optimize/backup/repair (FTS5 reindex, `db/repair.go`) still pending |
 | #08 | `nd-tagreader` (storage registry, extractors, gotaglib transforms, shim `RawTags` sidecars + 12 tests) | DONE — **shim backend** chosen (pure-Rust taglib unavailable offline; C binding would fork the pinned go-taglib raw surface). Goldens emitted by the Go oracle harness `adapters/gotaglib/golden_dump_test.go` (`ND_GOLDEN_DUMP=1 go test ./adapters/gotaglib/ -run TestGoldenDump -v` → sidecars under `rust/crates/nd-tagreader/tests/fixtures/`); regenerate if the pinned fork bumps |
 | #09 | `nd-lyrics/src` (lrc/srt/ttml/normalize/parse/lyricsfile/model DTOs) | DONE (parsers half; #22 fetch/merge is stubbed inside the crate) |
 | #10 | `nd-playlists/src/parsers` (m3u/nsp/import + playlist DTO) | DONE (parsers half; #23 store/import stubbed) |
 | #11 | `nd-events` (broker/event/sse) | DONE |
 | #12 | `nd-sched` | **PARTIAL** — only `crontab.rs`; logging/maintenance pending |
 | #07 | `nd-ffmpeg` (args tables byte-exact, resolved ffmpeg lookup, ffprobe JSON parser, FLAC STREAMINFO patcher + 13 goldens, `ffCmd` process type with `process_group(0)` spawn / SIGKILL+reap cancel / 4096 stderr cap, encoder-probe memo, `ProbeAudioStream` 5s-bounded launch, `Transcode`/`ExtractImage`/`ConvertAnimatedImage` argv) | **PARTIAL** — 50 lib + 2 golden tests green, gate clean. Pending from the Test block: `tests/mock_ffmpeg.go` rebuilt as a Rust mock binary (lanes used `/bin/sh` + `/bin/echo` stand-ins instead), and the container fixtures (`test.aiff m4a ogg opus wav wma`, invalid-frame, symlink chain) for the live-ffmpeg cases. Deviations pinned in-module: no `killpg` (std/tokio gap) — signal goes to the fresh group's root pid; probe `-encoders` 5s bound only on the probe path; `patchFLACDuration` deferred to the consumer (#14) because the port cannot patch a stream it never sees |
-| #05, #06, #13–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
+| #06 | `nd-model` (entity DTOs: album/annotation/entity/wire serde shapes with Go camelCase renames, 5 tests) | **PARTIAL** — DTO half landed; criteria DSL JSON form and `model/{searchable,get_entity,library_matcher}.go` pending |
+| #05, #13–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
 
-Next in build order: finish **#07 `nd-ffmpeg`** test plane (mock binary + container fixtures), then **#05 `nd-db` / #06 `nd-model`** unblock the repository/model spine. #12 `nd-sched` logging/maintenance also depends on #07's full test plane.
+Next in build order: #07 test-plane tail (mock_ffmpeg as a Rust mock binary was dropped by the last lane; `/bin/sh`+`/bin/echo` stand-ins + the new live-container fixture pins cover the launch paths instead — the Go stand-in golden remains uncovered), then **#05 `nd-db`** (repository layer, gated by #04 — runner now green) and finish #04 (optimize/backup/repair) and #06 (criteria DSL). #12 `nd-sched` logging/maintenance depends on #07 + #13 + #06 + #05.
 
 ---
 ## Part A — shared artifacts first (design issues, blocking)
