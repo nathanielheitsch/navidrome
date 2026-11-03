@@ -35,7 +35,7 @@ Global rules:
 ## Progress ledger (updated 2026-11-02 — this is the port's live state, not the plan)
 
 Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features`
-(last run: fmt 0 diffs, clippy 0 errors, 32 test groups / 0 failures).
+(last run: fmt 0 diffs, clippy 0 errors, 59 test groups / 0 failures — nd-ffmpeg crate now 50 lib + 2 golden tests).
 
 | issue | crate | state |
 |---|---|---|
@@ -49,9 +49,10 @@ Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-t
 | #10 | `nd-playlists/src/parsers` (m3u/nsp/import + playlist DTO) | DONE (parsers half; #23 store/import stubbed) |
 | #11 | `nd-events` (broker/event/sse) | DONE |
 | #12 | `nd-sched` | **PARTIAL** — only `crontab.rs`; logging/maintenance pending |
-| #05, #06, #07, #13–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
+| #07 | `nd-ffmpeg` (args tables byte-exact, resolved ffmpeg lookup, ffprobe JSON parser, FLAC STREAMINFO patcher + 13 goldens, `ffCmd` process type with `process_group(0)` spawn / SIGKILL+reap cancel / 4096 stderr cap, encoder-probe memo, `ProbeAudioStream` 5s-bounded launch, `Transcode`/`ExtractImage`/`ConvertAnimatedImage` argv) | **PARTIAL** — 50 lib + 2 golden tests green, gate clean. Pending from the Test block: `tests/mock_ffmpeg.go` rebuilt as a Rust mock binary (lanes used `/bin/sh` + `/bin/echo` stand-ins instead), and the container fixtures (`test.aiff m4a ogg opus wav wma`, invalid-frame, symlink chain) for the live-ffmpeg cases. Deviations pinned in-module: no `killpg` (std/tokio gap) — signal goes to the fresh group's root pid; probe `-encoders` 5s bound only on the probe path; `patchFLACDuration` deferred to the consumer (#14) because the port cannot patch a stream it never sees |
+| #05, #06, #13–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
 
-Next in build order: **#07 `nd-ffmpeg`** (deps #S1, #01 — both green), then #05/#06 unblock the repository/model spine.
+Next in build order: finish **#07 `nd-ffmpeg`** test plane (mock binary + container fixtures), then **#05 `nd-db` / #06 `nd-model`** unblock the repository/model spine. #12 `nd-sched` logging/maintenance also depends on #07's full test plane.
 
 ---
 ## Part A — shared artifacts first (design issues, blocking)
