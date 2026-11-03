@@ -35,7 +35,7 @@ Global rules:
 ## Progress ledger (updated 2026-11-03 — this is the port's live state, not the plan)
 
 Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features`
-(last run: fmt 0 diffs, clippy 0 errors, 60 test groups / 0 failures — nd-ffmpeg 51 lib + 2 golden, nd-dbschema 3 lib + 7 golden, nd-model 5 lib).
+(last run: fmt 0 diffs, clippy 0 errors, 59 test groups / 0 failures — nd-ffmpeg 51 lib + 2 golden, nd-dbschema 3 lib + 7 golden, nd-model 5 lib).
 
 | issue | crate | state |
 |---|---|---|
