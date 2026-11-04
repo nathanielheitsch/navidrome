@@ -74,7 +74,9 @@ fn new_reader(data: Vec<u8>) -> MockFFmpeg {
 /// Re-derive the injected failure as the launch-verb error shape
 /// (`MockFFmpeg.Error`, `tests/mock_ffmpeg.go:22`).
 fn injected_failure(ff: &MockFFmpeg) -> Option<FFmpegError> {
-    ff.error.clone().map(|rendered| FFmpegError::NotAvailable(rendered.clone()))
+    ff.error
+        .clone()
+        .map(|rendered| FFmpegError::NotAvailable(rendered.clone()))
 }
 
 /// Go's probe verb returns a [`crate::errors.ProbeError`] where the other verbs
@@ -103,7 +105,10 @@ impl MockFFmpeg {
 
     /// Go's `MockFFmpeg.Transcode` (`tests/mock_ffmpeg.go:35-40`): ignore the
     /// options, fail when an error is injected, else hand back the reader.
-    pub fn transcode(self: &MockFFmpeg, _opts: TranscodeOptions) -> Result<MockFFmpeg, FFmpegError> {
+    pub fn transcode(
+        self: &MockFFmpeg,
+        _opts: TranscodeOptions,
+    ) -> Result<MockFFmpeg, FFmpegError> {
         match injected_failure(self) {
             Some(err) => Err(err),
             None => Ok(self.clone()),
@@ -144,13 +149,15 @@ impl MockFFmpeg {
 
     /// Go's `MockFFmpeg.ProbeAudioStream` (`tests/mock_ffmpeg.go:60-65`): the
     /// canned [`crate::probe.AudioProbeResult`], no launch.
-    pub fn probe_audio_stream(self: &MockFFmpeg, path: String) -> Result<AudioProbeResult, ProbeError> {
+    pub fn probe_audio_stream(
+        self: &MockFFmpeg,
+        path: String,
+    ) -> Result<AudioProbeResult, ProbeError> {
         match self.error {
             None => Ok(self.probe_audio_result.clone()),
             Some(ref rendered) => Err(probe_failure(path.clone(), rendered.clone())),
         }
     }
-
 
     /// Go's `MockFFmpeg.CmdPath` (`tests/mock_ffmpeg.go:67-72`): the literal
     /// `"ffmpeg"` Go returns at `:69`.
@@ -176,7 +183,11 @@ impl MockFFmpeg {
             return Vec::new();
         }
         let stop = self.offset + want;
-        let stop = if stop <= self.data.len() { stop } else { self.data.len() };
+        let stop = if stop <= self.data.len() {
+            stop
+        } else {
+            self.data.len()
+        };
         let chunk = self.data[self.offset..stop].to_vec();
         self.offset = stop;
         chunk
@@ -282,7 +293,8 @@ mod mock_ffmpeg_tests {
             Ok(_) => panic!("injected error must short-circuit ExtractImage"),
             Err(err) => assert!(matches!(err, FFmpegError::NotAvailable(_))),
         }
-        let c = ff.convert_animated_image(new_reader("gif".to_string().as_bytes().to_vec()), 250, 80);
+        let c =
+            ff.convert_animated_image(new_reader("gif".to_string().as_bytes().to_vec()), 250, 80);
         match c {
             Ok(_) => panic!("injected error must short-circuit ConvertAnimatedImage"),
             Err(err) => assert!(matches!(err, FFmpegError::NotAvailable(_))),
