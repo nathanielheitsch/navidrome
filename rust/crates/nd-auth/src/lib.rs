@@ -1,25 +1,15 @@
 // nd-auth: owned by #13 (docs/rust-port/issues.md Part B)
 
-//! Scaffold stage for nd-auth: this crate instantiates empty so later issues
-//! (#13) can fill it without pulling the world in (#S1 test contract).
+//! Credential + claim model (model B), the jwt/apiKey/internal credential
+//! switch arms, epoch revocation (#13's consumer of user_repo), the fail-closed
+//! auth limiter, trusted sources, and publicurl. Vetted crates only.
 
-/// Scaffold marker: the public surface authored by #13 replaces this constant.
+/// Scaffold marker kept until #13's public surface replaces it.
 pub const OWNED_BY_ISSUE: u8 = 13;
 
-#[cfg(test)]
-mod scaffold_tests {
-    use super::*;
-
-    #[test]
-    fn nd_auth_instantiates() {
-        // Arrange: the owning-issue number this crate must expose.
-        let expected: u8 = 13;
-        // Act: read the crate's own scaffold marker.
-        let actual: u8 = OWNED_BY_ISSUE;
-        // Assert
-        assert_eq!(
-            actual, expected,
-            "nd-auth instantiates without pulling in the world"
-        );
-    }
-}
+pub mod claims;
+pub mod credentials;
+pub mod initial_setup;
+pub mod limiter;
+pub mod publicurl;
+pub mod trusted_sources;
