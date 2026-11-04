@@ -93,6 +93,13 @@ slice builds on those semantics.
   security-reviewer pass is part of this slice's definition of done.
 
 ### Slice 3 — leaf repos, mock-repo-backed, #13's dep first
+- **SECURITY GATE (security-reviewer, slice-2 pass, finding 1)**: `sql_restful.rs`
+  `parse_rest_filters` interpolates the user-controlled filter *key* as an SQL
+  identifier when no whitelist is registered — faithful to Go (`sql_restful.go:33-44`,
+  nil whitelist = allow) but every slice-3 repository consuming it MUST call
+  `with_field_white_list` with names from the `nd-model/src/fields.rs` registry
+  before exposing the repository to user filters. Lanes that ship a restful-backed
+  repository without registering a whitelist are rejected at review.
 - Order within the slice: **`user_repository` first** (`persistence/
   user_repository.go:129-144` epoch revocation is #13's hard dep) — this is the
   earliest legal point for #13 to start. Then the Test-block six:
