@@ -16,6 +16,7 @@
 pub const OWNED_BY_ISSUE: u8 = 5;
 
 pub mod pool;
+pub mod sqlrepo;
 pub mod store;
 
 #[cfg(test)]
