@@ -667,6 +667,7 @@ version = "0.1.0"
 name = "nd-model"
 version = "0.1.0"
 dependencies = [
+ "nd-utils",
  "serde",
  "serde_json",
  "thiserror",

@@ -109,7 +109,7 @@ async fn probe_symlink_chain_to_real_audio_probes_normally() {
     assert_eq!(r.sample_rate, 44100);
     assert_eq!(r.channels, 2);
     assert_eq!(r.bit_rate, 192); // stream bit_rate 192000 bps -> kbps
-    assert_eq!(r.bit_depth, 0);  // lossy codec reports no depth
+    assert_eq!(r.bit_depth, 0); // lossy codec reports no depth
 }
 
 /// `symlink2dir` -> `empty_folder`: statted through the symlink (Go's
@@ -124,8 +124,7 @@ async fn probe_symlink_to_directory_is_inaccessible_not_not_found() {
 
     // Arrange / Act: the stub binary proves the launch never happens.
     let media = fixture("symlink2dir".to_string());
-    let res =
-        probe_audio_stream_with(STUB_BINARY.to_string(), media.to_string()).await;
+    let res = probe_audio_stream_with(STUB_BINARY.to_string(), media.to_string()).await;
     // Assert: ProbeError carrying the file-access reason, NotFound false (the
     // path is there, it is just not a media file).
     let err = res.unwrap_err();
@@ -141,10 +140,8 @@ async fn probe_symlink_to_directory_is_inaccessible_not_not_found() {
 #[tokio::test]
 async fn probe_missing_container_under_invalid_files_is_not_found() {
     // Arrange / Act
-    let media =
-        fixture("invalid-files/this-container-does-not-exist.flac".to_string());
-    let res =
-        probe_audio_stream_with(STUB_BINARY.to_string(), media.to_string()).await;
+    let media = fixture("invalid-files/this-container-does-not-exist.flac".to_string());
+    let res = probe_audio_stream_with(STUB_BINARY.to_string(), media.to_string()).await;
     // Assert
     let err = res.unwrap_err();
     assert!(err.not_found);
