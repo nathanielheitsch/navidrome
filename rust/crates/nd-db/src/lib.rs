@@ -16,6 +16,9 @@
 pub const OWNED_BY_ISSUE: u8 = 5;
 
 pub mod pool;
+pub mod scrobble_buffer_repo;
+pub mod scrobble_repo;
+pub mod share_repo;
 pub mod sql_annotations;
 pub mod sql_bookmarks;
 pub mod sql_participations;
@@ -26,6 +29,10 @@ pub mod sql_search_like;
 pub mod sql_tags;
 pub mod sqlrepo;
 pub mod store;
+pub mod tag_repo;
+pub mod transcoding_repo;
+pub mod user_props_repo;
+pub mod user_repo;
 
 #[cfg(test)]
 mod scaffold_tests {
