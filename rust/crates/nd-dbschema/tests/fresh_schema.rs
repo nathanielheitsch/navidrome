@@ -75,6 +75,27 @@ fn fts5_tables_are_created() {
 }
 
 #[test]
+fn fts5_feeder_columns_survive_writes() {
+    // Go `20260220173400_add_fts5_search.go:28-46`: media_file and album carry
+    // `search_participants`, all three base tables carry `search_normalized` —
+    // the FTS triggers bind against them on the first INSERT.
+    let conn = open(":memory:").unwrap();
+    apply_fresh_schema(&conn).unwrap();
+    let inserts = [
+        "INSERT INTO library ( id, name, path ) VALUES ( 1, 'l', '/l' )",
+        "INSERT INTO media_file ( id, search_participants, search_normalized ) VALUES ( 'x', '', '' )",
+        "INSERT INTO album ( id, name, search_participants, search_normalized ) VALUES ( 'a', 'n', '', '' )",
+        "INSERT INTO artist ( id, name, search_normalized ) VALUES ( 'r', 'n', '' )",
+    ];
+    for sql in inserts.to_vec() {
+        match conn.execute(sql, []) {
+            Err(e) => panic!("feeder column write failed: {e}"),
+            Ok(_) => {}
+        }
+    }
+}
+
+#[test]
 fn schema_is_idempotent() {
     let conn = open(":memory:").unwrap();
     apply_fresh_schema(&conn).unwrap();
