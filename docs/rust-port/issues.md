@@ -36,7 +36,7 @@ Global rules:
 
 Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features`
 (last run: fmt 0 diffs, clippy 0 errors, 59 test groups / 0 failures — nd-ffmpeg 54 lib + 2 golden, nd-dbschema 3 lib + 7 golden, nd-model 5 lib).
-Next body of work is written up in `docs/rust-port/next-work.md` (task packet + pinned decisions below the fold — read it before re-deriving anything).
+Plan of record for the next body of work: `docs/rust-port/next-work.md` (phased plan: tails → #05 in 4 slices with the harness in slice 1 → #12/#13 fill-in → #14/#15 stream; read it before re-deriving anything).
 
 | issue | crate | state |
 |---|---|---|
@@ -51,7 +51,7 @@ Next body of work is written up in `docs/rust-port/next-work.md` (task packet + 
 | #11 | `nd-events` (broker/event/sse) | DONE |
 | #12 | `nd-sched` | **PARTIAL** — only `crontab.rs`; logging/maintenance pending |
 | #07 | `nd-ffmpeg` (args tables byte-exact, resolved ffmpeg lookup, ffprobe JSON parser, FLAC STREAMINFO patcher + 13 goldens, `ffCmd` process type with `process_group(0)` spawn / SIGKILL+reap cancel / 4096 stderr cap, encoder-probe memo, `ProbeAudioStream` 5s-bounded launch, `Transcode`/`ExtractImage`/`ConvertAnimatedImage` argv) | **PARTIAL** — 50 lib + 2 golden tests green, gate clean. Test-block tail now covered except: the symlink chain (`tests/fixtures/symlink*`) and the `invalid-files` directory cases. Go's `MockFFmpeg` interface double is ported as `src/mock_ffmpeg.rs` (canned reader/probe result + injected-failure re-shaping at the probe boundary); live container fixtures `test.{aiff,m4a,opus,wav,wma}` pinned by the fixture test. Deviations pinned in-module: no `killpg` (std/tokio gap) — signal goes to the fresh group's root pid; probe `-encoders` 5s bound only on the probe path; `patchFLACDuration` deferred to the consumer (#14) because the port cannot patch a stream it never sees |
-| #06 | `nd-model` (entity DTOs: album/annotation/entity/wire serde shapes with Go camelCase renames, 5 tests) | **PARTIAL** — DTO half landed; criteria DSL pending. `src/{fields,operators}.rs` are an UNCOMMITTED non-compiling draft (not declared in lib.rs, so the gate never sees them) + `src/criteria/fields.rs` is a duplicate of `src/fields.rs` — the next #06 lane keeps one, mechanical-fixes the other, and adds `criteria/{json,sort,criteria}.rs`; verdict + fix list recorded in next-work.md |
+| #06 | `nd-model` (entity DTOs: album/annotation/entity/wire serde shapes with Go camelCase renames, 5 tests) | **PARTIAL** — DTO half landed; criteria DSL pending. the abandoned criteria drafts are ARCHIVED at `docs/rust-port/drafts/{fields,operators}.rs` (untracked relics moved out of `src/`; verdict + fix list in git history) — the next #06 lane reuses them as base and adds `criteria/{json,sort,criteria}.rs` |
 | #05, #13–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
 
 Next in build order: #07 test-plane tail (mock_ffmpeg as a Rust mock binary was dropped by the last lane; `/bin/sh`+`/bin/echo` stand-ins + the new live-container fixture pins cover the launch paths instead — the Go stand-in golden remains uncovered), then **#05 `nd-db`** (repository layer, gated by #04 — runner now green) and finish #04 (optimize/backup/repair) and #06 (criteria DSL). #12 `nd-sched` logging/maintenance depends on #07 + #13 + #06 + #05.
