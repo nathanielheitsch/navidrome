@@ -7,3 +7,17 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+nd-conf = { version = "0.1.0", path = "../nd-conf" }
+nd-dbschema = { version = "0.1.0", path = "../nd-dbschema" }
+nd-utils = { version = "0.1.0", path = "../nd-utils" }
+# rusqlite is not a workspace dependency: every consumer re-pins the same
+# version+features verbatim (nd-dbschema/Cargo.toml:14 is the template).
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup"] }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "test-util"] }
