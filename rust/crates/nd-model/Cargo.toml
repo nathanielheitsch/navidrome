@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+nd-utils = { version = "0.1.0", path = "../nd-utils" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
