@@ -588,6 +588,17 @@ dependencies = [
 [[package]]
 name = "nd-db"
 version = "0.1.0"
+dependencies = [
+ "nd-conf",
+ "nd-dbschema",
+ "nd-id",
+ "nd-utils",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "nd-dbschema"

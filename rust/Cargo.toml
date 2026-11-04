@@ -50,7 +50,6 @@ serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 thiserror = "^1"
 anyhow = "^1"
-sqlx = { version = "^0.2", features = ["sqlite", "runtime-tokio"] }
 argon2 = "^1"
 jsonwebtoken = "^9"
 rand = { version = "^0.9" }

@@ -116,6 +116,8 @@ impl Condition {
 struct Join {
     table: String,
     on: String,
+    join_args: Vec<Value>,
+    // join_args bind at the JOIN position in to_sql() (squirrel .Join args).
 }
 
 /// Builder modeling the dbx/squirrel select chain
@@ -157,7 +159,42 @@ impl Repository {
         self.joins.push(Join {
             table: table.into(),
             on: on.into(),
+            join_args: Vec::new(),
         });
+        self
+    }
+
+    /// Adds a `JOIN` whose table expression carries bound args (squirrel
+    /// `.Join(sqlString, args...)`, sql_search.go:141 joins the ranked rowid
+    /// subquery whose args contain user text). The args bind AT THE JOIN
+    /// POSITION in to_sql(): they precede later WHERE/ORDER args.
+    #[must_use]
+    pub fn join(
+        mut self,
+        table: impl Into<String>,
+        on: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Self {
+        self.joins.push(Join {
+            table: table.into(),
+            on: on.into(),
+            join_args: args,
+        });
+        self
+    }
+
+    /// Clears the pagination limit (squirrel `RemoveLimit()`, applied at
+    /// sql_search.go:126 before the rowid page re-hydration).
+    #[must_use]
+    pub fn remove_limit(mut self) -> Self {
+        self.limit = None;
+        self
+    }
+
+    /// Clears the pagination offset (squirrel `RemoveOffset()`, sql_search.go:127).
+    #[must_use]
+    pub fn remove_offset(mut self) -> Self {
+        self.offset = None;
         self
     }
 
@@ -265,6 +302,7 @@ impl Repository {
 
         for join in &self.joins {
             sql.push_str(&format!(" INNER JOIN {} ON {}", join.table, join.on));
+            args.extend(join.join_args.iter().cloned());
         }
 
         // Squirrel joins every accumulated .Where() clause with AND; the Go
