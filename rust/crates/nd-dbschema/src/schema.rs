@@ -39,6 +39,15 @@ pub enum Error {
         /// Underlying rusqlite error.
         cause: RsError,
     },
+
+    /// Filesystem failure around backup/restore (message carries the path).
+    /// Added for #04's backup.rs: an IO failure has no rusqlite cause to
+    /// smuggle into `Failed.cause`, and inventing one would misreport it.
+    #[error("cannot access backup file '{message}'")]
+    Filesystem {
+        /// Human-readable failure including the path.
+        message: String,
+    },
 }
 
 /// Opens the DB (URI-capable flags so the `:memory:` rewrite parses as a sqlite

@@ -8,14 +8,16 @@
 //! (`db/db.go:44-51`), plus the single fresh-schema migration that installs the
 //! 31-table set (`schema-contract.md` §1) with the §3 FTS5 tables always present.
 //!
-//! Out of scope for this pass (later run owns them, so they are not even
-//! declared here): optimize/backup/repair, the goose offset semantics of
-//! `db/db.go`, and the incremental migration machinery.
+//! Tail (this pass): [`optimize`] — the ANALYZE scheduling of `db/optimize.go`, and
+//! [`backup`] — the snapshot/restore/prune machinery of `db/backup.go`. The FTS
+//! repair probe of `db/repair.go` stays out of scope for this run (later worker).
 
 /// Scaffold marker: the public surface authored by #04 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 4;
 
+pub mod backup;
 pub mod migrate;
+pub mod optimize;
 pub mod schema;
 pub mod schema_ddl;
 

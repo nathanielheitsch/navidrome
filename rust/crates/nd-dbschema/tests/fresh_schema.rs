@@ -87,10 +87,9 @@ fn fts5_feeder_columns_survive_writes() {
         "INSERT INTO album ( id, name, search_participants, search_normalized ) VALUES ( 'a', 'n', '', '' )",
         "INSERT INTO artist ( id, name, search_normalized ) VALUES ( 'r', 'n', '' )",
     ];
-    for sql in inserts.to_vec() {
-        match conn.execute(sql, []) {
-            Err(e) => panic!("feeder column write failed: {e}"),
-            Ok(_) => {}
+    for sql in inserts.iter().copied() {
+        if let Err(e) = conn.execute(sql, []) {
+            panic!("feeder column write failed: {e}")
         }
     }
 }

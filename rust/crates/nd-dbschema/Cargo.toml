@@ -11,6 +11,6 @@ workspace = true
 [dependencies]
 nd-conf = { version = "0.1.0", path = "../nd-conf" }
 nd-utils = { version = "0.1.0", path = "../nd-utils" }
-rusqlite = { version = "0.32", features = ["bundled", "collation", "functions"] }
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup"] }
 thiserror = "1"
 tokio = "1"
