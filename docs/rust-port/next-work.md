@@ -57,11 +57,23 @@ slice builds on those semantics.
 ### Slice 1 — connection + ownership core + minimal harness
 - `SQLStore` from `persistence.go:17-40,71,171,203-235`: lazy repo builders,
   `WithTx`/`WithTxRetry` (txMaxRetries=3, delay 5s), busy-retry.
-- **Pin in the brief**: the pool mechanism (single `Mutex<Connection>` vs pool
-  crate — single-owner matches Go's `SetMaxOpenConns(1)` best), which rusqlite
-  errors retry vs fail (`SQLITE_BUSY`/`SQLITE_LOCKED` retry; everything else
-  fail), and that bundled SQLite (rusqlite `bundled` feature) is what FTS5 +
-  JSON1 run against.
+- **Pool mechanism — DECIDED (2026-11-03)**: a fixed pool of N owned
+  `rusqlite::Connection`s behind `Mutex`, N = `max(4, available_parallelism())`
+  (`conf/configuration.go:1213-1216`, NOT 1 — that value is the e2e harness's
+  test setting, `e2e_suite_test.go:243`). `Connection` is `!Sync` and sqlite
+  serializes writers on a single write lock anyway (`configuration.go:1211`
+  comment) — more conns buy reader parallelism while disk-I/O-blocked, which is
+  exactly what Go's pool does. No pool crate, no async connection surface:
+  sync rusqlite inside the async shell, blocking calls via `tokio::task::
+  spawn_blocking` at the store boundary. Reuse #04 `schema::open` per connection
+  so `SEEDEDRAND`/`NATSORT` registration (`schema.rs:86`) is per-connection as
+  `schema-contract.md:177` requires.
+- **Retry mapping — DECIDED**: `SQLITE_BUSY`/`SQLITE_BUSY_SN`/`SQLITE_LOCKED`
+  (`rusqlite::Error::SqliteFailure` extended codes 5/17, plus `Sys` wrap)
+  → retry up to 3 with 5s delay; every other error → fail immediately. Go
+  reaches this via ctx-value + `withBusyRetry` (`persistence.go:234`); the
+  port classifies at the error site instead — same observable semantics,
+  no ambient context.
 - **Minimal harness now**: temp file DB → #04 `open` + fresh schema → one trivial
   repo round-trip. Harness grows with each slice.
 - **Schema-drift guard**: dump the fully-migrated Go schema (`go run` with
@@ -139,9 +151,7 @@ Commits GPG-signed, no co-author trailers, no gpgsign bypass.
 - **Worker exhaustion**: executors have died mid-thought twice on this port.
   Slices are bounded so a dead lane loses a slice, not a phase. Verify with
   `ls`/`grep` before trusting a crew's "completed" report.
-- **`Connection` is `!Sync`**: the pool choice in #05 slice 1 is load-bearing —
-  pin it in the brief, not in a worker's judgment.
-- **`bench/`, `docs/perf/`**: untracked artifacts of a prior session's perf run
-  (Nov 2). Not mine; commit or remove — ask, don't decide unilaterally. Same
-  class of leftover as `docs/rust-port/drafts/` if the #06 lane doesn't consume
-  it.
+- **`Connection` is `!Sync`**: pool mechanism + retry mapping for #05 slice 1
+  are now DECIDED in the plan above — workers implement, they don't re-derive.
+- **`bench/`, `docs/perf/`**: COMMITTED (2026-11-03) as the crew-run perf
+  baseline for future comparison; worktree is fully clean.
