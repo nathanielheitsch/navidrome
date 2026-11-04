@@ -1,0 +1,1812 @@
+{
+  "runId": "team_20261102161518_a1c18cddd4069ce1",
+  "generatedAt": "2026-11-02T16:26:15.653Z",
+  "summary": {
+    "wallMs": 583460,
+    "totalCost": 0,
+    "totalTokens": {
+      "input": 90914,
+      "output": 24768,
+      "cacheRead": 789474,
+      "cacheWrite": 0,
+      "totalTokens": 905156
+    },
+    "modelBreakdown": {
+      "vllm/strata-coder": 1,
+      "openrouter/coding": 1,
+      "openrouter/fast": 1,
+      "openrouter/reasoning": 1,
+      "openrouter/auto": 1,
+      "openrouter/image": 1,
+      "openrouter/openai/gpt-6-luna": 1,
+      "nomic-embed-text": 1
+    },
+    "subagentCount": 3,
+    "eventCount": 172,
+    "tokensPerSec": 42.45,
+    "eventsPerSec": 0.29,
+    "workflow": "implementation",
+    "goal": "Port issue #07 — ffmpeg process adapter (nd-ffmpeg crate) — in the Rust workspace at rust/ (26 nd-* crates, standard Rust, edition 2021). Replace the scaffold in rust/crates/nd-ffmpeg/ with a full por",
+    "parentModel": "bifrost/vllm/strata-coder"
+  },
+  "subagents": [
+    {
+      "taskId": "01_assess",
+      "role": "planner",
+      "model": "vllm/strata-coder, openrouter/coding, openrouter/fast, openrouter/reasoning, openrouter/auto, openrouter/image, openrouter/openai/gpt-6-luna, nomic-embed-text",
+      "modelRouting": "bifrost/vllm/strata-coder",
+      "usage": {
+        "input": 90914,
+        "output": 24768,
+        "cacheRead": 789474,
+        "cacheWrite": 0,
+        "totalTokens": 905156
+      },
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      },
+      "timeline": {
+        "phases": {
+          "launch": 0,
+          "respawn": 94043,
+          "startup": 0,
+          "activeWork": 575547,
+          "drain": 0,
+          "finalize": 47,
+          "total": 483111,
+          "wall": 577040
+        },
+        "progressCount": 87,
+        "maxGap": 194910
+      },
+      "tools": 29,
+      "assistantMsgs": 24,
+      "messageEndCount": 49,
+      "apiErrors": 10,
+      "spawnCount": 9,
+      "exitCode": 0,
+      "attempts": 2,
+      "modelAttempts": [
+        {
+          "model": "bifrost/vllm/strata-coder",
+          "success": true,
+          "exitCode": 0
+        }
+      ],
+      "status": "completed",
+      "pid": 8265,
+      "spawnMs": 1793636218689,
+      "exitMs": 1793636701686,
+      "hasTranscript": true,
+      "resource": {
+        "taskId": "01_assess",
+        "pid": 8265,
+        "samples": 241,
+        "peakRssBytes": 282017792,
+        "peakCpuPct": 68.4,
+        "p95RssBytes": 236306432,
+        "p95CpuPct": 2.9,
+        "avgRssBytes": 185961119,
+        "avgCpuPct": 1.8,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793636220360,
+            "pid": 8265,
+            "rssBytes": 282017792,
+            "cpuPct": 68.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636228363,
+            "pid": 8265,
+            "rssBytes": 226705408,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636234398,
+            "pid": 8265,
+            "rssBytes": 221970432,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636244373,
+            "pid": 8265,
+            "rssBytes": 200474624,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636250432,
+            "pid": 8265,
+            "rssBytes": 240517120,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636256398,
+            "pid": 8265,
+            "rssBytes": 240582656,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636262373,
+            "pid": 8265,
+            "rssBytes": 179634176,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636264409,
+            "pid": 8265,
+            "rssBytes": 179634176,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636274378,
+            "pid": 8265,
+            "rssBytes": 172883968,
+            "cpuPct": 4.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636280382,
+            "pid": 8265,
+            "rssBytes": 177242112,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636284411,
+            "pid": 8265,
+            "rssBytes": 177668096,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636288392,
+            "pid": 8265,
+            "rssBytes": 177668096,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636294450,
+            "pid": 8265,
+            "rssBytes": 175882240,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636304450,
+            "pid": 8265,
+            "rssBytes": 156123136,
+            "cpuPct": 2.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636308458,
+            "pid": 8265,
+            "rssBytes": 189743104,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636314443,
+            "pid": 8265,
+            "rssBytes": 189808640,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636320450,
+            "pid": 8265,
+            "rssBytes": 163430400,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636324483,
+            "pid": 8265,
+            "rssBytes": 163446784,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636332488,
+            "pid": 8265,
+            "rssBytes": 163364864,
+            "cpuPct": 0.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636338476,
+            "pid": 8265,
+            "rssBytes": 161824768,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636346470,
+            "pid": 8265,
+            "rssBytes": 161005568,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636352483,
+            "pid": 8265,
+            "rssBytes": 161103872,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636358494,
+            "pid": 8265,
+            "rssBytes": 161251328,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636364482,
+            "pid": 8265,
+            "rssBytes": 172851200,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636370484,
+            "pid": 8265,
+            "rssBytes": 176979968,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636372492,
+            "pid": 8265,
+            "rssBytes": 176947200,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636378495,
+            "pid": 8265,
+            "rssBytes": 176619520,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636386504,
+            "pid": 8265,
+            "rssBytes": 176652288,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636390507,
+            "pid": 8265,
+            "rssBytes": 166297600,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636398497,
+            "pid": 8265,
+            "rssBytes": 176750592,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636402511,
+            "pid": 8265,
+            "rssBytes": 176668672,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636408510,
+            "pid": 8265,
+            "rssBytes": 176668672,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636418516,
+            "pid": 8265,
+            "rssBytes": 176734208,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636420516,
+            "pid": 8265,
+            "rssBytes": 176488448,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636426517,
+            "pid": 8265,
+            "rssBytes": 176488448,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636434531,
+            "pid": 8265,
+            "rssBytes": 177979392,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636442524,
+            "pid": 8265,
+            "rssBytes": 183484416,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636444519,
+            "pid": 8265,
+            "rssBytes": 183484416,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636455025,
+            "pid": 8265,
+            "rssBytes": 185499648,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636458535,
+            "pid": 8265,
+            "rssBytes": 199557120,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636466538,
+            "pid": 8265,
+            "rssBytes": 201850880,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636472547,
+            "pid": 8265,
+            "rssBytes": 202375168,
+            "cpuPct": 0.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636476552,
+            "pid": 8265,
+            "rssBytes": 202391552,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636484544,
+            "pid": 8265,
+            "rssBytes": 202440704,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636490552,
+            "pid": 8265,
+            "rssBytes": 202768384,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636496553,
+            "pid": 8265,
+            "rssBytes": 230752256,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636498557,
+            "pid": 8265,
+            "rssBytes": 230752256,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636506550,
+            "pid": 8265,
+            "rssBytes": 236306432,
+            "cpuPct": 14.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636514569,
+            "pid": 8265,
+            "rssBytes": 236371968,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636518571,
+            "pid": 8265,
+            "rssBytes": 236453888,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636524573,
+            "pid": 8265,
+            "rssBytes": 231718912,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636528573,
+            "pid": 8265,
+            "rssBytes": 231718912,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636534579,
+            "pid": 8265,
+            "rssBytes": 231964672,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636544607,
+            "pid": 8265,
+            "rssBytes": 232325120,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636548588,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636552585,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636558590,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636564592,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636570599,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636580605,
+            "pid": 8265,
+            "rssBytes": 232603648,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636582603,
+            "pid": 8265,
+            "rssBytes": 232603648,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636592605,
+            "pid": 8265,
+            "rssBytes": 232685568,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636598617,
+            "pid": 8265,
+            "rssBytes": 233127936,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636604621,
+            "pid": 8265,
+            "rssBytes": 233226240,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636610611,
+            "pid": 8265,
+            "rssBytes": 233259008,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636616615,
+            "pid": 8265,
+            "rssBytes": 233783296,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636620622,
+            "pid": 8265,
+            "rssBytes": 233947136,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636624619,
+            "pid": 8265,
+            "rssBytes": 230539264,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636634634,
+            "pid": 8265,
+            "rssBytes": 172113920,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636640638,
+            "pid": 8265,
+            "rssBytes": 172244992,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636642637,
+            "pid": 8265,
+            "rssBytes": 172244992,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636650655,
+            "pid": 8265,
+            "rssBytes": 91209728,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636658647,
+            "pid": 8265,
+            "rssBytes": 85164032,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636664684,
+            "pid": 8265,
+            "rssBytes": 90095616,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636666647,
+            "pid": 8265,
+            "rssBytes": 91340800,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636676657,
+            "pid": 8265,
+            "rssBytes": 93913088,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636682657,
+            "pid": 8265,
+            "rssBytes": 97124352,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636684654,
+            "pid": 8265,
+            "rssBytes": 96927744,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636692665,
+            "pid": 8265,
+            "rssBytes": 92602368,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636700672,
+            "pid": 8265,
+            "rssBytes": 92798976,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      }
+    },
+    {
+      "taskId": "gc-2dfd7f81-6183-42c6-b3b1-9f651baab498",
+      "role": "explorer",
+      "model": "",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0
+      },
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      },
+      "timeline": {
+        "phases": {
+          "launch": null,
+          "respawn": null,
+          "startup": null,
+          "activeWork": null,
+          "drain": null,
+          "finalize": null,
+          "total": null,
+          "wall": null
+        },
+        "progressCount": 0,
+        "maxGap": 0
+      },
+      "tools": 0,
+      "assistantMsgs": 0,
+      "messageEndCount": 0,
+      "apiErrors": 0,
+      "spawnCount": 0,
+      "attempts": 0,
+      "modelAttempts": [],
+      "status": "completed",
+      "hasTranscript": false
+    },
+    {
+      "taskId": "gc-ed38462d-4b59-4439-b0d5-ee6ff29683e3",
+      "role": "explorer",
+      "model": "",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0
+      },
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      },
+      "timeline": {
+        "phases": {
+          "launch": null,
+          "respawn": null,
+          "startup": null,
+          "activeWork": null,
+          "drain": null,
+          "finalize": null,
+          "total": null,
+          "wall": null
+        },
+        "progressCount": 0,
+        "maxGap": 0
+      },
+      "tools": 0,
+      "assistantMsgs": 0,
+      "messageEndCount": 0,
+      "apiErrors": 0,
+      "spawnCount": 0,
+      "attempts": 0,
+      "modelAttempts": [],
+      "status": "completed",
+      "hasTranscript": false
+    }
+  ],
+  "problems": [
+    {
+      "severity": 2,
+      "type": "task.failed",
+      "taskId": "01_assess",
+      "message": "All 8 model candidates exhausted (tried: bifrost/vllm/strata-coder → bifrost/openrouter/coding → bifrost/openrouter/fast → bifrost/openrouter/reasoning → bifrost/openrouter/auto → bifrost/openrouter/image → bifrost/openrouter/openai/gpt-6-luna → ollama/nomic-embed-text). Last failure: Model settled without a final answer (empty final assistant message; upstream rate-limit/429 exhaustion)",
+      "seq": 68
+    },
+    {
+      "severity": 3,
+      "type": "adaptive.plan_repair_failed",
+      "taskId": "01_assess",
+      "message": "Adaptive planner output could not be repaired.",
+      "seq": 155
+    },
+    {
+      "severity": 3,
+      "type": "adaptive.plan_missing",
+      "taskId": "01_assess",
+      "message": "Adaptive planner did not produce a valid plan; no dynamic subagents were spawned.",
+      "seq": 157
+    },
+    {
+      "severity": 3,
+      "type": "adaptive.plan_repair_failed",
+      "taskId": "01_assess",
+      "message": "Adaptive planner output could not be repaired.",
+      "seq": 166
+    },
+    {
+      "severity": 3,
+      "type": "adaptive.plan_missing",
+      "taskId": "01_assess",
+      "message": "Adaptive planner did not produce a valid plan; no dynamic subagents were spawned.",
+      "seq": 168
+    },
+    {
+      "severity": 4,
+      "type": "retry",
+      "taskId": "01_assess",
+      "message": "2 attempts (retry)",
+      "value": 2
+    }
+  ],
+  "bottlenecks": [
+    {
+      "taskId": "01_assess",
+      "phase": "activeWork",
+      "durationMs": 575547,
+      "label": "planner active work"
+    },
+    {
+      "taskId": "01_assess",
+      "phase": "total",
+      "durationMs": 483111,
+      "label": "planner total wall"
+    },
+    {
+      "taskId": "01_assess",
+      "phase": "intra_gap",
+      "durationMs": 194910,
+      "label": "gap @ 2026-11-02T16:25:01.377Z"
+    }
+  ],
+  "resources": {
+    "sampleCount": 1194,
+    "peakRssBytes": 401129472,
+    "peakCpuPct": 133.4,
+    "rssGrowthBytes": -816234496,
+    "spanMs": 576415,
+    "byPid": [
+      {
+        "pid": 81560,
+        "label": "root",
+        "peakRss": 401129472,
+        "peakCpu": 133.4,
+        "firstRss": 401129472,
+        "lastRss": 76595200
+      },
+      {
+        "pid": 82260,
+        "label": "child",
+        "peakRss": 47120384,
+        "peakCpu": 21,
+        "firstRss": 46039040,
+        "lastRss": 42106880
+      },
+      {
+        "pid": 82435,
+        "label": "child",
+        "peakRss": 353828864,
+        "peakCpu": 63.6,
+        "firstRss": 337903616,
+        "lastRss": 158662656
+      },
+      {
+        "pid": 82610,
+        "label": "child",
+        "peakRss": 1753088,
+        "peakCpu": 17.1,
+        "firstRss": 1753088,
+        "lastRss": 1753088
+      },
+      {
+        "pid": 97909,
+        "label": "child",
+        "peakRss": 142540800,
+        "peakCpu": 8.2,
+        "firstRss": 142540800,
+        "lastRss": 107364352
+      },
+      {
+        "pid": 97932,
+        "label": "child",
+        "peakRss": 142770176,
+        "peakCpu": 15.2,
+        "firstRss": 142770176,
+        "lastRss": 96600064
+      },
+      {
+        "pid": 97955,
+        "label": "child",
+        "peakRss": 284180480,
+        "peakCpu": 54.5,
+        "firstRss": 284180480,
+        "lastRss": 284180480
+      },
+      {
+        "pid": 98780,
+        "label": "child",
+        "peakRss": 268943360,
+        "peakCpu": 89.5,
+        "firstRss": 268943360,
+        "lastRss": 268943360
+      },
+      {
+        "pid": 99483,
+        "label": "child",
+        "peakRss": 267616256,
+        "peakCpu": 84.8,
+        "firstRss": 267616256,
+        "lastRss": 267616256
+      },
+      {
+        "pid": 662,
+        "label": "child",
+        "peakRss": 255049728,
+        "peakCpu": 97.8,
+        "firstRss": 255049728,
+        "lastRss": 255049728
+      },
+      {
+        "pid": 1704,
+        "label": "child",
+        "peakRss": 286900224,
+        "peakCpu": 85.9,
+        "firstRss": 286900224,
+        "lastRss": 286900224
+      },
+      {
+        "pid": 1885,
+        "label": "child",
+        "peakRss": 53182464,
+        "peakCpu": 35.6,
+        "firstRss": 53182464,
+        "lastRss": 53182464
+      },
+      {
+        "pid": 2559,
+        "label": "child",
+        "peakRss": 276676608,
+        "peakCpu": 78.8,
+        "firstRss": 276676608,
+        "lastRss": 276676608
+      },
+      {
+        "pid": 2871,
+        "label": "child",
+        "peakRss": 56459264,
+        "peakCpu": 32.7,
+        "firstRss": 56459264,
+        "lastRss": 56459264
+      },
+      {
+        "pid": 3343,
+        "label": "child",
+        "peakRss": 255082496,
+        "peakCpu": 94.1,
+        "firstRss": 255082496,
+        "lastRss": 217120768
+      },
+      {
+        "pid": 3838,
+        "label": "child",
+        "peakRss": 1753088,
+        "peakCpu": 15.4,
+        "firstRss": 1753088,
+        "lastRss": 1753088
+      },
+      {
+        "pid": 8265,
+        "label": "child",
+        "peakRss": 282017792,
+        "peakCpu": 68.4,
+        "firstRss": 282017792,
+        "lastRss": 92798976
+      },
+      {
+        "pid": 8762,
+        "label": "child",
+        "peakRss": 1753088,
+        "peakCpu": 16.4,
+        "firstRss": 1753088,
+        "lastRss": 1753088
+      }
+    ],
+    "perSubagent": [
+      {
+        "taskId": "01_assess",
+        "pid": 8265,
+        "samples": 241,
+        "peakRssBytes": 282017792,
+        "peakCpuPct": 68.4,
+        "p95RssBytes": 236306432,
+        "p95CpuPct": 2.9,
+        "avgRssBytes": 185961119,
+        "avgCpuPct": 1.8,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793636220360,
+            "pid": 8265,
+            "rssBytes": 282017792,
+            "cpuPct": 68.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636228363,
+            "pid": 8265,
+            "rssBytes": 226705408,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636234398,
+            "pid": 8265,
+            "rssBytes": 221970432,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636244373,
+            "pid": 8265,
+            "rssBytes": 200474624,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636250432,
+            "pid": 8265,
+            "rssBytes": 240517120,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636256398,
+            "pid": 8265,
+            "rssBytes": 240582656,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636262373,
+            "pid": 8265,
+            "rssBytes": 179634176,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636264409,
+            "pid": 8265,
+            "rssBytes": 179634176,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636274378,
+            "pid": 8265,
+            "rssBytes": 172883968,
+            "cpuPct": 4.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636280382,
+            "pid": 8265,
+            "rssBytes": 177242112,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636284411,
+            "pid": 8265,
+            "rssBytes": 177668096,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636288392,
+            "pid": 8265,
+            "rssBytes": 177668096,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636294450,
+            "pid": 8265,
+            "rssBytes": 175882240,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636304450,
+            "pid": 8265,
+            "rssBytes": 156123136,
+            "cpuPct": 2.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636308458,
+            "pid": 8265,
+            "rssBytes": 189743104,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636314443,
+            "pid": 8265,
+            "rssBytes": 189808640,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636320450,
+            "pid": 8265,
+            "rssBytes": 163430400,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636324483,
+            "pid": 8265,
+            "rssBytes": 163446784,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636332488,
+            "pid": 8265,
+            "rssBytes": 163364864,
+            "cpuPct": 0.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636338476,
+            "pid": 8265,
+            "rssBytes": 161824768,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636346470,
+            "pid": 8265,
+            "rssBytes": 161005568,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636352483,
+            "pid": 8265,
+            "rssBytes": 161103872,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636358494,
+            "pid": 8265,
+            "rssBytes": 161251328,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636364482,
+            "pid": 8265,
+            "rssBytes": 172851200,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636370484,
+            "pid": 8265,
+            "rssBytes": 176979968,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636372492,
+            "pid": 8265,
+            "rssBytes": 176947200,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636378495,
+            "pid": 8265,
+            "rssBytes": 176619520,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636386504,
+            "pid": 8265,
+            "rssBytes": 176652288,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636390507,
+            "pid": 8265,
+            "rssBytes": 166297600,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636398497,
+            "pid": 8265,
+            "rssBytes": 176750592,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636402511,
+            "pid": 8265,
+            "rssBytes": 176668672,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636408510,
+            "pid": 8265,
+            "rssBytes": 176668672,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636418516,
+            "pid": 8265,
+            "rssBytes": 176734208,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636420516,
+            "pid": 8265,
+            "rssBytes": 176488448,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636426517,
+            "pid": 8265,
+            "rssBytes": 176488448,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636434531,
+            "pid": 8265,
+            "rssBytes": 177979392,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636442524,
+            "pid": 8265,
+            "rssBytes": 183484416,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636444519,
+            "pid": 8265,
+            "rssBytes": 183484416,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636455025,
+            "pid": 8265,
+            "rssBytes": 185499648,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636458535,
+            "pid": 8265,
+            "rssBytes": 199557120,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636466538,
+            "pid": 8265,
+            "rssBytes": 201850880,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636472547,
+            "pid": 8265,
+            "rssBytes": 202375168,
+            "cpuPct": 0.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636476552,
+            "pid": 8265,
+            "rssBytes": 202391552,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636484544,
+            "pid": 8265,
+            "rssBytes": 202440704,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636490552,
+            "pid": 8265,
+            "rssBytes": 202768384,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636496553,
+            "pid": 8265,
+            "rssBytes": 230752256,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636498557,
+            "pid": 8265,
+            "rssBytes": 230752256,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636506550,
+            "pid": 8265,
+            "rssBytes": 236306432,
+            "cpuPct": 14.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636514569,
+            "pid": 8265,
+            "rssBytes": 236371968,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636518571,
+            "pid": 8265,
+            "rssBytes": 236453888,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636524573,
+            "pid": 8265,
+            "rssBytes": 231718912,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636528573,
+            "pid": 8265,
+            "rssBytes": 231718912,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636534579,
+            "pid": 8265,
+            "rssBytes": 231964672,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636544607,
+            "pid": 8265,
+            "rssBytes": 232325120,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636548588,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636552585,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636558590,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636564592,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636570599,
+            "pid": 8265,
+            "rssBytes": 232439808,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636580605,
+            "pid": 8265,
+            "rssBytes": 232603648,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636582603,
+            "pid": 8265,
+            "rssBytes": 232603648,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636592605,
+            "pid": 8265,
+            "rssBytes": 232685568,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636598617,
+            "pid": 8265,
+            "rssBytes": 233127936,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636604621,
+            "pid": 8265,
+            "rssBytes": 233226240,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636610611,
+            "pid": 8265,
+            "rssBytes": 233259008,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636616615,
+            "pid": 8265,
+            "rssBytes": 233783296,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636620622,
+            "pid": 8265,
+            "rssBytes": 233947136,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636624619,
+            "pid": 8265,
+            "rssBytes": 230539264,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636634634,
+            "pid": 8265,
+            "rssBytes": 172113920,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636640638,
+            "pid": 8265,
+            "rssBytes": 172244992,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636642637,
+            "pid": 8265,
+            "rssBytes": 172244992,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636650655,
+            "pid": 8265,
+            "rssBytes": 91209728,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636658647,
+            "pid": 8265,
+            "rssBytes": 85164032,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636664684,
+            "pid": 8265,
+            "rssBytes": 90095616,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636666647,
+            "pid": 8265,
+            "rssBytes": 91340800,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636676657,
+            "pid": 8265,
+            "rssBytes": 93913088,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636682657,
+            "pid": 8265,
+            "rssBytes": 97124352,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636684654,
+            "pid": 8265,
+            "rssBytes": 96927744,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636692665,
+            "pid": 8265,
+            "rssBytes": 92602368,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793636700672,
+            "pid": 8265,
+            "rssBytes": 92798976,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      }
+    ],
+    "firstSample": {
+      "ts": 1793636124262,
+      "pid": 81560,
+      "ppid": 0,
+      "label": "root",
+      "rssBytes": 401129472,
+      "heapBytes": 0,
+      "cpuPct": 133.4
+    },
+    "lastSample": {
+      "ts": 1793636700677,
+      "pid": 82260,
+      "ppid": 0,
+      "label": "child",
+      "rssBytes": 42106880,
+      "heapBytes": 0,
+      "cpuPct": 0
+    }
+  },
+  "anomalies": [
+    {
+      "severity": "HIGH",
+      "category": "run_not_completed",
+      "subagent": "(run)",
+      "message": "run terminated via run.blocked (not run.completed) — aborted/blocked/failed"
+    },
+    {
+      "severity": "HIGH",
+      "category": "task",
+      "subagent": "01_assess",
+      "message": "task.failed: All 8 model candidates exhausted (tried: bifrost/vllm/strata-coder → bifrost/openrouter/coding → bifrost/openrouter/fast → bifrost/openrouter/reasoning → bifrost/openrouter/auto → bifrost/openrouter/image → bifrost/openrouter/openai/gpt-6-luna → ollama/nomic-embed-text). Last failure: Model settled without a final answer (empty final assistant message; upstream rate-limit/429 exhaustion)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "model_retry",
+      "subagent": "01_assess",
+      "message": "model retry/fallback: 2 attempt(s), 1 model(s) [bifrost/vllm/strata-coder]"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "large_gap",
+      "subagent": "01_assess",
+      "message": "single event-gap of 194.9s (>15s) — an LLM turn or tool stalled"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "slow_phase",
+      "subagent": "01_assess",
+      "message": "phase \"activeWork\" took 575.5s (>40s)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "worker_respawn_churn",
+      "subagent": "01_assess",
+      "message": "9 worker.spawned events for one task (worker respawned 8×) — likely crash/restart loop (check exitCodes)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "adaptive",
+      "subagent": "01_assess",
+      "message": "adaptive.plan_repair_failed: Adaptive planner output could not be repaired."
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "missing_transcript",
+      "subagent": "gc-2dfd7f81-6183-42c6-b3b1-9f651baab498",
+      "message": "no transcript found — token/cost reported as 0 (potential silent undercount if the subagent did real work)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "missing_transcript",
+      "subagent": "gc-ed38462d-4b59-4439-b0d5-ee6ff29683e3",
+      "message": "no transcript found — token/cost reported as 0 (potential silent undercount if the subagent did real work)"
+    },
+    {
+      "severity": "LOW",
+      "category": "cost_unreported",
+      "subagent": "(run)",
+      "message": "cost is $0 despite 905,156 tokens consumed — provider does not report cost; the cost metric is UNAVAILABLE (not free)"
+    }
+  ],
+  "typeCounts": {
+    "run.created": 1,
+    "runtime.resolved": 3,
+    "async.spawned": 1,
+    "async.started": 1,
+    "run.running": 4,
+    "hook.executed": 9,
+    "task.started": 2,
+    "task.progress": 88,
+    "worker.spawned": 9,
+    "delegate.requested": 7,
+    "delegate.admitted": 2,
+    "delegate.rejected": 5,
+    "worker.exit": 9,
+    "worker.close": 9,
+    "worker.session_before_compact": 2,
+    "task.failed": 1,
+    "crew.task.retry_attempt": 1,
+    "task.waiting": 1,
+    "ask.requested": 1,
+    "ask.answered": 1,
+    "task.resumed": 1,
+    "delegate.completed": 2,
+    "task.completed": 1,
+    "workflow.phase_completed": 1,
+    "adaptive.plan_repair_failed": 2,
+    "run.blocked": 2,
+    "adaptive.plan_missing": 2,
+    "run.goal_achievement": 2,
+    "async.completed": 1,
+    "run.resume_requested": 1
+  }
+}
