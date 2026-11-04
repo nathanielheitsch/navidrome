@@ -13,8 +13,11 @@ use nd_dbschema::schema::{apply_fresh_schema, open};
 use std::fs;
 use std::process::Command;
 
-/// The Go artifact (never fabricated; absence is a hard failure).
-const GO_DUMP_PATH: &str = "/tmp/nd-go-schema.txt";
+/// The committed Go baseline: produced out-of-repo by the `nd-go-dump` harness
+/// against the migrated Go tree (regenerate via docs/rust-port/next-work.md if
+/// it ever drifts) and vendored as a golden fixture so fresh checkouts / CI run
+/// the test unchanged. Path is relative to the crate root (cargo test cwd).
+const GO_DUMP_PATH: &str = "tests/fixtures/go_schema_dump.txt";
 const MISSING_GO_DUMP: &str = "Go-migrated .schema dump missing — regenerate via the nd-go-dump harness (see docs/rust-port/next-work.md) and re-run";
 
 /// Names the Go dump carries but the Rust fresh-DDL golden deliberately drops
