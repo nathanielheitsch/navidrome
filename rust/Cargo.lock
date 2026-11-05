@@ -880,6 +880,14 @@ version = "0.1.0"
 [[package]]
 name = "nd-stream"
 version = "0.1.0"
+dependencies = [
+ "jsonwebtoken",
+ "nd-conf",
+ "nd-ffmpeg",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "nd-tagreader"
