@@ -1,0 +1,4097 @@
+{
+  "runId": "team_20261104145948_a41f27e2fe321ba7",
+  "generatedAt": "2026-11-04T15:36:15.362Z",
+  "summary": {
+    "wallMs": 2183125,
+    "totalCost": 0,
+    "totalTokens": {
+      "input": 484418,
+      "output": 107382,
+      "cacheRead": 5370853,
+      "cacheWrite": 0,
+      "totalTokens": 5962653
+    },
+    "modelBreakdown": {
+      "vllm/strata-coder": 3,
+      "openrouter/coding": 1
+    },
+    "subagentCount": 3,
+    "eventCount": 561,
+    "tokensPerSec": 49.19,
+    "eventsPerSec": 0.26,
+    "workflow": "fast-fix",
+    "goal": "#05 nd-db SLICE 1 (foundation only) — pool + store + retry semantics. Repo root /Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn, Rust workspace under rust/, Go or",
+    "parentModel": "bifrost/vllm/strata-coder"
+  },
+  "subagents": [
+    {
+      "taskId": "01_explore",
+      "role": "explorer",
+      "model": "vllm/strata-coder",
+      "modelRouting": "bifrost/vllm/strata-coder",
+      "usage": {
+        "input": 37027,
+        "output": 10393,
+        "cacheRead": 494322,
+        "cacheWrite": 0,
+        "totalTokens": 541742
+      },
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      },
+      "timeline": {
+        "phases": {
+          "launch": 147,
+          "respawn": 0,
+          "startup": 779,
+          "activeWork": 216953,
+          "drain": 0,
+          "finalize": 36,
+          "total": 217908,
+          "wall": 217725
+        },
+        "progressCount": 95,
+        "maxGap": 67849
+      },
+      "tools": 43,
+      "assistantMsgs": 21,
+      "messageEndCount": 61,
+      "apiErrors": 0,
+      "spawnCount": 1,
+      "exitCode": 0,
+      "attempts": 1,
+      "modelAttempts": [
+        {
+          "model": "bifrost/vllm/strata-coder",
+          "success": true,
+          "exitCode": 0
+        }
+      ],
+      "status": "completed",
+      "pid": 40839,
+      "spawnMs": 1793804389369,
+      "exitMs": 1793804607094,
+      "hasTranscript": true,
+      "resource": {
+        "taskId": "01_explore",
+        "pid": 40839,
+        "samples": 108,
+        "peakRssBytes": 234143744,
+        "peakCpuPct": 24.5,
+        "p95RssBytes": 232996864,
+        "p95CpuPct": 9.2,
+        "avgRssBytes": 189498103,
+        "avgCpuPct": 2.6,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793804393337,
+            "pid": 40839,
+            "rssBytes": 218087424,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804395364,
+            "pid": 40839,
+            "rssBytes": 218202112,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804399368,
+            "pid": 40839,
+            "rssBytes": 229736448,
+            "cpuPct": 0.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804401362,
+            "pid": 40839,
+            "rssBytes": 231374848,
+            "cpuPct": 4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804403363,
+            "pid": 40839,
+            "rssBytes": 232325120,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804407350,
+            "pid": 40839,
+            "rssBytes": 232996864,
+            "cpuPct": 14.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804409381,
+            "pid": 40839,
+            "rssBytes": 233013248,
+            "cpuPct": 0.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804411372,
+            "pid": 40839,
+            "rssBytes": 233013248,
+            "cpuPct": 0.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804415369,
+            "pid": 40839,
+            "rssBytes": 233390080,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804417358,
+            "pid": 40839,
+            "rssBytes": 234143744,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804419374,
+            "pid": 40839,
+            "rssBytes": 226263040,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804423364,
+            "pid": 40839,
+            "rssBytes": 184221696,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804425359,
+            "pid": 40839,
+            "rssBytes": 184270848,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804427381,
+            "pid": 40839,
+            "rssBytes": 185663488,
+            "cpuPct": 3.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804429386,
+            "pid": 40839,
+            "rssBytes": 186220544,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804433384,
+            "pid": 40839,
+            "rssBytes": 185958400,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804435363,
+            "pid": 40839,
+            "rssBytes": 186990592,
+            "cpuPct": 9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804439385,
+            "pid": 40839,
+            "rssBytes": 187744256,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804441397,
+            "pid": 40839,
+            "rssBytes": 192479232,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804443392,
+            "pid": 40839,
+            "rssBytes": 192626688,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804445385,
+            "pid": 40839,
+            "rssBytes": 193216512,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804449388,
+            "pid": 40839,
+            "rssBytes": 194543616,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804451388,
+            "pid": 40839,
+            "rssBytes": 204439552,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804455379,
+            "pid": 40839,
+            "rssBytes": 205455360,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804457399,
+            "pid": 40839,
+            "rssBytes": 205488128,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804461386,
+            "pid": 40839,
+            "rssBytes": 205504512,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804463408,
+            "pid": 40839,
+            "rssBytes": 202604544,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804465405,
+            "pid": 40839,
+            "rssBytes": 202604544,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804469403,
+            "pid": 40839,
+            "rssBytes": 204816384,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804471405,
+            "pid": 40839,
+            "rssBytes": 208027648,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804473388,
+            "pid": 40839,
+            "rssBytes": 217874432,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804475412,
+            "pid": 40839,
+            "rssBytes": 217874432,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804479407,
+            "pid": 40839,
+            "rssBytes": 217874432,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804481409,
+            "pid": 40839,
+            "rssBytes": 217661440,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804483399,
+            "pid": 40839,
+            "rssBytes": 218398720,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804487418,
+            "pid": 40839,
+            "rssBytes": 218398720,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804489411,
+            "pid": 40839,
+            "rssBytes": 218415104,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804493414,
+            "pid": 40839,
+            "rssBytes": 218497024,
+            "cpuPct": 3.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804495416,
+            "pid": 40839,
+            "rssBytes": 218529792,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804497404,
+            "pid": 40839,
+            "rssBytes": 218611712,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804499414,
+            "pid": 40839,
+            "rssBytes": 219889664,
+            "cpuPct": 2.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804503418,
+            "pid": 40839,
+            "rssBytes": 187596800,
+            "cpuPct": 9.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804505415,
+            "pid": 40839,
+            "rssBytes": 189874176,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804509418,
+            "pid": 40839,
+            "rssBytes": 189874176,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804511404,
+            "pid": 40839,
+            "rssBytes": 193118208,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804515422,
+            "pid": 40839,
+            "rssBytes": 193167360,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804517414,
+            "pid": 40839,
+            "rssBytes": 205094912,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804519426,
+            "pid": 40839,
+            "rssBytes": 155222016,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804523410,
+            "pid": 40839,
+            "rssBytes": 163692544,
+            "cpuPct": 9.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804525430,
+            "pid": 40839,
+            "rssBytes": 163840000,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804527439,
+            "pid": 40839,
+            "rssBytes": 163840000,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804531429,
+            "pid": 40839,
+            "rssBytes": 164298752,
+            "cpuPct": 3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804533415,
+            "pid": 40839,
+            "rssBytes": 164331520,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804535435,
+            "pid": 40839,
+            "rssBytes": 164364288,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804539426,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 9.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804541424,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804543418,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804545419,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804549442,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 3.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804551447,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804553444,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804557443,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804559446,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804563454,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804565448,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 3.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804569438,
+            "pid": 40839,
+            "rssBytes": 161808384,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804571453,
+            "pid": 40839,
+            "rssBytes": 163790848,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804573456,
+            "pid": 40839,
+            "rssBytes": 163921920,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804575448,
+            "pid": 40839,
+            "rssBytes": 163921920,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804579467,
+            "pid": 40839,
+            "rssBytes": 163921920,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804581466,
+            "pid": 40839,
+            "rssBytes": 163954688,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804583457,
+            "pid": 40839,
+            "rssBytes": 164036608,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804587466,
+            "pid": 40839,
+            "rssBytes": 164036608,
+            "cpuPct": 3.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804589471,
+            "pid": 40839,
+            "rssBytes": 164069376,
+            "cpuPct": 4.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804591461,
+            "pid": 40839,
+            "rssBytes": 164102144,
+            "cpuPct": 3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804595475,
+            "pid": 40839,
+            "rssBytes": 164102144,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804597471,
+            "pid": 40839,
+            "rssBytes": 164102144,
+            "cpuPct": 3.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804601469,
+            "pid": 40839,
+            "rssBytes": 164134912,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804603474,
+            "pid": 40839,
+            "rssBytes": 164134912,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804605472,
+            "pid": 40839,
+            "rssBytes": 164134912,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      }
+    },
+    {
+      "taskId": "02_execute",
+      "role": "executor",
+      "model": "vllm/strata-coder, openrouter/coding",
+      "modelRouting": "bifrost/openrouter/coding",
+      "usage": {
+        "input": 406578,
+        "output": 75478,
+        "cacheRead": 4495389,
+        "cacheWrite": 0,
+        "totalTokens": 4977445
+      },
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      },
+      "timeline": {
+        "phases": {
+          "launch": 158,
+          "respawn": 710155,
+          "startup": 0,
+          "activeWork": 1108404,
+          "drain": 3,
+          "finalize": 30,
+          "total": 1109362,
+          "wall": 1109174
+        },
+        "progressCount": 334,
+        "maxGap": 120020
+      },
+      "tools": 100,
+      "assistantMsgs": 95,
+      "messageEndCount": 194,
+      "apiErrors": 0,
+      "spawnCount": 2,
+      "exitCode": 143,
+      "attempts": 2,
+      "modelAttempts": [
+        {
+          "model": "bifrost/vllm/strata-coder",
+          "success": false,
+          "exitCode": 0,
+          "error": "Model settled without a final answer (empty final assistant message; upstream rate-limit/429 exhaustion)"
+        },
+        {
+          "model": "bifrost/openrouter/coding",
+          "success": true,
+          "exitCode": 0
+        }
+      ],
+      "status": "completed",
+      "pid": 50123,
+      "spawnMs": 1793805317519,
+      "exitMs": 1793805716538,
+      "hasTranscript": true,
+      "resource": {
+        "taskId": "02_execute",
+        "pid": 50123,
+        "samples": 200,
+        "peakRssBytes": 275283968,
+        "peakCpuPct": 78.3,
+        "p95RssBytes": 274071552,
+        "p95CpuPct": 15.6,
+        "avgRssBytes": 244915732,
+        "avgCpuPct": 2.7,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793805321915,
+            "pid": 50123,
+            "rssBytes": 235454464,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805325918,
+            "pid": 50123,
+            "rssBytes": 273219584,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805331920,
+            "pid": 50123,
+            "rssBytes": 274169856,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805335926,
+            "pid": 50123,
+            "rssBytes": 274776064,
+            "cpuPct": 0.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805341929,
+            "pid": 50123,
+            "rssBytes": 262258688,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805345933,
+            "pid": 50123,
+            "rssBytes": 262307840,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805351939,
+            "pid": 50123,
+            "rssBytes": 197394432,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805355943,
+            "pid": 50123,
+            "rssBytes": 197492736,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805357945,
+            "pid": 50123,
+            "rssBytes": 197541888,
+            "cpuPct": 0.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805363951,
+            "pid": 50123,
+            "rssBytes": 196067328,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805367956,
+            "pid": 50123,
+            "rssBytes": 196526080,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805373964,
+            "pid": 50123,
+            "rssBytes": 191709184,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805381974,
+            "pid": 50123,
+            "rssBytes": 194592768,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805383976,
+            "pid": 50123,
+            "rssBytes": 194592768,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805392007,
+            "pid": 50123,
+            "rssBytes": 253952000,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805395981,
+            "pid": 50123,
+            "rssBytes": 272351232,
+            "cpuPct": 25.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805399984,
+            "pid": 50123,
+            "rssBytes": 275283968,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805404004,
+            "pid": 50123,
+            "rssBytes": 269631488,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805411994,
+            "pid": 50123,
+            "rssBytes": 200130560,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805416000,
+            "pid": 50123,
+            "rssBytes": 201588736,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805422002,
+            "pid": 50123,
+            "rssBytes": 233160704,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805424006,
+            "pid": 50123,
+            "rssBytes": 233209856,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805432012,
+            "pid": 50123,
+            "rssBytes": 239370240,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805436013,
+            "pid": 50123,
+            "rssBytes": 250855424,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805442017,
+            "pid": 50123,
+            "rssBytes": 262340608,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805446023,
+            "pid": 50123,
+            "rssBytes": 268910592,
+            "cpuPct": 15.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805448023,
+            "pid": 50123,
+            "rssBytes": 268926976,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805456028,
+            "pid": 50123,
+            "rssBytes": 270712832,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805458029,
+            "pid": 50123,
+            "rssBytes": 272089088,
+            "cpuPct": 6.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805466040,
+            "pid": 50123,
+            "rssBytes": 273694720,
+            "cpuPct": 4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805472075,
+            "pid": 50123,
+            "rssBytes": 272515072,
+            "cpuPct": 9.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805476084,
+            "pid": 50123,
+            "rssBytes": 269631488,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805478064,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805484067,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805488070,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805494086,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805498083,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805504092,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805508093,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805514094,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805518098,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805524105,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805528112,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805534122,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805538114,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805544121,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805548125,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805554132,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805558132,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805564142,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805568147,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805574145,
+            "pid": 50123,
+            "rssBytes": 194576384,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805578168,
+            "pid": 50123,
+            "rssBytes": 194576384,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805584153,
+            "pid": 50123,
+            "rssBytes": 194576384,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805592162,
+            "pid": 50123,
+            "rssBytes": 194658304,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805596167,
+            "pid": 50123,
+            "rssBytes": 194822144,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805602170,
+            "pid": 50123,
+            "rssBytes": 223625216,
+            "cpuPct": 3.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805606168,
+            "pid": 50123,
+            "rssBytes": 251871232,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805610187,
+            "pid": 50123,
+            "rssBytes": 274759680,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805614180,
+            "pid": 50123,
+            "rssBytes": 270336000,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805620185,
+            "pid": 50123,
+            "rssBytes": 270811136,
+            "cpuPct": 9.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805624260,
+            "pid": 50123,
+            "rssBytes": 270811136,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805628242,
+            "pid": 50123,
+            "rssBytes": 233848832,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805634201,
+            "pid": 50123,
+            "rssBytes": 241090560,
+            "cpuPct": 15.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805640202,
+            "pid": 50123,
+            "rssBytes": 242417664,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805644211,
+            "pid": 50123,
+            "rssBytes": 242515968,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805650210,
+            "pid": 50123,
+            "rssBytes": 241942528,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805654215,
+            "pid": 50123,
+            "rssBytes": 241844224,
+            "cpuPct": 4.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805658216,
+            "pid": 50123,
+            "rssBytes": 242089984,
+            "cpuPct": 21.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805666232,
+            "pid": 50123,
+            "rssBytes": 238895104,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805668233,
+            "pid": 50123,
+            "rssBytes": 238927872,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805676238,
+            "pid": 50123,
+            "rssBytes": 238403584,
+            "cpuPct": 4.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805682270,
+            "pid": 50123,
+            "rssBytes": 242712576,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805686245,
+            "pid": 50123,
+            "rssBytes": 243040256,
+            "cpuPct": 41.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805688246,
+            "pid": 50123,
+            "rssBytes": 243269632,
+            "cpuPct": 2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805696258,
+            "pid": 50123,
+            "rssBytes": 240222208,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805702268,
+            "pid": 50123,
+            "rssBytes": 240353280,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805706263,
+            "pid": 50123,
+            "rssBytes": 240451584,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805712273,
+            "pid": 50123,
+            "rssBytes": 240812032,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805714275,
+            "pid": 50123,
+            "rssBytes": 241041408,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      }
+    },
+    {
+      "taskId": "03_verify",
+      "role": "verifier",
+      "model": "vllm/strata-coder",
+      "modelRouting": "bifrost/vllm/strata-coder",
+      "usage": {
+        "input": 40813,
+        "output": 21511,
+        "cacheRead": 381142,
+        "cacheWrite": 0,
+        "totalTokens": 443466
+      },
+      "cost": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "total": 0
+      },
+      "timeline": {
+        "phases": {
+          "launch": 0,
+          "respawn": 816582,
+          "startup": 0,
+          "activeWork": 853407,
+          "drain": 0,
+          "finalize": null,
+          "total": null,
+          "wall": 854321
+        },
+        "progressCount": 64,
+        "maxGap": 600212
+      },
+      "tools": 19,
+      "assistantMsgs": 17,
+      "messageEndCount": 35,
+      "apiErrors": 0,
+      "spawnCount": 3,
+      "exitCode": 0,
+      "error": "Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions.",
+      "attempts": 3,
+      "modelAttempts": [
+        {
+          "model": "bifrost/vllm/strata-coder",
+          "success": false,
+          "exitCode": 1,
+          "error": "Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions."
+        }
+      ],
+      "status": "failed",
+      "pid": 3657,
+      "spawnMs": 1793806533852,
+      "exitMs": 1793806571591,
+      "hasTranscript": true,
+      "resource": {
+        "taskId": "03_verify",
+        "pid": 3657,
+        "samples": 19,
+        "peakRssBytes": 258785280,
+        "peakCpuPct": 65,
+        "p95RssBytes": 258785280,
+        "p95CpuPct": 65,
+        "avgRssBytes": 234654235,
+        "avgCpuPct": 5.4,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793806534757,
+            "pid": 3657,
+            "rssBytes": 205815808,
+            "cpuPct": 65,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806536723,
+            "pid": 3657,
+            "rssBytes": 237731840,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806538721,
+            "pid": 3657,
+            "rssBytes": 238305280,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806540737,
+            "pid": 3657,
+            "rssBytes": 244809728,
+            "cpuPct": 2.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806542726,
+            "pid": 3657,
+            "rssBytes": 257114112,
+            "cpuPct": 5.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806544728,
+            "pid": 3657,
+            "rssBytes": 257196032,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806546733,
+            "pid": 3657,
+            "rssBytes": 257277952,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806548732,
+            "pid": 3657,
+            "rssBytes": 257572864,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806550732,
+            "pid": 3657,
+            "rssBytes": 258195456,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806552736,
+            "pid": 3657,
+            "rssBytes": 258785280,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806554735,
+            "pid": 3657,
+            "rssBytes": 248397824,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806556739,
+            "pid": 3657,
+            "rssBytes": 248430592,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806558740,
+            "pid": 3657,
+            "rssBytes": 248463360,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806560741,
+            "pid": 3657,
+            "rssBytes": 248643584,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806562740,
+            "pid": 3657,
+            "rssBytes": 248676352,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806564745,
+            "pid": 3657,
+            "rssBytes": 185597952,
+            "cpuPct": 4.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806566747,
+            "pid": 3657,
+            "rssBytes": 185516032,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806568742,
+            "pid": 3657,
+            "rssBytes": 185532416,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806570747,
+            "pid": 3657,
+            "rssBytes": 186368000,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      }
+    }
+  ],
+  "problems": [
+    {
+      "severity": 1,
+      "type": "exit_code",
+      "taskId": "02_execute",
+      "message": "Worker exit SIGTERM (143)",
+      "value": 143
+    },
+    {
+      "severity": 2,
+      "type": "task_status",
+      "taskId": "03_verify",
+      "message": "Task status: failed",
+      "value": "failed"
+    },
+    {
+      "severity": 2,
+      "type": "verification_failed",
+      "taskId": "03_verify",
+      "message": "Verification failed (required targeted, observed none) — Task failed: Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions. — self-attested (no verification commands configured)"
+    },
+    {
+      "severity": 2,
+      "type": "worker.response_timeout",
+      "taskId": "03_verify",
+      "message": "Worker lifecycle: response_timeout error=No output for 600000ms",
+      "seq": 515
+    },
+    {
+      "severity": 2,
+      "type": "task.failed",
+      "taskId": "03_verify",
+      "message": "Child Pi worker became unresponsive and was terminated. Stderr tail: Warning: No project session found with id 'crew-team202611041459'; creating a new session with that id.\n",
+      "seq": 520
+    },
+    {
+      "severity": 2,
+      "type": "task.failed",
+      "taskId": "03_verify",
+      "message": "Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 code compiles and gates green (fmt/clippy/test all exit 0), but the four required harnesses `rust/crates/nd-db/tests/*.rs` do not exist — `cargo test -p nd-db` ran exactly 1 test (the scaffold marker), leaving all 359 LOC of pool/store/retry logic with zero behavioral asserti",
+      "seq": 537
+    },
+    {
+      "severity": 2,
+      "type": "task.failed",
+      "taskId": "03_verify",
+      "message": "Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions.",
+      "seq": 553
+    },
+    {
+      "severity": 2,
+      "type": "workflow.phase_failed",
+      "message": "Workflow phase 'verify' failed.",
+      "seq": 556
+    },
+    {
+      "severity": 3,
+      "type": "recovery.attempted",
+      "taskId": "03_verify",
+      "message": "Task failed: Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions.",
+      "seq": 559
+    },
+    {
+      "severity": 4,
+      "type": "retry",
+      "taskId": "02_execute",
+      "message": "2 attempts (retry)",
+      "value": 2
+    },
+    {
+      "severity": 4,
+      "type": "retry",
+      "taskId": "03_verify",
+      "message": "3 attempts (retry)",
+      "value": 3
+    }
+  ],
+  "bottlenecks": [
+    {
+      "taskId": "02_execute",
+      "phase": "total",
+      "durationMs": 1109362,
+      "label": "executor total wall"
+    },
+    {
+      "taskId": "02_execute",
+      "phase": "activeWork",
+      "durationMs": 1108404,
+      "label": "executor active work"
+    },
+    {
+      "taskId": "03_verify",
+      "phase": "activeWork",
+      "durationMs": 853407,
+      "label": "verifier active work"
+    },
+    {
+      "taskId": "03_verify",
+      "phase": "intra_gap",
+      "durationMs": 600212,
+      "label": "gap @ 2026-11-04T15:34:30.354Z"
+    },
+    {
+      "taskId": "01_explore",
+      "phase": "total",
+      "durationMs": 217908,
+      "label": "explorer total wall"
+    },
+    {
+      "taskId": "01_explore",
+      "phase": "activeWork",
+      "durationMs": 216953,
+      "label": "explorer active work"
+    },
+    {
+      "taskId": "02_execute",
+      "phase": "intra_gap",
+      "durationMs": 120020,
+      "label": "gap @ 2026-11-04T15:19:59.259Z"
+    },
+    {
+      "taskId": "01_explore",
+      "phase": "intra_gap",
+      "durationMs": 67849,
+      "label": "gap @ 2026-11-04T15:03:26.829Z"
+    }
+  ],
+  "resources": {
+    "sampleCount": 4558,
+    "peakRssBytes": 2188165120,
+    "peakCpuPct": 356,
+    "rssGrowthBytes": 1845739520,
+    "spanMs": 2181449,
+    "byPid": [
+      {
+        "pid": 46536,
+        "label": "root",
+        "peakRss": 510607360,
+        "peakCpu": 78.6,
+        "firstRss": 509706240,
+        "lastRss": 444710912
+      },
+      {
+        "pid": 40683,
+        "label": "child",
+        "peakRss": 52822016,
+        "peakCpu": 33.8,
+        "firstRss": 46317568,
+        "lastRss": 28213248
+      },
+      {
+        "pid": 40839,
+        "label": "child",
+        "peakRss": 234143744,
+        "peakCpu": 24.5,
+        "firstRss": 217989120,
+        "lastRss": 164134912
+      },
+      {
+        "pid": 90609,
+        "label": "child",
+        "peakRss": 263815168,
+        "peakCpu": 72.3,
+        "firstRss": 29638656,
+        "lastRss": 185843712
+      },
+      {
+        "pid": 14010,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 14028,
+        "label": "child",
+        "peakRss": 9846784,
+        "peakCpu": 68.2,
+        "firstRss": 9846784,
+        "lastRss": 9846784
+      },
+      {
+        "pid": 14029,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0.1,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 25233,
+        "label": "child",
+        "peakRss": 2310144,
+        "peakCpu": 0,
+        "firstRss": 2310144,
+        "lastRss": 2310144
+      },
+      {
+        "pid": 25235,
+        "label": "child",
+        "peakRss": 1851392,
+        "peakCpu": 50.9,
+        "firstRss": 1851392,
+        "lastRss": 1851392
+      },
+      {
+        "pid": 50123,
+        "label": "child",
+        "peakRss": 275283968,
+        "peakCpu": 78.3,
+        "firstRss": 132169728,
+        "lastRss": 237846528
+      },
+      {
+        "pid": 78468,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0.2,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 78469,
+        "label": "child",
+        "peakRss": 60506112,
+        "peakCpu": 8.5,
+        "firstRss": 60506112,
+        "lastRss": 60506112
+      },
+      {
+        "pid": 78470,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0.1,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 78471,
+        "label": "child",
+        "peakRss": 88342528,
+        "peakCpu": 24.8,
+        "firstRss": 88342528,
+        "lastRss": 88342528
+      },
+      {
+        "pid": 80511,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0.6,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 80512,
+        "label": "child",
+        "peakRss": 60751872,
+        "peakCpu": 4.2,
+        "firstRss": 53362688,
+        "lastRss": 60751872
+      },
+      {
+        "pid": 80513,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0.4,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 80822,
+        "label": "child",
+        "peakRss": 391118848,
+        "peakCpu": 92.4,
+        "firstRss": 391118848,
+        "lastRss": 391118848
+      },
+      {
+        "pid": 81892,
+        "label": "child",
+        "peakRss": 34865152,
+        "peakCpu": 8.2,
+        "firstRss": 34865152,
+        "lastRss": 34865152
+      },
+      {
+        "pid": 84375,
+        "label": "child",
+        "peakRss": 2408448,
+        "peakCpu": 0.1,
+        "firstRss": 2408448,
+        "lastRss": 2408448
+      },
+      {
+        "pid": 84377,
+        "label": "child",
+        "peakRss": 45383680,
+        "peakCpu": 49.5,
+        "firstRss": 45383680,
+        "lastRss": 45383680
+      },
+      {
+        "pid": 84378,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 84390,
+        "label": "child",
+        "peakRss": 79020032,
+        "peakCpu": 14.3,
+        "firstRss": 79020032,
+        "lastRss": 79020032
+      },
+      {
+        "pid": 87064,
+        "label": "child",
+        "peakRss": 2260992,
+        "peakCpu": 0,
+        "firstRss": 2260992,
+        "lastRss": 2260992
+      },
+      {
+        "pid": 87065,
+        "label": "child",
+        "peakRss": 52723712,
+        "peakCpu": 42.3,
+        "firstRss": 52723712,
+        "lastRss": 52723712
+      },
+      {
+        "pid": 87066,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 88390,
+        "label": "child",
+        "peakRss": 2244608,
+        "peakCpu": 0,
+        "firstRss": 2244608,
+        "lastRss": 2244608
+      },
+      {
+        "pid": 88395,
+        "label": "child",
+        "peakRss": 676413440,
+        "peakCpu": 356,
+        "firstRss": 4292608,
+        "lastRss": 676331520
+      },
+      {
+        "pid": 88396,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 88397,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 88398,
+        "label": "child",
+        "peakRss": 68698112,
+        "peakCpu": 56.7,
+        "firstRss": 68698112,
+        "lastRss": 68698112
+      },
+      {
+        "pid": 89436,
+        "label": "child",
+        "peakRss": 32768,
+        "peakCpu": 0,
+        "firstRss": 32768,
+        "lastRss": 32768
+      },
+      {
+        "pid": 89437,
+        "label": "child",
+        "peakRss": 3375104,
+        "peakCpu": 0,
+        "firstRss": 3375104,
+        "lastRss": 3358720
+      },
+      {
+        "pid": 39100,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0.3,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 39103,
+        "label": "child",
+        "peakRss": 43139072,
+        "peakCpu": 98.5,
+        "firstRss": 43139072,
+        "lastRss": 43139072
+      },
+      {
+        "pid": 39120,
+        "label": "child",
+        "peakRss": 82755584,
+        "peakCpu": 16.5,
+        "firstRss": 82755584,
+        "lastRss": 82755584
+      },
+      {
+        "pid": 41600,
+        "label": "child",
+        "peakRss": 2260992,
+        "peakCpu": 0,
+        "firstRss": 2260992,
+        "lastRss": 2260992
+      },
+      {
+        "pid": 41602,
+        "label": "child",
+        "peakRss": 52494336,
+        "peakCpu": 3.9,
+        "firstRss": 52494336,
+        "lastRss": 52494336
+      },
+      {
+        "pid": 41614,
+        "label": "child",
+        "peakRss": 209043456,
+        "peakCpu": 7.7,
+        "firstRss": 209043456,
+        "lastRss": 209043456
+      },
+      {
+        "pid": 41631,
+        "label": "child",
+        "peakRss": 151748608,
+        "peakCpu": 78.5,
+        "firstRss": 151748608,
+        "lastRss": 151748608
+      },
+      {
+        "pid": 43036,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 43199,
+        "label": "child",
+        "peakRss": 22036480,
+        "peakCpu": 35.5,
+        "firstRss": 22036480,
+        "lastRss": 22036480
+      },
+      {
+        "pid": 44503,
+        "label": "child",
+        "peakRss": 2277376,
+        "peakCpu": 0,
+        "firstRss": 2277376,
+        "lastRss": 2277376
+      },
+      {
+        "pid": 44509,
+        "label": "child",
+        "peakRss": 87343104,
+        "peakCpu": 4,
+        "firstRss": 87326720,
+        "lastRss": 87228416
+      },
+      {
+        "pid": 44510,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 44996,
+        "label": "child",
+        "peakRss": 146915328,
+        "peakCpu": 52.6,
+        "firstRss": 146915328,
+        "lastRss": 146915328
+      },
+      {
+        "pid": 45256,
+        "label": "child",
+        "peakRss": 240140288,
+        "peakCpu": 56.5,
+        "firstRss": 150077440,
+        "lastRss": 240140288
+      },
+      {
+        "pid": 45336,
+        "label": "child",
+        "peakRss": 84705280,
+        "peakCpu": 34.8,
+        "firstRss": 84705280,
+        "lastRss": 84705280
+      },
+      {
+        "pid": 45341,
+        "label": "child",
+        "peakRss": 357990400,
+        "peakCpu": 49.8,
+        "firstRss": 132890624,
+        "lastRss": 357990400
+      },
+      {
+        "pid": 45530,
+        "label": "child",
+        "peakRss": 121044992,
+        "peakCpu": 32.4,
+        "firstRss": 121044992,
+        "lastRss": 121044992
+      },
+      {
+        "pid": 46524,
+        "label": "child",
+        "peakRss": 186236928,
+        "peakCpu": 58.3,
+        "firstRss": 186236928,
+        "lastRss": 186236928
+      },
+      {
+        "pid": 46785,
+        "label": "child",
+        "peakRss": 236699648,
+        "peakCpu": 55.9,
+        "firstRss": 167690240,
+        "lastRss": 236699648
+      },
+      {
+        "pid": 46856,
+        "label": "child",
+        "peakRss": 160579584,
+        "peakCpu": 54,
+        "firstRss": 160579584,
+        "lastRss": 160579584
+      },
+      {
+        "pid": 46935,
+        "label": "child",
+        "peakRss": 267436032,
+        "peakCpu": 54.4,
+        "firstRss": 160907264,
+        "lastRss": 267436032
+      },
+      {
+        "pid": 47809,
+        "label": "child",
+        "peakRss": 191152128,
+        "peakCpu": 35.6,
+        "firstRss": 191152128,
+        "lastRss": 191152128
+      },
+      {
+        "pid": 48413,
+        "label": "child",
+        "peakRss": 3096576,
+        "peakCpu": 0,
+        "firstRss": 3096576,
+        "lastRss": 3096576
+      },
+      {
+        "pid": 48728,
+        "label": "child",
+        "peakRss": 15532032,
+        "peakCpu": 0,
+        "firstRss": 15532032,
+        "lastRss": 15532032
+      },
+      {
+        "pid": 48750,
+        "label": "child",
+        "peakRss": 257179648,
+        "peakCpu": 82.6,
+        "firstRss": 73220096,
+        "lastRss": 257179648
+      },
+      {
+        "pid": 49110,
+        "label": "child",
+        "peakRss": 94322688,
+        "peakCpu": 30.1,
+        "firstRss": 94322688,
+        "lastRss": 94322688
+      },
+      {
+        "pid": 50538,
+        "label": "child",
+        "peakRss": 244908032,
+        "peakCpu": 87.9,
+        "firstRss": 244908032,
+        "lastRss": 244908032
+      },
+      {
+        "pid": 50931,
+        "label": "child",
+        "peakRss": 140525568,
+        "peakCpu": 62.9,
+        "firstRss": 140525568,
+        "lastRss": 140525568
+      },
+      {
+        "pid": 51574,
+        "label": "child",
+        "peakRss": 209616896,
+        "peakCpu": 90.6,
+        "firstRss": 209616896,
+        "lastRss": 209616896
+      },
+      {
+        "pid": 51897,
+        "label": "child",
+        "peakRss": 154796032,
+        "peakCpu": 61.7,
+        "firstRss": 154796032,
+        "lastRss": 154796032
+      },
+      {
+        "pid": 54881,
+        "label": "child",
+        "peakRss": 2293760,
+        "peakCpu": 1,
+        "firstRss": 2293760,
+        "lastRss": 2293760
+      },
+      {
+        "pid": 70890,
+        "label": "child",
+        "peakRss": 237387776,
+        "peakCpu": 83.1,
+        "firstRss": 193134592,
+        "lastRss": 61210624
+      },
+      {
+        "pid": 71379,
+        "label": "child",
+        "peakRss": 1753088,
+        "peakCpu": 1,
+        "firstRss": 1753088,
+        "lastRss": 1753088
+      },
+      {
+        "pid": 74582,
+        "label": "child",
+        "peakRss": 2310144,
+        "peakCpu": 0,
+        "firstRss": 2310144,
+        "lastRss": 2310144
+      },
+      {
+        "pid": 74725,
+        "label": "child",
+        "peakRss": 26181632,
+        "peakCpu": 0.3,
+        "firstRss": 26181632,
+        "lastRss": 26181632
+      },
+      {
+        "pid": 74794,
+        "label": "child",
+        "peakRss": 60866560,
+        "peakCpu": 1.5,
+        "firstRss": 60866560,
+        "lastRss": 60866560
+      },
+      {
+        "pid": 74887,
+        "label": "child",
+        "peakRss": 192577536,
+        "peakCpu": 71.3,
+        "firstRss": 192577536,
+        "lastRss": 192577536
+      },
+      {
+        "pid": 76335,
+        "label": "child",
+        "peakRss": 58540032,
+        "peakCpu": 7.6,
+        "firstRss": 58540032,
+        "lastRss": 58540032
+      },
+      {
+        "pid": 84772,
+        "label": "child",
+        "peakRss": 2310144,
+        "peakCpu": 0,
+        "firstRss": 2310144,
+        "lastRss": 2310144
+      },
+      {
+        "pid": 92381,
+        "label": "child",
+        "peakRss": 2342912,
+        "peakCpu": 0.1,
+        "firstRss": 2342912,
+        "lastRss": 2342912
+      },
+      {
+        "pid": 92400,
+        "label": "child",
+        "peakRss": 1654784,
+        "peakCpu": 0.1,
+        "firstRss": 1654784,
+        "lastRss": 1654784
+      },
+      {
+        "pid": 92401,
+        "label": "child",
+        "peakRss": 2703360,
+        "peakCpu": 49.2,
+        "firstRss": 2703360,
+        "lastRss": 2703360
+      },
+      {
+        "pid": 92402,
+        "label": "child",
+        "peakRss": 1032192,
+        "peakCpu": 0.2,
+        "firstRss": 1032192,
+        "lastRss": 1032192
+      },
+      {
+        "pid": 11387,
+        "label": "child",
+        "peakRss": 2310144,
+        "peakCpu": 1,
+        "firstRss": 2310144,
+        "lastRss": 1146880
+      },
+      {
+        "pid": 11395,
+        "label": "child",
+        "peakRss": 2188165120,
+        "peakCpu": 100,
+        "firstRss": 14073856,
+        "lastRss": 534331392
+      },
+      {
+        "pid": 11396,
+        "label": "child",
+        "peakRss": 1048576,
+        "peakCpu": 0.3,
+        "firstRss": 1048576,
+        "lastRss": 163840
+      },
+      {
+        "pid": 3657,
+        "label": "child",
+        "peakRss": 258785280,
+        "peakCpu": 65,
+        "firstRss": 205815808,
+        "lastRss": 186368000
+      }
+    ],
+    "perSubagent": [
+      {
+        "taskId": "01_explore",
+        "pid": 40839,
+        "samples": 108,
+        "peakRssBytes": 234143744,
+        "peakCpuPct": 24.5,
+        "p95RssBytes": 232996864,
+        "p95CpuPct": 9.2,
+        "avgRssBytes": 189498103,
+        "avgCpuPct": 2.6,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793804393337,
+            "pid": 40839,
+            "rssBytes": 218087424,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804395364,
+            "pid": 40839,
+            "rssBytes": 218202112,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804399368,
+            "pid": 40839,
+            "rssBytes": 229736448,
+            "cpuPct": 0.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804401362,
+            "pid": 40839,
+            "rssBytes": 231374848,
+            "cpuPct": 4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804403363,
+            "pid": 40839,
+            "rssBytes": 232325120,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804407350,
+            "pid": 40839,
+            "rssBytes": 232996864,
+            "cpuPct": 14.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804409381,
+            "pid": 40839,
+            "rssBytes": 233013248,
+            "cpuPct": 0.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804411372,
+            "pid": 40839,
+            "rssBytes": 233013248,
+            "cpuPct": 0.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804415369,
+            "pid": 40839,
+            "rssBytes": 233390080,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804417358,
+            "pid": 40839,
+            "rssBytes": 234143744,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804419374,
+            "pid": 40839,
+            "rssBytes": 226263040,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804423364,
+            "pid": 40839,
+            "rssBytes": 184221696,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804425359,
+            "pid": 40839,
+            "rssBytes": 184270848,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804427381,
+            "pid": 40839,
+            "rssBytes": 185663488,
+            "cpuPct": 3.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804429386,
+            "pid": 40839,
+            "rssBytes": 186220544,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804433384,
+            "pid": 40839,
+            "rssBytes": 185958400,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804435363,
+            "pid": 40839,
+            "rssBytes": 186990592,
+            "cpuPct": 9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804439385,
+            "pid": 40839,
+            "rssBytes": 187744256,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804441397,
+            "pid": 40839,
+            "rssBytes": 192479232,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804443392,
+            "pid": 40839,
+            "rssBytes": 192626688,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804445385,
+            "pid": 40839,
+            "rssBytes": 193216512,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804449388,
+            "pid": 40839,
+            "rssBytes": 194543616,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804451388,
+            "pid": 40839,
+            "rssBytes": 204439552,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804455379,
+            "pid": 40839,
+            "rssBytes": 205455360,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804457399,
+            "pid": 40839,
+            "rssBytes": 205488128,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804461386,
+            "pid": 40839,
+            "rssBytes": 205504512,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804463408,
+            "pid": 40839,
+            "rssBytes": 202604544,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804465405,
+            "pid": 40839,
+            "rssBytes": 202604544,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804469403,
+            "pid": 40839,
+            "rssBytes": 204816384,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804471405,
+            "pid": 40839,
+            "rssBytes": 208027648,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804473388,
+            "pid": 40839,
+            "rssBytes": 217874432,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804475412,
+            "pid": 40839,
+            "rssBytes": 217874432,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804479407,
+            "pid": 40839,
+            "rssBytes": 217874432,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804481409,
+            "pid": 40839,
+            "rssBytes": 217661440,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804483399,
+            "pid": 40839,
+            "rssBytes": 218398720,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804487418,
+            "pid": 40839,
+            "rssBytes": 218398720,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804489411,
+            "pid": 40839,
+            "rssBytes": 218415104,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804493414,
+            "pid": 40839,
+            "rssBytes": 218497024,
+            "cpuPct": 3.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804495416,
+            "pid": 40839,
+            "rssBytes": 218529792,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804497404,
+            "pid": 40839,
+            "rssBytes": 218611712,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804499414,
+            "pid": 40839,
+            "rssBytes": 219889664,
+            "cpuPct": 2.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804503418,
+            "pid": 40839,
+            "rssBytes": 187596800,
+            "cpuPct": 9.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804505415,
+            "pid": 40839,
+            "rssBytes": 189874176,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804509418,
+            "pid": 40839,
+            "rssBytes": 189874176,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804511404,
+            "pid": 40839,
+            "rssBytes": 193118208,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804515422,
+            "pid": 40839,
+            "rssBytes": 193167360,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804517414,
+            "pid": 40839,
+            "rssBytes": 205094912,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804519426,
+            "pid": 40839,
+            "rssBytes": 155222016,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804523410,
+            "pid": 40839,
+            "rssBytes": 163692544,
+            "cpuPct": 9.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804525430,
+            "pid": 40839,
+            "rssBytes": 163840000,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804527439,
+            "pid": 40839,
+            "rssBytes": 163840000,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804531429,
+            "pid": 40839,
+            "rssBytes": 164298752,
+            "cpuPct": 3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804533415,
+            "pid": 40839,
+            "rssBytes": 164331520,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804535435,
+            "pid": 40839,
+            "rssBytes": 164364288,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804539426,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 9.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804541424,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804543418,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804545419,
+            "pid": 40839,
+            "rssBytes": 165249024,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804549442,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 3.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804551447,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804553444,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804557443,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804559446,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804563454,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 2.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804565448,
+            "pid": 40839,
+            "rssBytes": 160792576,
+            "cpuPct": 3.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804569438,
+            "pid": 40839,
+            "rssBytes": 161808384,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804571453,
+            "pid": 40839,
+            "rssBytes": 163790848,
+            "cpuPct": 2.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804573456,
+            "pid": 40839,
+            "rssBytes": 163921920,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804575448,
+            "pid": 40839,
+            "rssBytes": 163921920,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804579467,
+            "pid": 40839,
+            "rssBytes": 163921920,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804581466,
+            "pid": 40839,
+            "rssBytes": 163954688,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804583457,
+            "pid": 40839,
+            "rssBytes": 164036608,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804587466,
+            "pid": 40839,
+            "rssBytes": 164036608,
+            "cpuPct": 3.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804589471,
+            "pid": 40839,
+            "rssBytes": 164069376,
+            "cpuPct": 4.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804591461,
+            "pid": 40839,
+            "rssBytes": 164102144,
+            "cpuPct": 3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804595475,
+            "pid": 40839,
+            "rssBytes": 164102144,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804597471,
+            "pid": 40839,
+            "rssBytes": 164102144,
+            "cpuPct": 3.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804601469,
+            "pid": 40839,
+            "rssBytes": 164134912,
+            "cpuPct": 2.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804603474,
+            "pid": 40839,
+            "rssBytes": 164134912,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793804605472,
+            "pid": 40839,
+            "rssBytes": 164134912,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      },
+      {
+        "taskId": "02_execute",
+        "pid": 50123,
+        "samples": 200,
+        "peakRssBytes": 275283968,
+        "peakCpuPct": 78.3,
+        "p95RssBytes": 274071552,
+        "p95CpuPct": 15.6,
+        "avgRssBytes": 244915732,
+        "avgCpuPct": 2.7,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793805321915,
+            "pid": 50123,
+            "rssBytes": 235454464,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805325918,
+            "pid": 50123,
+            "rssBytes": 273219584,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805331920,
+            "pid": 50123,
+            "rssBytes": 274169856,
+            "cpuPct": 1.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805335926,
+            "pid": 50123,
+            "rssBytes": 274776064,
+            "cpuPct": 0.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805341929,
+            "pid": 50123,
+            "rssBytes": 262258688,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805345933,
+            "pid": 50123,
+            "rssBytes": 262307840,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805351939,
+            "pid": 50123,
+            "rssBytes": 197394432,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805355943,
+            "pid": 50123,
+            "rssBytes": 197492736,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805357945,
+            "pid": 50123,
+            "rssBytes": 197541888,
+            "cpuPct": 0.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805363951,
+            "pid": 50123,
+            "rssBytes": 196067328,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805367956,
+            "pid": 50123,
+            "rssBytes": 196526080,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805373964,
+            "pid": 50123,
+            "rssBytes": 191709184,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805381974,
+            "pid": 50123,
+            "rssBytes": 194592768,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805383976,
+            "pid": 50123,
+            "rssBytes": 194592768,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805392007,
+            "pid": 50123,
+            "rssBytes": 253952000,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805395981,
+            "pid": 50123,
+            "rssBytes": 272351232,
+            "cpuPct": 25.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805399984,
+            "pid": 50123,
+            "rssBytes": 275283968,
+            "cpuPct": 1.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805404004,
+            "pid": 50123,
+            "rssBytes": 269631488,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805411994,
+            "pid": 50123,
+            "rssBytes": 200130560,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805416000,
+            "pid": 50123,
+            "rssBytes": 201588736,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805422002,
+            "pid": 50123,
+            "rssBytes": 233160704,
+            "cpuPct": 2.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805424006,
+            "pid": 50123,
+            "rssBytes": 233209856,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805432012,
+            "pid": 50123,
+            "rssBytes": 239370240,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805436013,
+            "pid": 50123,
+            "rssBytes": 250855424,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805442017,
+            "pid": 50123,
+            "rssBytes": 262340608,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805446023,
+            "pid": 50123,
+            "rssBytes": 268910592,
+            "cpuPct": 15.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805448023,
+            "pid": 50123,
+            "rssBytes": 268926976,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805456028,
+            "pid": 50123,
+            "rssBytes": 270712832,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805458029,
+            "pid": 50123,
+            "rssBytes": 272089088,
+            "cpuPct": 6.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805466040,
+            "pid": 50123,
+            "rssBytes": 273694720,
+            "cpuPct": 4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805472075,
+            "pid": 50123,
+            "rssBytes": 272515072,
+            "cpuPct": 9.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805476084,
+            "pid": 50123,
+            "rssBytes": 269631488,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805478064,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805484067,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805488070,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805494086,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805498083,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805504092,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805508093,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805514094,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805518098,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805524105,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805528112,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805534122,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805538114,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805544121,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805548125,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805554132,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805558132,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805564142,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805568147,
+            "pid": 50123,
+            "rssBytes": 274071552,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805574145,
+            "pid": 50123,
+            "rssBytes": 194576384,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805578168,
+            "pid": 50123,
+            "rssBytes": 194576384,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805584153,
+            "pid": 50123,
+            "rssBytes": 194576384,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805592162,
+            "pid": 50123,
+            "rssBytes": 194658304,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805596167,
+            "pid": 50123,
+            "rssBytes": 194822144,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805602170,
+            "pid": 50123,
+            "rssBytes": 223625216,
+            "cpuPct": 3.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805606168,
+            "pid": 50123,
+            "rssBytes": 251871232,
+            "cpuPct": 0.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805610187,
+            "pid": 50123,
+            "rssBytes": 274759680,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805614180,
+            "pid": 50123,
+            "rssBytes": 270336000,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805620185,
+            "pid": 50123,
+            "rssBytes": 270811136,
+            "cpuPct": 9.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805624260,
+            "pid": 50123,
+            "rssBytes": 270811136,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805628242,
+            "pid": 50123,
+            "rssBytes": 233848832,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805634201,
+            "pid": 50123,
+            "rssBytes": 241090560,
+            "cpuPct": 15.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805640202,
+            "pid": 50123,
+            "rssBytes": 242417664,
+            "cpuPct": 1.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805644211,
+            "pid": 50123,
+            "rssBytes": 242515968,
+            "cpuPct": 0.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805650210,
+            "pid": 50123,
+            "rssBytes": 241942528,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805654215,
+            "pid": 50123,
+            "rssBytes": 241844224,
+            "cpuPct": 4.8,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805658216,
+            "pid": 50123,
+            "rssBytes": 242089984,
+            "cpuPct": 21.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805666232,
+            "pid": 50123,
+            "rssBytes": 238895104,
+            "cpuPct": 1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805668233,
+            "pid": 50123,
+            "rssBytes": 238927872,
+            "cpuPct": 1.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805676238,
+            "pid": 50123,
+            "rssBytes": 238403584,
+            "cpuPct": 4.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805682270,
+            "pid": 50123,
+            "rssBytes": 242712576,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805686245,
+            "pid": 50123,
+            "rssBytes": 243040256,
+            "cpuPct": 41.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805688246,
+            "pid": 50123,
+            "rssBytes": 243269632,
+            "cpuPct": 2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805696258,
+            "pid": 50123,
+            "rssBytes": 240222208,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805702268,
+            "pid": 50123,
+            "rssBytes": 240353280,
+            "cpuPct": 0.1,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805706263,
+            "pid": 50123,
+            "rssBytes": 240451584,
+            "cpuPct": 0,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805712273,
+            "pid": 50123,
+            "rssBytes": 240812032,
+            "cpuPct": 0.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793805714275,
+            "pid": 50123,
+            "rssBytes": 241041408,
+            "cpuPct": 0.7,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      },
+      {
+        "taskId": "03_verify",
+        "pid": 3657,
+        "samples": 19,
+        "peakRssBytes": 258785280,
+        "peakCpuPct": 65,
+        "p95RssBytes": 258785280,
+        "p95CpuPct": 65,
+        "avgRssBytes": 234654235,
+        "avgCpuPct": 5.4,
+        "attributed": true,
+        "descendantPids": [],
+        "trajectory": [
+          {
+            "ts": 1793806534757,
+            "pid": 3657,
+            "rssBytes": 205815808,
+            "cpuPct": 65,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806536723,
+            "pid": 3657,
+            "rssBytes": 237731840,
+            "cpuPct": 0.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806538721,
+            "pid": 3657,
+            "rssBytes": 238305280,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806540737,
+            "pid": 3657,
+            "rssBytes": 244809728,
+            "cpuPct": 2.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806542726,
+            "pid": 3657,
+            "rssBytes": 257114112,
+            "cpuPct": 5.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806544728,
+            "pid": 3657,
+            "rssBytes": 257196032,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806546733,
+            "pid": 3657,
+            "rssBytes": 257277952,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806548732,
+            "pid": 3657,
+            "rssBytes": 257572864,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806550732,
+            "pid": 3657,
+            "rssBytes": 258195456,
+            "cpuPct": 1.5,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806552736,
+            "pid": 3657,
+            "rssBytes": 258785280,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806554735,
+            "pid": 3657,
+            "rssBytes": 248397824,
+            "cpuPct": 1.4,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806556739,
+            "pid": 3657,
+            "rssBytes": 248430592,
+            "cpuPct": 2.2,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806558740,
+            "pid": 3657,
+            "rssBytes": 248463360,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806560741,
+            "pid": 3657,
+            "rssBytes": 248643584,
+            "cpuPct": 1.9,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806562740,
+            "pid": 3657,
+            "rssBytes": 248676352,
+            "cpuPct": 1.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806564745,
+            "pid": 3657,
+            "rssBytes": 185597952,
+            "cpuPct": 4.6,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806566747,
+            "pid": 3657,
+            "rssBytes": 185516032,
+            "cpuPct": 2.3,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806568742,
+            "pid": 3657,
+            "rssBytes": 185532416,
+            "cpuPct": 1.7,
+            "isDescendant": false,
+            "firstSample": false
+          },
+          {
+            "ts": 1793806570747,
+            "pid": 3657,
+            "rssBytes": 186368000,
+            "cpuPct": 2.1,
+            "isDescendant": false,
+            "firstSample": false
+          }
+        ]
+      }
+    ],
+    "firstSample": {
+      "ts": 1793804389302,
+      "pid": 46536,
+      "ppid": 0,
+      "label": "root",
+      "rssBytes": 509706240,
+      "heapBytes": 0,
+      "cpuPct": 35.7
+    },
+    "lastSample": {
+      "ts": 1793806570751,
+      "pid": 40683,
+      "ppid": 0,
+      "label": "child",
+      "rssBytes": 28213248,
+      "heapBytes": 0,
+      "cpuPct": 0.7
+    }
+  },
+  "anomalies": [
+    {
+      "severity": "HIGH",
+      "category": "run_not_completed",
+      "subagent": "(run)",
+      "message": "run terminated via run.failed (not run.completed) — aborted/blocked/failed"
+    },
+    {
+      "severity": "HIGH",
+      "category": "high_failure_rate",
+      "subagent": "(run)",
+      "message": "2/3 subagents failed (67%) — run broadly broken"
+    },
+    {
+      "severity": "HIGH",
+      "category": "workflow",
+      "subagent": "(run)",
+      "message": "workflow.phase_failed: Workflow phase 'verify' failed."
+    },
+    {
+      "severity": "HIGH",
+      "category": "task_failed",
+      "subagent": "02_execute",
+      "message": "non-zero exitCode=143"
+    },
+    {
+      "severity": "HIGH",
+      "category": "task_failed",
+      "subagent": "03_verify",
+      "message": "subagent exited status=\"failed\" (exitCode=0): Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions."
+    },
+    {
+      "severity": "HIGH",
+      "category": "task_status",
+      "subagent": "03_verify",
+      "message": "task_status: Task status: failed"
+    },
+    {
+      "severity": "HIGH",
+      "category": "verification_failed",
+      "subagent": "03_verify",
+      "message": "verification_failed: Verification failed (required targeted, observed none) — Task failed: Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions. — self-attested (no verification commands configured)"
+    },
+    {
+      "severity": "HIGH",
+      "category": "worker",
+      "subagent": "03_verify",
+      "message": "worker.response_timeout: Worker lifecycle: response_timeout error=No output for 600000ms"
+    },
+    {
+      "severity": "HIGH",
+      "category": "task",
+      "subagent": "03_verify",
+      "message": "task.failed: Child Pi worker became unresponsive and was terminated. Stderr tail: Warning: No project session found with id 'crew-team202611041459'; creating a new session with that id.\n"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "large_gap",
+      "subagent": "01_explore",
+      "message": "single event-gap of 67.8s (>15s) — an LLM turn or tool stalled"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "slow_phase",
+      "subagent": "01_explore",
+      "message": "phase \"activeWork\" took 217.0s (>40s)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "model_retry",
+      "subagent": "02_execute",
+      "message": "model retry/fallback: 2 attempt(s), 2 model(s) [bifrost/vllm/strata-coder → bifrost/openrouter/coding] (1 failed)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "large_gap",
+      "subagent": "02_execute",
+      "message": "single event-gap of 120.0s (>15s) — an LLM turn or tool stalled"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "slow_phase",
+      "subagent": "02_execute",
+      "message": "phase \"activeWork\" took 1108.4s (>40s)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "model_retry",
+      "subagent": "03_verify",
+      "message": "model retry/fallback: 3 attempt(s), 1 model(s) [bifrost/vllm/strata-coder] (1 failed)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "large_gap",
+      "subagent": "03_verify",
+      "message": "single event-gap of 600.2s (>15s) — an LLM turn or tool stalled"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "slow_phase",
+      "subagent": "03_verify",
+      "message": "phase \"activeWork\" took 853.4s (>40s)"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "recovery",
+      "subagent": "03_verify",
+      "message": "recovery.attempted: Task failed: Verifier verdict FAIL (failureCause: verifier-verdict-fail): FAIL: the nd-db slice-1 gate is green (fmt/clippy/test exit 0) but the packet's required harnesses `rust/crates/nd-db/tests/*.rs` were never written — `cargo test -p nd-db` ran 1 test (the scaffold marker), so all 359 LOC of pool/store/retry logic have zero behavioral assertions."
+    },
+    {
+      "severity": "LOW",
+      "category": "cost_unreported",
+      "subagent": "(run)",
+      "message": "cost is $0 despite 5,962,653 tokens consumed — provider does not report cost; the cost metric is UNAVAILABLE (not free)"
+    },
+    {
+      "severity": "LOW",
+      "category": "tool_churn",
+      "subagent": "01_explore",
+      "message": "43 tool calls — chatty/expensive agent (check for tool-use loops)"
+    },
+    {
+      "severity": "LOW",
+      "category": "tool_churn",
+      "subagent": "02_execute",
+      "message": "100 tool calls — chatty/expensive agent (check for tool-use loops)"
+    }
+  ],
+  "typeCounts": {
+    "run.created": 1,
+    "run.running": 4,
+    "hook.executed": 15,
+    "runtime.resolved": 1,
+    "task.started": 5,
+    "task.progress": 496,
+    "worker.spawned": 6,
+    "worker.exit": 6,
+    "worker.close": 6,
+    "task.completed": 2,
+    "workflow.phase_completed": 2,
+    "worker.final_drain": 1,
+    "task.verifier_pre_gate": 3,
+    "worker.response_timeout": 1,
+    "task.failed": 3,
+    "crew.task.retry_attempt": 2,
+    "task.output_validation": 2,
+    "workflow.phase_failed": 1,
+    "run.failed": 1,
+    "policy.escalated": 1,
+    "recovery.attempted": 1,
+    "run.goal_achievement": 1
+  }
+}
