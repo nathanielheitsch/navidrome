@@ -35,11 +35,14 @@ pub type Sql = (String, Vec<Value>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct SearchConfig {
     /// ORDER BY for empty-query results (Go's `NaturalOrder`, e.g. `"album.rowid"`).
-    natural_order: String,
+    /// Public so repository modules outside this file (album/mediafile/playlist
+    /// repositories) can build the config the way Go's object literal does
+    /// (`album_repository.go:435-440`).
+    pub natural_order: String,
     /// ORDER BY for text-search results (Go's `OrderBy`, e.g. `["name"]`).
-    order_by: Vec<String>,
+    pub order_by: Vec<String>,
     /// Columns matched when the query is a UUID (Go's `MBIDFields`).
-    mbid_fields: Vec<String>,
+    pub mbid_fields: Vec<String>,
 }
 
 /// `searchStrategy` (`sql_search.go:21-25`) as data. `clause` is the strategy's
@@ -50,8 +53,12 @@ pub struct SearchConfig {
 /// (`sql_search_like.go:16-24` queries the full SELECT directly).
 #[derive(Debug, Clone)]
 pub struct SearchStrategy {
-    clause: Sql,
-    rowid_core: Option<Repository>,
+    /// Public so repository modules outside this file can assemble the strategy
+    /// Go's `getSearchStrategy` returns (`album_repository.go:441-447`).
+    pub clause: Sql,
+    /// Strategy-specific Phase-1 builder; `None` marks the LIKE family
+    /// (`sql_search_like.go:16-24`, no two-phase split).
+    pub rowid_core: Option<Repository>,
 }
 
 /// `doSearch`'s outcome. Go executes and fills `results`; the port names the

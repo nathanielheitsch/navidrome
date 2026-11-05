@@ -15,10 +15,25 @@
 /// Scaffold marker: the public surface authored by #05 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 5;
 
+pub mod album_repo;
+pub mod artist_repo;
+pub mod artwork_queue_repo;
+pub mod artwork_repo;
+pub mod folder_repo;
+pub mod genre_repo;
+pub mod library_repo;
+pub mod mediafile_repo;
+pub mod playlist_repo;
+pub mod playlist_track_repo;
+pub mod playqueue_repo;
+pub mod plugin_repo;
 pub mod pool;
+pub mod property_repo;
+pub mod radio_repo;
 pub mod scrobble_buffer_repo;
 pub mod scrobble_repo;
 pub mod share_repo;
+pub mod smart_playlist_repo;
 pub mod sql_annotations;
 pub mod sql_bookmarks;
 pub mod sql_participations;

@@ -129,6 +129,7 @@ pub struct Repository {
     columns: Vec<String>,
     joins: Vec<Join>,
     conditions: Vec<Condition>,
+    group_by: Vec<String>,
     order_by: Vec<String>,
     limit: Option<u64>,
     offset: Option<u64>,
@@ -180,6 +181,16 @@ impl Repository {
             on: on.into(),
             join_args: args,
         });
+        self
+    }
+
+    /// Sets the `GROUP BY` list (squirrel `.GroupBy(...)`, applied at
+    /// `sql_tags.go:224-228` by `baseTagRepository.newSelect`, which the genre
+    /// repository reuses for its aggregate counts). Identifiers are caller-supplied,
+    /// like every other SQL fragment here.
+    #[must_use]
+    pub fn group_by(mut self, exprs: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.group_by = exprs.into_iter().map(Into::into).collect();
         self
     }
 
@@ -314,6 +325,10 @@ impl Repository {
                 .map(|c| c.render(&mut args))
                 .collect::<Vec<_>>();
             sql.push_str(&format!(" WHERE {}", clauses.join(" AND ")));
+        }
+        // Squirrel emits GROUP BY after WHERE and before ORDER BY.
+        if !self.group_by.is_empty() {
+            sql.push_str(&format!(" GROUP BY {}", self.group_by.join(", ")));
         }
 
         if !self.order_by.is_empty() {
