@@ -740,12 +740,14 @@ dependencies = [
  "nd-conf",
  "nd-dbschema",
  "nd-id",
+ "nd-model",
  "nd-utils",
  "rusqlite",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "unicode-normalization",
 ]
 
 [[package]]
