@@ -1,5 +1,39 @@
 # Plan of record for the next body of work
 
+## Current state (2026-11-04, end of the Phase-4 body)
+
+Phases 1–4 below are **DONE except #15**. Verified gate at this boundary:
+`cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings` clean, `cargo test --workspace` = **969 passed / 0
+failed**; worktree clean, all commits GPG-signed.
+
+- **Phase 1** — #06 criteria DSL DONE (nd-model, 40 lib tests); #04 optimize/
+  backup DONE, `repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) still
+  DEFERRED as its own lane; #07 tail landed with `mock_ffmpeg.rs` + live
+  container fixtures (symlink-chain/invalid-files cases uncovered).
+- **Phase 2 slices 1–4** — #05 `nd-db` DONE: pool/store/harness + `sql_*`
+  helpers + all repos + `criteria_sql.rs` (904L criteria→SQL compiler:
+  `Cond` tree, threaded field map, join planner, orderBy coalesce/cast/role
+  forms, JSON merge groups @350 batch, NFC/NFD `pathVariants`); 316 lib tests.
+  Two-phase rowid semantics pinned to `sql_search.go:126-141`: base pagination
+  stripped from BOTH sql and args, page args bind AT the JOIN position.
+  Slice-4 security gate verified structurally (artist/radio via
+  `with_field_white_list`; scrobble/tag/transcoding/album take
+  caller-materialized fragments; `criteria_sql.rs` consumes no `QueryOptions`)
+  — a dedicated security-reviewer subagent pass over slice 4 was NOT run.
+- **Phase 3** — #13 `nd-auth` DONE (66 tests, security MUST-FIXes applied);
+  #12 `nd-sched` scheduler half DONE (39 tests); its maintenance/logging half
+  is still unspecified.
+- **Phase 4** — #14 `nd-stream` decision half DONE (types/aliases/codec/
+  limitations/decider/probe_json/token/legacy_client; 103 tests; HS256 tokens
+  with explicit secret + injected clock, issuer = `nd-conf` `JWT_ISSUER`).
+
+**Next body of work, in order:** (1) #15 `nd-stream` serving half —
+`media_streamer`, `limiter`, `archiver`, `handle_streams`, Range matrix +
+cancellation soak (decider's probe path is stubbed to `ProbeInput::NotAvailable
+until this lands); (2) `nd-dbschema/src/repair.rs`; (3) specify + build the
+#12 non-scheduler half.
+
 Supersedes the earlier packet. Written after a full re-read of the ledger
 (`issues.md`), the dependency graph, and an advisor review of the sequencing.
 State at time of writing: 59 test groups green, fmt 0 diffs, per-crate clippy
