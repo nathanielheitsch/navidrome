@@ -1,0 +1,31 @@
+[package]
+name = "nd-db"
+description = "Rust port scaffold: nd-db is owned by #05 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nd-conf = { version = "0.1.0", path = "../nd-conf" }
+nd-dbschema = { version = "0.1.0", path = "../nd-dbschema" }
+nd-utils = { version = "0.1.0", path = "../nd-utils" }
+# rusqlite is not a workspace dependency: every consumer re-pins the same
+# version+features verbatim (nd-dbschema/Cargo.toml:14 is the template).
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# nd-id supplies new_tag_id (model.NewTag is what sql_tags.go marshalTags calls).
+nd-id = { version = "0.1.0", path = "../nd-id" }
+# criteria_sql (slice 4 last lane) consumes nd-model’s criteria DSL and field
+# registry — the #06 bridge (docs/rust-port/issues.md:232).
+nd-model = { version = "0.1.0", path = "../nd-model" }
+unicode-normalization = "0.1.25"
+
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "test-util"] }

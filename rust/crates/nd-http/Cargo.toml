@@ -1,0 +1,9 @@
+[package]
+name = "nd-http"
+description = "Rust port scaffold: nd-http is owned by #24 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

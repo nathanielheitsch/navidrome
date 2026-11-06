@@ -1,0 +1,17 @@
+[package]
+name = "nd-stream"
+description = "Rust port of core/stream/** decision tables (issue #14, docs/rust-port/issues.md Part B); #15 owns the serving half"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nd-conf = { version = "0.1.0", path = "../nd-conf" }
+nd-ffmpeg = { version = "0.1.0", path = "../nd-ffmpeg" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+jsonwebtoken = { workspace = true }
+
+[lints]
+workspace = true

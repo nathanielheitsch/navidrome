@@ -1,0 +1,159 @@
+# Component map — Rust port of this navidrome fork
+
+This fork (Go server, `go 1.27`, GPL-3.0) decomposes into **33 component rows — 27 live components, 4 CANCELLED (C20 the Subsonic wire layer, C23 the Jellyfin API, C28 the WASM plugin host, C29 sonic similarity) and C32 backgrounds DROPPED post-UI-drop**, each owning a disjoint set of Go paths. This file is the port's build map: what each component is, which Go files it owns, what it must expose to the rest of the system, what it depends on, and in what order lanes can run. (C33 is repo/CI tooling, marked do-not-port in the table below; the live crate count in `issues.md` #S1 is 26: 27 live components − the C12/C13 pair both living in `nd-stream` = 26.)
+
+**Revision (post-milestone-0) — settled decisions** (mirrors `docs/rust-port/issues.md` §Revision; the reasoning lives there):
+
+- Canonical API = the existing native surface (`server/nativeapi/**`): **C22 `nd-api` is the TRUNK** — the surface the owners' Flutter client and the MCP client artifact speak.
+- The Subsonic wire layer is **CANCELLED — clean API break** (C20): no compat shim, no wire translation; third-party Subsonic clients will not work against this server (deliberate product decision). The 126 `.snapshots/` goldens become reference data only, and the fixture *discipline* transfers to the canonical API. The port borrows Subsonic semantics where sound (typed-ID prefixes, artwork-ID composition, transcode-decision split) but no wire format. A future community adapter would consume the published OpenAPI spec (C22's regeneration output), not the server internals.
+- The WASM plugin host is **CANCELLED**: C28 has no crate; `plugins/capabilities/*.yaml` survive as the trait spec for a future Rust-native provider layer.
+- Credential model **B** is settled — hashed API keys + JWT sessions revoked via `token_epoch`; there is **no reversible AES-GCM password store anywhere**: decryption exists only inside the one-time `migrate-credentials` path (see #S4), then is deleted. With the shim gone, model A has no host at all.
+- The bundled JS UI is **dropped by default**: C25 keeps only the server-side share-page HTML contract.
+
+Read this way:
+- **Inventory** (§1) is the ownership contract — a Go path appears in exactly one row. If a Rust crate needs another component's behavior, it consumes that crate's public API; it does not re-port the files.
+- **Dependency graph** (§2) is derived from the `dependsOn` column, not from intuition.
+- **Lanes** (§3) are the parallel execution plan; §4 lists the artifacts several lanes need *designed before* they start.
+- Unresolved product decisions are **not** in this file — they are in `docs/rust-port/issues.md`, Part C.
+
+Progress state lives in `docs/rust-port/issues.md` ("Progress ledger"); this file stays the ownership/dependency contract only.
+
+Everything here is tied to exact Go paths in this checkout. Size classes are shard-reported estimates (the explorer lanes had no shell, so nothing was measured with `wc`); treat them as ordering hints, not budgets.
+
+---
+
+## 1. Component inventory
+
+| # | Component | Owning Go paths (disjoint) | External interface (what other components call) | dependsOn | Size / effort | Risk | Lane |
+|---|---|---|---|---|---|---|---|
+| C01 | schema-migrations | `db/db.go` (215L: `Dialect = "sqlite3"` `:27`, `Driver = Dialect+"_custom"` `:28`, `//go:embed migrations/*.sql` `:32`, `registerDriverOnce` `:39`), `db/migrations/**` (the full `.go` + `.sql` migration set — newest schema-shaping ones: `20200130083147_create_schema.go`, `20240511220020_add_library_table.go`, `20241026183640_support_new_scanner.go`, `20260220173400_add_fts5_search.go`, `20260720015443_uniform_canonical_ids.go`, `20260722023032_add_artwork_tables.sql`, `20260929221042_add_library_pid_columns.sql`; harness `migration.go`, `migrations_suite_test.go`, guard tests `id_canonical_test.go`, `id_columns_guard_test.go`, `uniform_canonical_ids_test.go`), `db/optimize.go`, `db/backup.go`, `db/repair.go` | open/init DB, migration runner, ANALYZE/backup/repair entry points (CLI + scheduler) | C02 | M–L (~25 schema-shaping migrations of the full set) | HIGH (SQLite dialect coupling) | A |
+| C02 | db-store | `persistence/persistence.go` (279L; `type SQLStore` `:17-40` — `dbx.Builder` + 21 lazy repository builders), `persistence/sql_base_repository.go`, 24 `persistence/*_repository.go` (`album artist artwork artwork_queue folder genre library mediafile player playlist playlist_track playqueue plugin property radio scrobble scrobble_buffer share smart_playlist tag transcoding user user_props`), `persistence/sql_{search,search_fts,search_like,bookmarks,participations,tags,annotations,restful}.go`, `persistence/criteria_sql.go` (904L), `persistence/{helpers,artwork_hydration,plugin_cleanup}.go`, `persistence/e2e/`, `model/id/`, `model/request/request.go`, the interface half of `model/{album,artist,mediafile,folder,library,playlist,playqueue,tag,genre,radio,share,player,transcoding,user,user_props,properties,scrobble_buffer,scrobble,plugin,artwork,bookmark,annotation}.go` | the `*Repository` interfaces behind `SQLStore`, `WithTx` / `WithTxRetry` | C01, C05, C04 (via `model/id`), C06 | L | HIGH (gates ~20 components) | A |
+| C03 | config-consts | `conf/configuration.go` (1219L), `conf/dir.go`, `conf/mime/mime_types.go`, `conf/buildtags/{netgo,sqlite_fts5,doc}.go`, `conf/configtest/`, `conf/testdata/`, `consts/consts.go` (234L), `resources/mappings.yaml`, `resources/mime_types.yaml`, `Makefile:5` (`GO_BUILD_TAGS=netgo,sqlite_fts5`) | viper/INI schema, defaults + validation, `Dir` value type, MIME gating | — (root) | L | MED (existing installs pin the keys) | A |
+| C04 | id-gen | `model/id/id.go` (48L: `NewRandom` = 16 rand bytes → `Encode`; `Encode` `:18-20` renders a 16-byte value as the canonical **22-char zero-padded base62** id), `model/artwork_id.go`, `model/participants.go`, PID rules `consts/consts.go` | byte-exact id/pid encoding, deterministic `NewHash` (MD5 + U+200B separator) | C03 | S | MED (kept for design shape, not compat: fresh service) | B |
+| C05 | util-primitives | `utils/` — 21 subdirs (`cache/ chrono/ gg/ gravatar/ hasher/ httpclient/ ioutils/ jsoncommentstrip/ merge/ nanoid/ natural/ netguard/ number/ pl/ random/ req/ run/ shellquote/ singleton/ slice/ str/`) + top-level modules `context.go encrypt.go files.go index_group_parser.go limiter.go time.go` | pure functions: natural sort/collation (`utils/natural`, backs the `NATSORT` SQL collation), seeded hash (`utils/hasher`, backs the `SEEDEDRAND` SQL function), AES-GCM (`utils/encrypt.go`), rate limiters (`limiter.go`), caches, HTTP client, DI singletons (`utils/singleton/`) | — (root) | M | LOW–MED | B |
+| C06 | model-data | `model/{searchable,get_entity,library_matcher,file_types,errors,lyrics,lyrics_lrc,lyrics_srt,lyrics_ttml,lyrics_normalize,lyrics_parse,lyrics_lyricsfile}.go`, `model/tag_mappings.go`, `model/tag.go`, `model/annotation.go`, `model/criteria/**`, `model/metadata/**` (shared with C09 by role), `model/scanner.go`, `model/{image,genre,radio,playqueue}.go` DTOs | DTO/struct shapes + pure transforms: tag vocabulary, criteria DSL ⇄ JSON, lyric parsing/normalization | C03, C04 | L | MED | B |
+| C07 | auth | `core/auth/auth.go`, `core/auth/claims.go`, `server/auth.go`, `server/initial_setup.go`, `server/subsonic/middlewares.go` (credential parsing), `server/subsonic/auth_limiter.go`, `utils/encrypt.go` (crypto only), `core/publicurl/**`, plus keying-only contact with `persistence/{user,user_props,player,share}_repository.go` | JWT HS256 dual-secret + token-epoch revocation; `p / t+s / jwt / apiKey / internal` credential switch; AES-GCM password store | C02, C03, C05 | L | **HIGH (security)** | D |
+| C08 | taglib-extractor | `adapters/gotaglib/gotaglib.go`, `core/storage/**` (`local/`, `extractors.go`), `go.mod:5-6` (`// Fork to implement raw tags support`, `replace go.senan.xyz/taglib => github.com/deluan/go-taglib v0.0.0-…`) | `Extractor{Parse → map[string]Info, Version}`, `RegisterExtractor("taglib")` | C06, C05 | S | HIGH (C/C++ taglib binding has no Rust 1:1 analogue) | C |
+| C09 | tag-mapping | `model/metadata/**` (`map_mediafile`, `map_participants`, `persistent_ids`, `legacy_ids`), `model/tag_mappings.go`, `model/file_types.go`, `model/participants.go`, format branches driven from `adapters/gotaglib` | `Info{FileInfo,Tags,AudioProperties,HasPicture}` → `MediaFile` / `ArtistRole`; PID + canonical-id assignment | C06, C08, C03 | M | HIGH (ID canonicalization) | F |
+| C10 | scanner | `scanner/**` — `controller.go scanner.go walk_dir_tree.go ignore_checker.go watcher.go external.go folder_entry.go image_changes.go phase_1_folders.go phase_2_missing_tracks.go phase_3_refresh_albums.go phase_4_playlists.go` + `README.md` + tests; plus `conf/buildtags`, `model/scanner.go` | `ScanAll / ScanFolders / Status`, `New / CallScan / IsScanning / LockForMaintenance`, `ProgressInfo` events | C02, C06, C09, C19, C29 (adapters), C24 | **XL** (~3.4k src / ~7k test) | HIGH (symlink chains, subprocess IPC, fsnotify watchers) | F |
+| C11 | ffmpeg-adapter | `core/ffmpeg/ffmpeg.go`, `core/ffmpeg/flac_streaminfo.go`, `tests/mock_ffmpeg.go`, `tests/fixtures/**` | `Transcode / ExtractImage / ConvertAnimatedImage / ProbeAudioStream / CmdPath / IsAvailable` | C05 | M | HIGH (process cancellation, FLAC STREAMINFO patching) | C |
+| C12 | transcode-decision | `core/stream/types.go`, `core/stream/decider.go`, `core/stream/codec.go`, `core/stream/limitations.go`, `core/stream/aliases.go`, `core/stream/legacy_client.go`, `core/stream/token.go`, `core/stream/decider_test.go` (~1300L as executable spec), `model/transcoding.go`, `persistence/transcoding_repository.go`, `db/migrations/{20200706231659_add_default_transcodings.go, 20260309203355_ensure_default_transcodings.go, 20260618120509_add_metadata_to_default_transcodings.go, 20260307175815_add_codec_and_update_transcodings.go}`, default table region in `consts/consts.go` | `TranscodeDecider{MakeDecision, CreateTranscodeParams, ResolveRequestFromToken}` | C11, C07, C06, C02 | M–L | HIGH (protocol tables) | E |
+| C13 | stream-serving | `core/stream/media_streamer.go`, `core/stream/limiter.go`, `core/archiver.go`, `server/public/handle_streams.go` | `MediaStreamer.NewStream/Serve`, HTTP Range semantics, transcoding-file cache | C12, C11, C02 | M | HIGH (cancellation, cache singleton) | E |
+| C14 | artwork | `core/artwork/**` (`artwork.go worker.go image_cache.go image_store.go sources.go processor.go resize.go resolve.go gate.go housekeeping.go prune.go uploader.go disc.go animation.go trace.go agent_images.go folders_album.go folders_artist.go playlist_cover.go library_fs.go wire_providers.go`, `blurhash/`, `thumbhash/`, `dominant/`, `e2e/`), `model/artwork.go`, `persistence/{artwork_repository,artwork_queue_repository,artwork_hydration}.go`, `db/migrations/20260722023032_add_artwork_tables.sql` | `Artwork` service, thumbhash/blurhash encoders, `artwork_queue` drain contract | C02, C11, C08 | L | HIGH (thumbhash goldens shared with the JS UI) | F |
+| C15 | players/jukebox | `core/players.go`, `core/playback/{playbackserver,device,queue}.go`, `core/playback/mpv/{mpv,track,sockets,sockets_win}.go`, `model/player.go`, `persistence/player_repository.go`, `server/subsonic/jukebox.go` | `Players.Get/Register/Touch`, `PlaybackServer{Run, GetDeviceForUser}`, mpv IPC | C02, C13, C07 | M | MED (OS-conditional code) | I |
+| C16 | scrobbler | `core/scrobbler/{interfaces,play_tracker,buffered_scrobbler,nowplaying_worker,playbackreport_worker}.go`, `model/scrobble.go`, `model/scrobble_buffer.go`, `persistence/{scrobble_repository,scrobble_buffer_repository}.go`, `db/migrations/20251206013022_create_scrobbles_table.sql` | `Scrobbler{IsAuthorized, NowPlaying, Scrobble, PlaybackReport}`, `ErrRetryLater` identity | C02, C17 | M | MED | I |
+| C17 | external-metadata | `core/agents/**`, `core/external/{provider,provider_similarsongs}.go`, `core/matcher/matcher.go`, `adapters/lastfm/**`, `adapters/listenbrainz/**`, `adapters/deezer/**`, `core/wire_providers.go`, `plugins/{metadata_agent,lyrics_adapter,scrobbler_adapter}.go` (adapters only) | `agents` capability structs, `Provider{…}`, `Matcher.MatchSongs` | C02, C05, C07 (C28 edge dropped — C28 is CANCELLED; these adapters are not ported) | L | MED–HIGH (matcher thresholds are red-zone tuning) | I |
+| C18 | lyrics | `core/lyrics/{lyrics,sources}.go`, `model/lyrics*.go` (parse half also in C06), `server/subsonic/lyrics.go`, `tests/fixtures/**` (LRC/SRT/TTML samples) | structured-lyric fetch + merge, LRC/SRT/TTML parse | C06, C02 | M | MED | C (parsers) / I (fetch) |
+| C19 | playlists | `core/playlists/{playlists,import,parse_m3u,parse_nsp,rest_adapter}.go`, `model/playlist.go`, `persistence/{playlist_repository,playlist_track_repository,smart_playlist_repository}.go`, `db/migrations/{20260818002312_add_playlist_imported_hash.sql, 20260104203627_playlist_case_insensitive_name.sql}` | M3U/NSP import + store | C02, C06, C10 | M | MED | I |
+| C20 | subsonic-wire — **CANCELLED (clean API break)** | `server/subsonic/**`, `api/openapi/**`, `api/bundled/**`, `api/embed.go` — paths stay in the inventory but are **not ported** | **CANCELLED — no compat shim, no wire translation.** Rationale: a faithful Subsonic shim requires the reversible AES-GCM password store back (`t = md5(decrypted_password+salt)`, `server/subsonic/middlewares.go:281`) — re-importing the security debt model B removed — and the `apiKey`-over-`/rest` alternative works only for clients that can send `apiKey`, which the major Subsonic clients cannot. Third-party Subsonic clients (play:Sub, Symfonium, Feishin, DSub…) will not work against this server: a deliberate product decision. The 126 `.snapshots/` goldens remain **reference data** (behavioral spec of streaming/Range/ETag semantics worth transcribing into canonical fixtures) and gate nothing; the fixture *discipline* transfers to the canonical API (C22 captures its own recorded goldens from the Go binary). The Rust port borrows Subsonic *semantics* where sound (typed-ID prefixes `al-`/`mf-`/`pl-`, artwork-ID composition, transcode-decision split) but no wire format | — | — (not ported) | — | — |
+| C21 | http-shell | `server/server.go`, `server/middlewares.go`, `server/serve_index.go`, `server/auth.go` (route mount), `server/throttle_backlog.go`, `server/filter/filters.go`, `server/imghttp/headers.go`, `server/testdata/`, BasePath region of `consts/consts.go` | middleware pipeline, BaseURL/BasePath, HTML template injection, image ETag/304 | C07, C03, C26 | M | MED | I |
+| C22 | api-canonical — canonical surface (`nd-api`), **TRUNK** | `server/nativeapi/native_api.go`, `server/nativeapi/plugin.go`, `server/apiv1/api.go`, `api/bundled/openapi.{json,yaml}`, `api/embed.go` | `/api/*` JSON:API surface + `/api/v1` OpenAPI bundle (mounted at `consts/consts.go:58`) — **the surface the Flutter client and the MCP client artifact speak** | C07, C02, C30 | M | HIGH (external-client contract; its oracle is response-shape goldens captured from the Go binary, never the Subsonic `.snapshots/`) | G |
+| C23 | jellyfin-api — **CANCELLED (not ported)** | `server/jellyfin/**` paths stay inventoried, not ported; `core/quickconnect/quickconnect.go` re-owned by C22 `nd-api` | none (Quick-Connect device pairing moves to C22; `jellyfin` JWT audience removed) | — | — | user decision, Part C #15 resolved | tail |
+| C24 | public-share | `server/public/{public,handle_shares,handle_images,handle_streams,handle_downloads}.go`, `core/share.go`, `core/publicurl/**`, `model/share.go`, `persistence/share_repository.go`, `db/migrations/{20210530121921_create_shares_table.go, 20210601231734_update_share_fieldnames.go, 20230119152657_recreate_share_table.go, 20230310222612_add_download_to_share.go, 20250522013904_share_user_id_on_delete.sql}`, `utils/str/` (Content-Disposition) | `/share`, `/share/s|d|img`, share tokens, `Content-Disposition` | C02, C07, C13, C14, C26 | M | HIGH (public, unauthenticated surface) | E |
+| C25 | ui-template-contract | `ui/index.html` (`{{ .AppConfig }}`, `{{ .ShareInfo }}`), `ui/src/config.js`, `ui/src/consts.js`, `ui/src/utils/urls.js`, `ui/src/subsonic/index.js`, `ui/src/dataProvider/**`, `ui/src/eventStream.js`, `ui/src/transcode/**`, `ui/embed.go` | the **server-side** share-page HTML contract the Rust server must preserve — the bundled JS UI itself (~47k LOC under `ui/src`) is **DROPPED by default**, a Flutter client replaces it (no Rust port of the UI) | C22, C21, C24 (the C20 edge is dropped: the shim is optional, the trunk contract may not wait for it) | S (server side) | HIGH (compat) | G |
+| C26 | events-sse | `server/events/**` | SSE `/api/events`, `Event` / `Broker` broadcast | C07, C03 | S | LOW | B |
+| C27 | scheduler-logging | `scheduler/{scheduler,crontab_schedule,log_adapter}.go`, `log/{log,formatters,journal,redactrus}.go`, `core/maintenance.go` | cron jobs, log levels/redaction, maintenance ops | C03, C02 | S–M | LOW | B/I |
+| C28 | plugin-host — **CANCELLED** (no crate, not ported) | `plugins/**` — `manager.go manager_loader.go manager_call.go manager_sync.go manager_watcher.go manager_cache.go manager_plugin.go capabilities.go capability_lifecycle.go config_validation.go manifest.go manifest_gen.go manifest-schema.json package.go migrate.go types/ capabilities/ host/ sandbox_fs.go host_netguard.go host_*.go (artwork cache config httpclient kvstore library matcher scheduler scrobbleretriever storage subsonicapi taskqueue users websocket) plugins/{lyrics_adapter,scrobbler_adapter,sonic_similarity_adapter,metadata_agent}.go`, `plugins/pdk/**` (incl. `plugins/pdk/rust/{nd-pdk,nd-pdk-host,nd-pdk-capabilities,nd-pdk-types}/Cargo.toml`), `plugins/cmd/**` (`ndpgen`), `plugins/examples/**`, `plugins/testdata/**`, `go.mod:20` (`extism/go-sdk v1.7.1`), `go.mod:58` (`tetratelabs/wazero v1.12.0`) — paths stay in the inventory but are **not ported** | **CANCELLED — no ABI, no host services.** Rationale: the Extism/wazero host ABI was the largest single lane and delivers nothing the canonical API (C22) or the clients need. What survives is data only: `plugins/capabilities/*.yaml` remain the **trait spec** for a future Rust-native provider layer. | — | — (not ported) | — | — |
+| C29 | sonic-similarity — **CANCELLED** (its consumers were `server/subsonic/api.go:129` and the dropped JS UI; no canonical consumer exists post-clean-break) | `core/sonic/sonic.go`, `server/subsonic/sonic_similarity.go`, `plugins/sonic_similarity_adapter.go` | — (not ported; archive with a revival path if a canonical similar-tracks endpoint is ever wanted) | — | — | — | — |
+| C30 | cli | `cmd/` (27 entries: subcommand modules `root scan inspect doctor backup pls plugin svc user search missing artwork utils` + the DI pair `wire_gen.go` `wire_injectors.go` + `signaller_unix.go signaller_nounix.go` + tests) | CLI subcommands; **`cmd/wire_gen.go` / `cmd/wire_injectors.go` are Go-`wire` DI output — no Rust analogue** | all runtime components | L (as a scaffold) | HIGH (DI codegen must be redesigned, not ported) | I (stub first) |
+| C31 | diagnostics | `core/metrics/{insights,prometheus,insights_linux,data}.go`, `core/inspect.go`, `conf` `Inspect` section | Prometheus text output + library insights | C02, C03 | M | MED — deferrable | I |
+| C32 | backgrounds — **DROPPED** (post-UI-drop: sole consumer was the JS UI via `cmd/root.go:153`; see `issues.md` Part C #17) | `server/backgrounds/**` | — (not ported; drop unless a Flutter need appears) | — | S | LOW | — |
+| C33 | non-port | `git/pre-commit`, `git/pre-push`, `.github/**`, `release/**`, `contrib/**`, `.devcontainer/**`, `scripts/setup-worktree.sh`, `bench/**` | repo/CI tooling only | — | — | N/A — do not port | — |
+
+**Also in scope, no other component lists them** (must not be dropped by a lane): `core/user.go`, `core/library.go`, `core/common.go` (path-containment helper — see risk list), `core/wire_providers.go`, `model/datastore.go`, `conf/mime/mime_types.go`, `ui/embed.go`, `ui/bin/**`, `resources/{banner.txt,banner.go,embed.go,logo-192x192.png,artist-placeholder.webp,album-placeholder.webp,i18n/,hosting/}` (data assets, copied not ported). Test-only files with no matching module — the behavior they pin lives elsewhere: `persistence/{collation_test,item_tags_test,export_test,sort_index_coverage_test}.go`, `db/export_test.go`.
+
+---
+
+## 2. Dependency graph
+
+Arrows point **at the dependency** (A → B means A needs B finished).
+
+```
+Spine (nothing runtime-bearing compiles before this subgraph exists):
+  C03 config ─┬─> C01 schema-migrations ──> C02 db-store ──┬──> C06 model-data ──> C04 id-gen
+              └──────────────────────────────────────────^└──> C05 utils ─────────┘
+
+C02 + C03 + C05 ──> C07 auth ──(gates every wire surface)──> C22, C24
+
+Media chain (strictly sequenced):
+  C05 ──> C11 ffmpeg ──> C12 transcode-decision ──> C13 stream-serving ──┬──> C24 public-share
+                                                     C13 ────────────────┴──> C14 artwork (enqueue)
+
+Scan chain (strictly sequenced):
+  C08 taglib-extractor ──> C09 tag-mapping ──> C10 scanner ──┬──> C14 artwork
+                          C10 ──────────────────────────────┴──> C01 (FTS5 triggers, ANALYZE)
+
+Wire fan-in:
+  C20 subsonic-wire — CANCELLED: absent from the graph; no wire translation is ported
+  C23 jellyfin      ──> CANCELLED: absent from the graph; quickconnect re-owned by C22
+  C24 public-share  ──> { C02, C07, C13, C14, C26 }
+  C22 api-canonical ──> { C07, C02, C30 }                     (TRUNK: Flutter client + MCP artifact)
+  C25 ui-contract   ──> { C22, C21, C24 }   (consumer, not dependency of the UI)
+
+Satellites:
+  C16 scrobbler ──> { C02, C17 }        C17 agents ──> { C02, C05, C07 }
+  C15 players     ──> { C02, C13, C07 } C19 playlists ──> { C02, C06, C10 }
+  C28 plugin-host — CANCELLED: absent from the graph, the WASM host plane is not ported at all
+  C30 cli         ──> everything (DI scaffold; stub until lanes settle)
+```
+
+Cuts that dominate the schedule:
+- **C02 gates ~20 components** (`persistence/persistence.go:17-40` is the single lazy-`SQLStore` hub; `server/subsonic/api.go` wires 16 of these deps, materialised in `cmd/wire_gen.go:115`).
+- **C07 gates C22 (trunk) / C24** — no endpoint can ship before the credential model lands; that model is settled (B), so this is a build-order gate, not an open question.
+- **C11 gates C12 → C13 → C24**; **C08 gates C09 → C10**; **C13 gates C14's artwork enqueue and C24's share streams**.
+- **C30 is a stub-able scaffold**, not a spine member — DI codegen (`wire_gen.go`) becomes explicit construction in Rust.
+
+---
+
+## 3. Parallel-lane build plan
+
+Ownership rule: **one lane owns one crate boundary**; a lane consumes another crate's public API and never edits its sources. Crate names below are proposed (see `issues.md`), and map 1:1 onto the components in §1.
+
+| Lane | Components → crates | Runs concurrently with | Block point (what it must not start before) |
+|---|---|---|---|
+| **L0 — shared artifacts** | design only: workspace layout, DB schema doc, ID scheme, config format, wire fixtures, credential model, tag vocabulary, test-mock specs | — | first; blocking by definition |
+| **A — substrate (serial spine)** | C03 `nd-conf` → C01 `nd-dbschema` → C02 `nd-db` | B, C | nothing; it is the spine. Split seam first: `persistence/criteria_sql.go` (→ `nd-db`) vs `model/criteria/` (→ `nd-model`) |
+| **B — leaf utilities** | C05 `nd-utils`, C04 `nd-id`, C06 `nd-model`, C26 `nd-events`, C27 `nd-sched` | A, C | no DB writes → safe in parallel |
+| **C — process/media adapters** | C11 `nd-ffmpeg`, C08 `nd-tagreader`, C18 lyric-parsers (pure half of `model/lyrics*`), C15 mpv-IPC half | A, B | consumes C05 only; none touch DB |
+| **D — credential model** | C07 `nd-auth` | — | after A(C02/C03) + B(C05). Must land before E/F/G ship **any** endpoint |
+| **E — media decision + serving** | C12 → C13 `nd-stream` → C24 `nd-public` (strict order inside the lane) | F | needs C11 + C07 |
+| **F — scan pipeline** | C09 `nd-mapping` → C10 `nd-scanner` → C14 `nd-artwork` | E | needs A(C02) + C(C08) |
+| **G — wire surfaces** | C22 `nd-api` (**TRUNK**), C25 `nd-ui-contract` | I | needs D + E + F. Sublane allowed early: DTO/serialization of the **canonical** surface, tested against response-shape goldens captured from the Go binary (the `.snapshots/` goldens gate nothing — C20 is CANCELLED; they are reference data only) |
+| **I — satellites (last, concurrent)** | C16 scrobbler, C17 external-metadata + matcher, C19 playlists, C15 players, C21 `nd-http`, C31 diagnostics, C30 `nd-cli` (stub first) | — | needs D; C16 additionally needs C17 |
+
+Sequenced milestones: **P0** L0 → **P1** A ∥ B ∥ C → **P2** D → **P3** E ∥ F ∥ G(DTO sublane only) → **P4** G(handlers) ∥ I (no deferred tail: C23 CANCELLED).
+
+---
+
+## 4. Shared artifacts — design these FIRST
+
+These are not components; they are contracts several lanes need *before* they start, which is why they gate the whole plan. Consumers are components from §1.
+
+1. **Rust workspace / construction graph** — replaces Go DI: `cmd/wire_gen.go`, `cmd/wire_injectors.go`, `model/datastore.go`, `core/wire_providers.go`, `persistence/persistence.go:17-40`. *Consumed by:* every runtime component; C30 CLI; C17 DI singletons (`utils/singleton/`).
+2. **DB schema (final shape + FK graph + FTS5 + collation + `property` keys)** — from C01. *Consumed by:* C02, C09, C10, C14, C16, C19, C24 (C20/C23/C28/C29 cancelled and consume nothing). Fresh service: the schema is a free set (final Go shape as the starting point, one fresh Rust migration as the basis), recorded in the shared-artifacts brief, not here.
+3. **ID scheme** — `model/id/id.go` (byte-exact 22-char base62 + `NewHash` MD5/U+200B) plus sentinel ids and PID rules in `consts/consts.go`. *Consumed by:* C02, C06, C09, C10, C14, C24 (C20/C29 cancelled and consume nothing).
+4. **Config format** — `conf/configuration.go` key set + `consts/consts.go` defaults + no legacy-alias table (fresh service: clean TOML, unknown keys are a startup error at `conf/configuration.go:676-690`). *Consumed by:* C10, C12, C13, C15, C17, C21, C24, C27, C31, C01.
+5. **Wire-format fixtures** — `server/subsonic/responses/.snapshots/` (one golden per response shape × JSON/XML), `server/subsonic/responses/responses_suite_test.go` comparator contract, `server/subsonic/e2e/**`, `tests/fixtures/**`, `core/artwork/thumbhash/testdata/**` ↔ `ui/src/utils/thumbhash.js`. *Consumed by:* C14, C22, C25, C13. Post-clean-break the 126 Subsonic goldens gate **nothing** — C20 is CANCELLED — but they remain **reference data**: a recorded behavioral spec (field shapes, streaming/Range/ETag semantics) worth consulting while authoring the canonical API. The fixture *discipline* transfers: C22 captures its own native-API response-shape goldens from the Go binary before the issue opens. **Rule: fixtures are read as data; they may only be regenerated from the Go side (`Makefile:167`), never from a Rust lane** — otherwise they stop being an oracle.
+6. **Credential / claim model** — JWT claim set (`core/auth/claims.go`), audience `native` only (`jellyfin` removed with C23, `subsonic` never minted), token-epoch semantics, `X-ND-Authorization` (`consts/consts.go:31`). The MD5 `t` token (`server/subsonic/middlewares.go:281`) and the AES-GCM store (`utils/encrypt.go:15,40`) are **not ported** (fresh service, no upgrade path — `issues.md` #S4); `core/stream/token.go` remains only for the canonical stream-URL expiry decision (#15/#27). *Consumed by:* C07, C22, C24, C25, C12.
+7. **Tag vocabulary** — `resources/mappings.yaml` schema + `model/tag_mappings.go` loader contract. *Consumed by:* C06, C08, C09, C10, C02 (`model/criteria/fields.go`).
+8. **Test mocks as behavioral spec** — `tests/mock_ffmpeg.go`, `tests/mock_*_repo.go`, `tests/test_helpers.go`, `tests/navidrome-test.toml`. *Consumed by:* C11, C02, C13.
+
+---
+
+## 5. Licensing
+
+- **This repo is GPL-3.0**: `LICENSE:1-2` is the GNU General Public License, version 3; `go.mod:1` is `module github.com/navidrome/navidrome`. A Rust reimplementation of *this* fork's code is GPL-3.0 in effect — every crate shipping ported logic carries the same license plus attribution to the upstream authors. No CLA, no co-author/DCO policy is stated in the repo, so nothing here permits a re-license.
+- **The only Rust already in the tree is GPL-3.0 too**: `plugins/pdk/rust/nd-pdk/Cargo.toml:7` is `license = "GPL-3.0"` (and the siblings `nd-pdk-host`, `nd-pdk-capabilities`, `nd-pdk-types`). They are **not reused and not ported** — C28 is CANCELLED, so the whole `nd-pdk*` family stays out of the new workspace.
+- **Second license plane — keep separate, check before reuse, never absorb into our crates:**
+  - `go.mod:5-6` — `// Fork to implement raw tags support` / `replace go.senan.xyz/taglib => github.com/deluan/go-taglib`. C08's Rust analogue is a different library entirely (C++ taglib behind a Go binding); its raw-tag surface, not its license, is what must be re-established.
+  - `go.mod:20` `github.com/extism/go-sdk v1.7.1` and `go.mod:58` `github.com/tetratelabs/wazero v1.12.0`, plus `extism-pdk = "1.2"` (`plugins/pdk/rust/nd-pdk/Cargo.toml:17`) — C28's runtime, and the plane is **not ported at all** (C28 CANCELLED), so it never enters the Rust workspace; the taglib fork stays pinned at `go.mod:5-6`.
+  - `go.mod:48` `github.com/pressly/goose/v3 v3.28.0` (C01's migration engine) and `go.mod:47` `github.com/pocketbase/dbx v1.12.0` (C02's query builder) — both are replaced by Rust-side design, not transliterated.
+  - `go.mod:40` `github.com/mattn/go-sqlite3 v1.14.52` — the SQLite binding that supplies FTS5 and the custom-driver hooks `db/db.go:27-28`; the Rust SQLite binding chosen for C02 must provide the same hooks.
+
+---
+
+## 6. Provenance and what this file deliberately does not contain
+
+Sourced from the merged component graph (8 shard inventories) and the shared-artifacts design brief; path claims spot-checked against this checkout (`ls` over `db/migrations` (138 files incl. 4 test/suite files), `utils` (21 subdirs + 6 top-level modules), `core` (30 entries, no `core/subsonic/`), `server` (incl. `subsonic/ jellyfin/ nativeapi/ apiv1/ public/ events/ imghttp/ filter/ backgrounds/ throttle_backlog.go`), `persistence` (24 `*_repository.go` + `sql_*.go` + `criteria_sql.go`), `scanner` (12 src + `README.md`), `server/subsonic` (`.snapshots/` holds one golden file per response shape × JSON/XML plus `.gitattributes`; `api.go:32` pins `Version = "1.16.1"`), `cmd` (27 entries), `plugins`, `adapters` (`deezer/ gotaglib/ lastfm/ listenbrainz/`), `conf`, `api` (`openapi/ bundled/ embed.go`), `model` (`lyrics_*.go artwork_id.go participants.go searchable.go get_entity.go library_matcher.go criteria/ id/ metadata/ request/`)).
+
+Deliberately **not** in this file: the open contract questions — those live in `docs/rust-port/issues.md`, **Part C**. The old five MUST-RESOLVE product decisions are now settled: credential model A/B is **SETTLED — model B, argon2id from day one, no upgrade path** (model A is not ported at all, no `migrate-credentials` exists); DB migration strategy is **SETTLED — regenerate** (one fresh migration as the basis); Subsonic wire retention is **SETTLED — CANCELLED (C20, clean API break)**; Jellyfin retention is **SETTLED — CANCELLED (C23, quickconnect re-owned by C22)**; plugin-host retention is **SETTLED — CANCELLED (C28, not ported at all)**. Only Part C item 5 (per-key scopes) remains open; the rest are DECIDED there.

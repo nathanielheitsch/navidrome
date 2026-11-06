@@ -48,3 +48,10 @@ zz_*_test.go
 # wazero compilation cache for the plugins test suite
 /plugins/testdata/.wazero-cache/
 /plugins/testdata/*.stage/
+
+/.crew/
+/.crew
+!.crew/artifacts/
+!.crew/graphs/
+!.crew/artifacts/.gitkeep
+!.crew/graphs/.gitkeep

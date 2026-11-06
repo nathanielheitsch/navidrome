@@ -1,0 +1,18 @@
+[package]
+name = "nd-lyrics"
+description = "#09/#22 — lyrics DTOs, LRC/SRT/TTML/Lyricsfile parsers, cue normalization (Go model/lyrics_*.go)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nd-utils = { path = "../nd-utils" }
+quick-xml = "0.37"
+regex = "1.13"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+thiserror = { workspace = true }

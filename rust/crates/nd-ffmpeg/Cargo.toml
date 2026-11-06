@@ -1,0 +1,16 @@
+[package]
+name = "nd-ffmpeg"
+description = "Rust port of core/ffmpeg/** (issue #07, docs/rust-port/issues.md Part B): the ffmpeg/ffprobe process adapter plus the FLAC STREAMINFO patcher"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+nd-conf = { version = "0.1.0", path = "../nd-conf" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

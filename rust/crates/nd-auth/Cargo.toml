@@ -1,0 +1,19 @@
+[package]
+name = "nd-auth"
+description = "Rust port scaffold: nd-auth is owned by #13 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Vetted crates only per #13 (issues.md): argon2 password hashing, JOSE/JWT,
+# getrandom for salts/secrets. No other crypto deps.
+argon2 = "0.6.0"
+jsonwebtoken = "9.0.0"
+getrandom = "0.2"
+thiserror = { workspace = true }
+serde = { workspace = true }          # Claims wire renames (derive), jsonwebtoken is serde-generic
+sha2 = "0.10"                          # nds_ API-key lookup hash (credentials.md §2, player_repository.go:194-199)

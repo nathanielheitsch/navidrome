@@ -1,0 +1,9 @@
+[package]
+name = "nd-metrics"
+description = "Rust port scaffold: nd-metrics is owned by #32 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

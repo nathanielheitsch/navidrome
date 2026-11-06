@@ -1,0 +1,16 @@
+[package]
+name = "nd-dbschema"
+description = "Rust port scaffold: nd-dbschema is owned by #04 (docs/rust-port/issues.md Part B)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+nd-conf = { version = "0.1.0", path = "../nd-conf" }
+nd-utils = { version = "0.1.0", path = "../nd-utils" }
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup"] }
+thiserror = "1"
+tokio = "1"
