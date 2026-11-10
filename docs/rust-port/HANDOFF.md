@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `b78c01a2` (2026-11-10, after lane integration), `cd rust`:
+Measured at `c8c71f8d` (2026-11-10, after lane integration), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1183 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1230 passed / 0 FAILED**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -47,8 +47,14 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   Offset-without-limit renders `LIMIT -1` first (cited deviation: squirrel's bare `OFFSET n` is a SQLite parse error).
 - `nd-tagreader`: consumes `<media>.tags.json` sidecars that **no runtime producer writes** (only the Go
   `ND_GOLDEN_DUMP=1` fixture harness does). Real tag backend is a prerequisite for #16 → #17.
-- `nd-auth`: credentials/claims verified; no router middleware. `/player` and API-key issuance additionally need
-  the **player repository**, which has no Rust counterpart (Go: `persistence/player_repository.go`).
+- `nd-auth`: credentials/claims verified; no router middleware. The player repository is now ported
+  (`c8c71f8d`: `PlayerRepo`, `PlayerError::{NotFound,PermissionDenied,ApiKeyValidation,Sqlite}`, `save`,
+  `set_api_key`, `find_by_api_key`), but nothing mounts it.
+- `nd-dbschema`: `schema_ddl.rs` emits **no secondary indexes** at all (~107 exist in the Go migrations,
+  2 unique). `player_api_key_hash` UNIQUE is what settles API-key races in `Save`, so until the index is
+  ported the player repo's uniqueness path is unprotected under real concurrency. `schema_diff.rs` compares
+  only FTS5 triggers and fts5 tables, so it does **not** detect this — extend it to compare `sqlite_master`
+  indexes when fixing.
 - `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, and transcode body exist; the
   transcoding cache, the rate-limiting semaphore (`core/stream/limiter.go`), and archive do not — today one ffmpeg
   process per call with no concurrency cap. `nd-cli/src/main.rs` `main()` is empty and

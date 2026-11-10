@@ -18,13 +18,18 @@ The runtime spine has started, but nothing boots yet:
   exists only for `dbUser`. Pagination renders decimal literals with zero bound args, matching
   squirrel (`select.go:376-388,140-150`); `b78c01a2` fixed a crate-wide divergence where the port
   bound `LIMIT ?`/`OFFSET ?` as args. Offset-without-limit keeps the cited `LIMIT -1` deviation
-  because squirrel's bare `OFFSET n` is a SQLite parse error. **No Rust player repository yet**
-  (Go `persistence/player_repository.go`) — in progress on `rust/player-repo` — blocking `/player`
-  + API-key issuance.
+  because squirrel's bare `OFFSET n` is a SQLite parse error. **Player repository landed**
+  (`c8c71f8d`: `PlayerRepo`, `PlayerError`, `save`/`set_api_key`/`find_by_api_key`, 19 executed tests),
+  so `/player` and API-key issuance have a store — nothing mounts it yet.
+- `nd-dbschema` — `schema_ddl.rs` emits **no secondary indexes** (~107 in the Go migrations, 2 unique);
+  `player_api_key_hash` UNIQUE is what settles API-key races, and `schema_diff.rs` compares only FTS5
+  triggers/tables so it cannot catch this.
 - `nd-tagreader` — reads `<media>.tags.json` sidecars with **no runtime producer** (only the Go
   golden-dump fixture test writes them), so #16 → #17 ingest is blocked upstream.
 - `nd-auth` — credentials verified, not mountable; no router middleware.
-- `nd-stream` — Range/conditional matrix, bounded direct adapter, probe adapter, and process-backed
+- `nd-db` player repository — **landed** `c8c71f8d`, so `/player` and API-key issuance have a store to
+  build on; auth middleware (A10) is the next dependency. `nd-stream` — Range/conditional matrix,
+  bounded direct adapter, probe adapter, and process-backed
   transcode body landed; cache, limiter, and archive have not. `nd-cli` `main()` is empty and
   `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only.
 
@@ -49,21 +54,24 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
 ### Next body of work, in order
 
 1. ~~Land the four lanes above~~ — done; integrated to `issue/planning-rust-sdhnn` at `a462b1f2`, gate
-   re-measured in the parent at 1183 passed / 0 failed. There is no `main` branch: remote HEAD is
+   re-measured in the parent at 1230 passed / 0 failed. There is no `main` branch: remote HEAD is
    `master` (still `6b2ed391`, tree-identical to `29d9d9d0`), so this work lives on the planning branch
    and is unpushed.
-2. **Player repository** (#05 remainder, A9) — `persistence/player_repository.go` incl. the owner-only
-   API-key rules. Nothing in `/player` or API-key issuance can be wired before it exists.
+2. ~~Player repository~~ (#05 remainder, A9) — **landed** `c8c71f8d`. Its pagination unit test was
+   rewritten against squirrel's literal rendering during the `b78c01a2` rebase (it had pinned `LIMIT ?`).
 3. **Auth wiring** (A10) — mounted middleware over `SQLStore` + `UserRepo`; `token_epoch` and the stored
    ciphertext are already on `UserRecord`, so epoch revocation needs no extra query, and decryption stays
    in `nd-auth`.
-4. **Finish #15** — transcode cache + rate-limiting semaphore (`core/stream/limiter.go`), archive, and the
+4. **`nd-dbschema` secondary indexes** (#04 follow-up) — port the ~107 index statements the Go migrations
+   create, including both unique ones, and extend `schema_diff.rs` to compare `sqlite_master` indexes so this
+   cannot silently regress. Without `player_api_key_hash` UNIQUE, `Save` has no race settlement.
+5. **Finish #15** — transcode cache + rate-limiting semaphore (`core/stream/limiter.go`), archive, and the
    HTTP handler that consumes Range/direct/transcode bodies.
-5. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
+6. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
    scanner path cannot be exercised at all. Then #16 mapping → #17 scanner.
-6. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
-7. Specify + build the #12 maintenance/logging half.
-8. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
+7. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
+8. Specify + build the #12 maintenance/logging half.
+9. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
    Range + forced transcode + client disconnect with **zero surviving child processes**. Full #27 needs
    share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`);
    deferrable #32 must **not** gate this minimal slice.
