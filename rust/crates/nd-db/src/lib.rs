@@ -25,6 +25,7 @@ pub mod folder_repo;
 pub mod genre_repo;
 pub mod library_repo;
 pub mod mediafile_repo;
+pub mod player_repo;
 pub mod playlist_repo;
 pub mod playlist_track_repo;
 pub mod playqueue_repo;

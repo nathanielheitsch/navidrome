@@ -24,6 +24,9 @@ nd-id = { version = "0.1.0", path = "../nd-id" }
 nd-model = { version = "0.1.0", path = "../nd-model" }
 unicode-normalization = "0.1.25"
 
+# sha2 backs hashAPIKey (player_repository.go:195-198); already in Cargo.lock
+# via nd-utils (Cargo.lock:1317 sha2 0.10.9), so --locked builds are unaffected.
+sha2 = "^0.10"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }
 
