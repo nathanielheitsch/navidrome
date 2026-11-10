@@ -13,6 +13,7 @@ pub mod guarded_limiter;
 pub mod http_context;
 pub mod initial_setup;
 pub mod limiter;
+pub mod login;
 pub mod middleware;
 pub mod publicurl;
 pub mod refresh;
