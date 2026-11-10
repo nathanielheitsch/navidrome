@@ -103,7 +103,12 @@ async fn first_admin_login_and_wrong_password_use_stored_hash() {
         .body(Body::empty())
         .unwrap();
     assert_eq!(
-        protected.oneshot(protected_request).await.unwrap().status(),
+        protected
+            .clone()
+            .oneshot(protected_request)
+            .await
+            .unwrap()
+            .status(),
         StatusCode::OK
     );
     let wrong = app
@@ -116,6 +121,8 @@ async fn first_admin_login_and_wrong_password_use_stored_hash() {
         .unwrap();
     assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
     assert!(!wrong.headers().contains_key("x-nd-authorization"));
+    let wrong_body = to_bytes(wrong.into_body(), 8192).await.unwrap();
+    assert!(!std::str::from_utf8(&wrong_body).unwrap().contains("token"));
     let login_response = app
         .clone()
         .oneshot(request(
@@ -125,6 +132,20 @@ async fn first_admin_login_and_wrong_password_use_stored_hash() {
         .await
         .unwrap();
     assert_eq!(login_response.status(), StatusCode::OK);
+    let login_body = to_bytes(login_response.into_body(), 8192).await.unwrap();
+    let axum::Json(login_payload) = axum::Json::<TokenPayload>::from_bytes(&login_body).unwrap();
+    let login_request = Request::builder()
+        .uri("/")
+        .header(
+            "x-nd-authorization",
+            format!("Bearer {}", login_payload.token),
+        )
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        protected.oneshot(login_request).await.unwrap().status(),
+        StatusCode::OK
+    );
     let another = app
         .oneshot(request("/create", r#"{"username":"bob","password":"pw"}"#))
         .await
