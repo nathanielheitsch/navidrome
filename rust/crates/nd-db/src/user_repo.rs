@@ -68,6 +68,18 @@ pub fn libraries_json_column() -> String {
 /// (`Eq{"user.id": id}` etc.); `order_by` carries each expression's direction
 /// (Go's `buildSortOrder` output); `limit`/`offset` are the `Max`/`Offset`
 /// of `model.QueryOptions`, rendered as bound placeholders like squirrel.
+///
+/// Clause order follows squirrel's renderer (`select.go:117-148`): JOINs, WHERE,
+/// GROUP BY, ORDER BY, LIMIT, OFFSET — so `GROUP BY` sits *after* the caller's
+/// WHERE, not before it (`GROUP BY … WHERE` is a SQLite parse error).
+///
+/// Deviation (deliberate, cited): SQLite only accepts `OFFSET` with a `LIMIT`
+/// (`select 1 offset 1` is a parse error), while squirrel emits a bare
+/// `OFFSET n` (`select.go:144-147`) whenever `Max` is unset, so Go's
+/// offset-only page fails at the driver (`sql_base_repository.go:151-157`).
+/// Instead of reproducing that latent failure, an offset with no limit renders
+/// `LIMIT -1` — SQLite's unlimited bound — before `OFFSET ?`, keeping the
+/// crate invariant that every value is bound (`Value::Integer(-1)`).
 #[must_use]
 pub fn select_user_with_libraries(
     where_sql: Option<&str>,
@@ -79,14 +91,14 @@ pub fn select_user_with_libraries(
     let mut sql = format!(
         "SELECT user.*, {} FROM user \
          LEFT JOIN user_library ul ON user.id = ul.user_id \
-         LEFT JOIN library ON ul.library_id = library.id \
-         GROUP BY user.id",
+         LEFT JOIN library ON ul.library_id = library.id",
         libraries_json_column()
     );
     let mut args = where_args;
     if let Some(clause) = where_sql {
         sql.push_str(&format!(" WHERE {clause}"));
     }
+    sql.push_str(" GROUP BY user.id");
     if !order_by.is_empty() {
         sql.push_str(&format!(" ORDER BY {}", order_by.join(", ")));
     }
@@ -95,6 +107,9 @@ pub fn select_user_with_libraries(
         args.push(Value::Integer(i64::try_from(max).unwrap_or(i64::MAX)));
     }
     if let Some(off) = offset {
+        if limit.is_none() {
+            sql.push_str(" LIMIT -1");
+        }
         sql.push_str(" OFFSET ?");
         args.push(Value::Integer(i64::try_from(off).unwrap_or(i64::MAX)));
     }
@@ -478,7 +493,7 @@ mod tests {
              )) FILTER (WHERE library.id IS NOT NULL), '[]') AS libraries_json \
              FROM user LEFT JOIN user_library ul ON user.id = ul.user_id \
              LEFT JOIN library ON ul.library_id = library.id \
-             GROUP BY user.id WHERE user.id = ? ORDER BY updated_at LIMIT ? OFFSET ?"
+             WHERE user.id = ? GROUP BY user.id ORDER BY updated_at LIMIT ? OFFSET ?"
         );
         assert_eq!(
             args,
@@ -500,7 +515,7 @@ mod tests {
         let (count_sql, count_args) = count_all_sql();
         // Assert:
         assert!(get_sql.starts_with("SELECT user.*, COALESCE(json_group_array"));
-        assert!(get_sql.contains(" GROUP BY user.id WHERE user.id = ?"));
+        assert!(get_sql.contains(" WHERE user.id = ? GROUP BY user.id"));
         assert_eq!(get_args, vec![Value::Text(USER_ID.to_string())]);
         assert!(all_sql.ends_with(" GROUP BY user.id ORDER BY name asc LIMIT ?"));
         // Assert: squirrel renders the LIMIT as a bound placeholder.
@@ -519,8 +534,23 @@ mod tests {
         // Act:
         let (sql, args) = find_first_admin_sql();
         // Assert:
-        assert!(sql.contains(" WHERE user.is_admin = ? ORDER BY updated_at LIMIT ?"));
+        assert!(
+            sql.contains(" WHERE user.is_admin = ? GROUP BY user.id ORDER BY updated_at LIMIT ?")
+        );
         assert_eq!(args, vec![Value::Bool(true), Value::Integer(1)]);
+    }
+
+    #[test]
+    fn offset_without_limit_renders_the_unlimited_bound() {
+        // Arrange: squirrel emits a bare `OFFSET n` when Max is unset
+        // (select.go:144-147), which SQLite rejects; the port renders the
+        // unlimited bound instead (cited deviation on
+        // `select_user_with_libraries`).
+        // Act:
+        let (sql, args) = get_all_users_sql(&["name asc"], None, Some(20));
+        // Assert:
+        assert!(sql.ends_with(" GROUP BY user.id ORDER BY name asc LIMIT -1 OFFSET ?"));
+        assert_eq!(args, vec![Value::Integer(20)]);
     }
 
     #[test]

@@ -20,6 +20,7 @@ pub mod artist_repo;
 pub mod artwork_queue_repo;
 pub mod artwork_repo;
 pub mod criteria_sql;
+pub mod execution;
 pub mod folder_repo;
 pub mod genre_repo;
 pub mod library_repo;
