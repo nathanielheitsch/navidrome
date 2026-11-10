@@ -37,9 +37,11 @@ pub mod decider;
 pub mod direct;
 pub mod legacy_client;
 pub mod limitations;
+pub mod probe_adapter;
 pub mod probe_json;
 pub mod range;
 pub mod token;
+pub mod transcode_body;
 pub mod types;
 
 /// Scaffold marker kept for the #S1 instantiate contract: the owning issue

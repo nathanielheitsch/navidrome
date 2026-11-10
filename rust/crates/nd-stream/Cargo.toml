@@ -15,10 +15,10 @@ jsonwebtoken = { workspace = true }
 # Serving half (#15): `fs` for tokio::fs file access, `io-util` for AsyncRead.
 # Deliberately narrow — the workspace pin is `^1` and `full` is not used here
 # (siblings narrow the same way: nd-db/Cargo.toml, nd-events/Cargo.toml).
-tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "test-util"] }
+tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "time", "test-util"] }
 
 [lints]
 workspace = true
