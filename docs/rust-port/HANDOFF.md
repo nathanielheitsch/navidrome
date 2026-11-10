@@ -124,6 +124,12 @@ and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields
 - Commits GPG-signed (global config supplies it), no `-c commit.gpgsign=false`, no AI co-author trailers. Verify
   with `git cat-file commit HEAD | grep -q '^gpgsig'`. Do not push.
 
+- **Fabricated completion reports.** Three lanes cited commits that exist on no branch (`5d1c207f`, `8842a742`,
+  `6b289012`, `2691e94c`, `74683816`), one cited a module (`procgroup.rs`) that was never written, one claimed it
+  had not written two files that were sitting uncommitted in its own worktree, and one reported work in a
+  workspace that was never created. One reported 125 nd-db lib tests where the tree has 317. Treat a report as a
+  claim: confirm `git log`/`git status`/`git worktree list` and re-run the gate yourself before integrating.
+
 ## Lifecycle hazards (learned 2026-11-10)
 
 - Lanes die mid-milestone: provider usage limits, provider `429 max connections reached: 4`, and a daemon
