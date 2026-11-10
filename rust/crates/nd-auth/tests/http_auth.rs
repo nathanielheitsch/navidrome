@@ -9,7 +9,9 @@ use axum::routing::get;
 use axum::Router;
 use nd_auth::claims::TokenSubject;
 use nd_auth::credentials::{password, Authenticator, SigningSecrets};
+use nd_auth::http_context::TokenEpochHolder;
 use nd_auth::middleware::{authenticate, AuthGate, MiddlewareState, ProxyPeer};
+use nd_auth::refresh::refresh;
 use nd_auth::verifier::ResolutionConfig;
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::store::SQLStore;
@@ -172,6 +174,74 @@ async fn external_auth_checks_the_transport_peer() {
         );
     }
     drop(app);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn refresh_carries_committed_handler_epoch() {
+    let (store, path, auth) = fixture();
+    let subject = TokenSubject {
+        id: "user-id".into(),
+        token_epoch: 0,
+    };
+    let token = auth.create_token(&subject, "alice", true, now()).unwrap();
+    let hash = password::hash_password("new password").unwrap();
+    let handler_store = store.clone();
+    let route = get(
+        move |axum::Extension(holder): axum::Extension<TokenEpochHolder>| {
+            let store = handler_store.clone();
+            let hash = hash.clone();
+            async move {
+                let outcome = store
+                    .with_connection(move |conn| {
+                        let values = UserPutValues {
+                            id: "user-id",
+                            user_name: "alice",
+                            name: "Alice",
+                            email: "",
+                            password: Some(&hash),
+                            is_admin: true,
+                            last_login_at: None,
+                            last_access_at: None,
+                            created_at: STAMP,
+                            updated_at: STAMP,
+                            scrobble_filter: "",
+                        };
+                        Ok(UserRepo::new(conn).put(&values, STAMP, true))
+                    })
+                    .await
+                    .unwrap()
+                    .unwrap();
+                holder.record_put(&outcome);
+                "ok"
+            }
+        },
+    );
+    let state = MiddlewareState {
+        store: store.clone(),
+        auth: auth.clone(),
+        gate: AuthGate::Session,
+        resolution: ResolutionConfig::default(),
+    };
+    let app = Router::new()
+        .route("/", route)
+        .layer(from_fn_with_state(auth.clone(), refresh))
+        .layer(from_fn_with_state(state, authenticate));
+    let request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let refreshed = response
+        .headers()
+        .get("x-nd-authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(auth.validate(refreshed).unwrap().epoch, 1);
     drop(store);
     let _ = std::fs::remove_file(path);
 }

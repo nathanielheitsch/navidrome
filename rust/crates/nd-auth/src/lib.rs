@@ -15,5 +15,6 @@ pub mod initial_setup;
 pub mod limiter;
 pub mod middleware;
 pub mod publicurl;
+pub mod refresh;
 pub mod trusted_sources;
 pub mod verifier;
