@@ -21,45 +21,55 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `29d9d9d0` (2026-11-10), `cd rust`:
+Measured at `a462b1f2` (2026-11-10, after lane integration), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
-- `cargo clippy --locked --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --all-targets --all-features --no-fail-fast` — **1067 passed / 4 FAILED**
+- `cargo build --locked --workspace` — clean
+- `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1181 passed / 0 FAILED**
 
-The 4 failures are all `nd-ffmpeg` fixture-path portability, not behavior: they hardcode absolute paths from the
-retired worktree, so live `ffmpeg`/`ffprobe` cases and the container-fixture loop **execute zero fixtures** on any
-other host. `cc07fa1a` on `rust/ffmpeg-readiness` restores portable resolution (PATH lookup, dev-resolved ffprobe).
-A fail-closed integration test must then assert the fixtures were enumerated, not skipped.
+Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
+hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
+hardcoded paths from a retired worktree), `8152ac5a` (`process_group(0)` spawn + `kill_process_group` SIGKILL,
+`STDERR_CAP` with overflow still consumed, `TEARDOWN_TIMEOUT_MS` bounded drain/reap), `aa9b280e`/`a462b1f2`
+(Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body).
 
-Do **not** trust the ledger's historical "969 passed / 0 failed" (2026-11-04 boundary) as current green.
+Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 passed / 4 FAILED" boundaries as current.
 
 **Shape ≠ wired.** Phases 1–4 completed *decisions and SQL shaping*; runtime integration is a separate axis:
 
-- `nd-db`: `store.rs` has only tx/retry helpers; no `SQLStore` facade, no general row hydration
-  (`sql_base_repository.go:445,480` unported); only `share_repo` and `user_props_repo` execute against a
-  `Connection`. **Known defect:** `user_repo::select_user_with_libraries` renders `WHERE` after `GROUP BY`
-  (invalid SQLite — reproduced as `near "WHERE": syntax error`) and its unit test *asserts that invalid order*.
-  Fix the SQL against the Go oracle first; change the test only to pin the corrected statement.
+- `nd-db`: has an execution seam (`execution.rs` + `store::SQLStore` sync/async verbs) and **one** executing
+  repository (`user_repo`, 15 executed tests on per-test temp DBs). The other ~14 repos only render SQL; general
+  row hydration (`sql_base_repository.go:445,480`) exists only for `dbUser`. Sibling offset-only renderings still
+  emit a bare `OFFSET ?` (`album_repo.rs:244`, `artist_repo.rs:204`, `library_repo.rs:83`, `mediafile_repo.rs:351`,
+  `folder_repo.rs` `get_all_sql`) — SQLite requires a LIMIT with OFFSET, so those are latent parse errors.
 - `nd-tagreader`: consumes `<media>.tags.json` sidecars that **no runtime producer writes** (only the Go
   `ND_GOLDEN_DUMP=1` fixture harness does). Real tag backend is a prerequisite for #16 → #17.
 - `nd-auth`: credentials/claims verified; no router middleware. `/player` and API-key issuance additionally need
   the **player repository**, which has no Rust counterpart (Go: `persistence/player_repository.go`).
-- `nd-stream`: #14 decision half only; no serving/range/limiter/archiver. `nd-cli/src/main.rs` `main()` is empty
-  and `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only, so nothing boots.
+- `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, and transcode body exist; the
+  transcoding cache, the rate-limiting semaphore (`core/stream/limiter.go`), and archive do not — today one ffmpeg
+  process per call with no concurrency cap. `nd-cli/src/main.rs` `main()` is empty and
+  `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only, so nothing boots.
 
 ## Active lanes (user-approved 2026-11-10 — IN PROGRESS, not done)
 
-| lane | workspace / branch | scope | asks |
-|---|---|---|---|
-| DB runtime spine | `wks_e25e0d33ddcd3d79` / `rust-db-runtime` | `SQLStore` facade, row hydration, corrected user SQL + regression; then player repo; then auth wiring | A7, A8, A9, A10 |
-| FFmpeg | `wks_bee2b746c3462588` / `rust/ffmpeg-readiness` | portable fixtures committed `cc07fa1a`; then `FFCmd` process-group cancellation | A11 |
-| Stream serving | `wks_eb8b973e4c6c704b` / `rust/stream-serving` | Range/conditional matrix, forced transcode, limiter, cache eviction, archive | A12 |
-| Ledger correction | `wks_e33a89d09f7f9c11` / `rust/ledger-correction` | this document + `issues.md` + `next-work.md` | A6 |
+| lane | branch | scope | asks | state |
+|---|---|---|---|---|
+| DB runtime spine | `rust/db-runtime` | execution seam, `SQLStore`, corrected user SQL, user hydration | A7, A8, A11 | **landed** `3ce1b154`, `dee593b5` |
+| FFmpeg readiness | `rust/ffmpeg-readiness` | portable fixtures, process-group cancellation, bounded teardown | A2, A3, A4, A5 | **landed** `5e56f7e8`, `8152ac5a` |
+| Stream serving | `rust/stream-serving` | Range/conditional matrix, direct adapter, probe adapter, transcode body | A12 | **partial** `aa9b280e`, `a462b1f2`; limiter/cache/archive pending |
+| Ledger correction | `rust/ledger-correction` | this document + `issues.md` + `next-work.md` | A6 | **landed** `0309b5aa` |
+| Player repository | next | `persistence/player_repository.go` incl. owner-only API-key rules | A9 | not started |
+| Auth wiring | after player repo | middleware, `AuthResult` → claims, `/player`, API-key issuance | A10 | not started |
 
-Before consuming another lane's output, read its current code: streaming must use `nd-ffmpeg`'s
-`new_ffmpeg_cmd()` only — the lifecycle lane is adding **private** fields to `FFCmd`, so no struct literals and no
-touching lifecycle fields. Descendant-process cleanup lands separately; report it as an integration gap, not verified.
+All lanes above are finished or dead (provider limits: `429 max connections reached: 4`, Codex usage limit,
+OpenRouter budget). **Two of them reported commits that do not exist** (`5d1c207f`, `8842a742`, `6b289012`, and a
+`procgroup.rs` module absent from every branch); one wrote files without committing them. Always verify a report
+against `git log`, `git status`, and the actual files before integrating.
+
+Before consuming another lane's output, read its current code. Streaming consumes `nd-ffmpeg`'s `new_ffmpeg_cmd()`
+and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields stay private.
 
 ## Then, in order
 

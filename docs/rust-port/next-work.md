@@ -2,43 +2,66 @@
 
 ## Current state (2026-11-10) — supersedes the 2026-11-04 boundary below
 
-Measured gate at `29d9d9d0`: fmt clean, clippy `-D warnings` clean, and
-`cargo test --all-targets --all-features` = **1067 passed / 4 FAILED** (all in `nd-ffmpeg`,
-from hardcoded fixture paths in a retired worktree — the container fixtures execute **zero**
-files off that host; `cc07fa1a` on `rust/ffmpeg-readiness` fixes portability). The
+Measured gate at `a462b1f2` (parent-measured, integrated): fmt clean, workspace build clean, workspace
+clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features
+--no-fail-fast` = **1181 passed / 0 FAILED**. The earlier `29d9d9d0` figure — 1067 passed / 4 FAILED —
+was `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
+**zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
 "969 passed / 0 failed" figure further down is a dated historical boundary, not green state.
 
 **The Phase 1–4 plan below is accurate as a record of what was *shaped*, but shape ≠ wired.**
-Four crates read DONE while nothing can consume them, and no binary boots:
+The runtime spine has started, but nothing boots yet:
 
-- `nd-db` — SQL shaping only: no `SQLStore` facade, no row hydration, 2 of 24 repos execute.
-  `user_repo::select_user_with_libraries` renders `WHERE` after `GROUP BY` (invalid SQLite,
-  reproduced as `near "WHERE": syntax error`) and its test asserted that order. **No Rust player
-  repository exists** (Go `persistence/player_repository.go`), blocking `/player` + API-key issuance.
+- `nd-db` — execution seam (`execution.rs`, `store::SQLStore` sync + async verbs) and **one** executing
+  repository (`user_repo`, with `UserRecord`/`UserRow` hydration and the `WHERE`-before-`GROUP BY`
+  fix). The other ~14 repos only render SQL; general row hydration (`sql_base_repository.go:445,480`)
+  exists only for `dbUser`; sibling offset-only renderings still emit a bare `OFFSET ?`
+  (`album_repo.rs:244`, `artist_repo.rs:204`, `library_repo.rs:83`, `mediafile_repo.rs:351`,
+  `folder_repo.rs`). **No Rust player repository exists** (Go `persistence/player_repository.go`),
+  blocking `/player` + API-key issuance.
 - `nd-tagreader` — reads `<media>.tags.json` sidecars with **no runtime producer** (only the Go
   golden-dump fixture test writes them), so #16 → #17 ingest is blocked upstream.
 - `nd-auth` — credentials verified, not mountable; no router middleware.
-- `nd-stream` — decision half only; `nd-cli` `main()` empty; `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` scaffold-only.
+- `nd-stream` — Range/conditional matrix, bounded direct adapter, probe adapter, and process-backed
+  transcode body landed; cache, limiter, and archive have not. `nd-cli` `main()` is empty and
+  `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only.
 
 ### Active lanes (user-approved 2026-11-10)
 
-1. **DB runtime spine** (`wks_e25e0d33ddcd3d79` / `rust-db-runtime`, A7/A8) — facade + row hydration +
-   corrected user SQL; then **player repository** (A9); then **auth wiring** (A10). Sequenced, one writer.
-2. **`nd-ffmpeg`** (`wks_bee2b746c3462588` / `rust/ffmpeg-readiness`, A11) — portable fixtures committed
-   `cc07fa1a`; then `FFCmd` **process-group cancellation** (killpg + bounded 4096-byte stderr drain +
-   bounded teardown; the soak test must treat a timeout as failure). Prerequisite for #15.
-3. **Stream serving** (`wks_eb8b973e4c6c704b` / `rust/stream-serving`, A12) — Range/conditional matrix,
-   forced transcode, limiter, then cache eviction/archive. #15 incomplete until all four landed.
-4. **Ledger correction** (`wks_e33a89d09f7f9c11` / `rust/ledger-correction`, A6) — this file, `issues.md`, `HANDOFF.md`.
+1. **DB runtime spine** (`rust/db-runtime`, A7/A8) — **LANDED** `3ce1b154` + `dee593b5`: execution seam,
+   `SQLStore`, corrected user SQL, `user_repo` executed with hydration. Player repository (A9) and auth
+   wiring (A10) are NOT started.
+2. **`nd-ffmpeg`** (`rust/ffmpeg-readiness`, A2/A3/A4/A5/A11) — **LANDED** `5e56f7e8` + `8152ac5a`: portable
+   fixtures, `process_group(0)` spawn + `kill_process_group` SIGKILL with ESRCH fallback, `STDERR_CAP`
+   4096 with the overflow still consumed, `TEARDOWN_TIMEOUT_MS` bounded drain/reap. Grandchild-leak test
+   verified non-vacuous (stubbing the group kill fails it with a leaked pid).
+3. **Stream serving** (`rust/stream-serving`, A12) — **PARTIAL** `aa9b280e` + `a462b1f2`: Range/conditional
+   matrix at `net/http` parity, bounded direct-file adapter, probe adapter, transcode body with explicit
+   disconnect cancel. Remaining: transcoding cache, rate-limiting semaphore, archive, HTTP handler.
+4. **Ledger correction** (`rust/ledger-correction`, A6) — **LANDED** `0309b5aa`, superseded by this revision.
+
+All four lanes are finished or dead (provider limits). Two reported commits that exist on no branch
+(`5d1c207f`, `8842a742`, `6b289012`) and a `procgroup.rs` module that was never written; one left files
+uncommitted. Verify every report against `git log` / `git status` / the files themselves before integrating.
 
 ### Next body of work, in order
 
-1. Land the four lanes above; integrate in the parent and re-run the workspace gate.
-2. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
+1. ~~Land the four lanes above~~ — done; integrated to `issue/planning-rust-sdhnn` at `a462b1f2`, gate
+   re-measured in the parent at 1181 passed / 0 failed. There is no `main` branch: remote HEAD is
+   `master` (still `6b2ed391`, tree-identical to `29d9d9d0`), so this work lives on the planning branch
+   and is unpushed.
+2. **Player repository** (#05 remainder, A9) — `persistence/player_repository.go` incl. the owner-only
+   API-key rules. Nothing in `/player` or API-key issuance can be wired before it exists.
+3. **Auth wiring** (A10) — mounted middleware over `SQLStore` + `UserRepo`; `token_epoch` and the stored
+   ciphertext are already on `UserRecord`, so epoch revocation needs no extra query, and decryption stays
+   in `nd-auth`.
+4. **Finish #15** — transcode cache + rate-limiting semaphore (`core/stream/limiter.go`), archive, and the
+   HTTP handler that consumes Range/direct/transcode bodies.
+5. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
    scanner path cannot be exercised at all. Then #16 mapping → #17 scanner.
-3. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
-4. Specify + build the #12 maintenance/logging half.
-5. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
+6. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
+7. Specify + build the #12 maintenance/logging half.
+8. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
    Range + forced transcode + client disconnect with **zero surviving child processes**. Full #27 needs
    share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`);
    deferrable #32 must **not** gate this minimal slice.
