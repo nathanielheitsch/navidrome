@@ -17,3 +17,5 @@ getrandom = "0.2"
 thiserror = { workspace = true }
 serde = { workspace = true }          # Claims wire renames (derive), jsonwebtoken is serde-generic
 sha2 = "0.10"                          # nds_ API-key lookup hash (credentials.md §2, player_repository.go:194-199)
+# Executing user repository and in-flight password-change outcome.
+nd-db = { path = "../nd-db" }
