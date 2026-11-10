@@ -15,3 +15,4 @@ pub mod initial_setup;
 pub mod limiter;
 pub mod publicurl;
 pub mod trusted_sources;
+pub mod verifier;

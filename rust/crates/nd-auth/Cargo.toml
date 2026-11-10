@@ -19,3 +19,5 @@ serde = { workspace = true }          # Claims wire renames (derive), jsonwebtok
 sha2 = "0.10"                          # nds_ API-key lookup hash (credentials.md §2, player_repository.go:194-199)
 # Executing user repository and in-flight password-change outcome.
 nd-db = { path = "../nd-db" }
+# Already present in Cargo.lock via nd-events (axum 0.7.9).
+axum = { workspace = true }
