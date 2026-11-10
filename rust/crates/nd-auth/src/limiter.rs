@@ -120,6 +120,9 @@ impl AuthLimiter {
     /// cannot silently degrade; use [`AuthLimiter::disabled`] for the
     /// allow-everything shape. A zero window falls back to the default
     /// 20s (`consts.DefaultAuthWindowLength`).
+    /// Canonical trunk callers must reject non-positive limits before calling
+    /// this constructor: `docs/rust-port/issues.md` Part C #9 requires
+    /// fail-closed behavior rather than this Go-parity allow-all behavior.
     ///
     /// # Errors
     /// [`LimiterError::SeedUnavailable`] when the OS entropy source
@@ -142,6 +145,8 @@ impl AuthLimiter {
     /// The allow-everything limiter — the port of the nil limiter
     /// `newAuthLimiter(0, _)` hands back (`auth_limiter.go:39-41`):
     /// every acquire succeeds and every slot releases nothing.
+    /// Canonical trunk callers must not use this allow-all primitive;
+    /// `docs/rust-port/issues.md` Part C #9 requires a fail-closed gate.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
