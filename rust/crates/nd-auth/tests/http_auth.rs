@@ -245,3 +245,33 @@ async fn refresh_carries_committed_handler_epoch() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn refresh_omits_header_for_empty_response() {
+    let (store, path, auth) = fixture();
+    let subject = TokenSubject {
+        id: "user-id".into(),
+        token_epoch: 0,
+    };
+    let token = auth.create_token(&subject, "alice", true, now()).unwrap();
+    let state = MiddlewareState {
+        store: store.clone(),
+        auth: auth.clone(),
+        gate: AuthGate::Session,
+        resolution: ResolutionConfig::default(),
+    };
+    let app = Router::new()
+        .route("/", get(|| async { StatusCode::NO_CONTENT }))
+        .layer(from_fn_with_state(auth, refresh))
+        .layer(from_fn_with_state(state, authenticate));
+    let request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert!(!response.headers().contains_key("x-nd-authorization"));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

@@ -1,13 +1,15 @@
 //! Session-token refresh (`server/auth.go:308-370`).
 //!
-//! Axum handlers return a complete response before its headers can be emitted.
-//! Refresh immediately after the handler returns, which is the latest point
-//! before headers are committed, including when the body is streamed. Epoch
-//! updates made while subsequently polling a streaming body are too late, just
-//! as they are after Go's first `WriteHeader`/`Write`/`Flush`.
+//! Go's `refreshingWriter` sets the header on the first write during the
+//! handler (`server/auth.go:308-337`), whereas Axum fixes headers when the
+//! response returns. For ordinary nonempty bodies the client observes the
+//! same refreshed header. Empty and streaming/unknown-length responses are
+//! left untouched: an epoch bumped during SSE or chunked body polling cannot
+//! be propagated after the headers are committed, so no stale token is sent.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::body::HttpBody;
 use axum::extract::{Request, State};
 use axum::http::HeaderValue;
 use axum::middleware::Next;
@@ -34,6 +36,11 @@ pub async fn refresh(
     let holder = TokenEpochHolder::default();
     request.extensions_mut().insert(holder.clone());
     let mut response = next.run(request).await;
+    // Unknown-length bodies may perform work after the headers are committed.
+    // Do not advertise a refresh that could miss a mid-stream epoch bump.
+    if !matches!(response.body().size_hint().exact(), Some(size) if size > 0) {
+        return response;
+    }
     if let Some(epoch) = holder.epoch() {
         claims.epoch = epoch;
     }
