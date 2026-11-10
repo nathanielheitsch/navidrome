@@ -17,7 +17,10 @@ use crate::verifier::{resolve_username, ResolutionConfig};
 /// The transport peer (`server/auth.go:214-218`). The server must install
 /// this extension from the accepted connection, never from a request header.
 #[derive(Clone, Debug)]
-pub struct ProxyPeer(pub String);
+pub struct ProxyPeer(
+    /// Peer address supplied by the transport.
+    pub String,
+);
 
 /// An authenticated user without a password hash (`server/auth.go:246-255`).
 #[derive(Clone, Debug)]
@@ -36,7 +39,10 @@ pub struct AuthenticatedUser {
 
 /// Signed claims retained for refresh (`server/auth.go:308-370`).
 #[derive(Clone, Debug)]
-pub struct VerifiedClaims(pub Claims);
+pub struct VerifiedClaims(
+    /// Signature-verified claims, additionally checked when identifying the user.
+    pub Claims,
+);
 
 /// Audience policy for the authenticated route (`core/auth/auth.go:139-158`).
 #[derive(Clone, Copy, Debug)]

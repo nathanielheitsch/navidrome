@@ -3,9 +3,10 @@
 //! Go's `refreshingWriter` sets the header on the first write during the
 //! handler (`server/auth.go:308-337`), whereas Axum fixes headers when the
 //! response returns. For ordinary nonempty bodies the client observes the
-//! same refreshed header. Empty and streaming/unknown-length responses are
-//! left untouched: an epoch bumped during SSE or chunked body polling cannot
-//! be propagated after the headers are committed, so no stale token is sent.
+//! same refreshed header. Empty and unknown-length responses are left
+//! untouched. An exact-length streaming body is indistinguishable from a
+//! buffered body here; an epoch bump during its polling is not propagated.
+//! SSE and other unknown-length streams therefore receive no refresh header.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
