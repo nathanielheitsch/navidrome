@@ -1,11 +1,57 @@
 # Plan of record for the next body of work
 
-## Current state (2026-11-04, end of the Phase-4 body)
+## Current state (2026-11-10) — supersedes the 2026-11-04 boundary below
 
-Phases 1–4 below are **DONE except #15**. Verified gate at this boundary:
+Measured gate at `29d9d9d0`: fmt clean, clippy `-D warnings` clean, and
+`cargo test --all-targets --all-features` = **1067 passed / 4 FAILED** (all in `nd-ffmpeg`,
+from hardcoded fixture paths in a retired worktree — the container fixtures execute **zero**
+files off that host; `cc07fa1a` on `rust/ffmpeg-readiness` fixes portability). The
+"969 passed / 0 failed" figure further down is a dated historical boundary, not green state.
+
+**The Phase 1–4 plan below is accurate as a record of what was *shaped*, but shape ≠ wired.**
+Four crates read DONE while nothing can consume them, and no binary boots:
+
+- `nd-db` — SQL shaping only: no `SQLStore` facade, no row hydration, 2 of 24 repos execute.
+  `user_repo::select_user_with_libraries` renders `WHERE` after `GROUP BY` (invalid SQLite,
+  reproduced as `near "WHERE": syntax error`) and its test asserted that order. **No Rust player
+  repository exists** (Go `persistence/player_repository.go`), blocking `/player` + API-key issuance.
+- `nd-tagreader` — reads `<media>.tags.json` sidecars with **no runtime producer** (only the Go
+  golden-dump fixture test writes them), so #16 → #17 ingest is blocked upstream.
+- `nd-auth` — credentials verified, not mountable; no router middleware.
+- `nd-stream` — decision half only; `nd-cli` `main()` empty; `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` scaffold-only.
+
+### Active lanes (user-approved 2026-11-10)
+
+1. **DB runtime spine** (`wks_e25e0d33ddcd3d79` / `rust-db-runtime`, A7/A8) — facade + row hydration +
+   corrected user SQL; then **player repository** (A9); then **auth wiring** (A10). Sequenced, one writer.
+2. **`nd-ffmpeg`** (`wks_bee2b746c3462588` / `rust/ffmpeg-readiness`, A11) — portable fixtures committed
+   `cc07fa1a`; then `FFCmd` **process-group cancellation** (killpg + bounded 4096-byte stderr drain +
+   bounded teardown; the soak test must treat a timeout as failure). Prerequisite for #15.
+3. **Stream serving** (`wks_eb8b973e4c6c704b` / `rust/stream-serving`, A12) — Range/conditional matrix,
+   forced transcode, limiter, then cache eviction/archive. #15 incomplete until all four landed.
+4. **Ledger correction** (`wks_e33a89d09f7f9c11` / `rust/ledger-correction`, A6) — this file, `issues.md`, `HANDOFF.md`.
+
+### Next body of work, in order
+
+1. Land the four lanes above; integrate in the parent and re-run the workspace gate.
+2. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
+   scanner path cannot be exercised at all. Then #16 mapping → #17 scanner.
+3. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
+4. Specify + build the #12 maintenance/logging half.
+5. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
+   Range + forced transcode + client disconnect with **zero surviving child processes**. Full #27 needs
+   share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`);
+   deferrable #32 must **not** gate this minimal slice.
+
+---
+
+## Historical plan (2026-11-04, end of the Phase-4 body) — kept as the phase record
+
+Phases 1–4 below were **DONE except #15** as *shape*. Verified gate at that boundary:
 `cargo fmt --all -- --check` clean, `cargo clippy --workspace --all-targets
 --all-features -- -D warnings` clean, `cargo test --workspace` = **969 passed / 0
-failed**; worktree clean, all commits GPG-signed.
+failed**; worktree clean, all commits GPG-signed. That figure is historical — see the
+2026-11-10 gate above.
 
 - **Phase 1** — #06 criteria DSL DONE (nd-model, 40 lib tests); #04 optimize/
   backup DONE, `repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) still
@@ -28,10 +74,9 @@ failed**; worktree clean, all commits GPG-signed.
   limitations/decider/probe_json/token/legacy_client; 103 tests; HS256 tokens
   with explicit secret + injected clock, issuer = `nd-conf` `JWT_ISSUER`).
 
-**Next body of work, in order:** (1) #15 `nd-stream` serving half —
-`media_streamer`, `limiter`, `archiver`, `handle_streams`, Range matrix +
-cancellation soak (decider's probe path is stubbed to `ProbeInput::NotAvailable
-until this lands); (2) `nd-dbschema/src/repair.rs`; (3) specify + build the
+**Next body of work (2026-11-04 text, superseded by the 2026-11-10 section above):** (1) #15 `nd-stream`
+serving half — `media_streamer`, `limiter`, `archiver`, `handle_streams`, Range matrix +
+cancellation soak (decider's probe path is stubbed to `ProbeInput::NotAvailable until this lands); (2) `nd-dbschema/src/repair.rs`; (3) specify + build the
 #12 non-scheduler half.
 
 Supersedes the earlier packet. Written after a full re-read of the ledger
@@ -185,6 +230,13 @@ Commits GPG-signed, no co-author trailers, no gpgsign bypass.
 
 ## Standing hazards
 
+- **Lane losses are real.** Three lanes died on 2026-11-10 (one provider usage limit, two provider
+  `429 max connections`, one daemon `spawn pi ENOENT`) and their **uncommitted work was destroyed with the
+  worktree**. Bank progress in commits per milestone; a dead lane should lose a milestone, not a phase.
+- **Do not archive a lane whose worktree holds uncommitted work** — archiving removes the worktree. Collect the
+  diff or commit first.
+- **Provider capacity is 4 concurrent connections.** Running four Strata lanes plus the parent can hit it;
+  launch fewer at once or accept the 429.
 - **rustc 1.99.1 rejects Go-flavored pseudo-code** (`a + b` concat, `+=` on
   `&str`, `.append()`, `std::map<...>`, map-literal constructors, missing `->`).
   Workers loop write → `cargo build -q -p CRATE` → fix from compiler messages.

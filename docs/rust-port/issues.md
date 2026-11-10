@@ -32,11 +32,45 @@ Global rules:
 
 ---
 
-## Progress ledger (updated 2026-11-03 — this is the port's live state, not the plan)
+## Progress ledger (updated 2026-11-10 — this is the port's live state, not the plan)
 
-Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --all-targets --all-features`
-(last run: fmt 0 diffs, clippy 0 errors, 59 test groups / 0 failures — nd-ffmpeg 54 lib + 2 golden, nd-dbschema 3 lib + 7 golden, nd-model 5 lib).
-Plan of record for the next body of work: `docs/rust-port/next-work.md` (phased plan: tails → #05 in 4 slices with the harness in slice 1 → #12/#13 fill-in → #14/#15 stream; read it before re-deriving anything).
+Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo test --locked --all-targets --all-features --no-fail-fast`
+
+**Reproducible gate at `29d9d9d0` (measured 2026-11-10, not reported):** fmt clean; clippy clean `-D warnings`;
+`cargo test --all-targets --all-features` = **1067 passed / 4 FAILED**. All 4 failures are in `nd-ffmpeg` and are
+portability failures, not behavior failures: they hardcode absolute fixture paths from a retired worktree, so the
+live `ffmpeg`/`ffprobe` cases and the container-fixture loop **execute zero fixtures** on any other host. Commit
+`cc07fa1a` on `rust/ffmpeg-readiness` restores portable paths; the fail-closed guarantee must then be enforced by
+an integration test asserting the fixtures were actually enumerated rather than skipped.
+
+> The "969 passed / 0 failed" and "59 test groups / 0 failures" figures are a **dated historical boundary**
+> (2026-11-04, Phase-4 close), not current state. Do not quote them as green.
+
+Plan of record for the next body of work: `docs/rust-port/next-work.md` (read it before re-deriving anything).
+
+### What is *not* actually wired
+
+The per-crate rows below record *decision/shape* completion. Runtime integration is a separate axis, and four
+crates read DONE while nothing can consume them:
+
+- **#05 `nd-db` is SQL shaping, not a working store** — no `SQLStore` facade, no row hydration, only 2 of 24 repos execute. See the #05 row.
+- **#08 `nd-tagreader` consumes `<media>.tags.json` sidecars no runtime producer writes** — so ingest (#16 → #17) is blocked upstream.
+- **#13 `nd-auth` is credential-verified, not mountable** — no middleware, and `/player` + API-key issuance need the missing player repository.
+- **#15 serving is absent**; `nd-cli` `main()` is empty, so **nothing boots**.
+
+### Active lanes (user-approved 2026-11-10 — IN PROGRESS, not done)
+
+| work | workspace / branch | asks | state |
+|---|---|---|---|
+| DB runtime spine: `SQLStore` facade, row hydration, corrected user SQL + regression | `wks_e25e0d33ddcd3d79` / `rust-db-runtime` | A7, A8 | in progress |
+| Rust player repository (`persistence/player_repository.go`) | same lane, sequenced after the above | A9 | in progress |
+| Auth wiring onto the DB spine (`AuthResult` → claims, `/player`, API-key issuance) | same lane, sequenced | A10 | in progress |
+| `nd-ffmpeg` portable fixtures + fail-closed suite | `wks_bee2b746c3462588` / `rust/ffmpeg-readiness` (`cc07fa1a`) | A11 | committed; lifecycle pending |
+| `FFCmd` process-group cancellation (killpg, bounded drain/teardown) | same lane | A11 | in progress |
+| Stream serving #15: Range/conditional, forced transcode, limiter | `wks_eb8b973e4c6c704b` / `rust/stream-serving` | A12 | in progress |
+| This ledger correction + `HANDOFF.md` rewrite | `wks_e33a89d09f7f9c11` / `rust/ledger-correction` | A6 | in progress |
+
+Lanes are one-writer-per-worktree; `docs/**` belongs to the ledger lane only.
 
 | issue | crate | state |
 |---|---|---|
@@ -45,21 +79,39 @@ Plan of record for the next body of work: `docs/rust-port/next-work.md` (phased 
 | #02 | `nd-id` (id/artwork/participants) | DONE |
 | #03 | `nd-conf` (keys/config/dir/bytes/duration/crontab/consts) | DONE |
 | #04 | `nd-dbschema` (fresh schema DDL + open/init + `SEEDEDRAND`/`NATSORT` + marker-guard migration runner + `goose_db_version`/full-scan property + 3 idempotence tests) | **PARTIAL** — fresh schema + runner + `optimize.rs`/`backup.rs` green (7 lib + 8 golden); `db/repair.go` (367L, FTS5 verify/repair) EXPLICITLY DEFERRED as its own lane (not implied-pending). Maintenance ops gate #12 consumers, not #05 — FTS5 tables + extension registration (what #05 needs) are green |
-| #08 | `nd-tagreader` (storage registry, extractors, gotaglib transforms, shim `RawTags` sidecars + 12 tests) | DONE — **shim backend** chosen (pure-Rust taglib unavailable offline; C binding would fork the pinned go-taglib raw surface). Goldens emitted by the Go oracle harness `adapters/gotaglib/golden_dump_test.go` (`ND_GOLDEN_DUMP=1 go test ./adapters/gotaglib/ -run TestGoldenDump -v` → sidecars under `rust/crates/nd-tagreader/tests/fixtures/`); regenerate if the pinned fork bumps |
+| #08 | `nd-tagreader` (storage registry, extractors, gotaglib transforms, shim `RawTags` sidecars + 12 tests) | **DONE (decision half) — NOT RUNTIME-USABLE** — parsers/transforms green against Go-emitted goldens, but the only implemented tag source is the `<media>.tags.json` sidecar and **no runtime producer writes one**: the sole writer is the Go fixture harness `adapters/gotaglib/golden_dump_test.go` (`ND_GOLDEN_DUMP=1 go test ./adapters/gotaglib/ -run TestGoldenDump -v` → sidecars under `rust/crates/nd-tagreader/tests/fixtures/`). A real tag backend (pure-Rust taglib, or a pinned C binding to the go-taglib fork) is a prerequisite for #16 → #17; regenerate goldens if the pinned fork bumps |
 | #09 | `nd-lyrics/src` (lrc/srt/ttml/normalize/parse/lyricsfile/model DTOs) | DONE (parsers half; #22 fetch/merge is stubbed inside the crate) |
 | #10 | `nd-playlists/src/parsers` (m3u/nsp/import + playlist DTO) | DONE (parsers half; #23 store/import stubbed) |
 | #11 | `nd-events` (broker/event/sse) | DONE |
 | #12 | `nd-sched` | **PARTIAL** — only `crontab.rs`; logging/maintenance pending |
-| #07 | `nd-ffmpeg` (args tables byte-exact, resolved ffmpeg lookup, ffprobe JSON parser, FLAC STREAMINFO patcher + 13 goldens, `ffCmd` process type with `process_group(0)` spawn / SIGKILL+reap cancel / 4096 stderr cap, encoder-probe memo, `ProbeAudioStream` 5s-bounded launch, `Transcode`/`ExtractImage`/`ConvertAnimatedImage` argv) | **PARTIAL** — 50 lib + 2 golden tests green, gate clean. Test-block tail now covered except: the symlink chain (`tests/fixtures/symlink*`) and the `invalid-files` directory cases. Go's `MockFFmpeg` interface double is ported as `src/mock_ffmpeg.rs` (canned reader/probe result + injected-failure re-shaping at the probe boundary); live container fixtures `test.{aiff,m4a,opus,wav,wma}` pinned by the fixture test. Deviations pinned in-module: no `killpg` (std/tokio gap) — signal goes to the fresh group's root pid; probe `-encoders` 5s bound only on the probe path; `patchFLACDuration` deferred to the consumer (#14) because the port cannot patch a stream it never sees |
+| #07 | `nd-ffmpeg` (args tables byte-exact, resolved ffmpeg lookup, ffprobe JSON parser, FLAC STREAMINFO patcher + 13 goldens, `ffCmd` process type with `process_group(0)` spawn / SIGKILL+reap cancel / 4096 stderr cap, encoder-probe memo, `ProbeAudioStream` 5s-bounded launch, `Transcode`/`ExtractImage`/`ConvertAnimatedImage` argv) | **PARTIAL** — 50 lib + 2 golden tests green, gate clean. Test-block tail now covered except: the symlink chain (`tests/fixtures/symlink*`) and the `invalid-files` directory cases. Go's `MockFFmpeg` interface double is ported as `src/mock_ffmpeg.rs` (canned reader/probe result + injected-failure re-shaping at the probe boundary); live container fixtures `test.{aiff,m4a,opus,wav,wma}` pinned by the fixture test. Deviation pinned in-module: no `killpg` (std/tokio gap) — signal goes to the fresh group's root pid, so **grandchildren leak on cancel**; `drain_stderr` uses `read_to_end` (unbounded, and can hang on a descendant holding the pipe); the cancel soak test treats a 100ms timeout as success. **IN PROGRESS** in `wks_bee2b746c3462588`: portable fixtures committed (`cc07fa1a`), then process-group cancellation + bounded drain/teardown. Probe `-encoders` 5s bound only on the probe path; `patchFLACDuration` deferred to the consumer (#14/#15) because the port cannot patch a stream it never sees |
 | #06 | `nd-model` (entity DTOs: album/annotation/entity/wire serde shapes with Go camelCase renames, 5 tests) | **DONE** — criteria DSL complete: fields/operators/sort/json/criteria modules, 35 crate tests mirroring criteria_test.go + sibling Go test files (refreshDelay duration parse/format, LimitPercent clamp, all/any top-level rejection, child-playlist dedupe, ParseBool truth set per strconv incl. yes/on/off); 40 lib tests green, clippy -D warnings clean. `persistence/criteria_sql.go` stays deferred to #05 slice 4 |
 | #05 slice 1 (pool + store + busy-retry mapping + schema-drift guard) | `nd-db` slice 1 | **PARTIAL** — pool.rs (N=max(4,parallelism) rusqlite Connections behind one Mutex; rusqlite Connection is Send-not-Sync) + store.rs (with_tx/with_tx_retry per persistence.go:203/205 — BUSY/LOCKED codes 5/17, 3 retries x 5s, thiserror StoreError) + 6 harness groups green (pool round-trip, FTS5/JSON1 bind probes, store transaction, real SQLITE_LOCKED contention asserting BusyRetriesExhausted attempts=4, schema_diff vs Go-migrated dump: 9 triggers / 3 fts5 tables / feeder columns identical, name diff = goose_db_version+plugin). rusqlite 0.32 bundled re-pinned verbatim from nd-dbschema. Slices 2–4 (sql_base_repository + sql_* helpers, leaf repos with user_repository FIRST, remaining repos, criteria_sql 904L LAST) PENDING |
-| #13 | `nd-auth` (credential + claim model: model B, `native`-only audience, dual signing secrets, epoch revocation, jwt/apiKey/internal arms, fail-closed limiter, CIDR/`@` trusted sources, body caps, publicurl, initial setup) | **DONE** — claims/credentials 1007L + limiter/trusted_sources/publicurl/initial_setup 1645L; 66 tests green, clippy -D warnings clean. Security-reviewer MUST-FIXes applied (no `Debug` on SigningSecrets/InitialAdminUser; session gate renamed `check_session_claims` so no future slice re-opens the empty-`aud` hole). `p`/`t+s`/`enc:`/md5/AES-GCM arms absent (#25 CANCELLED). Deps vetted-only: argon2 0.6.0, jsonwebtoken 9.0.0, getrandom 0.2, serde/sha2 workspace pins |
-| #05 slices 2–4 (`nd-db` repositories) | `nd-db` | **DONE** — slice 4 landed all 15 leaf repositories (album/artist/artwork_queue/artwork/folder/genre/library/mediafile/playlist/playlist_track/playqueue/plugin/property/radio/smart_playlist) + `criteria_sql.rs` (904L criteria→SQL compiler: Cond tree, threaded field map, join planner, orderBy coalesce/cast/role forms, JSON merge groups @350 batch, NFC/NFD pathVariants); 316 lib tests green, fmt clean, clippy -D warnings clean. Two-phase rowid fix: RemoveLimit/RemoveOffset strips base pagination AND its args, page args bind AT the JOIN position (sql_search.go:126-141). Test-oracle corrections against Go: a non-empty sort tag becomes the source (no order-name fallback, `cmp.Or`); `external_url` precedes `similar_artists` (struct field order). Security gate: `with_field_white_list` enforced on every QueryOptions consumer (artist/radio via RestRepository; scrobble/tag/transcoding/album take caller-materialized fragments — no raw options sort path). |
+| #13 | `nd-auth` (credential + claim model: model B, `native`-only audience, dual signing secrets, epoch revocation, jwt/apiKey/internal arms, fail-closed limiter, CIDR/`@` trusted sources, body caps, publicurl, initial setup) | **DONE (credential + claim model) — NOT MOUNTABLE** — claims/credentials 1007L + limiter/trusted_sources/publicurl/initial_setup 1645L; 66 tests green, clippy -D warnings clean. Security-reviewer MUST-FIXes applied (no `Debug` on SigningSecrets/InitialAdminUser; session gate renamed `check_session_claims` so no future slice re-opens the empty-`aud` hole). `p`/`t+s`/`enc:`/md5/AES-GCM arms absent (#25 CANCELLED). Deps vetted-only: argon2 0.6.0, jsonwebtoken 9.0.0, getrandom 0.2, serde/sha2 workspace pins. **Integration pending:** no router middleware exists, and `/player` plus API-key issuance depend on the Rust player repository, which does not exist yet (Go: `persistence/player_repository.go`). |
+| #05 slices 2–4 (`nd-db` repositories) | `nd-db` | **SQL SHAPING DONE — RUNTIME INTEGRATION PENDING** — slice 4 landed all 15 leaf repositories (album/artist/artwork_queue/artwork/folder/genre/library/mediafile/playlist/playlist_track/playqueue/plugin/property/radio/smart_playlist) + `criteria_sql.rs` (904L criteria→SQL compiler: Cond tree, threaded field map, join planner, orderBy coalesce/cast/role forms, JSON merge groups @350 batch, NFC/NFD pathVariants); 316 lib tests green, fmt clean, clippy -D warnings clean. Two-phase rowid fix: RemoveLimit/RemoveOffset strips base pagination AND its args, page args bind AT the JOIN position (sql_search.go:126-141). Test-oracle corrections against Go: a non-empty sort tag becomes the source (no order-name fallback, `cmp.Or`); `external_url` precedes `similar_artists` (struct field order). Security gate: `with_field_white_list` enforced on every QueryOptions consumer (artist/radio via RestRepository; scrobble/tag/transcoding/album take caller-materialized fragments — no raw options sort path). **Why this is not DONE: those tests pin rendered SQL and bound args, and almost nothing executes. `store.rs` provides only tx/retry helpers — there is no `SQLStore` facade; there is no general row hydration (`sql_base_repository.go:445,480` has no Rust counterpart); only `share_repo` and `user_props_repo` run against a `Connection`; 2 of 24 repos have any integration test. Known defect: `user_repo::select_user_with_libraries` renders `WHERE` **after** `GROUP BY` (invalid SQLite; reproduced as `near "WHERE": syntax error` against a fresh DB) and its unit test *asserts that invalid ordering* — fix the SQL first, then change the test to pin the corrected statement. Also missing: the **player repository**, which blocks `/player` and API-key issuance.** |
 | #12 | `nd-sched` (scheduler half: crontab parser + robfig next-match cursor + Scheduler add/run/stop + CronLogger split) | **DONE (scheduler half)** — crontab.rs 703L + schedule.rs 562L + log_adapter.rs 103L; 39 tests green, clippy -D warnings clean. Validator-agreement pinned BOTH directions against nd-conf's crontab validator (#03); 5-field next-minute behavior pinned against a real robfig v3.0.1 Go oracle; `~` random resolved once at parse. Cleanup-audit orphan `crontab.rs` closed (rewritten). Maintenance hook (LockForMaintenance) lives in nd-scanner per issue boundaries |
-| #14 (decision half of `nd-stream`) | `nd-stream` decision half | **DONE (decision half)** — types.rs/aliases.rs/codec.rs/limitations.rs/decider.rs/probe_json.rs/token.rs (HS256 create+parse+resolve, explicit secret+`now_secs`, issuer = `nd-conf` JWT_ISSUER, stale/mismatch/expiry pinned)/legacy_client.rs + Cargo deps (nd-conf, nd-ffmpeg, serde/serde_json/thiserror/jsonwebtoken 9.0.0); 103 lib tests green, fmt clean, clippy -D warnings clean, `cargo build -p nd-stream` + workspace fmt/clippy/test green at the Phase-4 boundary (969 workspace tests passed, 0 failed). Probe verbs intentionally absent (left to #15/#07 integration) — decision takes `ProbeInput::{NotAvailable,Probed}` so `make_decision` is infallible. Serving half (#15) PENDING — the scaffold row below covers the remaining crates |
-| #15–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior) |
+| #14 (decision half of `nd-stream`) | `nd-stream` decision half | **DONE (decision half)** — types.rs/aliases.rs/codec.rs/limitations.rs/decider.rs/probe_json.rs/token.rs (HS256 create+parse+resolve, explicit secret+`now_secs`, issuer = `nd-conf` JWT_ISSUER, stale/mismatch/expiry pinned)/legacy_client.rs + Cargo deps (nd-conf, nd-ffmpeg, serde/serde_json/thiserror/jsonwebtoken 9.0.0); 103 lib tests green, fmt clean, clippy -D warnings clean, `cargo build -p nd-stream` green. Probe verbs intentionally absent (left to #15/#07 integration) — decision takes `ProbeInput::{NotAvailable,Probed}` so `make_decision` is infallible. **Serving half (#15) IN PROGRESS** in `wks_eb8b973e4c6c704b` (`rust/stream-serving`): Range/conditional matrix, forced transcode, limiter, then cache eviction/archive. #15 stays INCOMPLETE until all four landed. |
+| #15–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior). `nd-cli/src/main.rs` `main()` is **empty** — no DI wiring, no server bootstrap, so nothing boots. #26 additionally depends on the missing Rust player repository (see #05). |
 
-Next in build order: #07 test-plane tail (mock_ffmpeg as a Rust mock binary was dropped by the last lane; `/bin/sh`+`/bin/echo` stand-ins + the new live-container fixture pins cover the launch paths instead — the Go stand-in golden remains uncovered), then **#05 `nd-db`** (repository layer, gated by #04 — runner now green) and finish #04 (optimize/backup/repair) and #06 (criteria DSL). #12 `nd-sched` logging/maintenance depends on #07 + #13 + #06 + #05.
+## First-runnable-slice exit criteria
+
+The smallest honest definition of "the Rust server runs", in dependency order:
+
+1. Fresh SQLite DB via `nd-dbschema` open/init (schema + `SEEDEDRAND`/`NATSORT` registered per connection).
+2. Scan a real track directory: a tag backend that *produces* metadata → `nd-mapping` `Info` → entities → `nd-db` write path.
+3. Authenticated API lookup: initial admin setup → claims → mounted middleware → one entity read.
+4. Stream one track three ways: direct Range, forced transcode, and client disconnect.
+5. Disconnect leaves **zero surviving child processes** (needs the `FFCmd` group-cancellation fix).
+
+Dependency arithmetic the row labels hide: runtime ingest needs a real #08 tag producer, then #16, then #17.
+The first boot needs only scoped HTTP/API plus minimal serve wiring (`#27A`); full #27 needs share, playlists,
+artwork, external metadata, and quick-connect services (`server/nativeapi/native_api.go:38-55`), so a scoped
+`#27A` over landed auth + DB is the correct first slice. Deferrable #32 must NOT gate it.
+
+Next in build order (2026-11-10): the four active lanes above — DB runtime spine, then player repo, then auth
+wiring; `FFCmd` group cancellation; #15 serving. After those: a real #08 tag backend → #16 → #17, `repair.rs`,
+and the unspecified #12 maintenance/logging half. The historical "#07 test-plane tail" note below is superseded
+by the `cc07fa1a` fixture work.
 
 ---
 ## Part A — shared artifacts first (design issues, blocking)

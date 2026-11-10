@@ -2,61 +2,137 @@
 
 Paste everything between the `===PROMPT BEGIN===` / `===PROMPT END===` markers into the new session.
 
+> Path note (updated 2026-11-10): the worktree this document previously pointed at,
+> `/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn`, is **retired** and
+> no longer exists. Use the paths below; resolve Go and Rust roots from `CARGO_MANIFEST_DIR` ancestors
+> containing `go.mod` rather than from any absolute path baked into a doc or test.
+
 ===PROMPT BEGIN===
 
-You are continuing an existing multi-session task. Do not re-plan from scratch, do not re-do landed work, and do not widen scope. Repo root: `/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn`. Go source at root (`persistence/*.go`, `model/*.go`, `utils/*.go`, `rest/*.go`). Rust workspace at `rust/` (26 `nd-*` crates, edition 2021, GPL-3.0). Ledger: `docs/rust-port/issues.md`. Plan of record: `docs/rust-port/next-work.md`. Schema contract: `docs/rust-port/schema-contract.md`.
+You are continuing an existing multi-session task. Do not re-plan from scratch, do not re-do landed work, and do not widen scope.
+
+- Repo root: `/Users/nathanielheitsch/projects/barnstorm/navidrome`. Go source at root (`persistence/*.go`,
+  `model/*.go`, `utils/*.go`, `rest/*.go`, `core/**`, `server/**`). Rust workspace at `rust/`
+  (26 `nd-*` crates, edition 2021, GPL-3.0).
+- Ledger: `docs/rust-port/issues.md`. Plan of record: `docs/rust-port/next-work.md`. Schema contract:
+  `docs/rust-port/schema-contract.md`.
+- Migration lanes run as Paseo worktrees under `/Users/nathanielheitsch/.paseo/worktrees/0xo97qr3/`, one writer
+  per worktree; the parent session owns integration and final verification.
 
 ## State (verify, do not assume)
 
-Phase 3 is DONE and committed. Phase 4's `#05` nd-db **slice 4** is in flight and nearly done. Latest commit is `a137c46c docs(ledger): #12 nd-sched scheduler-half DONE …`. Untracked/uncommitted right now: the 15 slice-4 repo files in `rust/crates/nd-db/src/` (`album_repo.rs`, `artist_repo.rs`, `artwork_queue_repo.rs`, `artwork_repo.rs`, `folder_repo.rs`, `genre_repo.rs`, `library_repo.rs`, `mediafile_repo.rs`, `playlist_repo.rs`, `playlist_track_repo.rs`, `playqueue_repo.rs`, `plugin_repo.rs`, `property_repo.rs`, `radio_repo.rs`, `smart_playlist_repo.rs`) plus modified `lib.rs`, `sql_search.rs`, `sqlrepo.rs`.
+Measured at `29d9d9d0` (2026-11-10), `cd rust`:
 
-Gate right now (`cd rust`): `cargo build -p nd-db` **compiles**, `cargo fmt -p nd-db -- --check` **clean**, `cargo clippy -p nd-db --all-targets --all-features -- -D warnings` **clean**, `cargo test -p nd-db` = **279 passed / 4 failed**. All 4 failures are in `artist_repo.rs`'s `mod tests`.
+- `cargo fmt --all -- --check` — clean
+- `cargo clippy --locked --all-targets --all-features -- -D warnings` — clean
+- `cargo test --locked --all-targets --all-features --no-fail-fast` — **1067 passed / 4 FAILED**
 
-## First task — the 4 failing tests (finish in this order)
+The 4 failures are all `nd-ffmpeg` fixture-path portability, not behavior: they hardcode absolute paths from the
+retired worktree, so live `ffmpeg`/`ffprobe` cases and the container-fixture loop **execute zero fixtures** on any
+other host. `cc07fa1a` on `rust/ffmpeg-readiness` restores portable resolution (PATH lookup, dev-resolved ffprobe).
+A fail-closed integration test must then assert the fixtures were enumerated, not skipped.
 
-Run `cargo test -p nd-db --lib` and read the actual-vs-expected output. For each failure, decide whether the **code** or the **test expectation** is wrong, judged against the Go source — never bend code to a bad assertion. Starting diagnostics (verify, do not trust):
+Do **not** trust the ledger's historical "969 passed / 0 failed" (2026-11-04 boundary) as current green.
 
-1. `get_index_key_matches_prefixes_case_insensitively` — `artist_repo.rs:1633`. Go `getIndexKey` (`persistence/artist_repository.go:310-321`) does `source = cmp.Or(SortArtistName, OrderArtistName)` **when `PreferSortTags` is on**, so a non-empty sort tag wins and the prefix never matches. The test passes `sort="foo"` while expecting the `order`-based result → the assertion contradicts Go. Fix the test (and keep the code's Go-faithful source selection).
-2. `put_sql_update_leg_filters_cols_and_appends_updated_at` — `artist_repo.rs:1550`. The only diff is `external_url` vs `similar_artists` swapped. `model/artist.go:33-39` declares `biography, small_image_url, medium_image_url, large_image_url, external_url, similar_artists, external_info_updated_at` — that is `structs:` field order, which is Go's `toSQLArgs` order. The code already matches; the expectation is wrong.
-3. `search_empty_query_hydrates_the_natural_order_rowid_page` — `artist_repo.rs:1822`, `sql.ends_with("GROUP BY artist.id ORDER BY _ranked._rn")`. Compare against `sql_search.go` two-phase execute (`executeTwoPhase` keeps the rowid-core's ORDER BY **inside** the inner query; `hydrateRowidPage` keeps the outer WHERE) and print the actual rendered tail before editing.
-4. `search_fts_strategy_hydrates_the_rowid_page` — `artist_repo.rs:1938`: `args` order `Integer(10)` vs `Text("(beatles OR beatles*)")`. The MATCH param must bind **at the JOIN position** (`sqlrepo.rs` `join(table, on, args)` contract), ahead of the pagination args.
+**Shape ≠ wired.** Phases 1–4 completed *decisions and SQL shaping*; runtime integration is a separate axis:
 
-Then: re-run the crate gate (fmt, clippy `-D warnings`, test) → **all green** → commit slice 4 as ONE signed commit (`git add rust/crates/nd-db/src rust/crates/nd-db/tests docs/rust-port && git commit -m "feat(#05 slice 4): nd-db leaf repositories …"`) — no `-c commit.gpgsign=false`, no AI co-author trailer, then verify with `git cat-file commit HEAD | grep -q '^gpgsig'`.
+- `nd-db`: `store.rs` has only tx/retry helpers; no `SQLStore` facade, no general row hydration
+  (`sql_base_repository.go:445,480` unported); only `share_repo` and `user_props_repo` execute against a
+  `Connection`. **Known defect:** `user_repo::select_user_with_libraries` renders `WHERE` after `GROUP BY`
+  (invalid SQLite — reproduced as `near "WHERE": syntax error`) and its unit test *asserts that invalid order*.
+  Fix the SQL against the Go oracle first; change the test only to pin the corrected statement.
+- `nd-tagreader`: consumes `<media>.tags.json` sidecars that **no runtime producer writes** (only the Go
+  `ND_GOLDEN_DUMP=1` fixture harness does). Real tag backend is a prerequisite for #16 → #17.
+- `nd-auth`: credentials/claims verified; no router middleware. `/player` and API-key issuance additionally need
+  the **player repository**, which has no Rust counterpart (Go: `persistence/player_repository.go`).
+- `nd-stream`: #14 decision half only; no serving/range/limiter/archiver. `nd-cli/src/main.rs` `main()` is empty
+  and `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only, so nothing boots.
+
+## Active lanes (user-approved 2026-11-10 — IN PROGRESS, not done)
+
+| lane | workspace / branch | scope | asks |
+|---|---|---|---|
+| DB runtime spine | `wks_e25e0d33ddcd3d79` / `rust-db-runtime` | `SQLStore` facade, row hydration, corrected user SQL + regression; then player repo; then auth wiring | A7, A8, A9, A10 |
+| FFmpeg | `wks_bee2b746c3462588` / `rust/ffmpeg-readiness` | portable fixtures committed `cc07fa1a`; then `FFCmd` process-group cancellation | A11 |
+| Stream serving | `wks_eb8b973e4c6c704b` / `rust/stream-serving` | Range/conditional matrix, forced transcode, limiter, cache eviction, archive | A12 |
+| Ledger correction | `wks_e33a89d09f7f9c11` / `rust/ledger-correction` | this document + `issues.md` + `next-work.md` | A6 |
+
+Before consuming another lane's output, read its current code: streaming must use `nd-ffmpeg`'s
+`new_ffmpeg_cmd()` only — the lifecycle lane is adding **private** fields to `FFCmd`, so no struct literals and no
+touching lifecycle fields. Descendant-process cleanup lands separately; report it as an integration gap, not verified.
 
 ## Then, in order
 
-1. `criteria_sql.go` (`persistence/criteria_sql.go`, 904L) — the **last** item of slice 4: criteria→SQL generation, bridging nd-model's 40-test criteria DSL (done) into `smart_playlist_repo.rs`, whose seam is documented in its header. Port it as its own module, then per-crate gate + signed commit.
-2. Update `docs/rust-port/issues.md` (#05 slice 4 DONE, `criteria_sql` state) with a signed `docs(ledger)` commit.
-3. Phase-4 boundary workspace gate: `cd rust && cargo fmt --all -- --check && cargo clippy --all-targets --all-features -D warnings` (workspace-wide) and the full test run.
-4. `#14` `nd-stream/src/decision` transcode decision tables (pure tables, no serving).
-5. `#15` `nd-stream` serving half: `media_streamer`, `limiter`, `archiver`.
+1. Integrate the four lanes; re-run the workspace gate (fmt, clippy `-D warnings`, full test) in the parent.
+2. A **real tag backend** for #08 — until a producer exists, the scanner path cannot be exercised at all. Then
+   #16 mapping → #17 scanner.
+3. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — explicitly deferred, its own lane.
+4. Specify + build the #12 `nd-sched` maintenance/logging half (scheduler half is done).
+5. **First runnable slice (`#27A`)** — exit criteria: fresh DB → scan a real track → authenticated API lookup →
+   direct Range + forced transcode + client disconnect leaving **zero surviving child processes**. Full #27 needs
+   share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`); deferrable
+   #32 must not gate this minimal slice.
 
 ## Hard constraints (all still binding)
 
-- Plain Rust, house style: snake_case functions, UPPER constants, `///` doc comments citing `GoFile.go:LINE-LINE` for every ported function, `///` on every public struct field.
-- Errors: `thiserror` in libraries, `anyhow` only at the `nd-cli` boundary. Async: tokio v1. DI: explicit construction in `nd-cli/src/main.rs` — no ambient-context parameter in the SQL layer (Go's `ctx` becomes the caller's).
-- rusqlite 0.32 (bundled/collation/functions/backup) is the schema-contract binding. sqlx is dead — do not reintroduce it.
-- rusqlite `Connection` is `Send` but not `Sync`: the pool owns N = `max(4, available_parallelism())` connections behind one `Mutex`; no cross-thread leasing.
-- `PRAGMA has('fts5')`/`has('json1')` do not exist in SQLite; macOS `/usr/bin/sqlite3` (3.54.0) lacks the FTS5 amalgamation — rusqlite bundled does have it.
-- rustc 1.99.1 rejects Go-flavored pseudo-code: no adjacent string literals (use `concat!`), no `let Ok(..)` patterns, no `+` string concat, no map literals as struct constructors, patterns bind by value (`Some(ref x)`), `.to_string()` required at `String` call sites. Per-module loop: write → `cargo build -p nd-db` → fix from compiler messages.
-- `cargo clippy --fix` applies nothing under `-D warnings`; fix by hand. Clippy traps already hit: no `#[must_use]` on a function already returning `Result` (`double_must_use`), `x == None` → `x.is_none()`, `(b'0'..=b'9').contains(&b)` → `b.is_ascii_digit()`, no `format!` without args (use `.to_string()`/`concat!`), no needless borrows, no collapsible match, no dead helpers.
-- Never run filesystem-wide scans (`find /`, `locate`, `updatedb`) in a task — that hung a worker at 122s and killed it. Scope discovery to the project tree.
-- Security gate is part of the definition of done: every slice-3/4 repository consuming `sql_restful.rs` `QueryOptions` **must** call `with_field_white_list` (nil-whitelist finding from slice 2, recorded in `next-work.md`). The security-reviewer pass is mandatory before declaring slice 4 done.
-- Validation gate per crate: `cargo build -p CRATE` && `cargo fmt -p CRATE -- --check` && `cargo clippy -p CRATE --all-targets --all-features -- -D warnings` && `cargo test -p CRATE`. Workspace-wide at each phase boundary. No LSP diagnostics exist — the CLI toolchain is the gate; use `ast_grep` for structural searches.
-- Tests use the Arrange/Act/Assert pattern and pin rendered SQL **and** bound args, so the Go oracle stays visible forever.
-- One writer per file. `album_repo.rs` was previously damaged by a runaway write loop (29MB, `cursor_chunk_sql` duplicated 31,268 times); it was recovered with real content and verified to contain exactly one `mod tests` — re-verify each landed file for duplication before trusting any "completed" report (`ls -l`, `grep -c 'mod tests'`).
+- Plain Rust, house style: snake_case functions, UPPER constants, `///` doc comments citing `GoFile.go:LINE-LINE`
+  for every ported function, `///` on every public struct field.
+- Errors: `thiserror` in libraries, `anyhow` only at the `nd-cli` boundary. Async: tokio v1. DI: explicit
+  construction in `nd-cli/src/main.rs` — no ambient-context parameter in the SQL layer (Go's `ctx` becomes the
+  caller's).
+- rusqlite 0.32 (bundled/collation/functions/backup) is the schema-contract binding. sqlx is dead — never reintroduce it.
+- rusqlite `Connection` is `Send` but not `Sync`: the pool owns N = `max(4, available_parallelism())` connections
+  behind one `Mutex`; no cross-thread leasing. Blocking rusqlite calls go through `tokio::task::spawn_blocking`
+  at the store boundary.
+- `PRAGMA has('fts5')`/`has('json1')` do not exist in SQLite; macOS `/usr/bin/sqlite3` lacks the FTS5 amalgamation
+  — rusqlite bundled does have it.
+- rustc rejects Go-flavored pseudo-code: no adjacent string literals (use `concat!`), no `let Ok(..)` patterns, no
+  `+` string concat, no map literals as struct constructors, patterns bind by value (`Some(ref x)`), `.to_string()`
+  required at `String` call sites. Per-module loop: write → `cargo build -p CRATE` → fix from compiler messages.
+- Clippy traps already hit: no `#[must_use]` on a function returning `Result`, `x == None` → `x.is_none()`,
+  `(b'0'..=b'9').contains(&b)` → `b.is_ascii_digit()`, no `format!` without args, no needless borrows, no collapsible
+  match, no dead helpers. `cargo clippy --fix` applies nothing under `-D warnings`; fix by hand. Never autoformat.
+- **No absolute developer paths in source or tests.** Resolve binaries via `PATH`, fixtures via
+  `CARGO_MANIFEST_DIR`/repo-root discovery. Hardcoded paths made 4 tests unrunnable on every other host — that is
+  how a lane can be green locally and broken everywhere else.
+- `unsafe_code` is denied workspace-wide. If a safe wrapper for a syscall (e.g. `killpg`) is genuinely unavailable,
+  stop and report — do not add `unsafe`, a per-crate override, or a new dependency to work around it.
+- Never run filesystem-wide scans (`find /`, `locate`, `updatedb`); that hung a worker at 122s and killed it. Scope
+  discovery to the project tree.
+- Security gate is part of done: every repository consuming `sql_restful.rs` `QueryOptions` must call
+  `with_field_white_list` with names from the `nd-model/src/fields.rs` registry. Parameterized values only;
+  order-by identifiers through an allowlist.
+- Validation gate per crate: `cargo build -p CRATE` && `cargo fmt -p CRATE -- --check` &&
+  `cargo clippy -p CRATE --all-targets --all-features -- -D warnings` && `cargo test -p CRATE`. Workspace-wide at
+  each phase boundary — per-crate gates miss cross-crate feature interactions. No LSP diagnostics exist: the CLI
+  toolchain is the gate; use `ast_grep` for structural searches. Report actual output, including failures.
+- Tests use Arrange/Act/Assert and pin rendered SQL **and** bound args, so the Go oracle stays visible. A test that
+  asserts on an executed statement is worth more than one that asserts on a rendered string; prefer execution.
+- One writer per file and per worktree. `album_repo.rs` was once damaged by a runaway write loop (29MB,
+  `cursor_chunk_sql` duplicated 31,268 times); re-verify each landed file for duplication
+  (`ls -l`, `grep -c 'mod tests'`) before trusting any "completed" report.
+- Commits GPG-signed (global config supplies it), no `-c commit.gpgsign=false`, no AI co-author trailers. Verify
+  with `git cat-file commit HEAD | grep -q '^gpgsig'`. Do not push.
 
-## Delegation
+## Lifecycle hazards (learned 2026-11-10)
 
-Subagent spawning was blocked in the previous session ("Peer-only/cancelled turn cannot authorize task creation"). It may work in the new session — if it does, use the standard shape `scout → planner → worker → reviewer(s)` with narrow single-file worker tasks (30-minute timeout per subagent; bank progress one module at a time) and keep ownership non-overlapping. If it is blocked again, work in-session module-by-module and say so; never fall back to an external CLI agent (`codex*`, `claude-code*`, `cursor-agent*`).
+- Lanes die mid-milestone: provider usage limits, provider `429 max connections reached: 4`, and a daemon
+  `spawn pi ENOENT`. Bank progress in **commits per milestone**; a dead lane should lose a milestone, not a phase.
+- **Never archive a lane whose worktree holds uncommitted work** — archiving removes the worktree, and on 2026-11-10
+  that destroyed three lanes' uncommitted files.
+- Keep tests portable: temp fixtures under `target/` or the OS temp dir, never inside the repo tree, and never
+  referencing another developer's checkout.
 
 ## Also still open (do not forget)
 
-- `nd-dbschema/src/repair.rs` (367L FTS5 verify/repair) — explicitly deferred as its own lane, still not landed.
-- `nd-sched/src/crontab.rs` orphan noted by an earlier audit; `nd-sched` scheduler half is DONE, the other half of #12 is not yet specified.
-- Untracked `bench/results/team_20261104145948_*.json` and `docs/perf/perf-report-team_20261104145948_*.md` are stray artifacts — decide whether they belong in the tree or should be deleted before the next commit.
-- `Cargo.lock` gains new deps at each crate addition; fold it into the cleanup commit, not a separate one.
+- `nd-dbschema/src/repair.rs` (367L FTS5 verify/repair) — deferred lane, still not landed.
+- `nd-sched` #12 maintenance/logging half unspecified; scheduler half DONE. `crontab.rs` orphan was closed earlier.
+- Settled decisions — do not re-open: fresh service (no compatibility layer), canonical API only, Subsonic shim
+  (#25), plugin host (#29), Jellyfin API (#30), sonic similarity (#31) CANCELLED, JS UI and plugin host dropped,
+  root path 404 by design.
+- `Cargo.lock` gains deps at each crate addition; fold it into the relevant commit, not a separate one.
 
-Start by confirming the state above with `git log --oneline -3`, `git status --short`, `ls rust/crates/nd-db/src`, and one `cargo test -p nd-db` run. Report what differs from this brief before acting on it.
+Start by confirming state with `git log --oneline -3`, `git status --short`, `ls rust/crates`, and one
+`cargo test --all-targets --all-features` run in `rust/`. Report what differs from this brief before acting on it.
 
 ===PROMPT END===
