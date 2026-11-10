@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `a462b1f2` (2026-11-10, after lane integration), `cd rust`:
+Measured at `b78c01a2` (2026-11-10, after lane integration), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1181 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1183 passed / 0 FAILED**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -41,8 +41,10 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
 - `nd-db`: has an execution seam (`execution.rs` + `store::SQLStore` sync/async verbs) and **one** executing
   repository (`user_repo`, 15 executed tests on per-test temp DBs). The other ~14 repos only render SQL; general
   row hydration (`sql_base_repository.go:445,480`) exists only for `dbUser`. Sibling offset-only renderings still
-  emit a bare `OFFSET ?` (`album_repo.rs:244`, `artist_repo.rs:204`, `library_repo.rs:83`, `mediafile_repo.rs:351`,
-  `folder_repo.rs` `get_all_sql`) — SQLite requires a LIMIT with OFFSET, so those are latent parse errors.
+  pagination renders decimal literals with zero bound args, matching squirrel (`select.go:376-388,140-150`);
+  `b78c01a2` removed a crate-wide divergence where the port bound `LIMIT ?`/`OFFSET ?` as args, so
+  **`Repository::to_sql()` arg vectors no longer carry bounds** — never index pagination positions.
+  Offset-without-limit renders `LIMIT -1` first (cited deviation: squirrel's bare `OFFSET n` is a SQLite parse error).
 - `nd-tagreader`: consumes `<media>.tags.json` sidecars that **no runtime producer writes** (only the Go
   `ND_GOLDEN_DUMP=1` fixture harness does). Real tag backend is a prerequisite for #16 → #17.
 - `nd-auth`: credentials/claims verified; no router middleware. `/player` and API-key issuance additionally need

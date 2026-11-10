@@ -4,7 +4,7 @@
 
 Measured gate at `a462b1f2` (parent-measured, integrated): fmt clean, workspace build clean, workspace
 clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features
---no-fail-fast` = **1181 passed / 0 FAILED**. The earlier `29d9d9d0` figure — 1067 passed / 4 FAILED —
+--no-fail-fast` = **1183 passed / 0 FAILED**. The earlier `29d9d9d0` figure — 1067 passed / 4 FAILED —
 was `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
 **zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
 "969 passed / 0 failed" figure further down is a dated historical boundary, not green state.
@@ -15,10 +15,12 @@ The runtime spine has started, but nothing boots yet:
 - `nd-db` — execution seam (`execution.rs`, `store::SQLStore` sync + async verbs) and **one** executing
   repository (`user_repo`, with `UserRecord`/`UserRow` hydration and the `WHERE`-before-`GROUP BY`
   fix). The other ~14 repos only render SQL; general row hydration (`sql_base_repository.go:445,480`)
-  exists only for `dbUser`; sibling offset-only renderings still emit a bare `OFFSET ?`
-  (`album_repo.rs:244`, `artist_repo.rs:204`, `library_repo.rs:83`, `mediafile_repo.rs:351`,
-  `folder_repo.rs`). **No Rust player repository exists** (Go `persistence/player_repository.go`),
-  blocking `/player` + API-key issuance.
+  exists only for `dbUser`. Pagination renders decimal literals with zero bound args, matching
+  squirrel (`select.go:376-388,140-150`); `b78c01a2` fixed a crate-wide divergence where the port
+  bound `LIMIT ?`/`OFFSET ?` as args. Offset-without-limit keeps the cited `LIMIT -1` deviation
+  because squirrel's bare `OFFSET n` is a SQLite parse error. **No Rust player repository yet**
+  (Go `persistence/player_repository.go`) — in progress on `rust/player-repo` — blocking `/player`
+  + API-key issuance.
 - `nd-tagreader` — reads `<media>.tags.json` sidecars with **no runtime producer** (only the Go
   golden-dump fixture test writes them), so #16 → #17 ingest is blocked upstream.
 - `nd-auth` — credentials verified, not mountable; no router middleware.
@@ -47,7 +49,7 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
 ### Next body of work, in order
 
 1. ~~Land the four lanes above~~ — done; integrated to `issue/planning-rust-sdhnn` at `a462b1f2`, gate
-   re-measured in the parent at 1181 passed / 0 failed. There is no `main` branch: remote HEAD is
+   re-measured in the parent at 1183 passed / 0 failed. There is no `main` branch: remote HEAD is
    `master` (still `6b2ed391`, tree-identical to `29d9d9d0`), so this work lives on the planning branch
    and is unpushed.
 2. **Player repository** (#05 remainder, A9) — `persistence/player_repository.go` incl. the owner-only
