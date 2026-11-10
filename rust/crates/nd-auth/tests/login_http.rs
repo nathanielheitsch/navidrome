@@ -8,8 +8,8 @@ use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
 use axum::Router;
 use nd_auth::credentials::{Authenticator, SigningSecrets};
-use nd_auth::login::{create_admin, login, LoginState};
-use nd_auth::middleware::{authenticate, AuthGate, MiddlewareState};
+use nd_auth::login::{create_admin, login, login_from_headers, HeaderLoginState, LoginState};
+use nd_auth::middleware::{authenticate, AuthGate, MiddlewareState, ProxyPeer};
 use nd_auth::verifier::ResolutionConfig;
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::store::SQLStore;
@@ -180,7 +180,8 @@ async fn body_cap_and_invalid_limiter_fail_closed() {
 }
 
 #[tokio::test]
-async fn concurrent_first_admin_requests_leave_exactly_one_admin() {
+async fn concurrent_admin_requests_use_production_retry_schedule() {
+    // Contention may invoke the production 5s, 10s, and 15s retry delays.
     let (store, path, auth) = setup();
     let app =
         routes(LoginState::new(store.clone(), auth, 20, Duration::from_secs(60), false).unwrap());
@@ -204,6 +205,53 @@ async fn concurrent_first_admin_requests_leave_exactly_one_admin() {
         .unwrap();
     assert_eq!(count, 1);
     assert!(admin.is_admin);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn trusted_header_provisions_first_admin_then_regular_user() {
+    let (store, path, auth) = setup();
+    let state = HeaderLoginState {
+        login: LoginState::new(store.clone(), auth, 20, Duration::from_secs(60), false).unwrap(),
+        resolution: ResolutionConfig {
+            external_user_header: "x-user".into(),
+            trusted_sources: "10.0.0.0/8".into(),
+            ..ResolutionConfig::default()
+        },
+    };
+    let app = Router::new()
+        .route("/", get(login_from_headers))
+        .with_state(state);
+    for (name, peer, expected) in [
+        ("ignored", "11.0.0.1", StatusCode::UNAUTHORIZED),
+        ("alice", "10.0.0.1", StatusCode::OK),
+        ("bob", "10.0.0.1", StatusCode::OK),
+    ] {
+        let mut req = Request::builder()
+            .uri("/")
+            .header("x-user", name)
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ProxyPeer(peer.into()));
+        assert_eq!(app.clone().oneshot(req).await.unwrap().status(), expected);
+    }
+    let (alice, bob, count) = store
+        .with_connection_sync(|conn| {
+            let repo = UserRepo::new(conn);
+            Ok((
+                repo.find_by_username("alice").unwrap(),
+                repo.find_by_username("bob").unwrap(),
+                repo.count_all().unwrap(),
+            ))
+        })
+        .unwrap();
+    assert_eq!(count, 2);
+    assert!(alice.is_admin);
+    assert!(!bob.is_admin);
+    assert!(alice.password.starts_with("$argon2id$"));
+    assert!(alice.last_login_at.is_some());
+    drop(app);
     drop(store);
     let _ = std::fs::remove_file(path);
 }

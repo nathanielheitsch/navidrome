@@ -253,3 +253,137 @@ async fn create_admin_inner(state: &LoginState, request: Request) -> Response {
         Err(_) => failed(StatusCode::INTERNAL_SERVER_ERROR, "Cannot create admin"),
     }
 }
+
+/// Dependencies for trusted-header auto-provisioning (`server/auth.go:371-415`).
+#[derive(Clone)]
+pub struct HeaderLoginState {
+    /// Login dependencies, including the fail-closed limiter.
+    pub login: LoginState,
+    /// Config and trusted-proxy resolution rules.
+    pub resolution: crate::verifier::ResolutionConfig,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HeaderPayload {
+    id: String,
+    name: String,
+    username: String,
+    is_admin: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    avatar: Option<String>,
+}
+
+/// Authenticates a configured or trusted-header user, creating the user if
+/// absent (`server/auth.go:371-415`). First-user admin selection is performed
+/// in a transaction, unlike Go's non-atomic count and insert at `:390-407`.
+pub async fn login_from_headers(
+    State(state): State<HeaderLoginState>,
+    request: Request,
+) -> Response {
+    let peer = peer(&request);
+    let Some(username) = crate::verifier::header_username(
+        &state.resolution,
+        request.headers(),
+        request
+            .extensions()
+            .get::<ProxyPeer>()
+            .map(|p| p.0.as_str()),
+    ) else {
+        return failed(StatusCode::UNAUTHORIZED, "Not authenticated");
+    };
+    let Ok(slot) = state.login.limiter.acquire(&peer) else {
+        return failed(StatusCode::TOO_MANY_REQUESTS, "Too many attempts");
+    };
+    let response = header_login_inner(&state.login, username).await;
+    slot.release(response.status().is_client_error());
+    response
+}
+
+async fn header_login_inner(state: &LoginState, username: String) -> Response {
+    let lookup = username.clone();
+    let existing = state
+        .store
+        .with_connection(move |conn| Ok(UserRepo::new(conn).find_by_username(&lookup)))
+        .await;
+    let user = match existing {
+        Ok(Ok(user)) => user,
+        Ok(Err(UserError::NotFound)) => {
+            let mut random = [0_u8; 32];
+            if getrandom::getrandom(&mut random).is_err() {
+                return failed(StatusCode::INTERNAL_SERVER_ERROR, "Cannot create user");
+            }
+            let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+            let cleartext = format!("__NAVIDROME_AUTOGEN__{suffix}");
+            let hash = match state
+                .store
+                .with_connection(move |_| Ok(password::hash_password(&cleartext)))
+                .await
+            {
+                Ok(Ok(hash)) => hash,
+                _ => return failed(StatusCode::INTERNAL_SERVER_ERROR, "Cannot create user"),
+            };
+            let lookup = username.clone();
+            let created = state
+                .store
+                .with_tx_retry(move |tx| {
+                    let repo = UserRepo::new(tx);
+                    match repo.find_by_username(&lookup) {
+                        Ok(user) => return Ok(user),
+                        Err(UserError::NotFound) => {}
+                        Err(error) => return Err(sql_error(error)),
+                    }
+                    let is_admin = repo.count_all().map_err(sql_error)? == 0;
+                    let now: String =
+                        tx.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                            r.get(0)
+                        })?;
+                    let values = UserPutValues {
+                        id: "",
+                        user_name: &lookup,
+                        name: &lookup,
+                        email: "",
+                        password: Some(&hash),
+                        is_admin,
+                        last_login_at: Some(&now),
+                        last_access_at: None,
+                        created_at: &now,
+                        updated_at: &now,
+                        scrobble_filter: "",
+                    };
+                    repo.put(&values, &now, false).map_err(sql_error)?;
+                    repo.find_by_username(&lookup).map_err(sql_error)
+                })
+                .await;
+            match created {
+                Ok(user) => user,
+                Err(_) => return failed(StatusCode::INTERNAL_SERVER_ERROR, "Cannot create user"),
+            }
+        }
+        _ => return failed(StatusCode::INTERNAL_SERVER_ERROR, "Cannot access user"),
+    };
+    let id = user.id.clone();
+    let updated = state
+        .store
+        .with_connection(move |conn| {
+            let now: String =
+                conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')", [], |r| {
+                    r.get(0)
+                })?;
+            Ok(UserRepo::new(conn).update_last_login_at(&id, &now))
+        })
+        .await;
+    if !matches!(updated, Ok(Ok(()))) {
+        return failed(StatusCode::INTERNAL_SERVER_ERROR, "Cannot update login");
+    }
+    let avatar = (state.enable_gravatar && !user.email.is_empty())
+        .then(|| nd_utils::gravatar::url(&user.email, 50));
+    Json(HeaderPayload {
+        id: user.id,
+        name: user.name,
+        username: user.user_name,
+        is_admin: user.is_admin,
+        avatar,
+    })
+    .into_response()
+}

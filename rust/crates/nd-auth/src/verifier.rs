@@ -89,21 +89,36 @@ pub fn resolve_username(
     } else if let Some(claims) = claims.as_ref().filter(|claims| !claims.sub.is_empty()) {
         claims.sub.clone()
     } else {
-        let ip = proxy_ip?;
-        if !validate_ip_against_list(ip, &config.trusted_sources, &config.server_address) {
-            return None;
-        }
-        headers
-            .get(config.external_user_header.as_str())?
-            .to_str()
-            .ok()?
-            .to_owned()
+        header_username(config, headers, proxy_ip)?
     };
     if username.is_empty() {
         None
     } else {
         Some(Resolution { username, claims })
     }
+}
+
+/// Resolves the config or trusted proxy header without considering a JWT
+/// (`server/auth.go:210-232,242-244,371-379`). The peer must be supplied
+/// by the connection acceptor, not a client-controlled request header.
+#[must_use]
+pub fn header_username(
+    config: &ResolutionConfig,
+    headers: &HeaderMap,
+    proxy_ip: Option<&str>,
+) -> Option<String> {
+    if !config.dev_username.is_empty() {
+        return Some(config.dev_username.clone());
+    }
+    let ip = proxy_ip?;
+    if !validate_ip_against_list(ip, &config.trusted_sources, &config.server_address) {
+        return None;
+    }
+    let username = headers
+        .get(config.external_user_header.as_str())?
+        .to_str()
+        .ok()?;
+    (!username.is_empty()).then(|| username.to_owned())
 }
 
 #[cfg(test)]
