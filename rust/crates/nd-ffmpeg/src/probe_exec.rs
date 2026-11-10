@@ -209,6 +209,7 @@ mod tests {
     use crate::ffmpeg_cmd::is_probe_available;
     use crate::probe_exec::probe_audio_stream;
     use crate::probe_exec::probe_audio_stream_with;
+    use crate::test_fixtures::fixture;
 
     #[tokio::test]
     async fn probe_missing_file_is_not_found() {
@@ -230,9 +231,7 @@ mod tests {
     async fn probe_mock_binary_launch_failure() {
         // Arrange: /bin/sh as the ffprobe stand-in exits 127 with its own
         // usage stderr (direct exec, not `bash -c`).
-        let res = probe_audio_stream_with(
-            "/bin/sh".to_string(), "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.flac".to_string()
-        ).await;
+        let res = probe_audio_stream_with("/bin/sh".to_string(), fixture("test.flac")).await;
         let err = res.unwrap_err();
         // Assert: launch failure maps through probe_client_reason, and the
         // media file exists so NotFound stays false (Go: SafeReason is the
@@ -244,9 +243,7 @@ mod tests {
     #[tokio::test]
     async fn probe_garbage_stdout_is_parse_error() {
         // Arrange: /bin/echo prints its argv — never valid ffprobe JSON.
-        let res = probe_audio_stream_with(
-            "/bin/echo".to_string(), "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.flac".to_string()
-        ).await;
+        let res = probe_audio_stream_with("/bin/echo".to_string(), fixture("test.flac")).await;
         let err = res.unwrap_err();
         // Assert: parse failure reason carries Go's "parsing ffprobe output:"
         assert!(err.reason.contains("parsing ffprobe output"));
@@ -258,12 +255,11 @@ mod tests {
     /// 249 kbps from the format-level 249168.
     #[tokio::test]
     async fn probe_live_flac_matches_pins() {
+        let media = fixture("test.flac");
         if !is_probe_available() {
-            return; // skip-if-missing: no ffprobe resolved
+            return; // optional external tool, never optional fixtures
         }
-
-        let media = "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.flac";
-        let res = probe_audio_stream(media.to_string()).await;
+        let res = probe_audio_stream(media).await;
         let r = res.unwrap();
         assert_eq!(r.codec, "flac".to_string());
         assert_eq!(r.sample_rate, 44100);
@@ -272,29 +268,26 @@ mod tests {
         assert_eq!(r.bit_rate, 249);
     }
 
-    /// Live pins for every repo container fixture: probe must parse, codec
-    /// non-empty, bit_rate positive. Skipped when ffprobe is unresolved
-    /// (house skip-if-missing). Unparsable containers must fail as launch
-    /// errors, never parse errors (Go scanner logs and skips).
+    /// All seven valid container fixtures must exist and successfully probe.
     #[tokio::test]
     async fn probe_live_container_fixtures() {
+        let media: Vec<_> = ["mp3", "ogg", "opus", "wav", "m4a", "wma", "aiff"]
+            .iter()
+            .map(|ext| fixture(&format!("test.{ext}")))
+            .collect();
+        assert_eq!(media.len(), 7);
         if !is_probe_available() {
-            return;
+            return; // optional external tool, never optional fixtures
         }
-
-        let root =
-            "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn";
-        for ext in ["mp3", "ogg", "opus", "wav", "m4a", "wma", "aiff"] {
-            let media = format!("{}/tests/fixtures/test.{}", root, ext);
-            let res = probe_audio_stream(media.to_string()).await;
-            if res.is_err() {
-                let err = res.unwrap_err();
-                assert!(!err.reason.contains("parsing ffprobe output"));
-                continue;
-            }
-            let r = res.unwrap();
+        let mut checked = 0;
+        for path in media {
+            let r = probe_audio_stream(path.clone())
+                .await
+                .unwrap_or_else(|err| panic!("{path}: {err:?}"));
             assert!(!r.codec.is_empty());
             assert!(r.bit_rate > 0);
+            checked += 1;
         }
+        assert_eq!(checked, 7);
     }
 }

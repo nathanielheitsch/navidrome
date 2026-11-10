@@ -178,13 +178,20 @@ mod tests {
 
     #[test]
     fn animated_webp_gate_and_argv() {
-        // Arrange: this box's ffmpeg has no libwebp_anim → gate answers false
-        // with the ErrAnimatedWebPUnsupported sentinel available separately.
-        let (argv, ok) =
-            convert_animated_image_argv("/opt/homebrew/bin/ffmpeg".to_string(), 250, 80);
-        // Assert
-        assert!(argv.is_empty());
-        assert!(!ok);
+        let (binary, resolved) = ffmpeg_cmd();
+        if !resolved {
+            return; // optional external tool
+        }
+        let expected = crate::encoder_probe::has(binary.clone(), "libwebp_anim".to_string());
+        let (argv, ok) = convert_animated_image_argv(binary.clone(), 250, 80);
+        assert_eq!(ok, expected);
+        if expected {
+            assert_eq!(argv[0], binary);
+            assert!(argv.iter().any(|arg| arg == "libwebp_anim"));
+            assert!(argv.iter().any(|arg| arg.contains("min(250,iw)")));
+        } else {
+            assert!(argv.is_empty());
+        }
     }
 
     #[tokio::test]
@@ -221,11 +228,11 @@ mod tests {
     async fn extract_image_live_jpeg() {
         // Live ffmpeg (skip-if-missing): pull the attached-art frame from
         // tests/fixtures/test.mp3 as image2pipe bytes.
+        let media = crate::test_fixtures::fixture("test.mp3");
         let (_bin, ok) = ffmpeg_cmd();
         if !ok {
-            return;
+            return; // optional external tool, never optional fixtures
         }
-        let media = "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.mp3".to_string();
         let cmd = extract_image(media).await;
         match cmd {
             Err(_) => panic!("ffmpeg resolved but launch failed"),
