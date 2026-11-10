@@ -63,6 +63,9 @@ chrono = "^2"
 uuid = { version = "^1", features = ["v4"] }
 base64 = "^0.8"
 md5 = "^0.1"
+# Safe killpg wrapper for the ffmpeg process-group kill (#07/#15). Already in
+# Cargo.lock via tempfile; the `process` feature gates rustix::process.
+rustix = { version = "^1", features = ["process"] }
 
 # Shared lint policy: every crate opts in with `[lints] workspace = true`.
 [workspace.lints.rust]

@@ -781,6 +781,7 @@ name = "nd-ffmpeg"
 version = "0.1.0"
 dependencies = [
  "nd-conf",
+ "rustix",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

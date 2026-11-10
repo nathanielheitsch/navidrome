@@ -15,10 +15,11 @@
 //!
 //! // shortcut: killpg — `process_group(0)` gives the child a *fresh* group
 //! // keyed to its own pid (same tokio rule [`crate::ffcmd`] cites at
-//! // process/mod.rs:772-773) and `kill_on_drop(true)` SIGKILLs that group
-//! // root when the timed-out await's future — and with it the owned `Child`
-//! // — is discarded; neither std nor tokio exposes `killpg`, and Go's
-//! // `exec.CommandContext` signals only the direct child.
+//! // process/mod.rs:772-773). `kill_on_drop(true)` SIGKILLs the direct child
+//! // when the timed-out await's future — and with it the owned `Child` — is
+//! // discarded; the probe's descendants are cleared by the explicit
+//! // `rustix::process::kill_process_group` in [`run_probe`]'s timeout arm, so
+//! // the whole group dies rather than only the direct child Go signals.
 //! // shortcut: deadline — Go's probe has none; the port bounds the await at
 //! // [`PROBE_TIMEOUT_MS`] so a hung ffprobe cannot pin the request.
 //! // shortcut: `ProbeError.err` (Go's wrapped cause, read by
@@ -118,6 +119,12 @@ pub fn stat_token(path: String) -> String {
 /// A timeout or a spawn failure (Go's `exec` ENOEXEC path, whose `ProbeError`
 /// at `ffmpeg.go:163` renders the generic reason) yields empty captures, so
 /// [`crate::probe.probe_client_reason`] answers "could not read file".
+///
+/// The timeout path reaps the ffprobe **process group**, not just the direct
+/// child: `kill_on_drop` SIGKILLs only the child when the timed-out future is
+/// discarded, so a wrapper's descendants would survive. The group id is captured
+/// before the await (the child is consumed by `wait_with_output`) and signalled
+/// after the drop.
 pub async fn run_probe(binary: String, args: Vec<String>) -> (bool, Vec<u8>, Vec<u8>) {
     let mut cmd = Command::new(&binary);
     cmd.args(&args);
@@ -127,18 +134,38 @@ pub async fn run_probe(binary: String, args: Vec<String>) -> (bool, Vec<u8>, Vec
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    let bounded = timeout(Duration::from_millis(PROBE_TIMEOUT_MS), cmd.output()).await;
-    if bounded.is_err() {
-        return (false, Vec::new(), Vec::new());
-    }
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return (false, Vec::new(), Vec::new()),
+    };
+    let pgid = child.id().map(|id| id as i32);
 
-    let launched = bounded.unwrap();
-    if launched.is_err() {
-        return (false, Vec::new(), Vec::new());
-    }
-
-    let done = launched.unwrap();
+    let bounded = timeout(
+        Duration::from_millis(PROBE_TIMEOUT_MS),
+        child.wait_with_output(),
+    )
+    .await;
+    let done = match bounded {
+        Err(_) => {
+            // Direct child already killed by kill_on_drop; clear out the rest.
+            signal_group_gone(pgid);
+            return (false, Vec::new(), Vec::new());
+        }
+        Ok(launched) if launched.is_err() => return (false, Vec::new(), Vec::new()),
+        Ok(launched) => launched.unwrap(),
+    };
     (done.status.success(), done.stdout, done.stderr)
+}
+
+/// Best-effort group SIGKILL on a teardown path where the child handle is gone.
+/// Errors are ignored: the group may already be dead, and nothing downstream
+/// depends on the signal's success.
+fn signal_group_gone(pgid: Option<i32>) {
+    if let Some(raw) = pgid {
+        if let Some(pid) = rustix::process::Pid::from_raw(raw) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
 }
 
 /// `ProbeAudioStream` (`ffmpeg.go:150-168`) for an explicitly-supplied ffprobe
