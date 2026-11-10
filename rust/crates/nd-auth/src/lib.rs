@@ -17,5 +17,6 @@ pub mod login;
 pub mod middleware;
 pub mod publicurl;
 pub mod refresh;
+pub mod setup_store;
 pub mod trusted_sources;
 pub mod verifier;

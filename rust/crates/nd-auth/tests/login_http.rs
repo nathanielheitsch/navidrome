@@ -10,6 +10,7 @@ use axum::Router;
 use nd_auth::credentials::{Authenticator, SigningSecrets};
 use nd_auth::login::{create_admin, login, login_from_headers, HeaderLoginState, LoginState};
 use nd_auth::middleware::{authenticate, AuthGate, MiddlewareState, ProxyPeer};
+use nd_auth::setup_store::run_initial_setup;
 use nd_auth::verifier::ResolutionConfig;
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::store::SQLStore;
@@ -252,6 +253,34 @@ async fn trusted_header_provisions_first_admin_then_regular_user() {
     assert!(alice.password.starts_with("$argon2id$"));
     assert!(alice.last_login_at.is_some());
     drop(app);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn initial_setup_persists_hashed_dev_admin_once() {
+    let (store, path, _) = setup();
+    assert!(
+        run_initial_setup(&store, "dev-password", "2024-01-01T00:00:00Z")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !run_initial_setup(&store, "changed", "2024-01-02T00:00:00Z")
+            .await
+            .unwrap()
+    );
+    let (count, admin) = store
+        .with_connection_sync(|conn| {
+            let repo = UserRepo::new(conn);
+            Ok((repo.count_all().unwrap(), repo.find_first_admin().unwrap()))
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(admin.user_name, "admin");
+    assert!(
+        nd_auth::credentials::password::verify_password("dev-password", &admin.password).unwrap()
+    );
     drop(store);
     let _ = std::fs::remove_file(path);
 }
