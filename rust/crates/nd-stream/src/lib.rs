@@ -20,13 +20,25 @@
 //!     keeps the same branch table but receives the probe verdict as
 //!     [`ProbeInput`], so Go's probe-failure error arm cannot fire here and
 //!     `make_decision` is infallible in the port.
+//!
+//! The serving half (#15) is [`range`] plus [`direct`]: the conditional/Range
+//! matrix Go delegates to `http.ServeContent` (`media_streamer.go:160-162`) and
+//! the bounded direct-file body behind it. [`range`] is pure — metadata plus
+//! request in, headers plus byte window out — so the whole matrix is testable
+//! without a server. [`direct`] is the only I/O in that path and takes an
+//! **already-authorized** path; see the trust boundary in `direct.rs`.
+//! Still open in #15: the transcode limiter (`limiter.go`), the transcoding-file
+//! cache eviction contract (`utils/cache`), the archiver (`core/archiver.go`),
+//! and the process-backed transcode body (`media_streamer.go:101-133`).
 
 pub mod aliases;
 pub mod codec;
 pub mod decider;
+pub mod direct;
 pub mod legacy_client;
 pub mod limitations;
 pub mod probe_json;
+pub mod range;
 pub mod token;
 pub mod types;
 
@@ -46,11 +58,21 @@ pub use decider::{build_source_stream, parse_probe_data, resolve_target_format};
 pub use decider::{
     new_transcode_decider, ProbeInput, TranscodeDecider, Transcoding, FALLBACK_BITRATE,
 };
+pub use direct::{
+    meta_from_metadata, normalize_etag, open_authorized, plan_and_open, RangeBody, MAX_CHUNK_BYTES,
+};
 pub use legacy_client::{
     apply_server_override, build_legacy_client_info, resolve_client_request, resolve_request,
 };
 pub use limitations::{apply_limitation, check_limitations, AdjustResult};
 pub use probe_json::{probe_bytes, probe_json};
+pub use range::{
+    check_if_match, check_if_modified_since, check_if_none_match, check_if_range,
+    check_if_unmodified_since, etag_strong_match, etag_weak_match, http_date, parse_http_time,
+    parse_range, plan, plan_streaming, preconditions, scan_etag, trim_http_ws, ByteRange,
+    CondRequest, CondResult, FileMeta, PrecondOutcome, RangeOutcome, ServePlan,
+    ACCEPT_RANGES_BYTES, ACCEPT_RANGES_NONE, MAX_CONTENT_RANGES,
+};
 pub use token::{
     create_transcode_params, params_from_token, parse_transcode_params, resolve_request_from_token,
     TranscodeParams, TOKEN_TTL_SECS,

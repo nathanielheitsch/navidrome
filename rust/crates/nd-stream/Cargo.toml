@@ -12,6 +12,13 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 jsonwebtoken = { workspace = true }
+# Serving half (#15): `fs` for tokio::fs file access, `io-util` for AsyncRead.
+# Deliberately narrow — the workspace pin is `^1` and `full` is not used here
+# (siblings narrow the same way: nd-db/Cargo.toml, nd-events/Cargo.toml).
+tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "test-util"] }
 
 [lints]
 workspace = true
