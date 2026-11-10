@@ -344,14 +344,15 @@ mod tests {
         // Assert: LIMIT/OFFSET stripped from sq (RemoveLimit/RemoveOffset),
         // the _ranked subquery inlined, order preserved via _ranked._rn, and
         // args are [rowid-query args..., sq's WHERE args...] — user text is a
-        // `?` param, never interpolated.
+        // `?` param, never interpolated. The bounds themselves are squirrel
+        // literals (`select.go:139-147`), so they contribute no args.
         assert_eq!(
             sql,
             "SELECT * FROM album \
              INNER JOIN (SELECT rowid as _rid, row_number() OVER () AS _rn FROM \
              (SELECT album.rowid FROM album WHERE album.missing = ? AND \
              album.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?) \
-             ORDER BY album.rowid LIMIT ? OFFSET ?)) AS _ranked ON album.rowid = _ranked._rid \
+             ORDER BY album.rowid LIMIT 10 OFFSET 20)) AS _ranked ON album.rowid = _ranked._rid \
              WHERE album.name = ? ORDER BY _ranked._rn"
         );
         assert_eq!(
@@ -359,8 +360,6 @@ mod tests {
             vec![
                 Value::Bool(false),
                 Value::Text("user1".to_string()),
-                Value::Integer(10),
-                Value::Integer(20),
                 Value::Text("Abbey Road".to_string()),
             ]
         );
@@ -369,8 +368,8 @@ mod tests {
     #[test]
     fn do_search_empty_query_pins_natural_order_rowid_page() {
         // Arrange: doSearch (sql_search.go:47-50) for search3 query="". The
-        // full select keeps its pagination? No — hydrate strips it (sq's
-        // LIMIT ? OFFSET ? below belong to the ROWID query, not sq).
+        // full select keeps its pagination? No — hydrate strips it (the
+        // `LIMIT 20 OFFSET 40` below belongs to the ROWID query, not sq).
         let options = QueryOptions {
             max: 20,
             offset: 40,
@@ -404,7 +403,7 @@ mod tests {
              INNER JOIN (SELECT rowid as _rid, row_number() OVER () AS _rn FROM \
              (SELECT album.rowid FROM album WHERE album.missing = ? AND \
              album.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?) \
-             ORDER BY album.rowid LIMIT ? OFFSET ?)) AS _ranked ON album.rowid = _ranked._rid \
+             ORDER BY album.rowid LIMIT 20 OFFSET 40)) AS _ranked ON album.rowid = _ranked._rid \
              WHERE album.missing = ? ORDER BY _ranked._rn"
         );
         assert_eq!(
@@ -412,8 +411,6 @@ mod tests {
             vec![
                 Value::Bool(false),
                 Value::Text("user1".to_string()),
-                Value::Integer(20),
-                Value::Integer(40),
                 Value::Bool(false),
             ]
         );
@@ -576,7 +573,7 @@ mod tests {
              INNER JOIN (SELECT rowid as _rid, row_number() OVER () AS _rn FROM \
              (SELECT album.rowid FROM album INNER JOIN album_fts ON \
              album_fts.rowid = album.rowid AND album_fts MATCH ? WHERE \
-             album.missing = ? ORDER BY album_fts.rank, album.name LIMIT ?)) AS _ranked ON album.rowid = _ranked._rid \
+             album.missing = ? ORDER BY album_fts.rank, album.name LIMIT 10)) AS _ranked ON album.rowid = _ranked._rid \
              WHERE album.missing = ? ORDER BY _ranked._rn"
         );
         assert_eq!(
@@ -584,7 +581,6 @@ mod tests {
             vec![
                 Value::Text("(beatles OR beatles*)".to_string()),
                 Value::Bool(false),
-                Value::Integer(10),
                 Value::Bool(false),
             ]
         );

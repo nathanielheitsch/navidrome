@@ -157,7 +157,7 @@ pub fn refresh_sql(
 ///  FROM media_file
 ///  <criteria joins>  <library filter>
 ///  WHERE <filter>
-///  [ORDER BY <order_by>]  [LIMIT ? [OFFSET ?]]`
+///  [ORDER BY <order_by>]  [LIMIT n [OFFSET n]]`
 ///
 /// The `<playlist_id>` literal is Go's own string splice (`:175`); the port
 /// keeps it as SQL text because the id is a server-generated fixed identifier.
@@ -207,12 +207,11 @@ pub fn build_insert_select(
         sql.push_str(&format!(" ORDER BY {}", criteria.order_by));
     }
     if criteria.limit > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(Value::Integer(criteria.limit));
-        // squirrel emits both bounds together once Limit is set (Go calls
-        // .Limit().Offset() unconditionally inside the limit branch, :205).
-        sql.push_str(" OFFSET ?");
-        args.push(Value::Integer(criteria.offset));
+        // squirrel renders the bounds as decimal literals and contributes no
+        // args (`select.go:139-147`). Go calls `.Limit().Offset()` together
+        // inside the limit branch (:205), so both are emitted here too.
+        sql.push_str(&format!(" LIMIT {}", criteria.limit));
+        sql.push_str(&format!(" OFFSET {}", criteria.offset));
     }
     (sql, args)
 }
@@ -388,7 +387,7 @@ mod tests {
              media_file.album_id AND album_annotation.item_type = 'album' AND \
              album_annotation.user_id = ?) \
              WHERE media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?) \
-             AND media_file.title LIKE ? ORDER BY media_file.title asc LIMIT ? OFFSET ?"
+             AND media_file.title LIKE ? ORDER BY media_file.title asc LIMIT 10 OFFSET 5"
         );
         assert_eq!(
             args,
@@ -397,10 +396,10 @@ mod tests {
                 Value::Text("u1".to_string()),     // album_annotation join
                 Value::Text("u1".to_string()),     // library subquery
                 Value::Text("%love%".to_string()), // criteria filter
-                Value::Integer(10),                // limit
-                Value::Integer(5),                 // offset
             ]
         );
+        // Assert: the limit/offset bounds are squirrel literals
+        // (`select.go:139-147`), so they contribute no args.
     }
 
     #[test]

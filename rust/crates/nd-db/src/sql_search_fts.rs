@@ -1066,10 +1066,13 @@ mod tests {
         // Assert:
         assert!(select_sql.starts_with("SELECT * FROM album WHERE album.rowid IN"));
         assert!(count_sql.contains("count(distinct album.id) as count"));
-        assert!(select_sql.ends_with("LIMIT ?"));
+        assert!(select_sql.ends_with("LIMIT 10"));
+        // Assert: the limit is a squirrel literal (`select.go:139-142`), so the
+        // select's only arg is the FTS match expression.
+        assert_eq!(select_args, vec![Value::Text(fts.match_expr.clone())]);
         assert!(!select_sql.contains("Peppers"));
         assert!(!count_sql.contains("Peppers"));
-        assert_eq!(select_args.len(), 2);
+        assert_eq!(select_args.len(), 1);
         assert_eq!(count_args, vec![Value::Text(fts.match_expr.clone())]);
     }
 }

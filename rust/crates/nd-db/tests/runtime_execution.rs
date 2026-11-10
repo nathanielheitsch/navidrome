@@ -5,8 +5,9 @@
 //! from an async task without blocking the executor).
 
 use nd_db::execution::{execute, query_all, query_optional};
+use nd_db::library_repo;
 use nd_db::pool::{Pool, PoolConfig};
-use nd_db::sqlrepo::Value;
+use nd_db::sqlrepo::{Repository, Value};
 use nd_db::store::SQLStore;
 use nd_db::user_repo::{
     find_by_username_sql, get_all_users_sql, get_user_sql, select_user_with_libraries,
@@ -48,7 +49,7 @@ fn user_where_before_group_by_executes_with_bound_adversarial_username() {
             let page = select_user_with_libraries(None, vec![], &["user.id"], Some(1), Some(1));
             assert!(query_all(conn, &page, |_| Ok(()))?.is_empty());
             // Offset-only page: squirrel's bare `OFFSET n` is a SQLite parse
-            // error; the port's `LIMIT -1 OFFSET ?` renders and executes (the
+            // error; the port's `LIMIT -1 OFFSET n` renders and executes (the
             // cited deviation on `select_user_with_libraries`). One row exists,
             // so offset 0 keeps it and offset 1 pages past it.
             let first_page = get_all_users_sql(&["user.id"], None, Some(0));
@@ -75,6 +76,78 @@ fn user_where_before_group_by_executes_with_bound_adversarial_username() {
                 )))?,
                 Some(("text".into(), 7, 1.5, true, None))
             );
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
+fn literal_pagination_bounds_execute_against_sqlite() {
+    // Milestone-3 golden: squirrel renders LIMIT/OFFSET as decimal literals
+    // (`select.go:139-147`), and SQLite rejects a bare `OFFSET n`. Every page
+    // shape the port now emits must actually run, not just render.
+    let store = store();
+    store
+        .with_connection_sync(|conn| {
+            for id in 1..=5 {
+                conn.execute(
+                    "INSERT INTO library(id, name, path) VALUES(?, ?, ?)",
+                    rusqlite::params![id, format!("lib-{id}"), format!("/r/{id}")],
+                )?;
+            }
+            // Builder path: LIMIT + OFFSET as literals, no bound args.
+            let (sql, args) = Repository::new("library")
+                .select(["id"])
+                .order_by(["id"])
+                .limit(2)
+                .offset(2)
+                .to_sql()
+                .expect("pagination renders");
+            assert_eq!(sql, "SELECT id FROM library ORDER BY id LIMIT 2 OFFSET 2");
+            assert!(args.is_empty());
+            assert_eq!(
+                query_all(conn, &(sql, args), |r| r.get::<_, i64>(0))?,
+                vec![3, 4]
+            );
+
+            // Offset-only page through the builder: the port's `LIMIT -1`
+            // deviation is what makes this execute at all.
+            let (sql, args) = Repository::new("library")
+                .select(["id"])
+                .order_by(["id"])
+                .offset(3)
+                .to_sql()
+                .expect("offset renders");
+            assert_eq!(sql, "SELECT id FROM library ORDER BY id LIMIT -1 OFFSET 3");
+            assert_eq!(
+                query_all(conn, &(sql, args), |r| r.get::<_, i64>(0))?,
+                vec![4, 5]
+            );
+
+            // squirrel's own shape, for contrast: a bare OFFSET is a parse error.
+            let bare = "SELECT id FROM library ORDER BY id OFFSET 3";
+            assert!(conn.prepare(bare).is_err(), "bare OFFSET must not prepare");
+
+            // Repository-level pages reached through the real SQL builders.
+            let (sql, args) = library_repo::get_all_sql(&["name asc"], 2, 1);
+            assert_eq!(
+                sql,
+                "SELECT * FROM library ORDER BY name asc LIMIT 2 OFFSET 1"
+            );
+            assert!(args.is_empty());
+            assert_eq!(query_all(conn, &(sql, args), |_| Ok(()))?.len(), 2);
+
+            // Offset without a limit at a hand-rolled site: executes via `LIMIT -1`.
+            let (sql, args) = library_repo::get_all_sql(&["name asc"], 0, 2);
+            assert_eq!(
+                sql,
+                "SELECT * FROM library ORDER BY name asc LIMIT -1 OFFSET 2"
+            );
+            assert_eq!(query_all(conn, &(sql, args), |_| Ok(()))?.len(), 3);
+
+            // A page beyond the last row is an empty result, not an error.
+            let (sql, args) = library_repo::get_all_sql(&["name asc"], 10, 50);
+            assert!(query_all(conn, &(sql, args), |_| Ok(()))?.is_empty());
             Ok(())
         })
         .unwrap();

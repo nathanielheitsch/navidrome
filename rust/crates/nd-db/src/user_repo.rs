@@ -75,7 +75,7 @@ pub fn libraries_json_column() -> String {
 /// multiplication. `where_sql`/`where_args` pin the caller's clause
 /// (`Eq{"user.id": id}` etc.); `order_by` carries each expression's direction
 /// (Go's `buildSortOrder` output); `limit`/`offset` are the `Max`/`Offset`
-/// of `model.QueryOptions`, rendered as bound placeholders like squirrel.
+/// of `model.QueryOptions`, rendered as decimal literals like squirrel.
 ///
 /// Clause order follows squirrel's renderer (`select.go:117-148`): JOINs, WHERE,
 /// GROUP BY, ORDER BY, LIMIT, OFFSET — so `GROUP BY` sits *after* the caller's
@@ -86,8 +86,8 @@ pub fn libraries_json_column() -> String {
 /// `OFFSET n` (`select.go:144-147`) whenever `Max` is unset, so Go's
 /// offset-only page fails at the driver (`sql_base_repository.go:151-157`).
 /// Instead of reproducing that latent failure, an offset with no limit renders
-/// `LIMIT -1` — SQLite's unlimited bound — before `OFFSET ?`, keeping the
-/// crate invariant that every value is bound (`Value::Integer(-1)`).
+/// `LIMIT -1` — SQLite's unlimited bound — before `OFFSET n`. The bounds are
+/// literals (`select.go:139-147`), so they never join the args list.
 #[must_use]
 pub fn select_user_with_libraries(
     where_sql: Option<&str>,
@@ -102,7 +102,7 @@ pub fn select_user_with_libraries(
          LEFT JOIN library ON ul.library_id = library.id",
         libraries_json_column()
     );
-    let mut args = where_args;
+    let args = where_args;
     if let Some(clause) = where_sql {
         sql.push_str(&format!(" WHERE {clause}"));
     }
@@ -111,15 +111,20 @@ pub fn select_user_with_libraries(
         sql.push_str(&format!(" ORDER BY {}", order_by.join(", ")));
     }
     if let Some(max) = limit {
-        sql.push_str(" LIMIT ?");
-        args.push(Value::Integer(i64::try_from(max).unwrap_or(i64::MAX)));
+        // squirrel renders the bound as a decimal literal and binds nothing
+        // (`select.go:139-142`), so it never joins the args list.
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     if let Some(off) = offset {
         if limit.is_none() {
+            // Deviation (deliberate, cited): squirrel emits a bare `OFFSET n`
+            // when Max is unset (`applyOptions` sets the bounds independently,
+            // `sql_base_repository.go:151-156`), which SQLite rejects as a parse
+            // error. SQLite is Navidrome's primary engine, so the port emits
+            // `LIMIT -1` (its unlimited bound) ahead of the offset.
             sql.push_str(" LIMIT -1");
         }
-        sql.push_str(" OFFSET ?");
-        args.push(Value::Integer(i64::try_from(off).unwrap_or(i64::MAX)));
+        sql.push_str(&format!(" OFFSET {off}"));
     }
     (sql, args)
 }
@@ -905,16 +910,9 @@ mod tests {
              )) FILTER (WHERE library.id IS NOT NULL), '[]') AS libraries_json \
              FROM user LEFT JOIN user_library ul ON user.id = ul.user_id \
              LEFT JOIN library ON ul.library_id = library.id \
-             WHERE user.id = ? GROUP BY user.id ORDER BY updated_at LIMIT ? OFFSET ?"
+             WHERE user.id = ? GROUP BY user.id ORDER BY updated_at LIMIT 1 OFFSET 5"
         );
-        assert_eq!(
-            args,
-            vec![
-                Value::Text(USER_ID.to_string()),
-                Value::Integer(1),
-                Value::Integer(5),
-            ]
-        );
+        assert_eq!(args, vec![Value::Text(USER_ID.to_string())]);
     }
 
     #[test]
@@ -929,9 +927,9 @@ mod tests {
         assert!(get_sql.starts_with("SELECT user.*, COALESCE(json_group_array"));
         assert!(get_sql.contains(" WHERE user.id = ? GROUP BY user.id"));
         assert_eq!(get_args, vec![Value::Text(USER_ID.to_string())]);
-        assert!(all_sql.ends_with(" GROUP BY user.id ORDER BY name asc LIMIT ?"));
-        // Assert: squirrel renders the LIMIT as a bound placeholder.
-        assert_eq!(all_args, vec![Value::Integer(10)]);
+        assert!(all_sql.ends_with(" GROUP BY user.id ORDER BY name asc LIMIT 10"));
+        // Assert: squirrel renders the bound as a literal, contributing no arg.
+        assert_eq!(all_args, Vec::<Value>::new());
         assert_eq!(
             count_sql,
             "SELECT count(distinct user.id) as count FROM user"
@@ -947,9 +945,9 @@ mod tests {
         let (sql, args) = find_first_admin_sql();
         // Assert:
         assert!(
-            sql.contains(" WHERE user.is_admin = ? GROUP BY user.id ORDER BY updated_at LIMIT ?")
+            sql.contains(" WHERE user.is_admin = ? GROUP BY user.id ORDER BY updated_at LIMIT 1")
         );
-        assert_eq!(args, vec![Value::Bool(true), Value::Integer(1)]);
+        assert_eq!(args, vec![Value::Bool(true)]);
     }
 
     #[test]
@@ -961,8 +959,9 @@ mod tests {
         // Act:
         let (sql, args) = get_all_users_sql(&["name asc"], None, Some(20));
         // Assert:
-        assert!(sql.ends_with(" GROUP BY user.id ORDER BY name asc LIMIT -1 OFFSET ?"));
-        assert_eq!(args, vec![Value::Integer(20)]);
+        assert!(sql.ends_with(" GROUP BY user.id ORDER BY name asc LIMIT -1 OFFSET 20"));
+        // Assert: the bounds are literals, so nothing is bound.
+        assert!(args.is_empty());
     }
 
     #[test]

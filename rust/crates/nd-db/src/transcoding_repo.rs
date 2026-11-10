@@ -260,8 +260,9 @@ mod tests {
         // Act:
         let (sql, args) = read_all_sql(Some(&options));
         // Assert:
-        assert_eq!(sql, "SELECT * FROM transcoding LIMIT ?");
-        assert_eq!(args, vec![Value::Integer(20)]);
+        assert_eq!(sql, "SELECT * FROM transcoding LIMIT 20");
+        // Assert: squirrel renders the bound as a literal (`select.go:139-142`).
+        assert!(args.is_empty());
     }
 
     #[test]

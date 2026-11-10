@@ -261,15 +261,27 @@ impl Repository {
         self
     }
 
-    /// Sets `LIMIT ?` (squirrel `.Limit`, `sql_base_repository.go:106-108`).
-    /// Squirrel emits a bound parameter, not a literal, so the port does too.
+    /// Sets the `LIMIT` bound (squirrel `.Limit`, `sql_base_repository.go:151-153`).
+    ///
+    /// Squirrel stores the bound as a rendered decimal string — `Limit(n)` is
+    /// `builder.Set(b, "Limit", fmt.Sprintf("%d", n))` (`squirrel@v1.5.4
+    /// select.go:376-378`) and `ToSql` writes it straight into the SQL
+    /// (`select.go:139-142`), contributing **no** argument. So the bound is a
+    /// literal, not a placeholder, and the port renders it as one too. The
+    /// values here are always `u64` page sizes coming from
+    /// [`crate::sql_restful::QueryOptions`] rather than caller text, so
+    /// interpolation is not an injection surface.
     #[must_use]
     pub fn limit(mut self, limit: u64) -> Self {
         self.limit = Some(limit);
         self
     }
 
-    /// Sets `OFFSET ?` (squirrel `.Offset`, `sql_base_repository.go:109-111`).
+    /// Sets the `OFFSET` bound (squirrel `.Offset`, `sql_base_repository.go:154-156`).
+    ///
+    /// Same literal rendering as [`Self::limit`] (`select.go:386-388`,
+    /// `select.go:144-147`). See [`Self::to_sql`] for the one place the port
+    /// deliberately departs from squirrel's output.
     #[must_use]
     pub fn offset(mut self, offset: u64) -> Self {
         self.offset = Some(offset);
@@ -291,10 +303,20 @@ impl Repository {
 
     /// Materializes the query, porting `toSQL()`
     /// (`sql_base_repository.go:358-372`): `SELECT cols FROM table [JOINs]
-    /// [WHERE all-clauses-AND] [ORDER BY exprs] [LIMIT ?] [OFFSET ?]`, with
-    /// every value bound to a `?` placeholder in order. Go's trailing rewrite
-    /// of `?` into dbx named params `{:p0}` has no rusqlite counterpart and is
-    /// intentionally not ported.
+    /// [WHERE all-clauses-AND] [GROUP BY] [ORDER BY exprs] [LIMIT n]
+    /// [OFFSET n]`, with every *filter* value bound to a `?` placeholder in
+    /// order. Squirrel's `LIMIT`/`OFFSET` bounds are rendered decimal literals
+    /// and contribute no args (`select.go:139-147`), so they do not join the
+    /// arg list. Go's trailing rewrite of `?` into dbx named params `{:p0}`
+    /// has no rusqlite counterpart and is intentionally not ported.
+    ///
+    /// Deviation (deliberate, cited): squirrel emits a bare `OFFSET n` when
+    /// `Max` is unset (`applyOptions` sets the two bounds independently,
+    /// `sql_base_repository.go:151-156`), which is valid on PostgreSQL and
+    /// MySQL but a **parse error on SQLite** — SQLite requires a `LIMIT`
+    /// before `OFFSET`. Since SQLite is Navidrome's primary engine, the port
+    /// emits `LIMIT -1` (SQLite's unlimited bound) ahead of `OFFSET n` in
+    /// that case, so an offset-only page executes instead of failing.
     ///
     /// # Errors
     /// [`SqlError::NoTable`] if the builder has no `from` table;
@@ -335,16 +357,18 @@ impl Repository {
             sql.push_str(&format!(" ORDER BY {}", self.order_by.join(", ")));
         }
 
-        // Squirrel renders both bounds as placeholders; empty-IN squirrels to
-        // `1=0`, but an empty values list is a caller bug the builder rejects
-        // rather than silently matches nothing.
+        // Squirrel renders the bounds as decimal literals straight into the
+        // SQL and pushes nothing onto args (`select.go:139-147`); empty-IN
+        // still squirrels to `1=0`, but an empty values list is a caller bug
+        // the builder rejects rather than silently matching nothing.
         if let Some(limit) = self.limit {
-            sql.push_str(" LIMIT ?");
-            args.push(Value::Integer(i64::try_from(limit).unwrap_or(i64::MAX)));
+            sql.push_str(&format!(" LIMIT {limit}"));
         }
         if let Some(offset) = self.offset {
-            sql.push_str(" OFFSET ?");
-            args.push(Value::Integer(i64::try_from(offset).unwrap_or(i64::MAX)));
+            if self.limit.is_none() {
+                sql.push_str(" LIMIT -1");
+            }
+            sql.push_str(&format!(" OFFSET {offset}"));
         }
 
         Ok((sql, args))
@@ -437,8 +461,8 @@ mod tests {
     }
 
     #[test]
-    fn pagination_renders_placeholder_bounds_and_order() {
-        // Arrange: applyOptions' Limit/Offset/OrderBy (sql_base_repository.go:105-112);
+    fn pagination_renders_literal_bounds_and_contributes_no_args() {
+        // Arrange: applyOptions' Limit/Offset/OrderBy (sql_base_repository.go:145-159);
         // buildSortOrder output carries the direction in the expression.
         let repo = Repository::new("artist")
             .select(["name", "artist.id"])
@@ -447,12 +471,29 @@ mod tests {
             .offset(20);
         // Act:
         let (sql, args) = repo.to_sql().expect("pagination renders");
-        // Assert:
+        // Assert: squirrel stores the bounds as rendered decimals
+        // (`select.go:376-388`) and writes them into the SQL without touching
+        // args (`select.go:139-147`), so nothing here is bound.
         assert_eq!(
             sql,
-            "SELECT name, artist.id FROM artist ORDER BY name asc LIMIT ? OFFSET ?"
+            "SELECT name, artist.id FROM artist ORDER BY name asc LIMIT 10 OFFSET 20"
         );
-        assert_eq!(args, vec![Value::Integer(10), Value::Integer(20)]);
+        assert_eq!(args, Vec::<Value>::new());
+    }
+
+    #[test]
+    fn offset_without_limit_emits_the_sqlite_unlimited_bound() {
+        // Arrange: applyOptions sets the bounds independently
+        // (sql_base_repository.go:151-156), so Max unset + Offset set squirrels
+        // a bare `OFFSET 5`.
+        let repo = Repository::new("user").select(["*"]).offset(5);
+        // Act:
+        let (sql, args) = repo.to_sql().expect("offset renders");
+        // Assert: squirrel's bare `OFFSET n` is a SQLite parse error, so the
+        // port precedes it with `LIMIT -1` (SQLite's unlimited bound). Bounds
+        // stay literals, so args remains empty.
+        assert_eq!(sql, "SELECT * FROM user LIMIT -1 OFFSET 5");
+        assert_eq!(args, Vec::<Value>::new());
     }
 
     #[test]

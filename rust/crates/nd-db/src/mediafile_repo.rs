@@ -340,17 +340,25 @@ pub fn get_all_sql(
     max: i64,
     offset: i64,
 ) -> Sql {
-    let (mut sql, mut args) = select_media_file(user_id, library_filter);
+    let (mut sql, args) = select_media_file(user_id, library_filter);
     if !order_by.is_empty() {
         sql.push_str(&format!(" ORDER BY {}", order_by.join(", ")));
     }
     if max > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(crate::sqlrepo::Value::Integer(max));
+        // squirrel renders the bound as a decimal literal and binds nothing
+        // (`select.go:139-147`), so `max` joins neither clause nor args list.
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     if offset > 0 {
-        sql.push_str(" OFFSET ?");
-        args.push(crate::sqlrepo::Value::Integer(offset));
+        // Deviation (deliberate, cited): squirrel emits a bare `OFFSET n`
+        // (`applyOptions` sets the bounds independently,
+        // `sql_base_repository.go:151-156`), which SQLite rejects — a parse
+        // error. SQLite is Navidrome's primary engine, so the port emits
+        // `LIMIT -1` (its unlimited bound) ahead of the offset.
+        if max <= 0 {
+            sql.push_str(" LIMIT -1");
+        }
+        sql.push_str(&format!(" OFFSET {offset}"));
     }
     (sql, args)
 }
@@ -380,8 +388,9 @@ pub fn get_random_rowid_sql(
     }
     sql.push_str(" ORDER BY random()");
     if max > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(crate::sqlrepo::Value::Integer(max));
+        // `.Limit(uint64(opt.Max))` (`mediafile_repository.go:261`) renders as a
+        // decimal literal with no bound arg (`select.go:139-142`).
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     (sql, args)
 }
@@ -1029,8 +1038,10 @@ mod tests {
             )
         );
         let (sql, args) = get_all_sql(None, None, &["title asc"], 10, 20);
-        assert!(sql.ends_with(" ORDER BY title asc LIMIT ? OFFSET ?"));
-        assert_eq!(args, vec![Value::Integer(10), Value::Integer(20)]);
+        // Assert: the bounds render as squirrel literals (`select.go:139-147`),
+        // so the page contributes no args.
+        assert!(sql.ends_with(" ORDER BY title asc LIMIT 10 OFFSET 20"));
+        assert!(args.is_empty());
     }
 
     #[test]
@@ -1052,12 +1063,9 @@ mod tests {
             "SELECT media_file.rowid FROM media_file \
              WHERE title like ? AND media_file.library_id IN \
              (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?) \
-             ORDER BY random() LIMIT ?"
+             ORDER BY random() LIMIT 5"
         );
-        assert_eq!(
-            rowid_args,
-            vec![Value::from("%x%"), Value::from("user1"), Value::Integer(5)]
-        );
+        assert_eq!(rowid_args, vec![Value::from("%x%"), Value::from("user1")]);
         assert!(hydrate_sql.ends_with("WHERE media_file.rowid IN (?, ?, ?) ORDER BY random()"));
         assert_eq!(
             hydrate_args,

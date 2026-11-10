@@ -23,8 +23,9 @@
 //! (`JSON_GROUP_OBJECT(...)`) and `GROUP BY artist.id` have no
 //! [`crate::sqlrepo::Repository`] spelling (that builder renders neither),
 //! so the artist selects are hand-rendered here in squirrel's clause order
-//! (JOIN, WHERE, GROUP BY, ORDER BY, LIMIT/OFFSET) with every value bound
-//! and every identifier fixed. The search path composes the shared
+//! (JOIN, WHERE, GROUP BY, ORDER BY, LIMIT/OFFSET) with every filter value
+//! bound and every identifier fixed; the bounds themselves are squirrel
+//! literals (`select.go:139-147`) and contribute no args. The search path composes the shared
 //! exported phases ([`crate::sql_search::rowid_page_phase`]'s filter stack)
 //! instead of [`crate::sql_search::do_search`], for the same reason — the
 //! base select cannot ride through a `Repository` without losing the
@@ -192,21 +193,29 @@ fn where_fragment(options: Option<&QueryOptions>) -> Option<(String, Vec<Value>)
     options.and_then(|o| o.where_clause())
 }
 
-/// The `LIMIT ? OFFSET ?` tail `applyOptions` appends (`:149-159`).
-fn pagination_fragment(options: Option<&QueryOptions>) -> (String, Vec<Value>) {
+/// The `LIMIT n [OFFSET n]` tail `applyOptions` appends (`:149-159`).
+/// Squirrel renders both bounds as decimal literals and contributes no
+/// arguments (`select.go:139-147`), so this returns SQL only.
+#[must_use]
+fn pagination_fragment(options: Option<&QueryOptions>) -> String {
+    let Some(o) = options else {
+        return String::new();
+    };
     let mut sql = String::new();
-    let mut args = Vec::new();
-    if let Some(o) = options {
-        if o.max > 0 {
-            sql.push_str(" LIMIT ?");
-            args.push(Value::Integer(o.max));
-        }
-        if o.offset > 0 {
-            sql.push_str(" OFFSET ?");
-            args.push(Value::Integer(o.offset));
-        }
+    if o.max > 0 {
+        sql.push_str(&format!(" LIMIT {}", o.max));
     }
-    (sql, args)
+    if o.offset > 0 {
+        // Deviation (deliberate, cited): squirrel emits a bare `OFFSET n`
+        // (`applyOptions` sets the bounds independently, :151-156), which
+        // SQLite rejects as a parse error; the port adds `LIMIT -1` (SQLite's
+        // unlimited bound) so an offset-only page executes.
+        if o.max <= 0 {
+            sql.push_str(" LIMIT -1");
+        }
+        sql.push_str(&format!(" OFFSET {}", o.offset));
+    }
+    sql
 }
 
 /// `selectArtist` (`:207-214`): the stats select — `artist.*` plus the
@@ -236,9 +245,7 @@ pub fn select_artist_sql(
         args.extend(filter_args);
     }
     sql.push_str(&format!(" GROUP BY {TABLE}.id"));
-    let (page_sql, page_args) = pagination_fragment(options);
-    sql.push_str(&page_sql);
-    args.extend(page_args);
+    sql.push_str(&pagination_fragment(options));
     (sql, args)
 }
 
@@ -648,9 +655,7 @@ pub fn get_all_ids_sql(user: &User, options: Option<&QueryOptions>) -> Sql {
         args.extend(filter_args);
     }
     sql.push_str(&format!(" GROUP BY {TABLE}.id"));
-    let (page_sql, page_args) = pagination_fragment(options);
-    sql.push_str(&page_sql);
-    args.extend(page_args);
+    sql.push_str(&pagination_fragment(options));
     (sql, args)
 }
 
@@ -1058,9 +1063,7 @@ pub fn search_sql(
             }
             args.extend(clause_args);
             sql.push_str(&format!(" ORDER BY {}", cfg.order_by.join(", ")));
-            let (page_sql, page_args) = pagination_fragment(Some(options));
-            sql.push_str(&page_sql);
-            args.extend(page_args);
+            sql.push_str(&pagination_fragment(Some(options)));
             Ok(ArtistSearchOutcome::Query((sql, args)))
         }
     }
@@ -1087,14 +1090,11 @@ fn two_phase_sql(
     page_sql: String,
     page_args: Vec<Value>,
 ) -> Sql {
-    let (base_sql, mut base_args) = base;
+    let (base_sql, base_args) = base;
     // Go strips the base's pagination before hydrating (RemoveLimit/
     // RemoveOffset, sql_search.go:126-127): the page query owns the
-    // LIMIT/OFFSET and the base's trailing page args go with it.
-    let (base_sql, dropped) = strip_pagination(&base_sql);
-    for _ in 0..dropped {
-        base_args.pop();
-    }
+    // LIMIT/OFFSET, and squirrel's bounds are literals so no args go with them.
+    let base_sql = strip_pagination(&base_sql);
     // Page args bind AT the join position (sql_search.go:141) — after the
     // base's JOIN args and ahead of its WHERE args (base_args is flat
     // [join_args, where_args]; base_where.1.len() splits them).
@@ -1125,24 +1125,33 @@ fn two_phase_sql(
 }
 
 /// `RemoveLimit`/`RemoveOffset` (`sql_search.go:126-127`) on a rendered SQL
-/// string: strip the trailing ` LIMIT ?`/` OFFSET ?` tail the base select
-/// carried and report how many placeholders were dropped (one per arg to
-/// pop).
+/// string: drop the trailing `LIMIT n [OFFSET n]` tail the base select carried.
+/// The bounds are decimal literals (`select.go:139-147`), so nothing is popped
+/// from the args list.
 #[must_use]
-fn strip_pagination(sql: &str) -> (String, usize) {
+fn strip_pagination(sql: &str) -> String {
+    /// End offset of a `<keyword><signed decimal>` suffix, if the SQL ends with
+    /// one; `None` when the tail after the keyword is not a bare number.
+    fn bound_suffix(s: &str, keyword: &str) -> Option<usize> {
+        let index = s.rfind(keyword)?;
+        let tail = &s[index + keyword.len()..];
+        let digits = tail.strip_prefix('-').unwrap_or(tail);
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        Some(index)
+    }
     let mut s = sql.to_string();
-    let mut dropped = 0;
-    if s.ends_with(" OFFSET ?") {
-        let cut = s.len() - " OFFSET ?".len();
-        s.truncate(cut);
-        dropped += 1;
+    // Pagination is the last thing the base select appended, so peel the
+    // trailing `OFFSET n` then the trailing `LIMIT n` (including the port's
+    // `LIMIT -1` unlimited bound), mirroring RemoveLimit + RemoveOffset.
+    while let Some(index) = bound_suffix(&s, " OFFSET ") {
+        s.truncate(index);
     }
-    if s.ends_with(" LIMIT ?") {
-        let cut = s.len() - " LIMIT ?".len();
-        s.truncate(cut);
-        dropped += 1;
+    while let Some(index) = bound_suffix(&s, " LIMIT ") {
+        s.truncate(index);
     }
-    (s, dropped)
+    s
 }
 
 /// `requestedLibraryIDs` (`:702-710`): the `[]int` of an
@@ -1412,17 +1421,9 @@ mod tests {
              INNER JOIN library_artist on library_artist.artist_id = artist.id \
              INNER JOIN user_library on user_library.library_id = library_artist.library_id \
              AND user_library.user_id = ? \
-             WHERE starred = ? GROUP BY artist.id LIMIT ? OFFSET ?"
+             WHERE starred = ? GROUP BY artist.id LIMIT 10 OFFSET 20"
         );
-        assert_eq!(
-            args,
-            vec![
-                Value::Text("u1".to_string()),
-                Value::Bool(true),
-                Value::Integer(10),
-                Value::Integer(20),
-            ]
-        );
+        assert_eq!(args, vec![Value::Text("u1".to_string()), Value::Bool(true)]);
     }
 
     #[test]
@@ -1853,7 +1854,9 @@ mod tests {
             panic!("the empty query must produce a query");
         };
         assert!(sql.contains("row_number() OVER () AS _rn"));
-        assert!(sql.contains("ORDER BY artist.id LIMIT ? OFFSET ?"));
+        // Assert: the page bounds are literals in the rowid subquery, so they
+        // never reach args (`select.go:139-147`).
+        assert!(sql.contains("ORDER BY artist.id LIMIT 5 OFFSET 10)"));
         assert!(sql.contains("INNER JOIN user_library"));
         assert!(sql.ends_with("GROUP BY artist.id ORDER BY _ranked._rn"));
         // Base join arg (u1) binds before the page args.
@@ -1862,7 +1865,10 @@ mod tests {
             args.contains(&Value::Integer(1)),
             "the scope library id binds"
         );
-        assert!(args.contains(&Value::Integer(5)) && args.contains(&Value::Integer(10)));
+        assert!(
+            !args.contains(&Value::Integer(5)) && !args.contains(&Value::Integer(10)),
+            "the literal page bounds contribute no args"
+        );
     }
 
     #[test]
@@ -1970,10 +1976,13 @@ mod tests {
             panic!("the FTS query must produce a query");
         };
         assert!(sql.contains("artist_fts MATCH ?"));
+        // Assert: the page bound renders as a literal inside the rowid
+        // subquery (`select.go:139-142`), not as a bound parameter.
+        assert!(sql.contains("LIMIT 10))"));
         assert!(sql.ends_with("ORDER BY _ranked._rn"));
         assert_eq!(args[0], Value::Text("(beatles OR beatles*)".to_string()));
         assert!(args.contains(&Value::Bool(false)));
-        assert!(args.contains(&Value::Integer(10)));
+        assert!(!args.contains(&Value::Integer(10)));
     }
 
     #[test]

@@ -221,15 +221,9 @@ mod tests {
         // Assert:
         assert_eq!(
             sql,
-            "SELECT id, media_file_id, submission_time FROM scrobbles WHERE scrobbles.user_id = ? LIMIT ? OFFSET ?"
+            "SELECT id, media_file_id, submission_time FROM scrobbles WHERE scrobbles.user_id = ? LIMIT 10 OFFSET 5"
         );
-        assert_eq!(
-            args,
-            vec![
-                Value::Text("user1".to_string()),
-                Value::Integer(10),
-                Value::Integer(5),
-            ]
-        );
+        // Assert: the bounds are squirrel literals (`select.go:139-147`).
+        assert_eq!(args, vec![Value::Text("user1".to_string())]);
     }
 }

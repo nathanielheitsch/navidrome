@@ -516,14 +516,15 @@ mod tests {
         // Act:
         let (sql, args) = get_all_sql(None, vec!["folder.name asc".to_string()], 10, 20);
         let (bare_sql, _) = get_all_sql(None, Vec::new(), 0, 0);
-        // Assert:
+        // Assert: the bounds render as squirrel literals (`select.go:139-147`),
+        // so the page contributes no args.
         assert_eq!(
             sql,
             "SELECT folder.*, library.path as library_path FROM folder \
              INNER JOIN library ON library.id = folder.library_id \
-             ORDER BY folder.name asc LIMIT ? OFFSET ?"
+             ORDER BY folder.name asc LIMIT 10 OFFSET 20"
         );
-        assert_eq!(args, vec![Value::Integer(10), Value::Integer(20)]);
+        assert!(args.is_empty());
         assert_eq!(
             bare_sql,
             "SELECT folder.*, library.path as library_path FROM folder \

@@ -379,16 +379,11 @@ mod tests {
         // Assert:
         assert_eq!(
             sql,
-            "SELECT * FROM radio WHERE name LIKE ? LIMIT ? OFFSET ?"
+            "SELECT * FROM radio WHERE name LIKE ? LIMIT 10 OFFSET 20"
         );
-        assert_eq!(
-            args,
-            vec![
-                Value::Text("%one%".to_string()),
-                Value::Integer(10),
-                Value::Integer(20),
-            ]
-        );
+        // Assert: the bounds are squirrel literals (`select.go:139-147`), so
+        // only the parsed filter binds.
+        assert_eq!(args, vec![Value::Text("%one%".to_string())]);
     }
 
     #[test]

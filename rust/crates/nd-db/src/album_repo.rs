@@ -238,12 +238,20 @@ pub fn select_album_sql(
         sql.push_str(&format!(" ORDER BY {}", order_by.join(", ")));
     }
     if max > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(Value::Integer(max));
+        // squirrel renders the bound as a decimal literal and binds nothing
+        // (`select.go:139-147`), so `max` joins neither clause nor args list.
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     if offset > 0 {
-        sql.push_str(" OFFSET ?");
-        args.push(Value::Integer(offset));
+        // Deviation (deliberate, cited): squirrel emits a bare `OFFSET n`
+        // (`applyOptions` sets the bounds independently,
+        // `sql_base_repository.go:151-156`), which SQLite rejects — a parse
+        // error. SQLite is Navidrome's primary engine, so the port emits
+        // `LIMIT -1` (its unlimited bound) ahead of the offset.
+        if max <= 0 {
+            sql.push_str(" LIMIT -1");
+        }
+        sql.push_str(&format!(" OFFSET {offset}"));
     }
     (sql, args)
 }
@@ -939,7 +947,18 @@ mod tests {
         ));
         assert_eq!(args[0], Value::Bool(false));
         assert_eq!(args[1], Value::Text("user1".to_string()));
-        assert_eq!(args[2], Value::Integer(20));
+        // Assert: the page bound is a literal in the rowid subquery, so it is
+        // not part of args (`select.go:139-147`). The only remaining third arg
+        // is Phase 2's own `missing = ?` restriction.
+        assert!(sql.contains("ORDER BY album.rowid LIMIT 20)"));
+        assert_eq!(
+            args,
+            vec![
+                Value::Bool(false),
+                Value::Text("user1".to_string()),
+                Value::Bool(false)
+            ]
+        );
     }
 
     #[test]
@@ -1322,8 +1341,9 @@ mod tests {
             2,
             0,
         );
-        // Assert: join args first, then the IN ids, then pagination.
-        assert!(sql.contains("WHERE album.id IN (?, ?) ORDER BY name asc LIMIT ?"));
+        // Assert: join args first, then the IN ids. The `LIMIT 2` bound is a
+        // literal (`select.go:139-142`), so it is not appended to args.
+        assert!(sql.contains("WHERE album.id IN (?, ?) ORDER BY name asc LIMIT 2"));
         assert_eq!(
             args,
             vec![
@@ -1331,7 +1351,6 @@ mod tests {
                 Value::Text("u1".to_string()),
                 Value::Text("al-1".to_string()),
                 Value::Text("al-2".to_string()),
-                Value::Integer(2),
             ]
         );
     }

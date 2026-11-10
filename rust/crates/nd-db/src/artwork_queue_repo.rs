@@ -311,15 +311,6 @@ pub fn enqueue_by_source_sql(kind: &str, sources: &[String], priority: i64, now:
     )
 }
 
-/// Join two arg vectors in squirrel's binding order.
-fn concat_args(first: &[Value], second: Vec<Value>) -> Vec<Value> {
-    first
-        .iter()
-        .cloned()
-        .chain(second.iter().cloned())
-        .collect::<Vec<_>>()
-}
-
 /// `DequeueBatch` (`:166-176`): `Select(enqueueColumns).Where(LtOrEq{retry_at})`
 /// (+ optional `Eq{item_kind: kinds}`) `.OrderBy("priority DESC",
 /// "enqueued_at ASC").Limit(n)`. `now` (epoch seconds) is the eligibility
@@ -341,9 +332,9 @@ pub fn dequeue_batch_sql(n: i64, now: i64, kinds: &[String]) -> Sql {
     };
     (
         format!(
-            "SELECT {cols} FROM {TABLE} WHERE {where_sql} ORDER BY priority DESC, enqueued_at ASC LIMIT ?"
+            "SELECT {cols} FROM {TABLE} WHERE {where_sql} ORDER BY priority DESC, enqueued_at ASC LIMIT {n}"
         ),
-        concat_args(&args, vec![Value::Integer(n)]),
+        args,
     )
 }
 
@@ -513,11 +504,13 @@ mod tests {
         // Act: DequeueBatch(n=5, kinds album) (:166-176).
         let (sql, args) = dequeue_batch_sql(5, 1000, &["album".to_string()]);
         // Assert: eligibility + kind IN filter, the ORDER BY pair, limit last.
+        // The `LIMIT 5` bound is a squirrel literal (`select.go:139-142`), so
+        // only the eligibility bound and the kind filter are args.
         assert!(sql.contains("WHERE retry_at <= ? AND item_kind IN (?)"));
-        assert!(sql.contains("ORDER BY priority DESC, enqueued_at ASC LIMIT ?"));
-        assert_eq!(args.len(), 3);
+        assert!(sql.contains("ORDER BY priority DESC, enqueued_at ASC LIMIT 5"));
+        assert_eq!(args.len(), 2);
         assert_eq!(args[0], Value::Integer(1000));
-        assert_eq!(args.last(), Some(Value::Integer(5)).as_ref());
+        assert_eq!(args.last(), Some(&Value::Text("album".to_string())));
     }
 
     #[test]
