@@ -717,9 +717,13 @@ dependencies = [
  "getrandom 0.2.17",
  "jsonwebtoken",
  "nd-db",
+ "nd-dbschema",
+ "nd-utils",
  "serde",
  "sha2",
  "thiserror 1.0.69",
+ "tokio",
+ "tower",
 ]
 
 [[package]]

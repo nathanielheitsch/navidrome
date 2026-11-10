@@ -21,3 +21,10 @@ sha2 = "0.10"                          # nds_ API-key lookup hash (credentials.m
 nd-db = { path = "../nd-db" }
 # Already present in Cargo.lock via nd-events (axum 0.7.9).
 axum = { workspace = true }
+
+[dev-dependencies]
+# Existing workspace crates; tower and tokio mirror nd-events' test setup.
+nd-dbschema = { path = "../nd-dbschema" }
+nd-utils = { path = "../nd-utils" }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "test-util"] }
+tower = { workspace = true, features = ["util"] }
