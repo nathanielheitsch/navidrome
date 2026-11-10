@@ -9,11 +9,9 @@
 //! `ScanStruct` (`dbx@v1.12.0/rows.go:65-103`), established in `user_repo.rs`.
 //!
 //! The unique index that settles key races comes from the Go migration
-//! `db/migrations/20260924010054_add_player_api_key_hash.sql:4`, which
-//! `nd-dbschema`'s fresh DDL does not carry (`schema_ddl.rs:65` declares only
-//! the column, and the crate emits no secondary indexes). [`apply_api_key_index`]
-//! adds it so these tests mirror a migrated Go database, and the gap is reported
-//! to the nd-dbschema lane.
+//! `db/migrations/20260924010054_add_player_api_key_hash.sql:4` and is now part
+//! of `nd-dbschema`'s fresh DDL (the 80 secondary indexes), so the harness gets
+//! it from `apply_fresh_schema` with no per-test workaround.
 
 use nd_db::player_repo::{
     hash_api_key, ApiKeyValidationError, LoggedUser, Options, PlayerError, PlayerRecord,
@@ -43,18 +41,8 @@ fn store() -> (SQLStore, std::path::PathBuf) {
     {
         let conn = pool.checkout().unwrap();
         apply_fresh_schema(conn.conn()).unwrap();
-        apply_api_key_index(conn.conn());
     }
     (SQLStore::new(pool), path)
-}
-
-/// The unique index Go's migration adds
-/// (`20260924010054_add_player_api_key_hash.sql:4`).
-fn apply_api_key_index(conn: &rusqlite::Connection) {
-    conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS player_api_key_hash on player(api_key_hash);",
-    )
-    .unwrap();
 }
 
 /// A user row written straight to SQL — user creation belongs to `user_repo.rs`.
