@@ -21,7 +21,7 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `c8c71f8d` (2026-11-10, after lane integration), `cd rust`:
+Measured at `15426bbc` (2026-11-10, after the A13 index pass), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
@@ -32,7 +32,9 @@ Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + e
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
 hardcoded paths from a retired worktree), `8152ac5a` (`process_group(0)` spawn + `kill_process_group` SIGKILL,
 `STDERR_CAP` with overflow still consumed, `TEARDOWN_TIMEOUT_MS` bounded drain/reap), `aa9b280e`/`a462b1f2`
-(Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body).
+(Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body),
+`c8c71f8d` (player repository + API-key path, 19 executed tests), `15426bbc` (80 secondary indexes +
+the 8 dropped columns + index/column drift guards).
 
 Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 passed / 4 FAILED" boundaries as current.
 
@@ -50,11 +52,14 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
 - `nd-auth`: credentials/claims verified; no router middleware. The player repository is now ported
   (`c8c71f8d`: `PlayerRepo`, `PlayerError::{NotFound,PermissionDenied,ApiKeyValidation,Sqlite}`, `save`,
   `set_api_key`, `find_by_api_key`), but nothing mounts it.
-- `nd-dbschema`: `schema_ddl.rs` emits **no secondary indexes** at all (~107 exist in the Go migrations,
-  2 unique). `player_api_key_hash` UNIQUE is what settles API-key races in `Save`, so until the index is
-  ported the player repo's uniqueness path is unprotected under real concurrency. `schema_diff.rs` compares
-  only FTS5 triggers and fts5 tables, so it does **not** detect this — extend it to compare `sqlite_master`
-  indexes when fixing.
+- `nd-dbschema`: `schema_ddl.rs` now carries the **80 secondary indexes** (4 UNIQUE) and the
+  8 late-window columns that were missing (`album.rg_album_gain`/`rg_album_peak`,
+  `artist.uploaded_image`, `media_file.codec`/`probe_data`, `playlist.uploaded_image`/
+  `external_image_url`, `radio.uploaded_image`) - landed `15426bbc`. `player_api_key_hash`
+  UNIQUE therefore backs `PlayerRepo::save`'s race settlement, and `runtime_player_repo.rs`
+  no longer hand-creates it. `schema_diff.rs` now diffs index rows (name + uniqueness) and
+  per-table declared column sets, both verified non-vacuous by mutation; keep that coverage
+  when the schema changes.
 - `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, and transcode body exist; the
   transcoding cache, the rate-limiting semaphore (`core/stream/limiter.go`), and archive do not — today one ffmpeg
   process per call with no concurrency cap. `nd-cli/src/main.rs` `main()` is empty and

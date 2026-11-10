@@ -62,9 +62,14 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
 3. **Auth wiring** (A10) — mounted middleware over `SQLStore` + `UserRepo`; `token_epoch` and the stored
    ciphertext are already on `UserRecord`, so epoch revocation needs no extra query, and decryption stays
    in `nd-auth`.
-4. **`nd-dbschema` secondary indexes** (#04 follow-up) — port the ~107 index statements the Go migrations
-   create, including both unique ones, and extend `schema_diff.rs` to compare `sqlite_master` indexes so this
-   cannot silently regress. Without `player_api_key_hash` UNIQUE, `Save` has no race settlement.
+4. ~~`nd-dbschema` secondary indexes~~ (#04 follow-up, A13) — **landed** `15426bbc`. The fresh DDL now
+   carries all 80 index rows the migrated Go schema ends with (4 UNIQUE, incl. `player_api_key_hash`), and
+   `schema_diff.rs` diffs index rows (name + uniqueness) plus per-table column sets. It also recovered 8
+   columns the golden had dropped (`album.rg_album_gain`/`rg_album_peak`, `artist.uploaded_image`,
+   `media_file.codec`/`probe_data`, `playlist.uploaded_image`/`external_image_url`, `radio.uploaded_image`) —
+   `media_file_codec` could not even be created without `codec`. Follow-up worth scoping: the golden DDL was
+   derived by replaying migrations, so re-derive it once against this corrected shape to confirm nothing else
+   silently fell out.
 5. **Finish #15** — transcode cache + rate-limiting semaphore (`core/stream/limiter.go`), archive, and the
    HTTP handler that consumes Range/direct/transcode bodies.
 6. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
