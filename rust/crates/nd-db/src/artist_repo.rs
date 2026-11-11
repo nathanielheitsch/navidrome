@@ -45,7 +45,9 @@
 //! gated on a logged-in non-admin user (`:197-203`); the crate has no
 //! ambient context (the `sqlrepo.rs` DI rule), so the selects take the
 //! user as [`User`] — `None` is admin/headless (no join). Timestamps are
-//! epoch-seconds integers, caller-owned clock (see `radio_repo.rs`).
+//! are the chrono types of [`crate::time`] (TEXT in rusqlite's
+//! `DateTime<Utc>` shape; see `time.rs` for why epoch integers silently break
+//! range predicates and ordering), with a caller-owned clock.
 //!
 //! Not ported, with the reason: `hydrateArtwork` (`:294-296`) is the shared
 //! batched `item_artwork` lookup (`artwork_hydration.go:77-94`) — that
@@ -56,6 +58,7 @@
 //! (`sql_base_repository.go:286-320`) need the user row; [`search_scope`]
 //! takes the resolved visible set and the caller owns the fail-safe.
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
 use crate::sql_restful::{Filter, QueryOptions, RestRepository};
@@ -63,6 +66,7 @@ use crate::sql_search::{mbid_expr, rowid_page_phase, SearchConfig, Sql};
 use crate::sql_search_fts as fts;
 use crate::sql_search_like as like;
 use crate::sqlrepo::{Repository, SqlError, Value};
+use crate::time;
 use nd_utils::str::{normalize_for_fts, sanitize_strings};
 
 /// `r.tableName` (`:54`).
@@ -153,16 +157,19 @@ pub struct ArtistRecord {
     /// `similar_artists` — the marshalled `[{id, name}]` JSON
     /// (`PostMapArgs`, `:102-107`); `""` reads as `[]`.
     pub similar_artists: String,
-    /// `external_info_updated_at` (epoch seconds; 0 = Go's nil).
-    pub external_info_updated_at: i64,
+    /// `external_info_updated_at` — Go's `*time.Time` (`artist.go:39`);
+    /// `None` binds NULL ("no external update recorded").
+    pub external_info_updated_at: Option<DateTime<Utc>>,
     /// `missing`.
     pub missing: bool,
     /// `uploaded_image`.
     pub uploaded_image: String,
-    /// `created_at` (epoch seconds; 0 = Go's nil).
-    pub created_at: i64,
-    /// `updated_at` (epoch seconds; 0 = Go's nil).
-    pub updated_at: i64,
+    /// `created_at` — Go's `*time.Time` (`artist.go:45`), which `Put` always
+    /// stamps (`artist_repository.go:240`), so `None` only reaches this layer
+    /// on a row the caller never stamped.
+    pub created_at: Option<DateTime<Utc>>,
+    /// `updated_at` — Go's `*time.Time` (`artist.go:46`), stamped by `Put`.
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// The `library_artist` + `user_library` joins every artist select carries
@@ -554,17 +561,17 @@ pub fn put_cols(artist: &ArtistRecord) -> Vec<(String, Value)> {
             "similar_artists".to_string(),
             Value::Text(artist.similar_artists.clone()),
         ),
-        (
-            "external_info_updated_at".to_string(),
-            Value::Integer(artist.external_info_updated_at),
+        time::optional_col(
+            "external_info_updated_at",
+            artist.external_info_updated_at.as_ref(),
         ),
         ("missing".to_string(), Value::Bool(artist.missing)),
         (
             "uploaded_image".to_string(),
             Value::Text(artist.uploaded_image.clone()),
         ),
-        ("created_at".to_string(), Value::Integer(artist.created_at)),
-        ("updated_at".to_string(), Value::Integer(artist.updated_at)),
+        time::optional_col("created_at", artist.created_at.as_ref()),
+        time::optional_col("updated_at", artist.updated_at.as_ref()),
         (
             "full_text".to_string(),
             Value::Text(format_full_text(&artist.name, &artist.sort_artist_name)),
@@ -585,18 +592,15 @@ pub fn put_cols(artist: &ArtistRecord) -> Vec<(String, Value)> {
 /// (`sql_base_repository.go:613-641`): the UPDATE-first/INSERT-fallback
 /// upsert. `selectUpdateColumns` (`:587-604`) filters the SET list to the
 /// requested columns (all when none), always minus `created_at`;
-/// `Put`'s `CreatedAt = new(time.Now())` (`:240-241`) stamps a fresh row's
-/// timestamps and every save re-stamps `updated_at`. The UPDATE's row
+/// `Put` stamps `CreatedAt = new(time.Now())` and `UpdatedAt = CreatedAt`
+/// (`:240-241`): a row carrying no `created_at` gets `now`, an existing one
+/// keeps its stamp, and every save re-stamps `updated_at`. The UPDATE's row
 /// count decides which statement ran — the caller's.
 #[must_use]
-pub fn put_sql(artist: &ArtistRecord, now: i64, cols_to_update: &[&str]) -> (Sql, Sql) {
+pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str]) -> (Sql, Sql) {
     let stamped = ArtistRecord {
-        created_at: if artist.created_at == 0 {
-            now
-        } else {
-            artist.created_at
-        },
-        updated_at: now,
+        created_at: Some(artist.created_at.unwrap_or(now)),
+        updated_at: Some(now),
         ..artist.clone()
     };
     let all_cols = put_cols(&stamped);
@@ -1321,6 +1325,18 @@ fn library_id_filter_fn() -> crate::sql_restful::FilterFn {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{NaiveDate, TimeZone};
+
+    /// Deterministic caller clock (Go's `time.Now()`,
+    /// `artist_repository.go:240`).
+    fn at(year: u32, month: u32, day: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
+        Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(i32::try_from(year).unwrap(), month, day)
+                .unwrap()
+                .and_hms_opt(h, mi, s)
+                .unwrap(),
+        )
+    }
     use crate::sqlrepo::Value;
 
     #[test]
@@ -1574,7 +1590,7 @@ mod tests {
         };
         // Act:
         let ((update_sql, update_args), (insert_sql, _)) =
-            put_sql(&artist, 999, &EXTERNAL_INFO_COLS);
+            put_sql(&artist, at(2024, 1, 2, 0, 0, 0), &EXTERNAL_INFO_COLS);
         // Assert: only the 7 external-info columns + appended updated_at,
         // never created_at.
         assert_eq!(
@@ -1586,7 +1602,7 @@ mod tests {
         assert_eq!(update_args.len(), 9);
         assert_eq!(
             update_args[7],
-            Value::Integer(999),
+            Value::Text("2024-01-02 00:00:00+00:00".to_string()),
             "the appended updated_at"
         );
         assert_eq!(update_args[8], Value::Text("ar-1".to_string()));
