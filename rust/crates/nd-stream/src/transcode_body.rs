@@ -1932,4 +1932,482 @@ mod tests {
             "a chunk exceeded the bound: {max_chunk}"
         );
     }
+    // ---------------------------------------------------------------------
+    // Concurrency cap: enforcement, rejection shape, and the permit lifetime
+    // that makes the cap real.
+    //
+    // These lanes launch a **stub process** (`/bin/sh -c "sleep 30"`) in place
+    // of ffmpeg so the cap stays saturated for the whole assertion instead of
+    // racing a real encode's runtime. Go's suite does the same thing with a
+    // reader that never returns (`core/stream/media_streamer_test.go:74-80`,
+    // "an ffmpeg whose Read blocks indefinitely so the cache's background copy
+    // can't drain the source and release the slot"). Everything else is the
+    // production sequence: acquire, then launch, then hand the process to the
+    // owner that keeps the slot alive — exactly `open_transcode_gated`.
+    // ---------------------------------------------------------------------
+
+    /// Is `pid` running (a zombie does not count — it has terminated)? Same
+    /// `ps` check `nd-ffmpeg`'s lifecycle tests use.
+    fn pid_alive(pid: u32) -> bool {
+        let out = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .expect("ps must be available for process lifecycle tests");
+        let state = String::from_utf8_lossy(&out.stdout);
+        let state = state.trim();
+        !state.is_empty() && !state.starts_with('Z')
+    }
+
+    /// One saturated slot plus a live stub process, in the order Go's producer
+    /// uses: `limiter.Acquire` (`media_streamer.go:234`) first, then the launch
+    /// (`:262`), then the reader wrapped so the slot lives with the process
+    /// (`:281`) — except that the slot here is held until the reap is confirmed
+    /// rather than until the reader is closed.
+    ///
+    /// The process is `/bin/sh -c "sleep 30"`, not ffmpeg: the cap must stay
+    /// saturated for the whole assertion instead of racing a real encode.
+    async fn stub_lane(
+        limiter: &TranscodeLimiter,
+        user: &str,
+    ) -> Result<GatedTranscode<std::future::Pending<()>>, GateError> {
+        stub_lane_with(limiter, user, std::future::pending::<()>()).await
+    }
+
+    /// The same lane with a real cancellation channel, so a disconnect can be
+    /// driven through the gate exactly as the handler would.
+    async fn stub_lane_with<D>(
+        limiter: &TranscodeLimiter,
+        user: &str,
+        disconnect: D,
+    ) -> Result<GatedTranscode<D>, GateError> {
+        let permit = limiter.acquire(user).map_err(GateError::Rejected)?;
+        let mut cmd = nd_ffmpeg::ffcmd::new_ffmpeg_cmd(
+            "/bin/sh".to_owned(),
+            vec!["-c".to_owned(), "sleep 30".to_owned()],
+        );
+        if cmd.start().await.is_err() {
+            // Go releases the slot when the launch fails (`media_streamer.go:273-277`).
+            drop(permit);
+            return Err(GateError::Body(TranscodeBodyError::Process {
+                message: "stub launch failed".to_owned(),
+            }));
+        }
+        let reader = cmd.reader().expect("piped stdout");
+        let child = cmd.detach().expect("a started command owns a child");
+        let body = TranscodeBody {
+            cmd,
+            reader: Some(reader),
+            patcher: None,
+            ended: false,
+        };
+        Ok(GatedTranscode {
+            permit: Some(permit),
+            child: Some(child),
+            body,
+            user: user.to_owned(),
+            disconnect: Disconnect::When(disconnect),
+        })
+    }
+
+    enum LaneReport {
+        Accepted(Box<GatedTranscode<std::future::Pending<()>>>, Option<u32>),
+        Rejected(GateError),
+    }
+
+    struct ContendOutcome {
+        succeeded: usize,
+        rejected: usize,
+        /// Accepted lanes whose stub process was alive at the checkpoint.
+        live: usize,
+        /// Accepted lanes still holding a slot at the checkpoint.
+        slot_held: usize,
+        /// Whether the limiter grants another slot at the checkpoint, while the
+        /// accepted stubs are still running.
+        admits_more: bool,
+        rejection: Option<GateError>,
+    }
+
+    /// Fire `attempts` concurrent requests against a global cap of `cap`, keep
+    /// every acquired slot open until all lanes have reported, and describe the
+    /// result. `mutate` performs Go's **early release** — freeing the slot while
+    /// the process still runs, which is what `releasingReadCloser.Close` does
+    /// (`core/stream/limiter.go:58-67`) — so the mutation lane can show that the
+    /// rejection count alone says nothing about whether the cap held.
+    async fn contend(cap: i64, attempts: usize, mutate: bool) -> ContendOutcome {
+        let limiter = TranscodeLimiter::new(cap as i32, 0);
+        let start = std::sync::Arc::new(tokio::sync::Barrier::new(attempts));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<LaneReport>();
+
+        let mut tasks = Vec::new();
+        for _ in 0..attempts {
+            let limiter = limiter.clone();
+            let start = std::sync::Arc::clone(&start);
+            let tx = tx.clone();
+            tasks.push(tokio::spawn(async move {
+                // Rendezvous first, so the acquires really are concurrent.
+                start.wait().await;
+                match stub_lane(&limiter, "alice").await {
+                    Ok(mut owner) => {
+                        let pid = owner.pid();
+                        if mutate {
+                            owner.release_slot_early();
+                        }
+                        let _ = tx.send(LaneReport::Accepted(Box::new(owner), pid));
+                    }
+                    Err(gate) => {
+                        let _ = tx.send(LaneReport::Rejected(gate));
+                    }
+                }
+            }));
+        }
+        drop(tx);
+
+        let mut owners: Vec<GatedTranscode<std::future::Pending<()>>> = Vec::new();
+        let mut succeeded = 0usize;
+        let mut rejected = 0usize;
+        let mut live = 0usize;
+        let mut slot_held = 0usize;
+        let mut rejection: Option<GateError> = None;
+        while let Some(report) = rx.recv().await {
+            match report {
+                LaneReport::Accepted(owner, pid) => {
+                    succeeded += 1;
+                    if pid.is_some_and(pid_alive) {
+                        live += 1;
+                    }
+                    if owner.slot_held() {
+                        slot_held += 1;
+                    }
+                    owners.push(*owner);
+                }
+                LaneReport::Rejected(gate) => {
+                    rejected += 1;
+                    if rejection.is_none() {
+                        rejection = Some(gate);
+                    }
+                }
+            }
+        }
+        for task in tasks {
+            task.await.expect("lane task must not panic");
+        }
+
+        // Checkpoint: the accepted processes are still running (nothing closed
+        // them), so this is the moment at which the cap must still be full.
+        let admits_more = limiter.acquire("late-arriver").is_ok();
+        let outcome = ContendOutcome {
+            succeeded,
+            rejected,
+            live,
+            slot_held,
+            admits_more,
+            rejection,
+        };
+        // Release everything: each owner's Drop signals its process group.
+        drop(owners);
+        outcome
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cap_of_two_rejects_exactly_one_of_three_concurrent_requests() {
+        let out = contend(2, 3, false).await;
+        assert_eq!(out.succeeded, 2, "the cap admits exactly MaxConcurrent");
+        assert_eq!(out.rejected, 1, "one request over the cap is refused");
+        assert_eq!(out.live, 2, "both admitted processes were still running");
+        assert_eq!(out.slot_held, 2, "the permit lives with the process");
+        assert!(
+            !out.admits_more,
+            "a saturated cap must not grant capacity while its processes run"
+        );
+
+        let gate = out.rejection.expect("one rejection was reported");
+        assert!(gate.is_rejected(), "the rejection is the rate-limit arm");
+        // Go's own error text (`core/stream/limiter.go:14`).
+        assert_eq!(gate.to_string(), "too many concurrent transcodes");
+        // 429: server/subsonic/api.go:319-323, server/public/handle_streams.go:66-68.
+        assert_eq!(gate.status_code(), 429);
+        // Retry-After: RetryAfterSeconds (`core/stream/limiter.go:16-19`), set at
+        // server/subsonic/api.go:321 and server/public/handle_streams.go:67.
+        assert_eq!(gate.retry_after(), Some(5));
+        // Message used verbatim by both handlers:
+        // server/public/handle_streams.go:68 and server/subsonic/api.go:309-310.
+        assert_eq!(
+            gate.client_message(),
+            "too many concurrent transcodes, please retry shortly"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn every_request_succeeds_when_the_cap_covers_all_of_them() {
+        // Non-vacuity control for the lane above: identical setup, cap raised by
+        // one, and the rejection disappears.
+        let out = contend(3, 3, false).await;
+        assert_eq!(out.succeeded, 3);
+        assert_eq!(out.rejected, 0);
+        assert_eq!(out.live, 3);
+        assert_eq!(out.slot_held, 3);
+        assert!(!out.admits_more);
+        assert!(out.rejection.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn early_release_defeats_the_cap_and_accumulates_processes() {
+        // The mutation: release the slot while ffmpeg still runs, which is what
+        // Go's releasingReadCloser does after closing the reader without waiting
+        // for the child (core/stream/limiter.go:58-67), and what the cache does
+        // when its background copy fails (utils/cache/file_caches.go:246-255).
+        let out = contend(2, 3, true).await;
+        // Every request now sails through, so a test that only checked "no
+        // request errored" or "bytes were served" would pass — while three live
+        // processes run under a cap of two. That is the failure
+        // Transcoding.MaxConcurrent exists to prevent, and the rejection count
+        // alone cannot see it: the invariant is live_processes <= cap, and the
+        // only thing enforcing it is releasing capacity on a confirmed reap.
+        assert_eq!(out.rejected, 0, "an early release admits everyone");
+        assert_eq!(out.succeeded, 3);
+        assert_eq!(out.live, 3, "three stub processes are running");
+        assert_eq!(out.slot_held, 0, "none of them holds a slot");
+        assert!(
+            out.live > 2,
+            "three live processes under MaxConcurrent = 2: the cap is decorative"
+        );
+        assert!(
+            out.admits_more,
+            "the limiter still hands out a fourth slot for processes that are alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn unresolved_cleanup_keeps_the_slot_and_stays_retryable() {
+        let limiter = TranscodeLimiter::new(1, 0);
+        let mut lane = stub_lane(&limiter, "alice").await.expect("first lane");
+        assert!(lane.slot_held());
+
+        // A child nobody reads cannot be reaped within TEARDOWN_TIMEOUT_MS, and
+        // Go's Close does not wait at all (core/ffmpeg/ffmpeg.go:361 has no
+        // Close). The port must report the timeout, not an ExitInfo.
+        let result = lane.close().await;
+        assert!(
+            matches!(result, Err(CleanupError::Unresolved(ref src))
+                if src.kind() == std::io::ErrorKind::TimedOut),
+            "a timed-out reap is an unresolved cleanup, not Ok(ExitInfo): {result:?}"
+        );
+        assert!(lane.cleanup_pending(), "the child is still tracked");
+        assert!(lane.slot_held(), "a timeout must not mint capacity");
+
+        // The cap therefore still refuses: the unresolved process occupies it.
+        assert!(
+            matches!(
+                stub_lane(&limiter, "bob").await,
+                Err(GateError::Rejected(TooManyTranscodes))
+            ),
+            "an unreaped process must keep its slot"
+        );
+
+        // SIGKILL at the group root reaps it, and only then is the slot freed.
+        let info = lane.cancel().await.expect("retry must kill and reap");
+        assert_eq!(info.code, -1, "SIGKILL leaves no exit code");
+        assert!(!lane.cleanup_pending());
+        assert!(!lane.slot_held(), "the confirmed reap released the slot");
+        let mut next = stub_lane(&limiter, "bob").await.expect("freed capacity");
+        assert!(next.cancel().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn confirmed_reap_releases_the_slot_and_a_dropped_body_does_not() {
+        let limiter = TranscodeLimiter::new(1, 0);
+        let mut lane = stub_lane(&limiter, "alice").await.expect("lane");
+
+        // Closing the response reader — the Go handler's `stream.Close()` on the
+        // ReadCloser — must NOT free the slot: the process is owned by the lane,
+        // which outlives the body.
+        lane.end_reader();
+        assert!(lane.is_ended());
+        assert!(lane.slot_held(), "closing the reader is not a reap");
+        assert!(
+            matches!(
+                stub_lane(&limiter, "bob").await,
+                Err(GateError::Rejected(TooManyTranscodes))
+            ),
+            "the reader may be gone while the process still holds its slot"
+        );
+
+        let info = lane.cancel().await.expect("kill and reap");
+        assert_eq!(info.code, -1);
+        assert!(!lane.slot_held());
+        assert!(stub_lane(&limiter, "bob").await.is_ok(), "capacity is back");
+    }
+
+    #[tokio::test]
+    async fn spawn_cleanup_releases_the_slot_only_after_reaping() {
+        let limiter = TranscodeLimiter::new(1, 0);
+        let mut lane = stub_lane(&limiter, "alice").await.expect("lane");
+        let pid = lane.pid().expect("stub pid");
+        assert!(pid_alive(pid));
+
+        // The handler's future is going away: hand cleanup to a tracker.
+        lane.spawn_cleanup();
+        assert!(!lane.slot_held(), "the tracker owns the slot now");
+
+        // The tracker kills, reaps, and only then drops the permit. Poll until it
+        // lands; the SIGKILL makes this prompt.
+        let mut released = false;
+        for _ in 0..60 {
+            if limiter.acquire("probe").is_ok() {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(released, "the detached tracker must free the slot");
+        assert!(
+            !pid_alive(pid),
+            "the handed-off process group must be terminated, not leaked"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gated_launch_needs_a_cancellation_channel_while_the_cap_is_enabled() {
+        // Go forces the request context when the limiter is enabled
+        // (media_streamer.go:245-259); the port refuses the combination instead
+        // of letting a cap's worth of ffmpeg drain unserved after a disconnect.
+        let limiter = TranscodeLimiter::new(1, 0);
+        let mf = MediaFile::default();
+        let job = job_for("/no/such/file.mp3", "mp3", 128);
+        let err = open_transcode_gated(
+            &limiter,
+            "alice",
+            &mf,
+            &job,
+            Disconnect::<std::future::Pending<()>>::Never,
+        )
+        .await
+        .expect_err("a non-cancellable gated transcode must be refused");
+        assert!(matches!(err, GateError::CancellationRequired), "{err}");
+        assert_eq!(err.status_code(), 500, "not a rate-limit rejection");
+        assert_eq!(
+            err.retry_after(),
+            None,
+            "no Retry-After for a config refusal"
+        );
+        assert_eq!(err.client_message(), "invalid request");
+
+        // Go's other arm (`:256`): with the cap disabled the legacy
+        // EnableCancellation=false behavior is preserved, so Never is accepted.
+        let disabled = TranscodeLimiter::new(0, 0);
+        assert!(!disabled.enabled());
+        let res = open_transcode_gated(
+            &disabled,
+            "alice",
+            &mf,
+            &job,
+            Disconnect::<std::future::Pending<()>>::Never,
+        )
+        .await;
+        assert!(
+            matches!(res, Err(GateError::Body(_))),
+            "reaches the launch and fails on the missing media file: {res:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn launch_failure_releases_the_slot_like_gos_transcode_error_arm() {
+        // Go: `release()` then return, when Transcode fails
+        // (media_streamer.go:273-277). Nothing was spawned, so the slot must be
+        // free for the next request.
+        let limiter = TranscodeLimiter::new(1, 0);
+        let mf = MediaFile::default();
+        let job = job_for("/no/such/file.mp3", "mp3", 128);
+        let err = open_transcode_gated(
+            &limiter,
+            "alice",
+            &mf,
+            &job,
+            Disconnect::When(std::future::pending::<()>()),
+        )
+        .await
+        .expect_err("a missing media file must not launch");
+        assert!(matches!(err, GateError::Body(_)), "{err}");
+        assert!(!err.is_rejected());
+        assert_eq!(err.status_code(), 500);
+        assert!(
+            limiter.acquire("alice").is_ok(),
+            "a failed launch must not consume a slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn serving_to_eof_leaves_the_slot_held_until_the_handler_closes() {
+        // Go's handler defers stream.Close() (server/public/handle_streams.go:78);
+        // EOF on stdout is not the reap, so the slot stays held in between.
+        let bin = match ffmpeg_bin() {
+            Some(b) => b,
+            None => return, // skip-if-missing
+        };
+        let src = match make_source(bin.as_str(), "gated", &[]) {
+            Some(p) => p,
+            None => return, // no libmp3lame in this build: skip
+        };
+        let limiter = TranscodeLimiter::new(1, 0);
+        let mf = MediaFile {
+            duration: 0.3,
+            ..MediaFile::default()
+        };
+        let mut lane = open_transcode_gated(
+            &limiter,
+            "alice",
+            &mf,
+            &job_for(src.as_str(), "mp3", 128),
+            Disconnect::When(std::future::pending::<()>()),
+        )
+        .await
+        .expect("gated transcode of a real file");
+
+        let mut sink = Sink::default();
+        let outcome = lane.serve(&mut sink).await;
+        assert_eq!(outcome.error, None, "clean run: {outcome:?}");
+        assert!(!outcome.cleanup_pending, "no cleanup was attempted yet");
+        assert!(outcome.written > 0);
+        assert!(lane.slot_held(), "EOF is not Close: the slot stays held");
+        assert!(
+            matches!(
+                stub_lane(&limiter, "bob").await,
+                Err(GateError::Rejected(TooManyTranscodes))
+            ),
+            "the next request waits for the handler's close"
+        );
+
+        let info = lane.close().await.expect("reap the exiting encoder");
+        assert_eq!(info.code, 0);
+        assert!(!lane.slot_held());
+    }
+
+    #[tokio::test]
+    async fn disconnect_through_the_gate_kills_the_group_and_frees_the_slot() {
+        let limiter = TranscodeLimiter::new(1, 0);
+        // A disconnect future that resolves immediately: the client went away,
+        // so the group must die, the reap must be confirmed, and the slot must
+        // come back — the same thing Go's request context does to the process.
+        let mut lane = stub_lane_with(&limiter, "alice", std::future::ready(()))
+            .await
+            .expect("stub lane with a cancellation channel");
+        let pid = lane.pid().expect("stub pid");
+        assert!(pid_alive(pid));
+        assert!(
+            matches!(
+                stub_lane(&limiter, "bob").await,
+                Err(GateError::Rejected(TooManyTranscodes))
+            ),
+            "the disconnecting lane still occupies the cap until cleanup"
+        );
+
+        let mut sink = Sink::default();
+        let outcome = lane.serve(&mut sink).await;
+        assert!(outcome.disconnected, "the disconnect must be reported");
+        assert_eq!(outcome.error, None, "a disconnect is not an error");
+        assert!(!outcome.cleanup_pending, "the kill+reap completed");
+        assert!(!lane.slot_held(), "a cancelled transcode frees its slot");
+        assert!(!pid_alive(pid), "the stub process group must be terminated");
+        assert!(stub_lane(&limiter, "bob").await.is_ok(), "capacity is back");
+    }
 }

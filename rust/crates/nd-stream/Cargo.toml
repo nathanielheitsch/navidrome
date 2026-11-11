@@ -18,7 +18,9 @@ jsonwebtoken = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "time", "test-util"] }
+# `rt-multi-thread` for the concurrent contention lanes and `sync` for the
+# rendezvous primitives they use to hold permits open across threads.
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs", "io-util", "time", "sync", "test-util"] }
 
 [lints]
 workspace = true
