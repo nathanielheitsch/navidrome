@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `5697d089` (2026-11-11, after the stream-complete merge), `cd rust`:
+Measured at `beed0bce` (2026-11-11, after the auth-fixes merge), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1248 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1272 passed / 0 FAILED**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
