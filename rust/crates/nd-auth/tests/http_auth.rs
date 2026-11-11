@@ -92,6 +92,9 @@ async fn session_epoch_and_api_audience_are_checked_against_real_user() {
         token_epoch: 0,
     };
     let token = auth.create_token(&subject, "alice", true, now()).unwrap();
+    let api_token = auth
+        .create_api_token(&subject, "alice", true, now())
+        .unwrap();
     let session = app(
         store.clone(),
         auth.clone(),
@@ -116,8 +119,17 @@ async fn session_epoch_and_api_audience_are_checked_against_real_user() {
         StatusCode::OK
     );
     assert_eq!(
-        api.oneshot(request()).await.unwrap().status(),
+        api.clone().oneshot(request()).await.unwrap().status(),
         StatusCode::UNAUTHORIZED
+    );
+    let api_request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {api_token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        api.oneshot(api_request).await.unwrap().status(),
+        StatusCode::OK
     );
     store
         .with_connection_sync(|conn| {
