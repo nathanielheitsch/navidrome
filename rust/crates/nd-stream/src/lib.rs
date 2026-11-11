@@ -37,6 +37,7 @@ pub mod decider;
 pub mod direct;
 pub mod legacy_client;
 pub mod limitations;
+pub mod limiter;
 pub mod probe_adapter;
 pub mod probe_json;
 pub mod range;
