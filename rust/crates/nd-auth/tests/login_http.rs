@@ -305,3 +305,48 @@ async fn initial_setup_persists_hashed_dev_admin_once() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn initial_setup_creates_dev_admin_with_existing_regular_user() {
+    let (store, path, _) = setup();
+    store
+        .with_connection_sync(|conn| {
+            let stamp = "2024-01-01T00:00:00Z";
+            let values = nd_db::user_repo::UserPutValues {
+                id: "regular",
+                user_name: "regular",
+                name: "Regular",
+                email: "",
+                password: None,
+                is_admin: false,
+                last_login_at: None,
+                last_access_at: None,
+                created_at: stamp,
+                updated_at: stamp,
+                scrobble_filter: "",
+            };
+            UserRepo::new(conn).put(&values, stamp, false).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        run_initial_setup(&store, "dev-password", "2024-01-01T00:00:00Z")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !run_initial_setup(&store, "dev-password", "2024-01-01T00:00:00Z")
+            .await
+            .unwrap()
+    );
+    store
+        .with_connection_sync(|conn| {
+            let repo = UserRepo::new(conn);
+            assert_eq!(repo.count_all().unwrap(), 2);
+            assert!(repo.find_by_username("admin").unwrap().is_admin);
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

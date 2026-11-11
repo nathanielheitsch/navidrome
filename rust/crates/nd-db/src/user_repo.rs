@@ -140,6 +140,16 @@ pub fn count_all_sql() -> Sql {
         .expect("the bare user count always renders")
 }
 
+/// Count users matching a username, using the column's declared collation.
+#[must_use]
+pub fn count_by_username_sql(user_name: &str) -> Sql {
+    (
+        "SELECT count(distinct user.id) as count FROM user WHERE user_name = ? ORDER BY user.id"
+            .into(),
+        vec![Value::from(user_name)],
+    )
+}
+
 /// `Get` (`user_repository.go:90-97`): the libraries select for one id.
 #[must_use]
 pub fn get_user_sql(id: &str) -> Sql {
@@ -690,6 +700,18 @@ impl<'a> UserRepo<'a> {
     /// [`UserError::Sqlite`] when the statement fails.
     pub fn count_all(&self) -> Result<i64, UserError> {
         let statement = count_all_sql();
+        Ok(
+            crate::execution::query_optional(self.conn, &statement, |row| row.get::<_, i64>(0))?
+                .unwrap_or_default(),
+        )
+    }
+
+    /// Count users matching the given username.
+    ///
+    /// # Errors
+    /// Returns an error if the statement fails.
+    pub fn count_by_username(&self, user_name: &str) -> Result<i64, UserError> {
+        let statement = count_by_username_sql(user_name);
         Ok(
             crate::execution::query_optional(self.conn, &statement, |row| row.get::<_, i64>(0))?
                 .unwrap_or_default(),
