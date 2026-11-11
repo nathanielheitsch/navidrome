@@ -594,6 +594,15 @@ impl TranscodeCache {
     /// which is Go's "Cache entry lost its data file. Re-fetching" arm
     /// (`file_caches.go:161-168`).
     pub async fn open_key(&self, key: &str) -> io::Result<Opened> {
+        if self.disabled {
+            // Go's `size == 0` arm leaves the cache nil (`file_caches.go:275-278`);
+            // there is no entry to open, and the caller reads from its reader
+            // instead (`:145-152`).
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "transcoding cache is disabled",
+            ));
+        }
         let data_path = self.data_path(key);
         let marker = marker_path(&data_path);
 
@@ -848,6 +857,8 @@ impl TranscodeCache {
         let mut count: usize = 0;
         let mut size: u64 = 0;
 
+        // Go enumerates the cache's entries; the port walks the spread layout
+        // `root/xx/xx/<40hex>` directly (`spread_fs.go:92-121` walks it the same way).
         let mut dirs = match tokio::fs::read_dir(&self.root).await {
             Ok(dirs) => dirs,
             Err(_) => return report,
@@ -856,54 +867,64 @@ impl TranscodeCache {
             if !dir.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
                 continue;
             }
-            let mut files = match tokio::fs::read_dir(dir.path()).await {
+            let mut level2 = match tokio::fs::read_dir(dir.path()).await {
                 Ok(files) => files,
                 Err(_) => continue,
             };
-            while let Ok(Some(file)) = files.next_entry().await {
-                let path = file.path();
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            while let Ok(Some(sub)) = level2.next_entry().await {
+                if !sub.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
                     continue;
+                }
+                let mut files = match tokio::fs::read_dir(sub.path()).await {
+                    Ok(files) => files,
+                    Err(_) => continue,
                 };
+                while let Ok(Some(file)) = files.next_entry().await {
+                    let path = file.path();
+                    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                        continue;
+                    };
 
-                if let Some(data_name) = name.strip_suffix(COMPLETE_MARKER_SUFFIX) {
-                    // Orphan marker: its data file is gone (`spread_fs.go:105-112`).
-                    if !is_data_file_name(data_name) {
+                    if let Some(data_name) = name.strip_suffix(COMPLETE_MARKER_SUFFIX) {
+                        // Orphan marker: its data file is gone (`spread_fs.go:105-112`).
+                        if !is_data_file_name(data_name) {
+                            continue;
+                        }
+                        if !tokio::fs::try_exists(sub.path().join(data_name))
+                            .await
+                            .unwrap_or(false)
+                            && tokio::fs::remove_file(&path).await.is_ok()
+                        {
+                            report.reaped.push(path);
+                        }
                         continue;
                     }
-                    let data = dir.path().join(data_name);
-                    if !tokio::fs::try_exists(&data).await.unwrap_or(false)
-                        && tokio::fs::remove_file(&path).await.is_ok()
-                    {
-                        report.reaped.push(path);
+                    if !is_data_file_name(name) {
+                        continue;
                     }
-                    continue;
-                }
-                if !is_data_file_name(name) {
-                    continue;
-                }
-                if self.in_use_path(&path) {
-                    continue;
-                }
-                let Ok(md) = tokio::fs::metadata(&path).await else {
-                    continue;
-                };
-                if md.len() == 0 {
-                    // "Removing invalid empty file" (`file_haunter.go:53-56`), and
-                    // `spreadFS.Remove` takes the marker with it.
-                    if tokio::fs::remove_file(&path).await.is_ok() {
-                        tokio::fs::remove_file(marker_path(&path)).await.ok();
-                        report.reaped.push(path);
+                    if self.in_use_path(&path) {
+                        continue;
                     }
-                    continue;
+                    let Ok(md) = tokio::fs::metadata(&path).await else {
+                        continue;
+                    };
+                    if md.len() == 0 {
+                        // "Removing invalid empty file" (`file_haunter.go:53-56`), and
+                        // `spreadFS.Remove` takes the marker with it.
+                        if tokio::fs::remove_file(&path).await.is_ok() {
+                            tokio::fs::remove_file(marker_path(&path)).await.ok();
+                            report.reaped.push(path);
+                        }
+                        continue;
+                    }
+                    count += 1;
+                    size += md.len();
+                    candidates.push(ScrubCandidate {
+                        path,
+                        size: md.len(),
+                        accessed: md.accessed().ok(),
+                    });
                 }
-                count += 1;
-                size += md.len();
-                candidates.push(ScrubCandidate {
-                    path,
-                    size: md.len(),
-                    accessed: md.accessed().ok(),
-                });
             }
         }
 
@@ -1217,6 +1238,9 @@ pub struct SharedDisconnect {
     parked: Option<Pin<Box<tokio::sync::futures::OwnedNotified>>>,
     /// Announced by the drain task once the transcode is torn down.
     finished: Arc<watch::Sender<bool>>,
+    /// Set by the poller task as its last act, so an owner can prove its own task
+    /// exited. `true` for observers that never spawned one ([`Self::never`]).
+    poller_exited: Arc<AtomicBool>,
 }
 
 impl SharedDisconnect {
@@ -1228,6 +1252,8 @@ impl SharedDisconnect {
             wake: Arc::new(Notify::new()),
             parked: None,
             finished: Arc::new(tx),
+            // No task was spawned, so nothing can leak.
+            poller_exited: Arc::new(AtomicBool::new(true)),
         }
     }
 }
@@ -1242,6 +1268,7 @@ impl Clone for SharedDisconnect {
             wake: Arc::clone(&self.wake),
             parked: None,
             finished: Arc::clone(&self.finished),
+            poller_exited: Arc::clone(&self.poller_exited),
         }
     }
 }
@@ -1303,6 +1330,8 @@ impl SharedDisconnect {
         observer.finished = Arc::new(finish_tx);
         let cancelled = Arc::clone(&observer.cancelled);
         let wake = Arc::clone(&observer.wake);
+        observer.poller_exited = Arc::new(AtomicBool::new(false));
+        let exited = Arc::clone(&observer.poller_exited);
         LIVE_POLLERS.fetch_add(1, Ordering::AcqRel);
         tokio::spawn(async move {
             tokio::pin!(disconnect);
@@ -1317,6 +1346,7 @@ impl SharedDisconnect {
                 Ok(()) = finish_rx.changed() => {}
             }
             LIVE_POLLERS.fetch_sub(1, Ordering::AcqRel);
+            exited.store(true, Ordering::Release);
         });
         observer
     }
@@ -1334,6 +1364,13 @@ impl SharedDisconnect {
     /// Idempotent.
     pub fn finish(&self) {
         let _ = self.finished.send(true);
+    }
+
+    /// Whether this observer's poller task has finished: the precise leak check, the
+    /// one a test can assert without depending on other lanes' tasks.
+    #[must_use]
+    pub fn poller_exited(&self) -> bool {
+        self.poller_exited.load(Ordering::Acquire)
     }
 
     /// Whether the client has gone away.
@@ -1447,12 +1484,8 @@ impl CacheTranscodeSource {
             Err(err) => {
                 observer.finish();
                 self.cache.drop_entry(entry.key.as_str());
-                let data = entry.data_path.clone();
-                let marker = entry.marker_path.clone();
-                tokio::spawn(async move {
-                    tokio::fs::remove_file(&marker).await.ok();
-                    tokio::fs::remove_file(&data).await.ok();
-                });
+                tokio::fs::remove_file(&entry.marker_path).await.ok();
+                tokio::fs::remove_file(&entry.data_path).await.ok();
                 return Err(err);
             }
         };
