@@ -3,22 +3,20 @@
 //! #08 — Tag extractor: `core/storage/**` registry + `adapters/gotaglib/**`
 //! transforms (see `docs/rust-port/issues.md` Part B).
 //!
-//! Backend decision (issue #08 says "choose once here"): pure-Rust TagLib is
-//! unavailable (no crate in the registry, no libtag on the system) and the C
-//! binding would fork the pinned `github.com/deluan/go-taglib` raw-tag surface
-//! (`go.mod:5-6`, `docs/rust-port/component-map.md:146`). We chose the **shim
-//! backend**: the extractor consumes the raw TagLib surface (PropertyMap tags,
-//! raw frames/atoms/attrs, stream properties) as data — produced today by the
-//! pinned fork, tomorrow by whatever binary the operator wires — and the
-//! Navidrome-side contract below is ported byte-exactly: registration, the
-//! `Info` map shape, and every gotaglib post-transform. The raw-tag surface
-//! itself stays owned by the pinned fork boundary, not reimplemented here.
+//! Real media files are read by pinned pure-Rust Lofty: no C toolchain, no
+//! subprocess and no runtime sidecar producer required. The legacy `taglib`
+//! registry ID is retained; `lofty` is an alias. Go-emitted sidecars remain
+//! test oracles for the post-transform, never an implicit runtime fallback.
+//! See the crate README for supported fields and explicit parity gaps.
+
+pub mod backend;
 
 pub mod extractors;
 pub mod gotaglib;
 pub mod info;
 pub mod storage;
 
+pub use backend::read_metadata;
 pub use extractors::{get_extractor, register_extractor, Extractor};
 pub use gotaglib::{ExtractMetadataResult, RawTags};
 pub use info::{AudioProperties, Info};

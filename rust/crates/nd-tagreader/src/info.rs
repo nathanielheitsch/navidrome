@@ -1,16 +1,16 @@
-//! `Info` / `AudioProperties` DTOs — port of `model/metadata.go` Info shape as
-//! consumed by `adapters/gotaglib` (`gotaglib.go:115-133`).
+//! `Info` / `AudioProperties`: `model/metadata/metadata.go:21-40`.
 //!
-//! Go: `type Info struct { Tags map[string][]string; AudioProperties AudioProperties; HasPicture bool }`.
-//! Tags keys are lowercase normalized (gotaglib.go:96-99 lowercases PropertyMap
-//! keys); values preserve order per key.
+//! The tag adapter fills Tags, AudioProperties and HasPicture
+//! (`adapters/gotaglib/gotaglib.go:118-122`). Go's FileInfo field is enriched
+//! by storage later (`core/storage/local/local.go:96-107`); #17 owns that
+//! consumer, not the tag parser. Keys are lowercase; value order is preserved.
 
 use std::collections::BTreeMap;
 
-/// `model/metadata.go` AudioProperties (fields set by gotaglib.go:106-111).
+/// `model/metadata/metadata.go:33-40` (filled by `gotaglib.go:87-94`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioProperties {
-    /// Duration in seconds, rounded to 10ms by the extractor (gotaglib.go:107).
+    /// Duration in seconds, rounded to 10ms (`gotaglib.go:88`).
     pub duration: f64,
     /// kbps.
     pub bit_rate: i64,
@@ -24,14 +24,14 @@ pub struct AudioProperties {
     pub codec: String,
 }
 
-/// `model/metadata.go` Info.
+/// Adapter output: `model/metadata/metadata.go:21-26`, excluding storage FileInfo.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Info {
-    /// Tag name → values (Go `Tags map[string][]string`; BTreeMap = sorted keys,
-    /// matching Go's deterministic map iteration for tests).
+    /// Tag name → values; keys are sorted for reproducible Rust tests.
+    /// Go's map order is unspecified, but value order within a key is retained.
     pub tags: BTreeMap<String, Vec<String>>,
     /// Audio stream properties.
     pub audio_properties: AudioProperties,
-    /// File has an embedded picture (gotaglib.go:130; len(props.Images) > 0).
+    /// File has an embedded picture (`gotaglib.go:116`; len(props.Images) > 0).
     pub has_picture: bool,
 }
