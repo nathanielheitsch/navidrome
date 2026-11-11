@@ -2,10 +2,11 @@
 
 ## Current state (2026-11-10) — supersedes the 2026-11-04 boundary below
 
-Measured gate at `a462b1f2` (parent-measured, integrated): fmt clean, workspace build clean, workspace
-clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features
---no-fail-fast` = **1183 passed / 0 FAILED**. The earlier `29d9d9d0` figure — 1067 passed / 4 FAILED —
-was `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
+Measured gate at `b419472b` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
+clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` =
+**1301 passed / 0 FAILED**. Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 → `b419472b` (#16
+mapping + Go oracle) 1301. The `a462b1f2` figure below — 1183 — and the `29d9d9d0` figure — 1067 passed / 4 FAILED —
+are dated: the latter had `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
 **zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
 "969 passed / 0 failed" figure further down is a dated historical boundary, not green state.
 
@@ -84,9 +85,20 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
    MPEG-frame-timestamp SYLT skipped. A fresh review is checking whether these surface honestly or silently
    persist wrong values. Note the exact pin: bumping lofty regenerates nothing automatically, and the Go
    goldens must be re-dumped if the go-taglib fork changes.
-7. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
-8. Specify + build the #12 maintenance/logging half.
-9. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
+7. ~~#16 tag/metadata mapping~~ (`nd-mapping`) — **landed** `4463670b` + `5d12b5ad`, merged `b419472b`,
+   gate 1301/0. `Info → Metadata → MediaFile` pinned by a Go oracle harness (`tests/testdata/go_oracle/main.go`
+   → `tests/data/go_oracle.json`, 51 rows). **Ingest is now #17 only.** Hazard for #17: Go's `parseID3Pairs`
+   (`model/metadata/metadata.go:276-290`) iterates a map, so pair-tag and sub-role ordering is unreproducible
+   across runs of the same binary (parent-verified: three regenerations differ byte-wise, agree only sorted).
+   Rust is `BTreeMap`-ordered; #17 must persist no ordering inherited from either.
+8. **#15 remainder** — transcode cache eviction contract, archiver (`core/archiver.go` zip goldens), and the HTTP handler
+   consuming direct/transcode bodies; the limiter is now wired (`164780ee`), so criterion 5 needs an end-to-end
+   disconnect assertion through that handler.
+9. **#17 scanner** (`nd-scanner`) — XL; starts after #16 (done). Symlink semantics, subprocess IPC, fsnotify, phase
+   ordering, idempotent second pass.
+10. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
+11. Specify + build the #12 maintenance/logging half.
+12. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
    Range + forced transcode + client disconnect with **zero surviving child processes**. Full #27 needs
    share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`);
    deferrable #32 must **not** gate this minimal slice.
