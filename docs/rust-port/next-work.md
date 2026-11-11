@@ -2,10 +2,11 @@
 
 ## Current state (2026-11-10) — supersedes the 2026-11-04 boundary below
 
-Measured gate at `b419472b` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
+Measured gate at `b5c317f8` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
 clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` =
-**1301 passed / 0 FAILED**. Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 → `b419472b` (#16
-mapping + Go oracle) 1301. The `a462b1f2` figure below — 1183 — and the `29d9d9d0` figure — 1067 passed / 4 FAILED —
+**1371 passed / 0 FAILED**. Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 → `b419472b` (#16
+mapping + Go oracle) 1301 → `b5c317f8` (#15 archiver + zip oracle) 1371. The `a462b1f2` figure below — 1183 —
+and the `29d9d9d0` figure — 1067 passed / 4 FAILED —
 are dated: the latter had `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
 **zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
 "969 passed / 0 failed" figure further down is a dated historical boundary, not green state.
@@ -91,14 +92,20 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
    (`model/metadata/metadata.go:276-290`) iterates a map, so pair-tag and sub-role ordering is unreproducible
    across runs of the same binary (parent-verified: three regenerations differ byte-wise, agree only sorted).
    Rust is `BTreeMap`-ordered; #17 must persist no ordering inherited from either.
-8. **#15 remainder** — transcode cache eviction contract, archiver (`core/archiver.go` zip goldens), and the HTTP handler
-   consuming direct/transcode bodies; the limiter is now wired (`164780ee`), so criterion 5 needs an end-to-end
-   disconnect assertion through that handler.
-9. **#17 scanner** (`nd-scanner`) — XL; starts after #16 (done). Symlink semantics, subprocess IPC, fsnotify, phase
-   ordering, idempotent second pass.
-10. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
-11. Specify + build the #12 maintenance/logging half.
-12. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
+8. ~~#15 archiver~~ — **landed** `8b9f48cf`…`b5c317f8` (6 signed commits, agent `5b52e50f…`), gate 1371/0.
+   `core/archiver.go` → `nd-stream/src/archiver.rs` (2546L) pinned by a real Go `archive/zip` oracle
+   (`tests/testdata/go_zip/main.go`, 8 goldens + manifest); parent-verified byte-reproducible for the deterministic
+   goldens and mutation-checked. Declared divergence: cover entries encode the instant in UTC while Go encodes it
+   with its zone (`archive/zip/writer.go:325-335`), so the legacy MS-DOS field differs by the zone offset; the
+   extended-timestamp extra field is asserted byte-exact.
+9. **#15 remainder** — transcode cache eviction contract (`utils/cache`), the HTTP handler consuming
+   direct/transcode/archive bodies, and the end-to-end disconnect assertion for criterion 5 (zero surviving
+   children through the handler).
+10. **#17 scanner** (`nd-scanner`) — XL; starts after #16 (done). Symlink semantics, subprocess IPC, fsnotify,
+    phase ordering, idempotent second pass.
+11. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
+12. Specify + build the #12 maintenance/logging half.
+13. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
    Range + forced transcode + client disconnect with **zero surviving child processes**. Full #27 needs
    share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`);
    deferrable #32 must **not** gate this minimal slice.
