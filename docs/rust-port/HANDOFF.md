@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `edb04ffc` (2026-11-11, incl. parent-authored atomicity tests), `cd rust`:
+Measured at `ccd1a195` (2026-11-11, incl. A4 fail-closed auth), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1275 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1281 passed / 0 FAILED**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -66,7 +66,7 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   username specifically (server/initial_setup.go:45-64), so a DB with a regular user and no admin skips
   creation yet commits the setup flag permanently. Credential precedence is NOT a bug - it matches Go
   (server/auth.go:186-197,257-276); neither implementation rejects conflicting sources. Known gap:
-  TokenEpochHolder::record_put has no production call site, so epoch propagation is wired but unproven
+  TokenEpochHolder::record_put has no production call site — see the A3 row in issues.md: the blocker is the missing native-API CRUD route layer (#27), not nd-auth
   until a real user-update handler calls it.
 - `nd-dbschema`: `schema_ddl.rs` now carries the **80 secondary indexes** (4 UNIQUE) and the
   8 late-window columns that were missing (`album.rg_album_gain`/`rg_album_peak`,
