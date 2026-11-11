@@ -1163,6 +1163,17 @@ where
             },
             ..planned
         };
+        // The caller's `Content-Encoding` is on the ResponseWriter before
+        // `ServeContent` runs (`serve.go:489-492`), so the plain-200 tail rule
+        // applies to the plan the open produced (`fs.go:425-427`).
+        let planned = if planned.status == 200 && req.content_encoding.is_some() {
+            ServePlan {
+                content_length: None,
+                ..planned
+            }
+        } else {
+            planned
+        };
         let headers = headers_for(req, &planned, BodyKind::Direct);
         let prepared = StreamPlan {
             plan: planned,
@@ -1398,7 +1409,32 @@ where
                         gate.close().await
                     };
                     match teardown {
-                        Ok(_) => child_reaped = true,
+                        Ok(exit) => {
+                            child_reaped = true;
+                            // Go's `ffCmd.wait` pushes a non-zero exit into the
+                            // stdout pipe (`core/ffmpeg/ffmpeg.go:384-393`:
+                            // `out.CloseWithError("<path> exited with non-zero status
+                            // code: N[: stderr]")`), so `io.Copy` reports that as the
+                            // read error rather than reaching a clean EOF. A pipe that
+                            // produced nothing therefore lands in the error arm
+                            // (`media_streamer.go:181-185`, a 500 the caller can still
+                            // send) and only a **successful** exit counts as empty
+                            // output (`:190-193`). A killed process (code -1, from a
+                            // SIGKILL) is not a failure: that is the port's own
+                            // cancellation, which Go reports as a disconnected stream.
+                            if outcome.error.is_none()
+                                && !outcome.disconnected
+                                && outcome.written == 0
+                                && exit.code != 0
+                            {
+                                let message = nd_ffmpeg::go_error_message(
+                                    gate.exec().to_string(),
+                                    exit.code,
+                                    exit.stderr.clone(),
+                                );
+                                failure = Some((0, message));
+                            }
+                        }
                         Err(cleanup) => {
                             cleanup_error = Some(cleanup.to_string());
                             if gate.cleanup_pending() {
@@ -1412,9 +1448,12 @@ where
                         }
                     }
 
-                    if outcome.empty_output {
+                    if outcome.empty_output && failure.is_none() {
                         // Go logs this and does not treat it as an error
-                        // (`media_streamer.go:190-193`).
+                        // (`media_streamer.go:190-193`). A non-zero exit is the
+                        // error arm above, not empty output: `ffCmd.wait` closed
+                        // the pipe with an error, so `io.Copy` never reached the
+                        // `c == 0` log (`core/ffmpeg/ffmpeg.go:387-393`).
                         let reported = if head { 0 } else { outcome.written };
                         empty_output = Some(EmptyOutput {
                             written: reported,
@@ -1435,6 +1474,13 @@ where
             if at == 0 {
                 headers.del("Content-Length");
                 status = 500;
+                // Go's caller writes the message with `http.Error`, which sets
+                // `Content-Type: text/plain; charset=utf-8` over the audio type
+                // `Serve` had already staged (`net/http/server.go:2388`,
+                // `server/public/handle_streams.go:72`, `api.go:297-311`). Only
+                // the arms that send a message get that replacement; the abort
+                // arm below writes nothing at all.
+                headers.set("Content-Type", ERROR_CONTENT_TYPE);
                 error = Some(StreamError::TruncatedBeforeFirstByte { message });
             } else {
                 error = Some(StreamError::Aborted {

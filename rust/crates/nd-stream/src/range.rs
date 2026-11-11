@@ -998,7 +998,7 @@ pub fn plan_streaming(
             // No size on a pipe: Content-Length only when the caller asked for
             // the estimate (media_streamer.go:168-172).
             let head = req.is_head();
-            ServePlan {
+            let mut plan = ServePlan {
                 status: 200,
                 start: 0,
                 end: 0,
@@ -1010,7 +1010,12 @@ pub fn plan_streaming(
                 content_type: meta.content_type.clone(),
                 no_body: head,
                 error_message: None,
-            }
+            };
+            // Go's non-seekable arm writes its own headers and then calls
+            // `w.ServeContent` (`serve.go:489-492`), so the `fs.go:425-427`
+            // Content-Encoding carve-out applies to the estimate as well.
+            finalize(&mut plan, req.is_head(), meta);
+            plan
         }
     }
 }
