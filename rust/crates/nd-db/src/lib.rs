@@ -48,6 +48,7 @@ pub mod sql_tags;
 pub mod sqlrepo;
 pub mod store;
 pub mod tag_repo;
+pub mod time;
 pub mod transcoding_repo;
 pub mod user_props_repo;
 pub mod user_repo;

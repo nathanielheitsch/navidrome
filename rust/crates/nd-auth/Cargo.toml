@@ -24,7 +24,7 @@ axum = { workspace = true }
 # Reuse the workspace's Gravatar implementation (server/auth.go:81-83).
 nd-utils = { path = "../nd-utils" }
 # Match nd-db's public transaction API and bundled SQLite features.
-rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup"] }
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup", "chrono"] }
 
 [dev-dependencies]
 # Existing workspace crates; tower and tokio mirror nd-events' test setup.

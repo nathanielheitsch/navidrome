@@ -818,6 +818,7 @@ dependencies = [
 name = "nd-db"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "nd-conf",
  "nd-dbschema",
  "nd-id",
@@ -1301,6 +1302,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7753b721174eb8ff87a9a0e799e2d7bc3749323e773db92e0984debb00019d6e"
 dependencies = [
  "bitflags",
+ "chrono",
  "fallible-iterator",
  "fallible-streaming-iterator",
  "hashlink",

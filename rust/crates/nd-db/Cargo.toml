@@ -13,8 +13,13 @@ nd-conf = { version = "0.1.0", path = "../nd-conf" }
 nd-dbschema = { version = "0.1.0", path = "../nd-dbschema" }
 nd-utils = { version = "0.1.0", path = "../nd-utils" }
 # rusqlite is not a workspace dependency: every consumer re-pins the same
-# version+features verbatim (nd-dbschema/Cargo.toml:14 is the template).
-rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup"] }
+# version+features verbatim (nd-dbschema/Cargo.toml:14 is the template). The
+# `chrono` feature is the crate-wide timestamp convention (src/time.rs):
+# `ToSql for DateTime<Utc>` stores '%F %T%.f%:z' TEXT (types/chrono.rs:88-93).
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup", "chrono"] }
+# The record fields' timestamp type; already in Cargo.lock via nd-events/
+# nd-mapping/nd-sched, so --locked builds gain no new crate.
+chrono = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 # nd-id supplies new_tag_id (model.NewTag is what sql_tags.go marshalTags calls).

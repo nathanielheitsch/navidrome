@@ -28,18 +28,24 @@
 //! pins the miss as [`ShareError::NotFound`] and leaves the permission
 //! branch open (residual risk).
 //!
-//! Timestamps: Go binds `time.Time` values (go-sqlite3 writes them as sqlite
-//! datetime text); the port uses epoch-seconds integers — the `Time` unit
-//! of `nd-dbschema`'s `optimize.rs:53` — so expiry is a numeric compare
-//! inside sqlite rather than a Go `time.Before` (`core/share.go:45`).
+//! Timestamps: `datetime` columns hold TEXT in [`crate::time`]'s convention —
+//! rusqlite's own `DateTime<Utc>` shape (`%F %T%.f%:z`), byte-identical to a
+//! direct `params![dt]` bind. Epoch-second integers are NOT bound: SQLite's
+//! affinity rules keep them `typeof() = integer`, and INTEGER sorts before
+//! TEXT, so a TEXT-bound range predicate silently excludes them and
+//! `ORDER BY created_at DESC` puts them first regardless of chronology.
+//! Expiry is Go's `!expiresAt.IsZero() && expiresAt.Before(time.Now())`
+//! (`core/share.go:44`), i.e. [`crate::time::is_expired`].
 //! Execution runs on the crate's store seam (`rusqlite::Connection`,
 //! `store.rs`); Go's `executeSQL`/`queryOne` (`sql_base_repository.go:336-355,375-388`)
 //! row counts and `ErrNoRows → ErrNotFound` mapping are reproduced here.
 
+use chrono::{DateTime, Utc};
 use rusqlite::{Connection, Error as RsError, OptionalExtension};
 
 use crate::sql_bookmarks::INVALID_USER_ID;
 use crate::sqlrepo::{Repository, Value};
+use crate::time;
 
 /// `r.tableName` (`share_repository.go:16` via `registerModel(&model.Share{})`,
 /// `sql_base_repository.go:104-110`).
@@ -49,9 +55,9 @@ pub const SHARE_TABLE: &str = "share";
 /// (`sql_base_repository.go:358-372`) output shape.
 pub type Sql = (String, Vec<Value>);
 
-/// Epoch-seconds timestamp unit (see module header for the go-sqlite3
-/// datetime-text deviation).
-pub type Time = i64;
+/// The record's timestamp unit: UTC instants stored as TEXT via
+/// [`crate::time`] (see module header for why not epoch seconds).
+pub type Time = DateTime<Utc>;
 
 /// A `SET column = value` pair, the values squirrel's `SetMap` threads to the
 /// UPDATE (`sql_base_repository.go:506-515` via `updateOwned`).
@@ -81,21 +87,41 @@ impl Col {
             value: Value::Integer(value),
         }
     }
+
+    /// A timestamp SET pair: bound with [`crate::time`]'s TEXT shape, never
+    /// an epoch integer.
+    #[must_use]
+    pub fn timestamp(column: &str, value: &DateTime<Utc>) -> Self {
+        Self {
+            column: column.to_string(),
+            value: time::value(value),
+        }
+    }
+
+    /// A nullable timestamp SET pair: `None` sets the column to NULL (Go's
+    /// nil `*time.Time`, `model/share.go:19,20`).
+    #[must_use]
+    pub fn optional_timestamp(column: &str, value: Option<&DateTime<Utc>>) -> Self {
+        Self {
+            column: column.to_string(),
+            value: time::optional_value(value),
+        }
+    }
 }
 
 /// A share row (the `structs:""` column spellings of `model/share.go:15-32`).
-/// Optional datetimes are epoch seconds ([`Time`]); `expires_at = 0` means
-/// "never expires" (Go's zero `*time.Time`, `core/share.go:44 IsZero()`).
+/// Optional datetimes mirror Go's `*time.Time` (`share.go:19,20`):
+/// `None` binds NULL and means "never expires" / "never visited"
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShareRecord {
     /// `id` — the share token.
     pub id: String,
     /// `user_id` — server-managed owner (`core/share.go:83-95`).
     pub user_id: String,
-    /// `expires_at` (0 = never).
-    pub expires_at: Time,
-    /// `last_visited_at`.
-    pub last_visited_at: Time,
+    /// `expires_at` — `None` (NULL) never expires (`core/share.go:44`).
+    pub expires_at: Option<Time>,
+    /// `last_visited_at` — `None` (NULL) until the first visit.
+    pub last_visited_at: Option<Time>,
     /// `created_at` — never overwritten on update
     /// (`selectUpdateColumns`, `sql_base_repository.go:605`).
     pub created_at: Time,
@@ -408,8 +434,9 @@ impl<'a> ShareRepo<'a> {
     }
 
     /// `load` (`core/share.go:38-58`): fetch the share by token, reject an
-    /// expired one (`model.ErrExpired`, `:44-47` — a nonzero `expires_at`
-    /// in the past), then bump `visit_count`/`last_visited_at` through
+    /// expired one (`model.ErrExpired`, `:44-47` — a non-nil `expires_at` in
+    /// the past, [`crate::time::is_expired`]), then bump
+    /// `visit_count`/`last_visited_at` through
     /// `Update(ctx, id, *share, "last_visited_at", "visit_count")`
     /// (`:48-51`, including the `updated_at` append at
     /// `share_repository.go:121`). The visit bump failure is logged and
@@ -428,16 +455,17 @@ impl<'a> ShareRepo<'a> {
         owner: Option<String>,
     ) -> Result<(ShareWithOwner, bool), ShareError> {
         let found = self.get(id, owner.clone())?;
-        // core/share.go:44-47: only a non-zero ExpiresAt in the past expires.
-        if found.share.expires_at != 0 && found.share.expires_at < now {
+        // core/share.go:44-47: a nil ExpiresAt never expires.
+        if time::is_expired(found.share.expires_at.as_ref(), &now) {
             return Err(ShareError::Expired);
         }
         // core/share.go:48-51 + share_repository.go:116-124: the two visit
-        // columns plus the appended updated_at.
+        // columns plus the appended updated_at, stamped with the caller's
+        // clock as datetime TEXT (see time.rs).
         let cols = vec![
             Col::integer("visit_count", found.share.visit_count + 1),
-            Col::integer("last_visited_at", now),
-            Col::integer("updated_at", now),
+            Col::timestamp("last_visited_at", &now),
+            Col::timestamp("updated_at", &now),
         ];
         let bumped = self.update(id, &cols, owner).is_ok();
         Ok((found, bumped))
@@ -451,6 +479,8 @@ fn row_to_share(row: &rusqlite::Row<'_>) -> rusqlite::Result<ShareWithOwner> {
         share: ShareRecord {
             id: row.get("id")?,
             user_id: row.get("user_id")?,
+            // rusqlite's own `FromSql for DateTime<Utc>` (types/chrono.rs:117-136)
+            // parses the stored text and falls back to SQLite's naive shape.
             expires_at: row.get("expires_at")?,
             last_visited_at: row.get("last_visited_at")?,
             created_at: row.get("created_at")?,
@@ -486,6 +516,18 @@ fn bind_values(args: &[Value]) -> Vec<rusqlite::types::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{NaiveDate, TimeZone};
+
+    /// Deterministic clock: a fixed UTC instant per second offset, so the
+    /// stamps stay comparable across save/update/read.
+    fn at(year: u32, month: u32, day: u32, h: u32, mi: u32, s: u32) -> Time {
+        Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(i32::try_from(year).unwrap(), month, day)
+                .unwrap()
+                .and_hms_opt(h, mi, s)
+                .unwrap(),
+        )
+    }
 
     /// The real `share` + `user` DDL (`schema_ddl.rs:57,68`) and one owner
     /// row, so the `selectShare` join and the save FK both behave.
@@ -506,23 +548,25 @@ mod tests {
              max_bit_rate integer not null default 0, visit_count integer not null default 0 );",
         )
         .expect("share schema creates");
+        // Stamped through the crate convention, not the 0 sentinel an old port
+        // wrote (time.rs).
+        let stamp = time::value(&at(2024, 1, 1, 0, 0, 0));
         conn.execute(
-            "INSERT INTO \"user\" (id, user_name, created_at, updated_at) \
-             VALUES ('user1', 'alice', 0, 0)",
-            [],
+            "INSERT INTO \"user\" (id, user_name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            rusqlite::params!["user1", "alice", stamp.clone(), stamp],
         )
         .expect("owner row seeds");
         conn
     }
 
-    fn record(id: &str, expires_at: Time) -> ShareRecord {
+    fn record(id: &str, expires_at: Option<Time>) -> ShareRecord {
         ShareRecord {
             id: id.to_string(),
             user_id: "user1".to_string(),
             expires_at,
-            last_visited_at: 0,
-            created_at: 100,
-            updated_at: 100,
+            last_visited_at: None,
+            created_at: at(2024, 1, 1, 0, 0, 0),
+            updated_at: at(2024, 1, 1, 0, 0, 0),
             resource_ids: "al-1".to_string(),
             resource_type: "album".to_string(),
             contents: "Some Album".to_string(),
@@ -592,8 +636,8 @@ mod tests {
         // share_repository.go:121's updated_at append, non-admin owner.
         let cols = vec![
             Col::integer("visit_count", 2),
-            Col::integer("last_visited_at", 500),
-            Col::integer("updated_at", 500),
+            Col::timestamp("last_visited_at", &at(2024, 1, 2, 0, 0, 0)),
+            Col::timestamp("updated_at", &at(2024, 1, 2, 0, 0, 0)),
         ];
         // Act:
         let (sql, args) = update_sql("tok1", &cols, Some("user1".to_string()));
@@ -607,8 +651,8 @@ mod tests {
             args,
             vec![
                 Value::Integer(2),
-                Value::Integer(500),
-                Value::Integer(500),
+                Value::Text("2024-01-02 00:00:00+00:00".to_string()),
+                Value::Text("2024-01-02 00:00:00+00:00".to_string()),
                 Value::Text("tok1".to_string()),
                 Value::Text("user1".to_string()),
             ]
@@ -621,14 +665,14 @@ mod tests {
         // returns the stored entity, anything else is model.ErrNotFound.
         let conn = conn();
         let repo = ShareRepo::new(&conn);
-        repo.save(&record("tok1", 0)).expect("row seeds");
+        repo.save(&record("tok1", None)).expect("row seeds");
         // Act:
         let hit = repo.get("tok1", None);
         let miss = repo.get("nope", None);
         let foreign = repo.get("tok1", Some("user2".to_string()));
         // Assert:
         let found = hit.expect("stored token reads");
-        assert_eq!(found.share, record("tok1", 0));
+        assert_eq!(found.share, record("tok1", None));
         assert_eq!(found.username, "alice".to_string());
         assert!(matches!(miss, Err(ShareError::NotFound)));
         assert!(matches!(foreign, Err(ShareError::NotFound)));
@@ -642,14 +686,14 @@ mod tests {
         let conn = conn();
         conn.execute(
             "INSERT INTO \"user\" (id, user_name, created_at, updated_at) \
-             VALUES ('user2', 'bob', 0, 0)",
+             VALUES ('user2', 'bob', '2024-01-01 00:00:00+00:00', '2024-01-01 00:00:00+00:00')",
             [],
         )
         .expect("second owner seeds");
         let repo = ShareRepo::new(&conn);
-        let mut other = record("tok2", 0);
+        let mut other = record("tok2", None);
         other.user_id = "user2".to_string();
-        repo.save(&record("tok1", 0)).expect("row 1 seeds");
+        repo.save(&record("tok1", None)).expect("row 1 seeds");
         repo.save(&other).expect("row 2 seeds");
         // Act:
         let admin_exists = repo.exists("tok2", None);
@@ -670,7 +714,7 @@ mod tests {
         // row via the ownership WHERE clause (sql_base_repository.go:506-515).
         let conn = conn();
         let repo = ShareRepo::new(&conn);
-        repo.save(&record("tok1", 0)).expect("row seeds");
+        repo.save(&record("tok1", None)).expect("row seeds");
         let cols = vec![Col::text("description", "new desc")];
         // Act:
         let owned = repo.update("tok1", &cols, Some("user1".to_string()));
@@ -691,8 +735,8 @@ mod tests {
         // token in order, ownership-restricted.
         let conn = conn();
         let repo = ShareRepo::new(&conn);
-        repo.save(&record("tok1", 0)).expect("row 1 seeds");
-        repo.save(&record("tok2", 0)).expect("row 2 seeds");
+        repo.save(&record("tok1", None)).expect("row 1 seeds");
+        repo.save(&record("tok2", None)).expect("row 2 seeds");
         // Act:
         repo.delete(&["tok1".to_string(), "tok2".to_string()], None)
             .expect("both tokens delete");
@@ -709,18 +753,20 @@ mod tests {
     fn load_rejects_expired_tokens_and_bumps_the_visit_count() {
         // Arrange: core/share.go:38-58 — an expired token raises
         // model.ErrExpired (:44-47), a live one bumps visit_count and
-        // last_visited_at (:48-51). expires_at = 0 never expires (:44).
+        // last_visited_at (:48-51). A nil expires_at never expires (:44).
         let conn = conn();
         let repo = ShareRepo::new(&conn);
-        repo.save(&record("expired", 100))
+        repo.save(&record("expired", Some(at(2024, 1, 1, 0, 0, 0))))
             .expect("expired row seeds");
-        repo.save(&record("live", 0)).expect("live row seeds");
-        repo.save(&record("later", 900)).expect("later row seeds");
+        repo.save(&record("live", None)).expect("live row seeds");
+        repo.save(&record("later", Some(at(2024, 1, 3, 0, 0, 0))))
+            .expect("future-expiry token seeds");
+        let now = at(2024, 1, 2, 0, 0, 0);
         // Act:
-        let expired = repo.load("expired", 500, None);
-        let (loaded, bumped) = repo.load("live", 500, None).expect("live token loads");
+        let expired = repo.load("expired", now, None);
+        let (loaded, bumped) = repo.load("live", now, None).expect("live token loads");
         let (untouched, _) = repo
-            .load("later", 500, None)
+            .load("later", now, None)
             .expect("future-expiry token loads");
         // Assert:
         assert!(matches!(expired, Err(ShareError::Expired)));
@@ -728,8 +774,11 @@ mod tests {
         assert_eq!(loaded.share.visit_count, 0);
         let reloaded = repo.get("live", None).expect("bumped row reads");
         assert_eq!(reloaded.share.visit_count, 1);
-        assert_eq!(reloaded.share.last_visited_at, 500);
-        assert_eq!(reloaded.share.updated_at, 500);
+        assert_eq!(
+            reloaded.share.last_visited_at,
+            Some(at(2024, 1, 2, 0, 0, 0))
+        );
+        assert_eq!(reloaded.share.updated_at, at(2024, 1, 2, 0, 0, 0));
         assert_eq!(untouched.share.visit_count, 0);
     }
 
@@ -740,7 +789,7 @@ mod tests {
         let conn = conn();
         let repo = ShareRepo::new(&conn);
         // Act:
-        let miss = repo.load("nope", 500, None);
+        let miss = repo.load("nope", at(2024, 1, 2, 0, 0, 0), None);
         // Assert:
         assert!(matches!(miss, Err(ShareError::NotFound)));
     }
