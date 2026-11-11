@@ -126,7 +126,15 @@ and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields
 ## Then, in order (updated 2026-11-11 at `d19526e3`, gate 1442/0)
 
 1. ~~#15 transcode cache~~ — **landed** `8abefec1`/`46b2a1ca`/`d19526e3`. #15 is complete.
-2. **`nd-db` shared marshal + hydration layer** — **the critical path**. Go routes every read through one
+2. **`nd-db` shared marshal + hydration layer** — **the critical path**.
+   **Timestamp convention is decided** (2026-11-11, user): the Rust standard, no Go compatibility, because this is not
+   a migration target. Use **rusqlite's `chrono` feature with `DateTime<Utc>`** (`types/chrono.rs:88-93` binds RFC3339
+   `%F %T%.f%:z`, `:117-136` parses it and falls back to naive), so no hand-rolled helper. Add `chrono` to the three
+   identical rusqlite feature pins; it is already in `Cargo.lock`. Fix the live bug while you are there:
+   `share_repo.rs`, `radio_repo.rs:124`, `artist_repo.rs:566` bind epoch-second `Value::Integer` into `datetime`
+   columns, which SQLite stores as `integer` — TEXT-bound range predicates (`mediafile_repository.go:533,559`) then
+   silently drop those rows and `ORDER BY created_at DESC` mis-orders them.
+ Go routes every read through one
    reflection scanner (`dbx@v1.12.0/rows.go:65-103` via `sql_base_repository.go:381,429,450,466`) and every write
    through `structs.Map` + `PostMapArgs` (`sql_base_repository.go:445,480`); Rust has **neither**, only three
    hand-written `row_to_*` mappers, and **nothing computes the media_file/album FTS columns**

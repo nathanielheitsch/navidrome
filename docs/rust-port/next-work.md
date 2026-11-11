@@ -163,17 +163,49 @@ Hazards, ranked by how silently they corrupt data:
    persist empty `search_*`/`full_text` and break search with no error anywhere.
 2. `PostScan` aggregation for album/artist/mediafile/folder (`Discs`, `Participants`, `Tags`, `FolderIDs`,
    `LibraryStatsJSON`) has no Rust counterpart; `artist_repo.rs:236` is an explicit stub.
-3. **Timestamp convention — decision needed before further repo work.** Go uses CGO `sqlite3` with the UTC layout
-   `2006-01-02 15:04:05.999999999-07` (`go-sqlite3@v1.14.52/sqlite3.go:132-134,583-603`); `nd-db/src/time.rs:43-69`
-   parses several layouts and `now_sql()` emits local-with-offset, while the port's own goldens are naive UTC. Rust is
-   internally consistent, so nothing fails visibly today — but a Go-written DB read by Rust (migration, dual-run parity)
-   diverges. Pick naive-UTC (matching the goldens) or Go's offset form, then pin it with a Go oracle rather than an
-   assertion.
-4. `playlist_repo.rs` reads `is_scheduled`/`owner_id`/`sync`/`path` from an existence map instead of a struct, and
-   `playlist_track_repo.rs:418` returns the media-file id where Go overwrites `ID = MediaFileID`
-   (`playlist_track_repository.go:27-33`).
-5. Genre `SongCount`/`AlbumCount` are never populated in Go (`model/genre.go:9-12`) yet `radio_repo.rs:95-97` maps
-   them; `user_props_repo.rs:108` maps `value` twice while Go reads `value->>'$.v'` (`user_props_repository.go:27`).
+3. **Timestamp convention — DECIDED by the user 2026-11-11: use the Rust standard; no Go-migration
+   compatibility is required.** This port is not a path users migrate a Go Navidrome DB into, so matching Go's stored
+   representation is explicitly *not* a goal. Choose for Rust ergonomics and correctness.
+
+   **The brief's `nd-db/src/time.rs:43-69` does not exist, and neither does `now_sql()`.** Both were fabricated. There
+   is no timestamp module and no central convention: `chrono` is not even a dependency of `nd-db`. The real state,
+   measured:
+   - `user_repo` / `player_repo` carry timestamps as TEXT and the tests use two different shapes —
+     `runtime_user_repo.rs:17` `"2024-01-01T00:00:00Z"` vs `runtime_player_repo.rs:27` `"2024-01-02 03:04:05"`.
+   - `share_repo` (`Time` = epoch seconds, `share_repo.rs:32,87-101`), `radio_repo.rs:23-24,124` and
+     `artist_repo.rs:566` bind **`Value::Integer` epoch seconds into `datetime` columns**, and the code already admits
+     the divergence in its own doc comments (`radio_repo.rs:23-24`, `share_repo.rs:32`).
+
+   **This is a live correctness bug, not a parity nit — parent-verified against SQLite.** In the affinity system an
+   INTEGER beats a `datetime` column, so the stored value keeps `typeof()` = `integer`, and INTEGER sorts before TEXT.
+   Two consequences, both silent:
+   - a `Gt{"media_file.created_at": since}` / `Lt` predicate bound as TEXT (`mediafile_repository.go:533,559` — Go
+     binds `time.Time`) **excludes** INTEGER-stored rows entirely: `where created_at > '2020-01-01 00:00:00'` returned
+     only the text row and skipped the integer one. That is the recent-files / scanner-missing path.
+   - `ORDER BY created_at DESC` puts INTEGER rows first regardless of chronology.
+   - `share` expiry (`core/share.go:44-47`) is currently self-consistent because both sides are integers, so it works —
+     but it will break the moment anything else reads those columns.
+
+   **Chosen convention: rusqlite's own `chrono` feature, with `DateTime<Utc>` everywhere.** That *is* the Rust standard
+   here, so no hand-rolled bind/parse helper is needed: `rusqlite-0.32.1/src/types/mod.rs:80-82` gates `mod chrono`,
+   whose `ToSql for DateTime<Utc>` (`types/chrono.rs:88-93`) emits `%F %T%.f%:z` →
+   `2024-01-01 00:00:00+00:00` and whose `FromSql` (`:117-136`) parses RFC3339 and **falls back to `NaiveDateTime`**
+   when there is no offset — so it reads both its own output and SQLite's naive `current_timestamp` default.
+   Add `chrono` to the three rusqlite pins (`nd-db`, `nd-dbschema`, `nd-auth` all repeat the same
+   `features = ["bundled", "collation", "functions", "backup"]`, per the `nd-dbschema/Cargo.toml:14` template).
+   `chrono` 0.4.45 is already in `Cargo.lock`, so this adds no new third-party crate to the lock — only a feature.
+   Parent-verified in SQLite that this fixes both bugs: rows stored as `2024-01-01 00:00:00+00:00` (with and without
+   fractional seconds) sort correctly and are included by a `Gt` bound, and the naive `2026-11-11 23:19:10` default
+   sorts last rather than first. Set `created_at`/`updated_at` explicitly instead of relying on that default — Go sets
+   them explicitly too (`persistence/artist_repository.go:241`, `user_repository.go` `values["created_at"] = time.Now()`),
+   so this is not a behavioural change. Keep the type opaque at the repository boundary where it already is
+   (`user_repo.rs:490-492` deliberately stops at the row), but make the *storage* type uniform.
+   Pin with an executed write→read→compare round-trip against a real DB, not a string assertion.
+4. `playlist_track_repo` has no executed read path at all, so Go's `PostScan` overwrite `MediaFile.ID = t.MediaFileID`
+   (`playlist_track_repository.go:27-33`) has no Rust counterpart yet — the hydration layer must supply it.
+5. **Two more brief claims are false — do not chase them.** `user_props_repo.rs:108` does *not* map `value` twice: its
+   `get` selects the single `value` column exactly as Go does (`user_props_repository.go:30-40`, verified). And
+   `artist_repo.rs:236` is not a `PostScan` stub; it is the annotation-column join inside `new_select_sql`.
 
 **Shape to build:** one file, one seam — entity→`(columns, values)` marshal and row→entity mapper, both pinned against a
 Go oracle, with `PostScan`/`PostMapArgs` hooks; then per-repo adapters. DTOs stay **local to `nd-db`**: `nd-model` is

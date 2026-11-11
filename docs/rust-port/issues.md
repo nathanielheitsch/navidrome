@@ -59,7 +59,10 @@ crates read DONE while nothing can consume them:
 - **#05 `nd-db` has an execution seam but four repositories** — `execution.rs` (`ToSql`, `execute`, `query_optional`,
   `query_all`) plus `store::SQLStore` landed in `3ce1b154`; `user_repo` executes with row hydration (`dee593b5`),
   `player_repo` (`c8c71f8d`), and `share_repo`/`user_props_repo` execute via raw `conn`. **The other 17 repos still only
-  render SQL.** Two scoping briefs (2026-11-11) converge on the same root cause and it is bigger than "hydration":
+  render SQL.** Two scoping briefs (2026-11-11) converge on the same root cause and it is bigger than "hydration"
+  (note: several `file:line` references in those briefs were fabricated and have been corrected — `nd-db/src/time.rs`
+  does not exist, `now_sql()` does not exist, `artist_repo.rs:236` is an annotation join not a `PostScan` stub, and
+  `user_props_repo.rs:108` does not map `value` twice. Treat brief citations as unverified until checked):
   there is **no shared row mapper and no shared entity→`(columns, values)` marshaler**. Go funnels every read through
   one reflection-based `dbx.Rows.ScanStruct` (`dbx@v1.12.0/rows.go:65-103`, reached from
   `sql_base_repository.go:381,429,450,466`) and every write through `structs.Map` + `PostMapArgs`
@@ -75,6 +78,21 @@ crates read DONE while nothing can consume them:
 - **#13 `nd-auth` is wired** (`bd8f7a84..cfea1e08`, merged `0fad9985`) — mountable request middleware, credential
   verifier, login with transactional first-admin, post-handler refresh, trusted-header provisioning, `GuardedLimiter`.
   Open item: the documented `createAdmin` atomicity deviation needs its own ledger row.
+- **Timestamp convention DECIDED (2026-11-11, user): Rust standard, no Go-migration compatibility.** This port is not
+  a migration target, so matching Go's stored form is explicitly not a goal. The real state is worse than "inconsistent":
+  `share_repo.rs:32,87-101`, `radio_repo.rs:23-24,124`, and `artist_repo.rs:566` bind **epoch-second `Value::Integer`
+  into `datetime` columns**, and the divergence is admitted in their own doc comments. Parent-verified against SQLite:
+  INTEGER affinity beats `datetime`, so the stored value keeps `typeof() = integer` and INTEGER sorts before TEXT — a
+  TEXT-bound `Gt`/`Lt` predicate (`mediafile_repository.go:533,559`) **silently excludes** integer rows, and
+  `ORDER BY created_at DESC` orders them first regardless of chronology. `user_repo`/`player_repo` use TEXT but in two
+  different shapes (`runtime_user_repo.rs:17` `...T00:00:00Z` vs `runtime_player_repo.rs:27` `2024-01-02 03:04:05`).
+  **Convention: rusqlite's `chrono` feature + `DateTime<Utc>`** — the Rust standard, no hand-rolled helper.
+  `rusqlite-0.32.1/src/types/chrono.rs:88-93` binds `%F %T%.f%:z` (`2024-01-01 00:00:00+00:00`) and `:117-136` parses
+  RFC3339 with a naive-`NaiveDateTime` fallback, so it also reads SQLite's `current_timestamp` default. Add the feature
+  to the three identical rusqlite pins (`nd-db`, `nd-dbschema`, `nd-auth`); `chrono` 0.4.45 is already in
+  `Cargo.lock`, so no new crate enters the lock. Parent-verified in SQLite: RFC3339 rows sort correctly, are included
+  by `Gt` bounds, and the naive default sorts last instead of first. Set timestamps explicitly rather than lean on the
+  DDL default, as Go does. Pin with an executed write→read→compare round-trip, not a string assertion.
 - **#15 stream serving is COMPLETE** (`d19526e3`, gate 1442/0) — Range/conditional matrix, bounded direct adapter, probe
   adapter, process-backed transcode body (`aa9b280e`, `a462b1f2`), rate-limiting semaphore (`164780ee`+`fc48ff3f`),
   archiver (`8b9f48cf`…`b5c317f8`), HTTP handler (`db9f1e42`…`38b0b812`), and the **transcoding-file cache**
