@@ -27,10 +27,12 @@
 //! request in, headers plus byte window out — so the whole matrix is testable
 //! without a server. [`direct`] is the only I/O in that path and takes an
 //! **already-authorized** path; see the trust boundary in `direct.rs`.
-//! Still open in #15: the transcoding-file cache eviction contract
-//! (`utils/cache`), whose seam is the injectable [`handler::TranscodeSource`] /
-//! [`handler::CachedTranscode`] pair. The transcode limiter (`limiter.go`) is
-//! now **enforced** through [`transcode_body::open_transcode_gated`], the
+//! The transcoding-file cache (`utils/cache`: `file_caches.go`, `spread_fs.go`,
+//! `file_haunter.go`) is ported in [`transcode_cache`]: the single-flight that makes
+//! two identical pending requests launch one ffmpeg, `Cached` semantics, fan-out from
+//! offset 0, the completion marker, and the haunter's eviction rule as an explicit
+//! [`transcode_cache::TranscodeCache::scrub`]. The transcode limiter (`limiter.go`) is
+//! enforced through [`transcode_body::open_transcode_gated`], the
 //! process-backed transcode body (`media_streamer.go:101-133`) is ported in
 //! [`transcode_body`], the archiver (`core/archiver.go`) is ported in
 //! [`archiver`] with its zip-layout contract pinned against a Go `archive/zip`
@@ -52,6 +54,7 @@ pub mod probe_json;
 pub mod range;
 pub mod token;
 pub mod transcode_body;
+pub mod transcode_cache;
 pub mod types;
 
 /// Scaffold marker kept for the #S1 instantiate contract: the owning issue
@@ -108,6 +111,13 @@ pub use range::{
 pub use token::{
     create_transcode_params, params_from_token, parse_transcode_params, resolve_request_from_token,
     TranscodeParams, TOKEN_TTL_SECS,
+};
+pub use transcode_cache::{
+    key_mapper, live_pollers, marker_path, rfc3339_utc, stream_cache_key, CacheItem, CacheLease,
+    CacheTranscodeSource, Entry, Opened, ScrubReport, SharedDisconnect, TranscodeCache,
+    CACHE_READ_CHUNK_BYTES, COMPLETE_MARKER_SUFFIX, DEFAULT_CACHE_CLEAN_UP_INTERVAL,
+    DEFAULT_CACHE_SIZE_BYTES, DEFAULT_TRANSCODING_CACHE_MAX_ITEMS, KEY_HASH_HEX_LEN,
+    TRANSCODING_CACHE_DIR,
 };
 pub use types::{
     ClientInfo, CodecProfile, DecisionOptions, DirectPlayProfile, ErrTokenInvalid, ErrTokenStale,

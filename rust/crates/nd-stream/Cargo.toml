@@ -18,6 +18,7 @@ jsonwebtoken = { workspace = true }
 # Deliberately narrow — the workspace pin is `^1` and `full` is not used here
 # (siblings narrow the same way: nd-db/Cargo.toml, nd-events/Cargo.toml).
 tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "time"] }
+sha1 = "^0.10.7"
 
 [dev-dependencies]
 # Oracle tests (#15): parse the Go-produced manifest and compare entry fields.
