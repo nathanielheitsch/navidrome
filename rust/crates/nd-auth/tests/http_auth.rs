@@ -247,7 +247,7 @@ async fn refresh_carries_committed_handler_epoch() {
 }
 
 #[tokio::test]
-async fn refresh_omits_header_for_empty_response() {
+async fn refresh_includes_header_for_empty_response() {
     let (store, path, auth) = fixture();
     let subject = TokenSubject {
         id: "user-id".into(),
@@ -271,7 +271,7 @@ async fn refresh_omits_header_for_empty_response() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(!response.headers().contains_key("x-nd-authorization"));
+    assert!(response.headers().contains_key("x-nd-authorization"));
     drop(store);
     let _ = std::fs::remove_file(path);
 }

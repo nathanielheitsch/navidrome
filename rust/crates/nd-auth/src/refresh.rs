@@ -2,11 +2,11 @@
 //!
 //! Go's `refreshingWriter` sets the header on the first write during the
 //! handler (`server/auth.go:308-337`), whereas Axum fixes headers when the
-//! response returns. For ordinary nonempty bodies the client observes the
-//! same refreshed header. Empty and unknown-length responses are left
-//! untouched. An exact-length streaming body is indistinguishable from a
-//! buffered body here; an epoch bump during its polling is not propagated.
-//! SSE and other unknown-length streams therefore receive no refresh header.
+//! response returns. Known-length responses, including empty responses, receive
+//! a refresh header. Unknown-length streams do not: headers are fixed before
+//! their bodies run, so a later epoch bump cannot be reflected. An exact-length
+//! streaming body is indistinguishable from a buffered body here; an epoch bump
+//! during its polling is likewise not propagated.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -39,7 +39,7 @@ pub async fn refresh(
     let mut response = next.run(request).await;
     // Unknown-length bodies may perform work after the headers are committed.
     // Do not advertise a refresh that could miss a mid-stream epoch bump.
-    if !matches!(response.body().size_hint().exact(), Some(size) if size > 0) {
+    if response.body().size_hint().exact().is_none() {
         return response;
     }
     if let Some(epoch) = holder.epoch() {
