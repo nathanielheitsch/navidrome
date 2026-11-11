@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `0fad9985` (2026-11-11, after the A10 auth-wiring merge), `cd rust`:
+Measured at `5697d089` (2026-11-11, after the stream-complete merge), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1243 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1248 passed / 0 FAILED**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -84,8 +84,15 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   running. `FFCmd::teardown` also does `child.take()` before its awaits, so cancelling that future leaves a live,
   un-killed, unreaped child. Fix in progress on `rust/stream-complete`, which now also owns `nd-ffmpeg/src/ffcmd.rs`:
   group-kill in Drop (not `kill_on_drop` alone — that kills only the direct child and breaks the `8152ac5a`
-  group invariant), cancel-safe teardown, and a permit held until the child is reaped, mirroring Go's deferred
-  streamJob Close (`core/stream/media_streamer.go:101-110`). `nd-cli/src/main.rs` `main()` is empty and
+  group invariant), cancel-safe teardown, and a permit held until the child is reaped. Landed in
+  `7266a183`/`72945411` (merged `5697d089`): Drop group-kills with a direct fallback, teardown borrows the child
+  across every await so a cancelled future cannot orphan it, `child` is private and a second `start()` while one is
+  owned is rejected, and the process tests now distinguish zombies from live processes. Honest limits: Drop kills
+  but CANNOT reap (Tokio's orphan queue is driver-polled with no timing guarantee), the reap timeout stays `Err`
+  and retains the child for retry, and the stderr-stall hazard is documented, not fixed. Still unwired: the
+  limiter primitive (`92714f90`) does not bound launches yet, and there is no fail-closed cleanup owner — Go
+  releases capacity after closing the reader WITHOUT waiting (`core/stream/limiter.go:63-66`), so a stricter
+  permit lifetime is a deliberate deviation, not parity. `nd-cli/src/main.rs` `main()` is empty and
   `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only, so nothing boots.
 
 ## Active lanes (user-approved 2026-11-10 — IN PROGRESS, not done)
