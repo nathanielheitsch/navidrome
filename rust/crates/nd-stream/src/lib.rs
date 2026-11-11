@@ -28,19 +28,22 @@
 //! without a server. [`direct`] is the only I/O in that path and takes an
 //! **already-authorized** path; see the trust boundary in `direct.rs`.
 //! Still open in #15: the transcoding-file cache eviction contract
-//! (`utils/cache`) and the HTTP handler that ties them together. The transcode
-//! limiter (`limiter.go`) is now **enforced** through
-//! [`transcode_body::open_transcode_gated`], the process-backed transcode body
-//! (`media_streamer.go:101-133`) is ported in [`transcode_body`], and the
-//! archiver (`core/archiver.go`) is ported in [`archiver`] with its zip-layout
-//! contract pinned against a Go `archive/zip` oracle
-//! (`tests/data/go_zip/`).
+//! (`utils/cache`), whose seam is the injectable [`handler::TranscodeSource`] /
+//! [`handler::CachedTranscode`] pair. The transcode limiter (`limiter.go`) is
+//! now **enforced** through [`transcode_body::open_transcode_gated`], the
+//! process-backed transcode body (`media_streamer.go:101-133`) is ported in
+//! [`transcode_body`], the archiver (`core/archiver.go`) is ported in
+//! [`archiver`] with its zip-layout contract pinned against a Go `archive/zip`
+//! oracle (`tests/data/go_zip/`), and the serving half — request in, response
+//! body out — is [`handler`], including the 429 rate-limit arm and the
+//! client-disconnect teardown that must leave no surviving child process.
 
 pub mod aliases;
 pub mod archiver;
 pub mod codec;
 pub mod decider;
 pub mod direct;
+pub mod handler;
 pub mod legacy_client;
 pub mod limitations;
 pub mod limiter;
@@ -79,6 +82,16 @@ pub use decider::{
 };
 pub use direct::{
     meta_from_metadata, normalize_etag, open_authorized, plan_and_open, RangeBody, MAX_CHUNK_BYTES,
+};
+pub use handler::{
+    content_type_for, empty_output_message, format_duration_header, headers_for, job_for_request,
+    non_zero_time, raw_extension, too_many_transcodes_response, BodyKind, CachedTranscode,
+    ChannelSink, ChunkReader, CloseState, DiscardSink, DisconnectingSink, EmptyOutput,
+    ProcessTranscode, ResponseHeaders, StreamError, StreamHandler, StreamPlan, StreamRequest,
+    StreamResponse, TranscodeLease, TranscodeSource, ERROR_CONTENT_TYPE,
+    HEADER_CONTENT_DISPOSITION, HEADER_CONTENT_DURATION, HEADER_CONTENT_TYPE_OPTIONS,
+    INTERNAL_ERROR, INVALID_REQUEST, NOSNIFF, NOT_FOUND, SUBSONIC_ERROR_GENERIC,
+    TOO_MANY_TRANSCODES_MESSAGE,
 };
 pub use legacy_client::{
     apply_server_override, build_legacy_client_info, resolve_client_request, resolve_request,
