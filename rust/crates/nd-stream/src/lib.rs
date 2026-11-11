@@ -27,9 +27,11 @@
 //! request in, headers plus byte window out — so the whole matrix is testable
 //! without a server. [`direct`] is the only I/O in that path and takes an
 //! **already-authorized** path; see the trust boundary in `direct.rs`.
-//! Still open in #15: the transcode limiter (`limiter.go`), the transcoding-file
-//! cache eviction contract (`utils/cache`), the archiver (`core/archiver.go`),
-//! and the process-backed transcode body (`media_streamer.go:101-133`).
+//! Still open in #15: the transcoding-file cache eviction contract
+//! (`utils/cache`), the archiver (`core/archiver.go`), and the HTTP handler that
+//! ties them together. The transcode limiter (`limiter.go`) is now **enforced**
+//! through [`transcode_body::open_transcode_gated`], and the process-backed
+//! transcode body (`media_streamer.go:101-133`) is ported in [`transcode_body`].
 
 pub mod aliases;
 pub mod codec;

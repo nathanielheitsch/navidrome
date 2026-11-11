@@ -1,7 +1,9 @@
 //! Immediate-rejection transcode concurrency limiter.
 //!
-//! This primitive is not yet wired into process creation. All process launches
-//! must share one limiter and hold its permit until the child has been reaped.
+//! Wired into process creation by [`crate::transcode_body::open_transcode_gated`]:
+//! every gated launch acquires here before spawning, and the permit is held by
+//! the process owner until a teardown **confirms** the child was reaped — see the
+//! permit-lifetime note in `transcode_body.rs` for why that is stricter than Go.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
