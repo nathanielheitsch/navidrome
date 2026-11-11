@@ -24,6 +24,14 @@ struct TokenPayload {
     token: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HeaderPayload {
+    id: String,
+    username: String,
+    is_admin: bool,
+}
+
 fn setup() -> (SQLStore, std::path::PathBuf, Authenticator) {
     let path = std::path::PathBuf::from(nd_utils::files::temp_file_name("nd-auth-login-", ".db"));
     let dsn = format!("file:{}?mode=rwc&_foreign_keys=on", path.display());
@@ -174,8 +182,16 @@ async fn body_cap_and_invalid_limiter_fail_closed() {
         false
     )
     .is_err());
-    let app =
-        routes(LoginState::new(store.clone(), auth, 1, Duration::from_secs(60), false).unwrap());
+    let app = routes(
+        LoginState::new(
+            store.clone(),
+            auth.clone(),
+            1,
+            Duration::from_secs(60),
+            false,
+        )
+        .unwrap(),
+    );
     let oversized = Request::builder()
         .method("POST")
         .uri("/login")
@@ -184,6 +200,13 @@ async fn body_cap_and_invalid_limiter_fail_closed() {
     assert_eq!(
         app.clone().oneshot(oversized).await.unwrap().status(),
         StatusCode::PAYLOAD_TOO_LARGE
+    );
+    let app =
+        routes(LoginState::new(store.clone(), auth, 1, Duration::from_secs(60), false).unwrap());
+    let wrong = || request("/login", r#"{"username":"nobody","password":"wrong"}"#);
+    assert_eq!(
+        app.clone().oneshot(wrong()).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
     );
     let blocked = app
         .oneshot(request(
@@ -279,6 +302,51 @@ async fn trusted_header_provisions_first_admin_then_regular_user() {
 }
 
 #[tokio::test]
+async fn concurrent_trusted_header_duplicate_username_returns_same_user() {
+    let (store, path, auth) = setup();
+    let state = HeaderLoginState {
+        login: LoginState::new(store.clone(), auth, 20, Duration::from_secs(60), false).unwrap(),
+        resolution: ResolutionConfig {
+            external_user_header: "x-user".into(),
+            trusted_sources: "10.0.0.0/8".into(),
+            ..ResolutionConfig::default()
+        },
+    };
+    let app = Router::new()
+        .route("/", get(login_from_headers))
+        .with_state(state);
+    let req = || {
+        let mut req = Request::builder()
+            .uri("/")
+            .header("x-user", "alice")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ProxyPeer("10.0.0.1".into()));
+        req
+    };
+    let (one, two) = tokio::join!(app.clone().oneshot(req()), app.oneshot(req()));
+    let mut ids = Vec::new();
+    for response in [one.unwrap(), two.unwrap()] {
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let axum::Json(body) = axum::Json::<HeaderPayload>::from_bytes(&body).unwrap();
+        assert_eq!(body.username, "alice");
+        assert!(body.is_admin);
+        ids.push(body.id);
+    }
+    assert_eq!(ids[0], ids[1]);
+    assert!(!ids[0].is_empty());
+    assert_eq!(
+        store
+            .with_connection_sync(|conn| Ok(UserRepo::new(conn).count_all().unwrap()))
+            .unwrap(),
+        1
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn initial_setup_persists_hashed_dev_admin_once() {
     let (store, path, _) = setup();
     assert!(
@@ -302,6 +370,51 @@ async fn initial_setup_persists_hashed_dev_admin_once() {
     assert!(
         nd_auth::credentials::password::verify_password("dev-password", &admin.password).unwrap()
     );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn initial_setup_creates_dev_admin_with_existing_regular_user() {
+    let (store, path, _) = setup();
+    store
+        .with_connection_sync(|conn| {
+            let stamp = "2024-01-01T00:00:00Z";
+            let values = nd_db::user_repo::UserPutValues {
+                id: "regular",
+                user_name: "regular",
+                name: "Regular",
+                email: "",
+                password: None,
+                is_admin: false,
+                last_login_at: None,
+                last_access_at: None,
+                created_at: stamp,
+                updated_at: stamp,
+                scrobble_filter: "",
+            };
+            UserRepo::new(conn).put(&values, stamp, false).unwrap();
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        run_initial_setup(&store, "dev-password", "2024-01-01T00:00:00Z")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !run_initial_setup(&store, "dev-password", "2024-01-01T00:00:00Z")
+            .await
+            .unwrap()
+    );
+    store
+        .with_connection_sync(|conn| {
+            let repo = UserRepo::new(conn);
+            assert_eq!(repo.count_all().unwrap(), 2);
+            assert!(repo.find_by_username("admin").unwrap().is_admin);
+            Ok(())
+        })
+        .unwrap();
     drop(store);
     let _ = std::fs::remove_file(path);
 }

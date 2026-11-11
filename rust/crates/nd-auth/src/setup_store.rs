@@ -65,7 +65,11 @@ pub async fn run_initial_setup(
             }
             let repo = UserRepo::new(tx);
             if let Some(hash) = hash.as_ref() {
-                if repo.count_all().map_err(sql_error)? == 0 {
+                if repo
+                    .count_by_username(DEV_INITIAL_USER_NAME)
+                    .map_err(sql_error)?
+                    == 0
+                {
                     let values = UserPutValues {
                         id: "",
                         user_name: DEV_INITIAL_USER_NAME,

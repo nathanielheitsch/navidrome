@@ -92,6 +92,9 @@ async fn session_epoch_and_api_audience_are_checked_against_real_user() {
         token_epoch: 0,
     };
     let token = auth.create_token(&subject, "alice", true, now()).unwrap();
+    let api_token = auth
+        .create_api_token(&subject, "alice", true, now())
+        .unwrap();
     let session = app(
         store.clone(),
         auth.clone(),
@@ -116,8 +119,17 @@ async fn session_epoch_and_api_audience_are_checked_against_real_user() {
         StatusCode::OK
     );
     assert_eq!(
-        api.oneshot(request()).await.unwrap().status(),
+        api.clone().oneshot(request()).await.unwrap().status(),
         StatusCode::UNAUTHORIZED
+    );
+    let api_request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {api_token}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        api.oneshot(api_request).await.unwrap().status(),
+        StatusCode::OK
     );
     store
         .with_connection_sync(|conn| {
@@ -247,7 +259,7 @@ async fn refresh_carries_committed_handler_epoch() {
 }
 
 #[tokio::test]
-async fn refresh_omits_header_for_empty_response() {
+async fn refresh_includes_header_for_empty_response() {
     let (store, path, auth) = fixture();
     let subject = TokenSubject {
         id: "user-id".into(),
@@ -271,7 +283,7 @@ async fn refresh_omits_header_for_empty_response() {
         .unwrap();
     let response = app.oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
-    assert!(!response.headers().contains_key("x-nd-authorization"));
+    assert!(response.headers().contains_key("x-nd-authorization"));
     drop(store);
     let _ = std::fs::remove_file(path);
 }
