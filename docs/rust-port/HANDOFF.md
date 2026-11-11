@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `ccd1a195` (2026-11-11, incl. A4 fail-closed auth), `cd rust`:
+Measured at `38b0b812` (2026-11-11), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1281 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1406 passed / 0 FAILED** (1 ignored)
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -35,7 +35,11 @@ hardcoded paths from a retired worktree), `8152ac5a` (`process_group(0)` spawn +
 (Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body),
 `c8c71f8d` (player repository + API-key path, 19 executed tests), `15426bbc` (80 secondary indexes +
 the 8 dropped columns + index/column drift guards), `0fad9985` (auth wiring merged: mountable
-`nd-auth` middleware, `verifier.rs`, `login.rs`, `refresh.rs`, `setup_store.rs`, `guarded_limiter.rs`).
+`nd-auth` middleware, `verifier.rs`, `login.rs`, `refresh.rs`, `setup_store.rs`, `guarded_limiter.rs),
+`beaf63d7` (real `lofty` tag backend), `4463670b`/`5d12b5ad`/`b419472b` (#16 mapping + Go oracle),
+`164780ee`/`fc48ff3f`/`18f6bc5e` (transcode semaphore wired), `8b9f48cf`…`b5c317f8` (#15 archiver +
+Go zip oracle), and `db9f1e42`…`38b0b812` (**#15 HTTP handler**, 35 integration tests incl. the
+zero-surviving-child criterion).
 
 Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 passed / 4 FAILED" boundaries as current.
 
@@ -76,24 +80,23 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   no longer hand-creates it. `schema_diff.rs` now diffs index rows (name + uniqueness) and
   per-table declared column sets, both verified non-vacuous by mutation; keep that coverage
   when the schema changes.
-- `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, and transcode body exist; the
-  transcoding cache, archive, and the HTTP handler do not. The limiter primitive landed (`92714f90`) but is NOT
-  wired, so ffmpeg count is still unbounded. **Confirmed leak bug**: `FFCmd` has no `impl Drop`
-  (`nd-ffmpeg/src/ffcmd.rs`), so `TranscodeBody::drop` (`transcode_body.rs:496-504`, whose comment claims FFCmd's
-  Drop signals the child) only closes the stdout pipe — a handler that returns without draining leaves ffmpeg
-  running. `FFCmd::teardown` also does `child.take()` before its awaits, so cancelling that future leaves a live,
-  un-killed, unreaped child. Fix in progress on `rust/stream-complete`, which now also owns `nd-ffmpeg/src/ffcmd.rs`:
-  group-kill in Drop (not `kill_on_drop` alone — that kills only the direct child and breaks the `8152ac5a`
-  group invariant), cancel-safe teardown, and a permit held until the child is reaped. Landed in
-  `7266a183`/`72945411` (merged `5697d089`): Drop group-kills with a direct fallback, teardown borrows the child
-  across every await so a cancelled future cannot orphan it, `child` is private and a second `start()` while one is
-  owned is rejected, and the process tests now distinguish zombies from live processes. Honest limits: Drop kills
-  but CANNOT reap (Tokio's orphan queue is driver-polled with no timing guarantee), the reap timeout stays `Err`
-  and retains the child for retry, and the stderr-stall hazard is documented, not fixed. Still unwired: the
-  limiter primitive (`92714f90`) does not bound launches yet, and there is no fail-closed cleanup owner — Go
-  releases capacity after closing the reader WITHOUT waiting (`core/stream/limiter.go:63-66`), so a stricter
-  permit lifetime is a deliberate deviation, not parity. `nd-cli/src/main.rs` `main()` is empty and
-  `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only, so nothing boots.
+- `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, transcode body, semaphore,
+  archiver, and the **HTTP handler** (`StreamHandler<D>`, `handler.rs`) all exist. The only remainder is the
+  transcoding-file **cache** and its eviction contract (`utils/cache`); the handler already takes it through
+  the `TranscodeSource` seam and `TranscodeLease::{Process, Cached}`, so adding it does not change the handler.
+  The limiter is **wired** (no longer an unbounded ffmpeg count), and `FFCmd`/`DetachedChild` now group-kill in
+  `Drop` and borrow the child across every await, so a cancelled or dropped future cannot orphan a live child —
+  `dropping_the_serve_future_leaves_no_child` proves it by pid.
+  The earlier leak bug (no `impl Drop` on `FFCmd`, and `teardown` taking the child before its
+  awaits) was fixed in `7266a183`/`72945411` (merged `5697d089`) and is now exercised through the
+  handler: Drop group-kills with a direct fallback, teardown borrows the child across every await,
+  `child` is private and a second `start()` while one is owned is rejected, and the process tests
+  distinguish zombies from live processes. Honest limits: Drop kills but CANNOT reap (Tokio's orphan
+  queue is driver-polled with no timing guarantee), the reap timeout stays `Err` and retains the child
+  for retry, and the stderr-stall hazard is documented, not fixed. The cleanup owner is fail-closed —
+  a slot is released only on a **confirmed** reap, which is a deliberate deviation from Go
+  (`core/stream/limiter.go:63-66` releases after closing the reader without waiting). `nd-cli/src/main.rs`
+  `main()` is empty and `nd-http`/`nd-api`/`nd-scanner` are scaffold-only, so nothing boots.
 
 ## Active lanes (user-approved 2026-11-10 — IN PROGRESS, not done)
 
@@ -101,10 +104,10 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
 |---|---|---|---|---|
 | DB runtime spine | `rust/db-runtime` | execution seam, `SQLStore`, corrected user SQL, user hydration | A7, A8, A11 | **landed** `3ce1b154`, `dee593b5` |
 | FFmpeg readiness | `rust/ffmpeg-readiness` | portable fixtures, process-group cancellation, bounded teardown | A2, A3, A4, A5 | **landed** `5e56f7e8`, `8152ac5a` |
-| Stream serving | `rust/stream-serving` | Range/conditional matrix, direct adapter, probe adapter, transcode body | A12 | **partial** `aa9b280e`, `a462b1f2`; limiter/cache/archive pending |
+| Stream serving | `rust/stream-serving` | Range/conditional matrix, direct adapter, probe adapter, transcode body | A12 | **landed** `aa9b280e`, `a462b1f2`; semaphore, archiver, and HTTP handler landed after it — cache only remains |
 | Ledger correction | `rust/ledger-correction` | this document + `issues.md` + `next-work.md` | A6 | **landed** `0309b5aa` |
-| Player repository | next | `persistence/player_repository.go` incl. owner-only API-key rules | A9 | not started |
-| Auth wiring | after player repo | middleware, `AuthResult` → claims, `/player`, API-key issuance | A10 | not started |
+| Player repository | next | `persistence/player_repository.go` incl. owner-only API-key rules | A9 | **landed** `c8c71f8d`, integrated `f198aa66` |
+| Auth wiring | after player repo | middleware, `AuthResult` → claims, `/player`, API-key issuance | A10 | **landed** `bd8f7a84..cfea1e08`, merged `0fad9985` |
 
 All lanes above are finished or dead (provider limits: `429 max connections reached: 4`, Codex usage limit,
 OpenRouter budget). **Two of them reported commits that do not exist** (`5d1c207f`, `8842a742`, `6b289012`, and a
@@ -114,17 +117,29 @@ against `git log`, `git status`, and the actual files before integrating.
 Before consuming another lane's output, read its current code. Streaming consumes `nd-ffmpeg`'s `new_ffmpeg_cmd()`
 and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields stay private.
 
-## Then, in order
+## Then, in order (updated 2026-11-11 at `38b0b812`, gate 1406/0)
 
-1. Integrate the four lanes; re-run the workspace gate (fmt, clippy `-D warnings`, full test) in the parent.
-2. A **real tag backend** for #08 — until a producer exists, the scanner path cannot be exercised at all. Then
-   #16 mapping → #17 scanner.
-3. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — explicitly deferred, its own lane.
-4. Specify + build the #12 `nd-sched` maintenance/logging half (scheduler half is done).
-5. **First runnable slice (`#27A`)** — exit criteria: fresh DB → scan a real track → authenticated API lookup →
-   direct Range + forced transcode + client disconnect leaving **zero surviving child processes**. Full #27 needs
+1. **#15 transcode cache** (`media_streamer.go:224` builds a `cache.NewFileCache("Transcoding", …)` over
+   `utils/cache/file_caches.go`) plus its eviction contract, behind the existing
+   `TranscodeSource` seam, with the single-flight key dedupe Go's `cache.Get` provides
+   (`media_streamer.go:112-118`). Additive: the handler and its 35 tests already drive `TranscodeLease::Cached`
+   with stand-ins, so no handler change is expected. Small, isolated, high value.
+2. **Row hydration for the remaining ~14 `nd-db` repositories** (`sql_base_repository.go:445,480`), which today
+   only render SQL. This is the largest gap between "shaped" and "runnable" and it gates everything downstream.
+3. **#17 scanner** (`nd-scanner`) — XL, unblocked now that #08 and #16 landed. Symlink semantics, subprocess IPC,
+   fsnotify, phase ordering, idempotent second pass. Respect the declared #08/#16 gaps (ASF/WMA, bit depth,
+   bitrate estimates, and the pair-tag ordering hazard: persist no ordering from either side).
+4. **`nd-http` shell + `nd-cli` bootstrap** (#24) — `main()` is empty, so nothing boots. Wire auth middleware →
+   router → `StreamHandler` + the two stream callers.
+5. **First runnable slice (`#27A`)** — fresh DB → scan a real track → authenticated API lookup → direct Range +
+   forced transcode + client disconnect leaving **zero surviving child processes**. Steps 1-4 are its prerequisites;
+   the disconnect half is already proven at the handler level, so #27A mostly needs the bootstrap. Full #27 needs
    share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`); deferrable
    #32 must not gate this minimal slice.
+6. Independent, no dependencies: `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) —
+   explicitly deferred, its own lane. And the #12 `nd-sched` maintenance/logging half (scheduler half is done).
+7. Re-derive the `nd-dbschema` golden DDL once against the corrected shape, and give the documented `createAdmin`
+   atomicity deviation its own ledger row.
 
 ## Hard constraints (all still binding)
 

@@ -1,11 +1,12 @@
 # Plan of record for the next body of work
 
-## Current state (2026-11-10) — supersedes the 2026-11-04 boundary below
+## Current state (2026-11-11) — supersedes the 2026-11-10 boundary below
 
-Measured gate at `b5c317f8` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
+Measured gate at `38b0b812` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
 clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` =
-**1371 passed / 0 FAILED**. Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 → `b419472b` (#16
-mapping + Go oracle) 1301 → `b5c317f8` (#15 archiver + zip oracle) 1371. The `a462b1f2` figure below — 1183 —
+**1406 passed / 0 FAILED** (1 ignored). Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 →
+`b419472b` (#16 mapping + Go oracle) 1301 → `b5c317f8` (#15 archiver + zip oracle) 1371 → `38b0b812`
+(#15 HTTP handler + Go duration oracle) 1406. The `a462b1f2` figure below — 1183 —
 and the `29d9d9d0` figure — 1067 passed / 4 FAILED —
 are dated: the latter had `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
 **zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
@@ -23,17 +24,19 @@ The runtime spine has started, but nothing boots yet:
   because squirrel's bare `OFFSET n` is a SQLite parse error. **Player repository landed**
   (`c8c71f8d`: `PlayerRepo`, `PlayerError`, `save`/`set_api_key`/`find_by_api_key`, 19 executed tests),
   so `/player` and API-key issuance have a store — nothing mounts it yet.
-- `nd-dbschema` — `schema_ddl.rs` emits **no secondary indexes** (~107 in the Go migrations, 2 unique);
-  `player_api_key_hash` UNIQUE is what settles API-key races, and `schema_diff.rs` compares only FTS5
-  triggers/tables so it cannot catch this.
-- `nd-tagreader` — reads `<media>.tags.json` sidecars with **no runtime producer** (only the Go
-  golden-dump fixture test writes them), so #16 → #17 ingest is blocked upstream.
-- `nd-auth` — credentials verified, not mountable; no router middleware.
-- `nd-db` player repository — **landed** `c8c71f8d`, so `/player` and API-key issuance have a store to
-  build on; auth middleware (A10) is the next dependency. `nd-stream` — Range/conditional matrix,
-  bounded direct adapter, probe adapter, and process-backed
-  transcode body landed; cache, limiter, and archive have not. `nd-cli` `main()` is empty and
-  `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only.
+- `nd-dbschema` — **landed** `15426bbc`: the fresh DDL now carries all 80 index rows the migrated Go schema
+  ends with (4 UNIQUE, incl. `player_api_key_hash`), and `schema_diff.rs` diffs index rows plus per-table
+  column sets. Follow-up worth scoping: re-derive the golden DDL once against the corrected shape.
+- `nd-tagreader` — **landed** `beaf63d7`: real `lofty` 0.25.5 parsing replaces the sidecar-only reader, so
+  #16 → #17 ingest is no longer blocked upstream. Declared gaps to respect in #17: ASF/WMA unsupported,
+  AAC-in-MP4 bit depth 0 vs Go's 16, bitrate estimates differ, MPEG-frame-timestamp SYLT skipped.
+- `nd-auth` — **wired** `bd8f7a84..cfea1e08` (merged `0fad9985`): mountable request middleware, credential
+  verifier, login with transactional first-admin, post-handler refresh, trusted-header provisioning,
+  `GuardedLimiter`. Open item: the documented `createAdmin` atomicity deviation needs its own ledger row.
+- `nd-db` player repository — **landed** `c8c71f8d`, and auth middleware now builds on it. `nd-stream` —
+  Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body, limiter,
+  archiver, and **HTTP handler** all landed; only the transcoding-file **cache** remains. `nd-cli` `main()`
+  is still empty and `nd-http`/`nd-api`/`nd-scanner` are scaffold-only, so **nothing boots**.
 
 ### Active lanes (user-approved 2026-11-10)
 
@@ -44,9 +47,10 @@ The runtime spine has started, but nothing boots yet:
    fixtures, `process_group(0)` spawn + `kill_process_group` SIGKILL with ESRCH fallback, `STDERR_CAP`
    4096 with the overflow still consumed, `TEARDOWN_TIMEOUT_MS` bounded drain/reap. Grandchild-leak test
    verified non-vacuous (stubbing the group kill fails it with a leaked pid).
-3. **Stream serving** (`rust/stream-serving`, A12) — **PARTIAL** `aa9b280e` + `a462b1f2`: Range/conditional
+3. **Stream serving** (`rust/stream-serving`, A12) — **LANDED** `aa9b280e` + `a462b1f2`: Range/conditional
    matrix at `net/http` parity, bounded direct-file adapter, probe adapter, transcode body with explicit
-   disconnect cancel. Remaining: transcoding cache, rate-limiting semaphore, archive, HTTP handler.
+   disconnect cancel. Semaphore (`164780ee`+`fc48ff3f`), archiver (`8b9f48cf`…`b5c317f8`), and HTTP handler
+   (`db9f1e42`…`38b0b812`) landed after it. Remaining: the transcoding-file cache only.
 4. **Ledger correction** (`rust/ledger-correction`, A6) — **LANDED** `0309b5aa`, superseded by this revision.
 
 All four lanes are finished or dead (provider limits). Two reported commits that exist on no branch
@@ -98,9 +102,17 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
    goldens and mutation-checked. Declared divergence: cover entries encode the instant in UTC while Go encodes it
    with its zone (`archive/zip/writer.go:325-335`), so the legacy MS-DOS field differs by the zone offset; the
    extended-timestamp extra field is asserted byte-exact.
-9. **#15 remainder** — transcode cache eviction contract (`utils/cache`), the HTTP handler consuming
-   direct/transcode/archive bodies, and the end-to-end disconnect assertion for criterion 5 (zero surviving
-   children through the handler).
+9. ~~#15 HTTP handler~~ — **landed** `db9f1e42` + `63272830` + `e35a7d2d` + `cc125af4` + `38b0b812`
+   (5 signed commits; the delegate lane died twice on provider aborts and the parent finished it), gate
+   **1406/0**. `StreamHandler<D>` consumes direct/transcode/cache bodies and reproduces both callers'
+   status/message/`Retry-After` arms; `X-Content-Duration` is pinned digit-for-digit against a Go
+   `strconv.FormatFloat` oracle (`tests/testdata/go_duration`). Criterion 5 is asserted end-to-end: four
+   lifecycle tests each prove the pid is gone from the process table and the concurrency slot returns.
+   Three Go-parity gaps were fixed on the way (a non-zero ffmpeg exit propagates through the stdout pipe
+   as a read error, `Content-Encoding` suppresses the estimate length, `http.Error` overwrites the staged
+   Content-Type). **Remaining for #15:** the transcoding-file cache and its eviction contract
+   (`utils/cache`) — the handler already takes it as `TranscodeSource` and two tests drive
+   `TranscodeLease::Cached` with stand-in entries, so the cache is additive rather than a rewrite.
 10. **#17 scanner** (`nd-scanner`) — XL; starts after #16 (done). Symlink semantics, subprocess IPC, fsnotify,
     phase ordering, idempotent second pass.
 11. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
