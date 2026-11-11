@@ -287,3 +287,232 @@ async fn refresh_includes_header_for_empty_response() {
     drop(store);
     let _ = std::fs::remove_file(path);
 }
+#[tokio::test]
+async fn conflicting_auth_sources_are_rejected_not_silently_preferred() {
+    // A4: Go's precedence walk (server/auth.go:257-266) would authenticate these
+    // requests from the highest-priority arm and never check the other credential.
+    let (store, path, auth) = fixture();
+    let subject = TokenSubject {
+        id: "user-id".into(),
+        token_epoch: 0,
+    };
+    let token = auth.create_token(&subject, "alice", true, now()).unwrap();
+    let other = auth
+        .create_token(
+            &TokenSubject {
+                id: "someone-else".into(),
+                token_epoch: 0,
+            },
+            "mallory",
+            true,
+            now(),
+        )
+        .unwrap();
+
+    // Dev auto-login as alice + a token naming mallory: Go authenticates as alice
+    // and ignores the token entirely. Agreeing sources still authenticate.
+    let dev_app = app(
+        store.clone(),
+        auth.clone(),
+        AuthGate::Session,
+        ResolutionConfig {
+            dev_username: "alice".into(),
+            ..ResolutionConfig::default()
+        },
+    );
+    for (creds, expected, why) in [
+        (
+            other.clone(),
+            StatusCode::UNAUTHORIZED,
+            "disagreeing token must be a conflict",
+        ),
+        (
+            token.clone(),
+            StatusCode::OK,
+            "agreeing sources must still authenticate",
+        ),
+    ] {
+        let request = Request::builder()
+            .uri("/")
+            .header("x-nd-authorization", format!("Bearer {creds}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            dev_app.clone().oneshot(request).await.unwrap().status(),
+            expected,
+            "{why}"
+        );
+    }
+
+    // Trusted proxy header naming alice + a token naming mallory: a conflict.
+    let proxy_app = app(
+        store.clone(),
+        auth.clone(),
+        AuthGate::Session,
+        ResolutionConfig {
+            external_user_header: "x-user".into(),
+            trusted_sources: "10.0.0.0/8".into(),
+            ..ResolutionConfig::default()
+        },
+    );
+    let mut request = Request::builder()
+        .uri("/")
+        .header("x-user", "alice")
+        .header("x-nd-authorization", format!("Bearer {other}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ProxyPeer("10.1.2.3".into()));
+    assert_eq!(
+        proxy_app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "trusted proxy header plus a disagreeing token must be rejected"
+    );
+
+    // An UNTRUSTED peer cannot authenticate through the header alone.
+    let mut request = Request::builder()
+        .uri("/")
+        .header("x-user", "alice")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ProxyPeer("11.1.2.3".into()));
+    assert_eq!(
+        proxy_app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "an untrusted proxy header cannot authenticate"
+    );
+
+    // Untrusted peer + header naming alice + a token naming mallory: the header is
+    // not counted as a source at all, so only the token decides — and mallory is
+    // not in the DB. An untrusted proxy must not be able to manufacture a conflict.
+    let mut request = Request::builder()
+        .uri("/")
+        .header("x-user", "alice")
+        .header("x-nd-authorization", format!("Bearer {other}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ProxyPeer("11.1.2.3".into()));
+    assert_eq!(
+        proxy_app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "an untrusted header is not a source, so the mallory token decides alone"
+    );
+
+    // Control: same untrusted peer, same disagreeing header, but the ALICE token.
+    // This succeeds, proving the rejection above came from the token's user and not
+    // from a spurious conflict.
+    let mut request = Request::builder()
+        .uri("/")
+        .header("x-user", "mallory")
+        .header("x-nd-authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ProxyPeer("11.1.2.3".into()));
+    assert_eq!(
+        proxy_app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::OK,
+        "the alice token authenticates even beside an untrusted disagreeing header"
+    );
+
+    // Agreeing sources (token names alice, TRUSTED header names Alice) authenticate.
+    let mut request = Request::builder()
+        .uri("/")
+        .header("x-user", "Alice")
+        .header("x-nd-authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ProxyPeer("10.1.2.3".into()));
+    assert_eq!(
+        proxy_app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::OK,
+        "sources naming the same user must still be accepted"
+    );
+
+    // And the trusted header beside a DISAGREEING token is rejected, completing the
+    // contrast with the untrusted control above.
+    let mut request = Request::builder()
+        .uri("/")
+        .header("x-user", "alice")
+        .header("x-nd-authorization", format!("Bearer {other}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ProxyPeer("10.1.2.3".into()));
+    assert_eq!(
+        proxy_app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "a trusted header plus a disagreeing token must be a conflict"
+    );
+
+    // A forged token next to a valid dev-config arm is rejected, not ignored.
+    let bogus = app(
+        store.clone(),
+        auth.clone(),
+        AuthGate::Session,
+        ResolutionConfig {
+            dev_username: "alice".into(),
+            ..ResolutionConfig::default()
+        },
+    );
+    let request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", "Bearer not-a-valid-token")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        bogus.oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn token_bound_to_a_different_id_fails_revalidation() {
+    // This proves `check_session_claims` is actually invoked on the authenticated
+    // path (the user_id check inside it is what rejects the token), not that the
+    // middleware's defense-in-depth `sub` comparison is reachable — after A4's
+    // conflict detection that comparison cannot trigger.
+    let (store, path, auth) = fixture();
+    // Valid signature, sub matches the DB user, but the token is bound to a
+    // different user id: check_session_claims must reject it.
+    let mismatched = auth
+        .create_token(
+            &TokenSubject {
+                id: "wrong-id".into(),
+                token_epoch: 0,
+            },
+            "alice",
+            true,
+            now(),
+        )
+        .unwrap();
+    let router = app(
+        store.clone(),
+        auth.clone(),
+        AuthGate::Session,
+        ResolutionConfig::default(),
+    );
+    let request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {mismatched}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "a token bound to another id must fail revalidation even when sub matches"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}

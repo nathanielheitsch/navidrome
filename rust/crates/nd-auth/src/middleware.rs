@@ -95,26 +95,40 @@ pub async fn authenticate(
     let Ok(Ok(user)) = result else {
         return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
     };
+    // Claim revalidation (`server/auth.go:249-255`).
+    //
+    // Go only consults the token when it happened to be the arm that won the
+    // precedence walk. Here a token can only reach this point if it validated AND
+    // agreed with every other supplied source, so whenever `claims` is present it
+    // is the credential that authenticated the request, and it is always checked.
+    //
+    // The `sub` comparison below is defense-in-depth, NOT a reachable branch: after
+    // A4's conflict detection `claims.sub` necessarily equals the username used for
+    // the NOCASE lookup, so it cannot mismatch. It is kept as a cheap invariant
+    // assertion in case resolution is ever relaxed again, and no test claims to
+    // exercise it. The load-bearing A4 behavior lives in `verifier::resolve_inner`,
+    // covered by the conflict tests there and by
+    // `conflicting_auth_sources_are_rejected_not_silently_preferred`.
     if let Some(claims) = resolution.claims.as_ref() {
-        if claims.sub.eq_ignore_ascii_case(&user.user_name) {
-            let subject = TokenSubject {
-                id: user.id.clone(),
-                token_epoch: user.token_epoch,
-            };
-            let verdict = match state.gate {
-                AuthGate::Session => state.auth.check_session_claims(
-                    claims,
-                    &subject,
-                    &user.user_name,
-                    AUDIENCE_NATIVE,
-                ),
-                AuthGate::Api => state
+        if !claims.sub.eq_ignore_ascii_case(&user.user_name) {
+            return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
+        }
+        let subject = TokenSubject {
+            id: user.id.clone(),
+            token_epoch: user.token_epoch,
+        };
+        let verdict = match state.gate {
+            AuthGate::Session => {
+                state
                     .auth
-                    .check_api_claims(claims, &subject, &user.user_name),
-            };
-            if verdict.is_err() {
-                return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
+                    .check_session_claims(claims, &subject, &user.user_name, AUDIENCE_NATIVE)
             }
+            AuthGate::Api => state
+                .auth
+                .check_api_claims(claims, &subject, &user.user_name),
+        };
+        if verdict.is_err() {
+            return (StatusCode::UNAUTHORIZED, "Not authenticated").into_response();
         }
     }
     request.extensions_mut().insert(AuthenticatedUser {
