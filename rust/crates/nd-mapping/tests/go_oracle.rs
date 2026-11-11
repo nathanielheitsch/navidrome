@@ -581,11 +581,7 @@ fn rust_participants(mf: &MediaFile) -> BTreeMap<String, Vec<Participant>> {
 #[test]
 fn oracle_corpus_is_populated() {
     let rows = rows();
-    assert_eq!(
-        rows.len(),
-        49,
-        "4 real fixtures + 14 Go fixtures + 31 synthetic cases"
-    );
+    assert_eq!(rows.len(), 51, "14 real fixtures + 37 synthetic cases");
     assert!(rows.iter().any(is_real_fixture), "real fixtures present");
 }
 
@@ -883,6 +879,48 @@ fn backend_gaps_are_surfaced_not_silently_defaulted() {
             gap.why
         );
     }
+}
+
+#[test]
+fn truncation_matches_go_lengths_exactly() {
+    // Go `sanitize` (`model/metadata/metadata.go:369-383`) truncates to the
+    // tag's `maxLength` — 4096 for `comment` (`resources/mappings.yaml:119`),
+    // 1024 by default (`metadata.go:367`) — then drops a partial trailing rune.
+    // `model/metadata/metadata_test.go:108-114` is the Go statement of this;
+    // these are byte lengths, so a mapping that skips truncation fails loudly
+    // instead of mismatching a long string field.
+    let rows = rows();
+    let find = |name: &str| {
+        rows.iter()
+            .find(|r| r.source == format!("synthetic:{name}"))
+            .expect("truncation case present")
+    };
+
+    let (md, mf) = map_row(find("comment_truncation_8192")).expect("mapped");
+    assert_eq!(mf.comment.len(), 4096, "comment maxLength 4096");
+    assert_eq!(mf.title.len(), 1024, "title uses the 1024 default");
+    assert_eq!(
+        md.all()
+            .get("lyricist")
+            .map(|v| v[0].len())
+            .expect("lyricist present"),
+        1024,
+        "participant names are truncated too"
+    );
+
+    // 4097 bytes of `é`×2047 + `中`: the 4096-byte cut splits the 3-byte rune,
+    // and Go drops the resulting partial rune rather than storing U+FFFD.
+    let (_, mf) = map_row(find("comment_truncation_rune_boundary")).expect("mapped");
+    assert_eq!(mf.comment.len(), 4094, "partial rune dropped, not replaced");
+    assert!(
+        mf.comment.chars().all(|c| c == 'é'),
+        "no replacement character survives"
+    );
+
+    // `movementname` inherits the 1024 default and the truncated name flows
+    // through to the movement list.
+    let (_, mf) = map_row(find("movements_max_length")).expect("mapped");
+    assert_eq!(mf.movements()[0].name.len(), 1024);
 }
 
 #[test]
