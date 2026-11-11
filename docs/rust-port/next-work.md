@@ -75,8 +75,15 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
    silently fell out.
 5. **Finish #15** — transcode cache + rate-limiting semaphore (`core/stream/limiter.go`), archive, and the
    HTTP handler that consumes Range/direct/transcode bodies.
-6. **A real tag backend** for #08 (pure-Rust taglib or a pinned binding) — without a producer, the
-   scanner path cannot be exercised at all. Then #16 mapping → #17 scanner.
+6. ~~A real tag backend~~ (#08, A15) — **landed** `beaf63d7`, merged; gate 1270/0. `lofty = "=0.25.5"`
+   (pure Rust, MIT/Apache-2.0, +11 new lock entries) reads MP3/FLAC/M4A/OGG with multi-values, comments,
+   language-coded USLT/SYLT, TIPL/TMCL, MP4 atom precedence, pictures, and malformed-file skipping; five
+   ffmpeg-synthesized fixtures plus eight Go media fixtures compared to their Go oracles. **Ingest (#16 → #17)
+   is no longer blocked upstream.** Declared gaps to respect when wiring #16/#17: ASF/WMA unsupported;
+   AAC-in-MP4 bit depth 0 vs Go's 16; bitrate estimates differ (FLAC 103/104, Vorbis 16/19 kbps);
+   MPEG-frame-timestamp SYLT skipped. A fresh review is checking whether these surface honestly or silently
+   persist wrong values. Note the exact pin: bumping lofty regenerates nothing automatically, and the Go
+   goldens must be re-dumped if the go-taglib fork changes.
 7. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
 8. Specify + build the #12 maintenance/logging half.
 9. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
