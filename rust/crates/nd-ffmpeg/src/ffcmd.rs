@@ -27,9 +27,9 @@
 //! the safe `kill(-pid, sig)` wrapper). `unsafe_code` stays denied
 //! workspace-wide (rust/Cargo.toml:69).
 //!
-//! Stderr is drained only during teardown, not while stdout is consumed: a
-//! sufficiently chatty child can stall before teardown. Drain and reap each have
-//! their own [`TEARDOWN_TIMEOUT_MS`] timeout (up to twice that in total).
+//! Stderr is drained concurrently from spawn, preventing a full stderr pipe
+//! from blocking stdout. Drain and reap have separate [`TEARDOWN_TIMEOUT_MS`]
+//! bounds (up to twice that duration in total).
 //! Drop attempts group termination only; reaping is best-effort and depends on
 //! Tokio's runtime driver. A killed child is a zombie until something reaps it,
 //! and Tokio makes no reaping timing guarantee (tokio process/mod.rs:218-223).
@@ -87,6 +87,7 @@ pub struct FFCmd {
     /// Go's `stderr: *bytes.Buffer` (`ffmpeg.go:359`), filled through the
     /// `limitedWriter` cap (`ffmpeg.go:400-418`).
     pub stderr: Vec<u8>,
+    stderr_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
     /// `MockFFmpeg.closed` (`tests/mock_ffmpeg.go:66`), flipped by
     /// `MockFFmpeg.Close`/`IsClosed` (`:88`/`:90`).
     pub closed: bool,
@@ -117,6 +118,7 @@ pub fn new_ffmpeg_cmd(exec: String, args: Vec<String>) -> FFCmd {
         args,
         child: None,
         stderr: Vec::new(),
+        stderr_task: None,
         closed: false,
         pgid: None,
     }
@@ -192,7 +194,13 @@ impl FFCmd {
         cmd.stderr(Stdio::piped());
         cmd.stdin(Stdio::null());
 
-        let child = cmd.spawn()?;
+        let mut child = cmd.spawn()?;
+        // Go's exec.Cmd drains stderr while the child runs (ffmpeg.go:370-382).
+        // Start before handing stdout to the caller to avoid a full-pipe stall.
+        self.stderr_task = child
+            .stderr
+            .take()
+            .map(|stderr| tokio::spawn(drain_stderr(stderr)));
         // process_group(0) makes the child the group leader, so its pid is the
         // group id; record it for the group kill in cancel().
         self.pgid = child.id().map(|id| id as i32);
@@ -240,15 +248,16 @@ impl FFCmd {
         if kill {
             kill_group(child, self.pgid)?;
         }
-        let bounded = timeout(
-            Duration::from_millis(TEARDOWN_TIMEOUT_MS),
-            drain_stderr(child),
-        )
-        .await;
-        if let Ok(drained) = bounded {
-            let remaining = STDERR_CAP.saturating_sub(self.stderr.len());
-            self.stderr
-                .extend_from_slice(&drained[..drained.len().min(remaining)]);
+        if let Some(task) = self.stderr_task.as_mut() {
+            match timeout(Duration::from_millis(TEARDOWN_TIMEOUT_MS), &mut *task).await {
+                Ok(Ok(drained)) => {
+                    let remaining = STDERR_CAP.saturating_sub(self.stderr.len());
+                    self.stderr
+                        .extend_from_slice(&drained[..drained.len().min(remaining)]);
+                }
+                _ => task.abort(),
+            }
+            self.stderr_task = None;
         }
         child.stdout.take();
         let status = timeout(Duration::from_millis(TEARDOWN_TIMEOUT_MS), child.wait())
@@ -289,6 +298,9 @@ impl Drop for FFCmd {
                 let _ = child.start_kill();
             }
         }
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -302,12 +314,7 @@ impl Drop for FFCmd {
 /// here — Go returns `(n, nil)` from `limitedWriter.Write` (`ffmpeg.go:410-417`),
 /// so the child sees a full sink either way — and it bounds memory at the cap
 /// instead of buffering the whole stream.
-async fn drain_stderr(child: &mut tokio::process::Child) -> Vec<u8> {
-    let maybe_err = child.stderr.take();
-    if maybe_err.is_none() {
-        return Vec::new();
-    }
-    let mut err = maybe_err.unwrap();
+async fn drain_stderr(mut err: tokio::process::ChildStderr) -> Vec<u8> {
     let mut captured: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
