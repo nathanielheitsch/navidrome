@@ -21,12 +21,12 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `15426bbc` (2026-11-10, after the A13 index pass), `cd rust`:
+Measured at `0fad9985` (2026-11-11, after the A10 auth-wiring merge), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1230 passed / 0 FAILED**
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1243 passed / 0 FAILED**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -34,7 +34,8 @@ hardcoded paths from a retired worktree), `8152ac5a` (`process_group(0)` spawn +
 `STDERR_CAP` with overflow still consumed, `TEARDOWN_TIMEOUT_MS` bounded drain/reap), `aa9b280e`/`a462b1f2`
 (Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body),
 `c8c71f8d` (player repository + API-key path, 19 executed tests), `15426bbc` (80 secondary indexes +
-the 8 dropped columns + index/column drift guards).
+the 8 dropped columns + index/column drift guards), `0fad9985` (auth wiring merged: mountable
+`nd-auth` middleware, `verifier.rs`, `login.rs`, `refresh.rs`, `setup_store.rs`, `guarded_limiter.rs`).
 
 Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 passed / 4 FAILED" boundaries as current.
 
@@ -49,9 +50,12 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   Offset-without-limit renders `LIMIT -1` first (cited deviation: squirrel's bare `OFFSET n` is a SQLite parse error).
 - `nd-tagreader`: consumes `<media>.tags.json` sidecars that **no runtime producer writes** (only the Go
   `ND_GOLDEN_DUMP=1` fixture harness does). Real tag backend is a prerequisite for #16 → #17.
-- `nd-auth`: credentials/claims verified; no router middleware. The player repository is now ported
-  (`c8c71f8d`: `PlayerRepo`, `PlayerError::{NotFound,PermissionDenied,ApiKeyValidation,Sqlite}`, `save`,
-  `set_api_key`, `find_by_api_key`), but nothing mounts it.
+- `nd-auth`: **wired** (`bd8f7a84..cfea1e08`, merged `0fad9985`) — request middleware, credential verifier,
+  login with transactional first-admin, post-handler token refresh, trusted-header provisioning, and
+  `GuardedLimiter` denying on a non-positive limit at the boundary. The reviewed `limiter.rs` primitive
+  keeps Go parity (non-positive => allow-all, `server/subsonic/auth_limiter.go:39-48,54-56`); the deny
+  lives at the boundary. A fresh reviewer (A16) is auditing whether the allow-all path is still
+  reachable from a mountable route — check that verdict before trusting it.
 - `nd-dbschema`: `schema_ddl.rs` now carries the **80 secondary indexes** (4 UNIQUE) and the
   8 late-window columns that were missing (`album.rg_album_gain`/`rg_album_peak`,
   `artist.uploaded_image`, `media_file.codec`/`probe_data`, `playlist.uploaded_image`/
