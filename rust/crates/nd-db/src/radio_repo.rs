@@ -20,11 +20,13 @@
 //! `newSelect`), which is also why `registerModel`'s only filter mapping is
 //! `containsFilter("name")` (`:20-22`).
 //!
-//! Timestamps: Go binds `time.Time` (go-sqlite3 datetime text); the port uses
-//! epoch-seconds integers like `share_repo.rs`, and the caller owns the
-//! clock — `Put`'s `UpdatedAt = time.Now()` / fresh-row `CreatedAt` /
-//! `id.NewRandom()` minting (`:96-100`) are reproduced by [`put_sql`] taking
-//! `now` and minting through [`nd_id::new_random`].
+//! Timestamps: `radio.created_at`/`updated_at` are the non-optional
+//! `time.Time` of `model/radio.go:20,21`, stored as TEXT via [`crate::time`]
+//! (rusqlite's `DateTime<Utc>` shape — see `time.rs` for why epoch integers
+//! silently break range predicates and ordering). The caller owns the clock —
+//! `Put`'s `UpdatedAt = time.Now()` / fresh-row `CreatedAt` / `id.NewRandom()`
+//! minting (`:96-100`) are reproduced by [`put_sql`] taking `now` and minting
+//! through [`nd_id::new_random`].
 //!
 //! Not ported, with the reason: `hydrateArtwork` (`:73-76`) is the shared
 //! batched `item_artwork` lookup of `artwork_hydration.go:77-94` — that
@@ -33,8 +35,11 @@
 //! migration-added column in Go's schema; `nd-dbschema`'s fresh DDL must
 //! carry it for the INSERT to bind (residual dependency on that lane).
 
+use chrono::{DateTime, Utc};
+
 use crate::sql_restful::{contains_filter, RestRepository};
 use crate::sqlrepo::Value;
+use crate::time;
 use nd_id::new_random;
 
 /// `r.tableName` (`radio_repository.go:16` via `registerModel(&model.Radio{})`,
@@ -80,7 +85,7 @@ impl Col {
         }
     }
 
-    /// An integer SET pair (the epoch timestamps).
+    /// An integer SET pair.
     #[must_use]
     pub fn integer(column: &str, value: i64) -> Self {
         Self {
@@ -88,11 +93,33 @@ impl Col {
             value: Value::Integer(value),
         }
     }
+
+    /// A timestamp SET pair: bound with [`crate::time`]'s TEXT shape, never
+    /// an epoch integer.
+    #[must_use]
+    pub fn timestamp(column: &str, value: &DateTime<Utc>) -> Self {
+        Self {
+            column: column.to_string(),
+            value: time::value(value),
+        }
+    }
+
+    /// A raw bound-value SET pair, for columns this repository does not model
+    /// as a chrono timestamp (the artwork queue's `retry_at`/`enqueued_at`,
+    /// see [`enqueue_artwork_sql`]).
+    #[must_use]
+    pub fn value(column: &str, value: Value) -> Self {
+        Self {
+            column: column.to_string(),
+            value,
+        }
+    }
 }
 
 /// `model.Radio` minus the `structs:"-"` embeds (`model/radio.go:12-21`):
 /// exactly the columns `toSQLArgs` yields, in struct order. `created_at`/
-/// `updated_at` are epoch seconds (see module header).
+/// `updated_at` are the non-optional `time.Time` of `model/radio.go:20,21`,
+/// stored via [`crate::time`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RadioRecord {
     /// `id` — empty for a fresh row; [`put_sql`] mints it.
@@ -106,9 +133,9 @@ pub struct RadioRecord {
     /// `uploaded_image` (migration-added column; see module header).
     pub uploaded_image: String,
     /// `created_at`.
-    pub created_at: i64,
+    pub created_at: DateTime<Utc>,
     /// `updated_at`.
-    pub updated_at: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// `toSQLArgs(&model.Radio{})` (`helpers.go:18-37`): every column, struct
@@ -121,8 +148,8 @@ pub fn put_cols(radio: &RadioRecord) -> Vec<Col> {
         Col::text("name", &radio.name),
         Col::text("home_page_url", &radio.home_page_url),
         Col::text("uploaded_image", &radio.uploaded_image),
-        Col::integer("created_at", radio.created_at),
-        Col::integer("updated_at", radio.updated_at),
+        Col::timestamp("created_at", &radio.created_at),
+        Col::timestamp("updated_at", &radio.updated_at),
     ]
 }
 
@@ -242,7 +269,7 @@ pub struct PutSql {
 /// `cols_to_update`'s names are the fixed snake_case column identifiers
 /// (Go's `toSnakeCase` of the struct fields), never user text.
 #[must_use]
-pub fn put_sql(radio: &RadioRecord, now: i64, cols_to_update: &[&str]) -> PutSql {
+pub fn put_sql(radio: &RadioRecord, now: DateTime<Utc>, cols_to_update: &[&str]) -> PutSql {
     let id = if radio.id.is_empty() {
         new_random()
     } else {
@@ -283,7 +310,7 @@ pub fn put_sql(radio: &RadioRecord, now: i64, cols_to_update: &[&str]) -> PutSql
         id: id.clone(),
         update,
         insert,
-        enqueue_artwork: enqueue_artwork_sql(&id, now),
+        enqueue_artwork: enqueue_artwork_sql(&id, &now),
     }
 }
 
@@ -307,9 +334,10 @@ fn select_update_cols(all_cols: &[Col], cols_to_update: &[&str]) -> Vec<Col> {
 /// The artwork enqueue of `Put` (`:107-113` via `Enqueue`,
 /// `artwork_queue_repository.go:47-50`): the Bump-priority upsert that starts
 /// a fresh lifecycle on conflict. `retry_at`/`enqueued_at` bind the same
-/// caller-owned `now`.
+/// caller-owned `now` through [`crate::time`] — Go binds `time.Now()`
+/// (`artwork_queue_repository.go:63`), so they are datetime TEXT here too.
 #[must_use]
-pub fn enqueue_artwork_sql(radio_id: &str, now: i64) -> Sql {
+pub fn enqueue_artwork_sql(radio_id: &str, now: &DateTime<Utc>) -> Sql {
     (
         format!(
             "INSERT INTO {ARTWORK_QUEUE_TABLE} \
@@ -324,8 +352,8 @@ pub fn enqueue_artwork_sql(radio_id: &str, now: i64) -> Sql {
             Value::Text(radio_id.to_string()),
             Value::Text(IMAGE_TYPE_PRIMARY.to_string()),
             Value::Integer(ARTWORK_PRIORITY_BUMP),
-            Value::Integer(now),
-            Value::Integer(now),
+            time::value(now),
+            time::value(now),
         ],
     )
 }
@@ -334,9 +362,25 @@ pub fn enqueue_artwork_sql(radio_id: &str, now: i64) -> Sql {
 mod tests {
     use super::*;
     use crate::sql_restful::{RestQueryOptions, ANNOTATION_FIELDS};
+    use chrono::{NaiveDate, TimeZone};
     use std::collections::BTreeMap;
 
-    const NOW: i64 = 1_736_000_000;
+    /// Deterministic clock: the caller-owned `time.Now()` of
+    /// `radio_repository.go:97`, and an earlier stamp for `created_at`.
+    fn at(year: u32, month: u32, day: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
+        Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(i32::try_from(year).unwrap(), month, day)
+                .unwrap()
+                .and_hms_opt(h, mi, s)
+                .unwrap(),
+        )
+    }
+
+    const NOW_STAMP: &str = "2024-01-02 03:04:05+00:00";
+
+    fn now() -> DateTime<Utc> {
+        at(2024, 1, 2, 3, 4, 5)
+    }
 
     fn radio(id: &str) -> RadioRecord {
         RadioRecord {
@@ -345,8 +389,8 @@ mod tests {
             name: "Radio One".to_string(),
             home_page_url: "https://example.com".to_string(),
             uploaded_image: "cover.png".to_string(),
-            created_at: NOW - 100,
-            updated_at: NOW - 100,
+            created_at: at(2024, 1, 1, 2, 4, 5),
+            updated_at: at(2024, 1, 1, 2, 4, 5),
         }
     }
 
@@ -425,7 +469,7 @@ mod tests {
         // keeps all, drops created_at (:601-604).
         let record = radio("ra-1");
         // Act:
-        let put = put_sql(&record, NOW, &[]);
+        let put = put_sql(&record, now(), &[]);
         let (sql, args) = &put.update;
         // Assert:
         assert_eq!(
@@ -441,7 +485,7 @@ mod tests {
                 Value::Text("Radio One".to_string()),
                 Value::Text("https://example.com".to_string()),
                 Value::Text("cover.png".to_string()),
-                Value::Integer(NOW),
+                Value::Text(NOW_STAMP.to_string()),
                 Value::Text("ra-1".to_string()),
             ]
         );
@@ -453,7 +497,7 @@ mod tests {
         // "name" plus the appended UpdatedAt — created_at never overwritten.
         let record = radio("ra-1");
         // Act:
-        let put = put_sql(&record, NOW, &["name"]);
+        let put = put_sql(&record, now(), &["name"]);
         let (sql, args) = &put.update;
         // Assert:
         assert_eq!(
@@ -464,7 +508,7 @@ mod tests {
             args.as_slice(),
             [
                 Value::Text("Radio One".to_string()),
-                Value::Integer(NOW),
+                Value::Text(NOW_STAMP.to_string()),
                 Value::Text("ra-1".to_string()),
             ]
         );
@@ -473,17 +517,27 @@ mod tests {
     #[test]
     fn put_fresh_row_mints_the_id_and_stamps_created_at() {
         // Arrange: Put with an empty id (:96-99) — NewRandom + CreatedAt=now.
+        // A fresh row's CreatedAt is overwritten by put_sql, so whatever the
+        // caller carries is irrelevant (:96-100).
         let mut record = radio("");
-        record.created_at = 0;
+        record.created_at = at(2020, 1, 1, 0, 0, 0);
         // Act:
-        let put = put_sql(&record, NOW, &[]);
+        let put = put_sql(&record, now(), &[]);
         let (sql, args) = &put.insert;
         // Assert:
         assert_eq!(put.id.len(), 22, "id2.NewRandom() is 22 base62 chars");
         assert!(sql.starts_with("INSERT INTO radio SET id = ?"));
         assert_eq!(args[0], Value::Text(put.id.clone()));
-        assert_eq!(args[5], Value::Integer(NOW), "created_at = now");
-        assert_eq!(args[6], Value::Integer(NOW), "updated_at = now");
+        assert_eq!(
+            args[5],
+            Value::Text(NOW_STAMP.to_string()),
+            "created_at = now"
+        );
+        assert_eq!(
+            args[6],
+            Value::Text(NOW_STAMP.to_string()),
+            "updated_at = now"
+        );
         // The UPDATE leg still targets the minted id (Go's put always tries it).
         assert!(put.update.0.ends_with("WHERE id = ?"));
         assert_eq!(put.update.1.last(), Some(&Value::Text(put.id.clone())));
@@ -494,7 +548,7 @@ mod tests {
         // Arrange: the never-failing enqueue (:107-113), KindRadioArtwork "ra"
         // and ArtworkPriorityBump 100.
         // Act:
-        let (sql, args) = enqueue_artwork_sql("ra-9", NOW);
+        let (sql, args) = enqueue_artwork_sql("ra-9", &now());
         // Assert:
         assert_eq!(
             sql,
@@ -511,8 +565,8 @@ mod tests {
                 Value::Text("ra-9".to_string()),
                 Value::Text("primary".to_string()),
                 Value::Integer(100),
-                Value::Integer(NOW),
-                Value::Integer(NOW),
+                Value::Text(NOW_STAMP.to_string()),
+                Value::Text(NOW_STAMP.to_string()),
             ]
         );
     }
