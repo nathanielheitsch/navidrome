@@ -285,6 +285,13 @@ Commits GPG-signed, no co-author trailers, no gpgsign bypass.
   diff or commit first.
 - **Provider capacity is 4 concurrent connections.** Running four Strata lanes plus the parent can hit it;
   launch fewer at once or accept the 429.
+- **Provider budget exhaustion (2026-11-11).** All `openai-codex/*` models hit the ChatGPT Plus limit
+  (~130 min cooldown) and `bifrost/openrouter/coding` hit a hard 20 USD cap, killing three lanes mid-run —
+  the #08 reviewer and the first #16 attempt died with their analysis unsaved. Only
+  `pi/bifrost/vllm/strata-coder` (local) stayed usable. When delegating, prefer the local model, keep briefs
+  small enough to finish in one budget, and check `paseo_get_agent_status` for `status: error` + the stop
+  reason before relaunching. Children must commit per milestone so a budget death costs a milestone, not the
+  analysis (the parent then performs the lost review directly).
 - **rustc 1.99.1 rejects Go-flavored pseudo-code** (`a + b` concat, `+=` on
   `&str`, `.append()`, `std::map<...>`, map-literal constructors, missing `->`).
   Workers loop write → `cargo build -q -p CRATE` → fix from compiler messages.
