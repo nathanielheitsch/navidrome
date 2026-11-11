@@ -24,8 +24,8 @@ package main
 import (
 	"archive/zip"
 	"bytes"
-	"encoding/hex"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hash/crc32"
@@ -42,9 +42,9 @@ import (
 var fixedTime = time.Date(2021, 7, 14, 12, 34, 56, 0, time.UTC)
 
 type entrySpec struct {
-	name    string
+	name     string
 	modified string // "fixed", "zero" or "now"
-	data    []byte
+	data     []byte
 }
 
 type golden struct {
@@ -69,11 +69,11 @@ type manifestEntry struct {
 }
 
 type manifestGolden struct {
-	Name       string          `json:"name"`
-	Comment    string          `json:"comment"`
-	ZipFile    string          `json:"zip_file"`
-	FixedAt    int64           `json:"fixed_unix"`
-	Entries    []manifestEntry `json:"entries"`
+	Name    string          `json:"name"`
+	Comment string          `json:"comment"`
+	ZipFile string          `json:"zip_file"`
+	FixedAt int64           `json:"fixed_unix"`
+	Entries []manifestEntry `json:"entries"`
 	// DeterministicHex is the archive prefix written before any entry whose
 	// Modified is "now" (Go's cover art uses time.Now(), whose MS-DOS fields and
 	// extended-timestamp seconds are not reproducible). Empty when the golden has
@@ -108,8 +108,8 @@ type joinCase struct {
 }
 
 type manifest struct {
-	FixedUnix     int64            `json:"fixed_unix"`
-	Goldens       []manifestGolden `json:"goldens"`
+	FixedUnix   int64            `json:"fixed_unix"`
+	Goldens     []manifestGolden `json:"goldens"`
 	CoverExt    []coverExtCase   `json:"cover_ext_cases"`
 	MsDos       []msdosCase      `json:"msdos_cases"`
 	CRC32       []crcCase        `json:"crc32_cases"`
@@ -209,7 +209,7 @@ func goldens() []golden {
 				{
 					name:     "Test Playlist.m3u",
 					modified: "fixed",
-					data: []byte("#EXTM3U\n#PLAYLIST:Test Playlist\n#EXTINF:0,AC/DC - track1\n01 - AC_DC - track1.mp3\n#EXTINF:0,Artist 2 - track2\n02 - Artist 2 - track2.mp3\n"),
+					data:     []byte("#EXTM3U\n#PLAYLIST:Test Playlist\n#EXTINF:0,AC/DC - track1\n01 - AC_DC - track1.mp3\n#EXTINF:0,Artist 2 - track2\n02 - Artist 2 - track2.mp3\n"),
 				},
 			},
 		},
@@ -433,8 +433,8 @@ func msdosCases() []msdosCase {
 		2147483647,
 		-2147483648,
 		1626287700, // odd second → 2s resolution
-		1626287696 + 59*60+59,
-		1626287696 + 23*3600+59*60+58,
+		1626287696 + 59*60 + 59,
+		1626287696 + 23*3600 + 59*60 + 58,
 	}
 	out := make([]msdosCase, 0, len(unixes))
 	for _, u := range unixes {
