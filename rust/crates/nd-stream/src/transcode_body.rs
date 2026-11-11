@@ -27,8 +27,9 @@
 //!     when the request context is cancelled. Rust has no ambient context, so
 //!     [`TranscodeBody::serve`] takes an explicit `disconnect` future and calls
 //!     [`TranscodeBody::cancel`] when it resolves: SIGKILL at the process-group
-//!     root, pipes drained, child reaped. Dropping the body synchronously signals
-//!     the process group, but cannot await reaping; explicit close is preferred.
+//!     root, pipes drained, child reaped. Drop attempts group termination but
+//!     cannot await reaping: it is best-effort and runtime-driver-dependent.
+//!     A killed child remains a zombie until reaped; explicit close is preferred.
 //!   - **Content type is the builtin table only.** Go's
 //!     `mime.TypeByExtension` (`media_streamer.go:146`) also consults
 //!     `/etc/mime.types` on unix; the port ships the Go builtin audio entries

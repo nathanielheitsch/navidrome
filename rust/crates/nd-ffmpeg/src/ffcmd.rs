@@ -27,10 +27,12 @@
 //! the safe `kill(-pid, sig)` wrapper). `unsafe_code` stays denied
 //! workspace-wide (rust/Cargo.toml:69).
 //!
-//! Teardown is bounded: stderr is drained concurrently with a hard [`STDERR_CAP`]
-//! bound that keeps consuming past the cap so the child never blocks on a full
-//! pipe, and the drain plus the reap run under [`TEARDOWN_TIMEOUT_MS`] so a
-//! descendant holding a pipe cannot pin the caller.
+//! Stderr is drained only during teardown, not while stdout is consumed: a
+//! sufficiently chatty child can stall before teardown. Drain and reap each have
+//! their own [`TEARDOWN_TIMEOUT_MS`] timeout (up to twice that in total).
+//! Drop attempts group termination only; reaping is best-effort and depends on
+//! Tokio's runtime driver. A killed child is a zombie until something reaps it,
+//! and Tokio makes no reaping timing guarantee (tokio process/mod.rs:218-223).
 
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -41,10 +43,9 @@ use tokio::time::{timeout, Duration};
 /// `limitedWriter`'s `limit` (`ffmpeg.go:370`: `limit: 4096`).
 pub const STDERR_CAP: usize = 4096;
 
-/// Upper bound on cancel/wait teardown (ms). A descendant that keeps stdout or
-/// stderr open would otherwise leave the drain — and with it the reap — waiting
-/// forever; past this bound the pipes are dropped and the caller still gets its
-/// [`ExitInfo`] with whatever the reap produced.
+/// Per-phase bound (ms) for stderr drain and child reap; the two phases may
+/// together take twice this duration. A reap timeout returns an error, leaving
+/// the child owned so a caller can retry or drop it.
 pub const TEARDOWN_TIMEOUT_MS: u64 = 2000;
 
 /// Signal the child's whole process group, falling back to the direct-child kill
@@ -82,7 +83,7 @@ pub struct FFCmd {
     /// Go's `*io.PipeReader` + `out: *io.PipeWriter` (`ffmpeg.go:355`/`:357`):
     /// the tokio child whose piped stdout is the audio stream. Emptied by
     /// `cancel`/`wait`, exactly as Go closes the pipe there.
-    pub child: Option<Child>,
+    child: Option<Child>,
     /// Go's `stderr: *bytes.Buffer` (`ffmpeg.go:359`), filled through the
     /// `limitedWriter` cap (`ffmpeg.go:400-418`).
     pub stderr: Vec<u8>,
@@ -178,6 +179,12 @@ impl FFCmd {
     /// stdin is `/dev/null` (Go leaves `cmd.Stdin` unset, which inherits our
     /// stdin and lets ffmpeg stall behind a terminal).
     pub async fn start(&mut self) -> std::io::Result<()> {
+        if self.child.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "ffmpeg child is still owned",
+            ));
+        }
         let mut cmd = Command::new(&self.exec);
         cmd.args(&self.args);
         cmd.process_group(0);
@@ -271,8 +278,10 @@ impl FFCmd {
     }
 }
 
-// Drop cannot await. Kill the process group synchronously, but callers needing
-// reaping must explicitly wait/cancel/close (core/ffmpeg/ffmpeg.go:363-398).
+// Drop cannot await. Group termination is best effort; reaping depends on
+// Tokio's runtime driver and is not guaranteed to occur promptly. A killed
+// child remains a zombie until reaped. Explicit wait/cancel/close can reap it
+// (core/ffmpeg/ffmpeg.go:363-398).
 impl Drop for FFCmd {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
@@ -358,6 +367,31 @@ mod ffcmd_tests {
         assert!(!pid_alive(grandchild), "grandchild survived aborted wait");
     }
 
+    #[tokio::test]
+    async fn start_rejects_an_owned_child_without_losing_it() {
+        let mut cmd = new_ffmpeg_cmd("/bin/sh".to_string(), w(&["-c", "sleep 30"]));
+        cmd.start().await.unwrap();
+        let first_pid = cmd.child.as_ref().unwrap().id();
+        assert_eq!(
+            cmd.start().await.unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(cmd.child.as_ref().unwrap().id(), first_pid);
+        cmd.cancel().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reap_timeout_preserves_the_owned_child_for_retry() {
+        let mut cmd = new_ffmpeg_cmd("/bin/sh".to_string(), w(&["-c", "sleep 30"]));
+        cmd.start().await.unwrap();
+        let result = cmd.wait().await;
+        assert!(matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::TimedOut));
+        assert!(cmd.is_available(), "timeout must retain the child");
+        assert!(!cmd.is_closed());
+        cmd.cancel().await.unwrap();
+        assert!(!cmd.is_available());
+    }
+
     /// (a) cancel-soak: the group is killed and reaped (`cancel()` succeeds, so
     /// no zombie remains) and stdout reaches clean EOF. A timeout here is a
     /// FAILURE, not a pass — an un-killed child keeps the pipe open forever.
@@ -378,21 +412,15 @@ mod ffcmd_tests {
         assert_eq!(read.unwrap_or(0), 0, "stdout must be at EOF");
     }
 
-    /// Is a pid still alive? `ps -p <pid>` prints a line only for a live one.
+    /// A zombie has terminated even though it remains in the process table.
     fn pid_alive(pid: u32) -> bool {
         let out = std::process::Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "pid="])
-            .output();
-        match out {
-            Ok(o) => {
-                String::from_utf8_lossy(&o.stdout)
-                    .trim()
-                    .matches(char::is_numeric)
-                    .count()
-                    > 0
-            }
-            Err(_) => false,
-        }
+            .args(["-p", &pid.to_string(), "-o", "stat="])
+            .output()
+            .expect("ps must be available for process lifecycle tests");
+        let state = String::from_utf8_lossy(&out.stdout);
+        let state = state.trim();
+        !state.is_empty() && !state.starts_with('Z')
     }
 
     /// (d) the group kill, not just the direct-child kill: a grandchild
@@ -400,35 +428,31 @@ mod ffcmd_tests {
     /// dies when the group is signalled. This fails without `kill_process_group`.
     #[tokio::test]
     async fn cancel_kills_grandchildren_that_outlived_the_root() {
-        let marker = std::env::temp_dir().join(format!("nd-ffmpeg-pgid-{}", std::process::id()));
-        // Grandchild in the background, its pid recorded, then the root exits so
-        // the grandchild is reparented — exactly the ffmpeg-wrapper leak shape.
-        let script = format!("sleep 60 & echo $! > {}; wait", marker.display());
-        let mut cmd = new_ffmpeg_cmd("/bin/sh".to_string(), w(&["-c", script.as_str()]));
+        let mut cmd = new_ffmpeg_cmd(
+            "/bin/sh".to_string(),
+            w(&["-c", "sleep 60 & echo $!; exit 0"]),
+        );
         cmd.start().await.unwrap();
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let text = loop {
-            if let Ok(t) = std::fs::read_to_string(&marker) {
-                if !t.trim().is_empty() {
-                    break t;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "grandchild pid never written"
-            );
-            timeout(Duration::from_millis(50), async {
-                tokio::task::yield_now().await
-            })
+        let mut output = BufReader::new(cmd.reader().unwrap());
+        let mut text = String::new();
+        timeout(Duration::from_secs(5), output.read_line(&mut text))
             .await
-            .ok();
-        };
+            .unwrap()
+            .unwrap();
         let grandchild: u32 = text.trim().parse().expect("grandchild pid is numeric");
-        let _ = std::fs::remove_file(&marker);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = cmd.child.as_mut().unwrap().try_wait().unwrap() {
+                assert!(status.success(), "wrapper must have exited normally");
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "wrapper did not exit");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(pid_alive(grandchild), "grandchild must outlive the wrapper");
 
         let info = cmd.cancel().await.expect("cancel succeeds");
-        assert_eq!(info.code, -1, "killed by SIGKILL");
+        assert_eq!(info.code, 0, "wrapper exited normally before cancel");
 
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while pid_alive(grandchild) && std::time::Instant::now() < deadline {
