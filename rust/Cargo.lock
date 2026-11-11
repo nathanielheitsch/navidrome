@@ -902,6 +902,20 @@ dependencies = [
 [[package]]
 name = "nd-mapping"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "lofty",
+ "md-5",
+ "nd-id",
+ "nd-lyrics",
+ "nd-tagreader",
+ "nd-utils",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "nd-metrics"

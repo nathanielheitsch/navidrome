@@ -1,9 +1,24 @@
 [package]
 name = "nd-mapping"
-description = "Rust port scaffold: nd-mapping is owned by #16 (docs/rust-port/issues.md Part B)"
+description = "Rust port of the Go tag→model mapping layer: model/metadata/**, model/tag_mappings.go, model/tag.go, model/file_types.go (Go #16)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dependencies]
+nd-id = { path = "../nd-id" }
+nd-utils = { path = "../nd-utils" }
+nd-tagreader = { path = "../nd-tagreader" }
+nd-lyrics = { path = "../nd-lyrics" }
+regex = "1.13"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+thiserror = { workspace = true }
+chrono = "0.4"
+md-5 = "0.10"
+# Same pin as nd-tagreader: the consumer surfaces the backend error type.
+lofty = "=0.25.5"
 
 [lints]
 workspace = true
