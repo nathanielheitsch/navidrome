@@ -147,10 +147,6 @@ pub fn format_duration_header(duration: f64) -> String {
             "-Inf".to_string()
         };
     }
-    if value == 0.0 {
-        return "0".to_string();
-    }
-
     let (negative, digits, exponent) = shortest_decimal(value);
     // Go's rule: exponential when `dp-1` is outside `[-4, 6)`.
     if !(-4..6).contains(&exponent) {
@@ -308,6 +304,15 @@ impl ChannelSink {
     /// as gone.
     pub fn drop_client(&mut self) {
         self.rx = None;
+    }
+
+    /// Hand the receiving end to a caller that drives the client from another
+    /// task — a test that watches bytes flow and then hangs up mid-body. The
+    /// sink keeps sending; once the receiver is dropped, every write fails the
+    /// way a closed socket does.
+    #[must_use]
+    pub fn take_receiver(&mut self) -> Option<tokio::sync::mpsc::UnboundedReceiver<Vec<u8>>> {
+        self.rx.take()
     }
 
     /// Drain the bytes written so far.
@@ -493,6 +498,16 @@ pub struct StreamRequest {
     /// Caller-set Content-Encoding; a plain 200 then omits Content-Length
     /// (`fs.go:426`).
     pub content_encoding: Option<String>,
+    /// The caller's resolved ffmpeg command template — Go's
+    /// `LookupTranscodeCommand(ctx, ds, format)` result, read inside
+    /// `NewStream`' cache producer (`media_streamer.go:228`). `None` (or empty)
+    /// falls back to the built-in default for the format
+    /// ([`crate::transcode_body::default_command_for`]), which is what Go's
+    /// `consts.DefaultTranscodings` row yields when no `transcoding` row is
+    /// configured. Go's empty-command arm (`:229-231`, "No transcoding command
+    /// available") is reproduced by the launch refusing before spawning
+    /// (`transcode_body::launch_transcode`).
+    pub command: Option<String>,
 }
 
 impl StreamRequest {
@@ -1176,7 +1191,10 @@ where
     ) -> Result<Prepared<D>, StreamError> {
         let mut job = plan.job.take().unwrap_or_default();
         if job.command.is_empty() {
-            job.command = default_command_for(job.format.as_str());
+            job.command = req
+                .command
+                .clone()
+                .unwrap_or_else(|| default_command_for(job.format.as_str()));
         }
         job.file_path = req.path.clone();
         let lease = self
