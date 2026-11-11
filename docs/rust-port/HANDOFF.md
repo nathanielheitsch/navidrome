@@ -173,6 +173,23 @@ and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields
   workspace that was never created. One reported 125 nd-db lib tests where the tree has 317. Treat a report as a
   claim: confirm `git log`/`git status`/`git worktree list` and re-run the gate yourself before integrating.
 
+## Verification protocol (learned 2026-11-11)
+
+- **When a reviewer dies on provider budget, the parent reviews instead of skipping review**, and says so. On
+  #08 the review agent errored on quota, so the parent ran it: Cargo.lock delta + license audit, fixture
+  regeneration against `generate.sh` (sha256-compared, byte-identical), a grep proving the sidecar loader is
+  reachable only from tests, and a mutation that stubs `read_metadata` (16 of 33 tagreader tests fail, so the
+  real-parsing coverage is load-bearing). A parent review is not an independent one — record who did it.
+- **Mutation-check every "bug fixed" claim.** On A17 the parent restored the pre-fix code and confirmed the new
+  tests fail (`refresh_includes_header_for_empty_response`, `initial_setup_creates_dev_admin_with_existing_regular_user`).
+  A test that cannot fail is not evidence of a fix.
+- **Verify a child's claims before forwarding them.** The teardown advisor's `kill_group` criticism was stale —
+  it had read the pre-fix commit — and the parent dropped it after checking the branch.
+- **Parent-supplied premises are a real failure mode.** Two children were corrected because the parent asserted
+  something false: a `COLLATE NOCASE` on `user.user_name` (the collation belongs to the separate
+  `user_username_password` index), and that Go releases the limiter permit only after reaping (it does not —
+  `core/stream/limiter.go:63-66`). Children that pushed back were right; cite files, not recollection.
+
 ## Lifecycle hazards (learned 2026-11-10)
 
 - Lanes die mid-milestone: provider usage limits, provider `429 max connections reached: 4`, and a daemon
