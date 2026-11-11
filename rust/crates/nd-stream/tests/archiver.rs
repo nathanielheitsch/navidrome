@@ -1907,6 +1907,36 @@ async fn the_comment_is_untouched_when_set_comment_refuses_it() {
     );
 }
 
+#[test]
+fn zip_error_messages_match_go_verbatim() {
+    // Go's strings (archive/zip/reader.go:30, writer.go:75, 92, 631, 643, 673),
+    // compared exactly — the message is part of the observable contract.
+    assert_eq!(
+        ZipError::UnsupportedMethod.to_string(),
+        "zip: unsupported compression algorithm"
+    );
+    assert_eq!(
+        ZipError::CommentTooLong.to_string(),
+        "zip: Writer.Comment too long"
+    );
+    assert_eq!(
+        ZipError::WriteToClosedFile.to_string(),
+        "zip: write to closed file"
+    );
+    assert_eq!(
+        ZipError::FileClosedTwice.to_string(),
+        "zip: file closed twice"
+    );
+    assert_eq!(
+        ZipError::WriteToDirectory.to_string(),
+        "zip: write to directory"
+    );
+    assert_eq!(
+        ZipError::ClosedTwice.to_string(),
+        "zip: writer closed twice"
+    );
+}
+
 #[tokio::test]
 async fn deflate_is_refused_like_zip_err_algorithm() {
     let mut z = ZipWriter::new(Vec::new());

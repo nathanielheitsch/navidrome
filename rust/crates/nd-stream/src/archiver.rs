@@ -111,22 +111,23 @@ impl ZipMethod {
 /// Errors mirroring the arms Go's `archive/zip` returns.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ZipError {
-    /// `zip.ErrAlgorithm` (`writer.go:376`): unsupported compression method.
-    #[error("zip: unsupported compression method")]
+    /// `zip.ErrAlgorithm` (`writer.go:387`): Go's `CreateHeader` returns it for
+    /// a method with no registered compressor. Message copied verbatim.
+    #[error("zip: unsupported compression algorithm")]
     UnsupportedMethod,
-    /// `zip: Writer.Comment too long` (`writer.go:73-76`).
+    /// `zip: Writer.Comment too long` (`writer.go:75`).
     #[error("zip: Writer.Comment too long")]
     CommentTooLong,
-    /// `zip: write to closed file` (`writer.go:630-632`).
+    /// `zip: write to closed file` (`writer.go:631`).
     #[error("zip: write to closed file")]
     WriteToClosedFile,
-    /// `zip: file closed twice` (`writer.go:641-643`).
+    /// `zip: file closed twice` (`writer.go:643`).
     #[error("zip: file closed twice")]
     FileClosedTwice,
-    /// `zip: write to directory` (`writer.go:665-672`).
+    /// `zip: write to directory` (`writer.go:666-673`).
     #[error("zip: write to directory")]
     WriteToDirectory,
-    /// `zip: writer closed twice` (`writer.go:87-89`).
+    /// `zip: writer closed twice` (`writer.go:92`).
     #[error("zip: writer closed twice")]
     ClosedTwice,
     /// An error from the underlying writer.
