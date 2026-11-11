@@ -151,9 +151,23 @@ fn poller_baseline() -> usize {
     live_pollers()
 }
 
-/// Assert that no poller task from this test is still running. Pollers exit when `D`
-/// resolves, so the count is given a moment to settle rather than racing the
-/// scheduler; a real leak never settles and this fails.
+/// Assert that no poller task started by **this** test is still running.
+///
+/// Contract, and it is load-bearing: the caller must hold [`PROCESS_LOCK`] for
+/// the whole serve **and** must have sampled `base` after acquiring it. The
+/// counter is process-wide, so a baseline taken while a sibling holds the lock
+/// can include that sibling's live poller and then fail forever — a task the
+/// sibling owns can never exit from inside this test. Sampling under the lock
+/// makes `base` the quiet count.
+///
+/// This helper deliberately does **not** acquire [`PROCESS_LOCK`] itself:
+/// `tokio::sync::Mutex` is not reentrant, so a nested `lock()` here would
+/// self-deadlock against the caller's guard and hang the suite rather than
+/// report a leak.
+///
+/// A task that has decided to exit is only removed once the scheduler reaps it,
+/// so the settle loop waits for that; a task that never exits never settles and
+/// this fails.
 async fn assert_no_poller_leak(base: usize, what: &str) {
     for _ in 0..100 {
         if live_pollers() == base {
@@ -727,8 +741,8 @@ async fn zero_size_cache_is_disabled_and_open_key_refuses() {
 
 #[tokio::test]
 async fn a_disabled_source_launches_uncached_rather_than_caching() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     // The observable Go behavior of a disabled cache: every Get reads straight from
     // the reader, so the seam goes to the gated launch and creates no entry.
     let bin = match ffmpeg_bin() {
@@ -927,8 +941,8 @@ async fn finalize_scrubs_on_entry_completion() {
 
 #[tokio::test]
 async fn two_concurrent_identical_requests_launch_exactly_one_ffmpeg() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1043,8 +1057,8 @@ async fn two_concurrent_identical_requests_launch_exactly_one_ffmpeg() {
 
 #[tokio::test]
 async fn a_writer_lease_reports_cached_false_and_a_joiner_cached_true() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1083,8 +1097,8 @@ async fn a_writer_lease_reports_cached_false_and_a_joiner_cached_true() {
 
 #[tokio::test]
 async fn first_requester_disconnect_kills_the_group_and_leaves_no_survivor() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1180,8 +1194,8 @@ async fn first_requester_disconnect_kills_the_group_and_leaves_no_survivor() {
 
 #[tokio::test]
 async fn a_late_reader_hanging_up_does_not_kill_the_shared_producer() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1253,8 +1267,8 @@ async fn a_late_reader_hanging_up_does_not_kill_the_shared_producer() {
 
 #[tokio::test]
 async fn a_rejection_is_429_semantics_not_a_cache_error() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1321,8 +1335,8 @@ async fn a_rejection_is_429_semantics_not_a_cache_error() {
 
 #[tokio::test]
 async fn head_on_a_cached_transcode_reports_zero_bytes_written() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     // `media_streamer.go:174-177` drains with `io.Discard` and returns 0, which is
     // what makes the share handler answer 500 on `n == 0`
     // (`server/public/handle_streams.go:87-89`). Reproduced, not "fixed".
@@ -1362,8 +1376,8 @@ async fn head_on_a_cached_transcode_reports_zero_bytes_written() {
 
 #[tokio::test]
 async fn a_completed_entry_is_served_seekable_with_range_semantics() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1425,8 +1439,8 @@ async fn a_completed_entry_is_served_seekable_with_range_semantics() {
 
 #[tokio::test]
 async fn a_joiner_takes_no_slot_while_an_unrelated_key_is_refused() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     // Proves the slot is neither double-acquired for the shared entry nor released
     // early: with the cap at 1, the identical request is served and a different key
     // is refused.
@@ -1503,8 +1517,8 @@ async fn a_joiner_takes_no_slot_while_an_unrelated_key_is_refused() {
 
 #[tokio::test]
 async fn single_flight_is_not_vacuous_when_dedupe_is_disabled() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     // The same two-request shape as
     // `two_concurrent_identical_requests_launch_exactly_one_ffmpeg`, with the dedupe
     // path switched off: the assertion `first.pid == second.pid` must FAIL here. This
@@ -1565,7 +1579,46 @@ async fn single_flight_is_not_vacuous_when_dedupe_is_disabled() {
 }
 
 #[tokio::test]
+async fn the_poller_exits_on_teardown_even_when_the_client_never_hangs_up() {
+    let _guard = PROCESS_LOCK.lock().await;
+    // Requirement 5: the poller task must not outlive the serve. Go's producer ends
+    // when the stream reaches EOF, so a client that keeps the socket open cannot pin
+    // a task. The exit here comes from the drain task's announcement
+    // (`SharedDisconnect::finish`), not from `D`, so the sender is deliberately never
+    // dropped.
+    let base = poller_baseline();
+    let bin = match ffmpeg_bin() {
+        Some(bin) => bin,
+        None => return,
+    };
+    let source = match make_source(&bin, "poller-teardown", 20.0) {
+        Some(path) => path,
+        None => return,
+    };
+    let arc = cache("poller-teardown", "50MB", 0);
+
+    let (_tx, rx) = stays_connected();
+    let observer = rx.observer();
+    let mut handler = cache_handler(Arc::clone(&arc), TranscodeLimiter::new(2, 1), true);
+    let mut sink = Vec::new();
+    let mf = media_file(&source, "pt-mf", "mp3", 20.0);
+    let req = transcode_request(&source, mf, "mp3", 128);
+    let response = handler.serve(&req, &mut sink, observer.clone()).await;
+    assert_eq!(response.status, 200);
+    assert!(response.written > 0);
+
+    // `_tx` is still alive, so the only thing that can release the task is the
+    // producer's teardown announcement. Whether that announcement has already landed
+    // when `serve` returns depends on the drain task's scheduling (Go runs
+    // `copyAndClose` in its own goroutine), so only the exit itself is asserted —
+    // and the mutation check proves a poller that ignores the announcement hangs.
+    wait_for_poller(&observer).await;
+    assert_no_poller_leak(base, "the poller exited on the teardown announcement").await;
+}
+
+#[tokio::test]
 async fn exactly_one_task_polls_a_caller_disconnect_however_many_copies_are_made() {
+    let _guard = PROCESS_LOCK.lock().await;
     // Requirement 2's premise: one owner polls `D`. `SharedDisconnect::spawn` is the
     // only constructor that starts a task, and cloning hands out receivers that cannot
     // poll the caller's future — so an observer and its clones account for exactly one
@@ -1607,8 +1660,8 @@ async fn exactly_one_task_polls_a_caller_disconnect_however_many_copies_are_made
 
 #[tokio::test]
 async fn the_lane_leaves_no_poller_task_behind() {
-    let base = poller_baseline();
     let _guard = PROCESS_LOCK.lock().await;
+    let base = poller_baseline();
     // `SharedDisconnect::spawn` is the only task that polls a caller's future, and
     // the drain task announces teardown. The count must be 0 once nothing is being
     // served — checked here and at the end of every lifecycle test above.
