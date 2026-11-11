@@ -2,11 +2,12 @@
 
 ## Current state (2026-11-11) — supersedes the 2026-11-10 boundary below
 
-Measured gate at `38b0b812` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
+Measured gate at `d19526e3` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
 clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` =
-**1406 passed / 0 FAILED** (1 ignored). Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 →
-`b419472b` (#16 mapping + Go oracle) 1301 → `b5c317f8` (#15 archiver + zip oracle) 1371 → `38b0b812`
-(#15 HTTP handler + Go duration oracle) 1406. The `a462b1f2` figure below — 1183 —
+**1442 passed / 0 FAILED** (1 ignored) across 52 test binaries, and zero surviving `ffmpeg` processes after the suite.
+Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 → `b419472b` (#16 mapping + Go oracle) 1301 →
+`b5c317f8` (#15 archiver + zip oracle) 1371 → `38b0b812` (#15 HTTP handler + Go duration oracle) 1406 →
+`d19526e3` (**#15 transcode cache — #15 is now COMPLETE**) **1442**. The `a462b1f2` figure below — 1183 —
 and the `29d9d9d0` figure — 1067 passed / 4 FAILED —
 are dated: the latter had `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
 **zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
@@ -15,10 +16,12 @@ are dated: the latter had `nd-ffmpeg` fixture paths hardcoded to a retired workt
 **The Phase 1–4 plan below is accurate as a record of what was *shaped*, but shape ≠ wired.**
 The runtime spine has started, but nothing boots yet:
 
-- `nd-db` — execution seam (`execution.rs`, `store::SQLStore` sync + async verbs) and **one** executing
-  repository (`user_repo`, with `UserRecord`/`UserRow` hydration and the `WHERE`-before-`GROUP BY`
-  fix). The other ~14 repos only render SQL; general row hydration (`sql_base_repository.go:445,480`)
-  exists only for `dbUser`. Pagination renders decimal literals with zero bound args, matching
+- `nd-db` — execution seam (`execution.rs`, `store::SQLStore` sync + async verbs) and **four** executing
+  repositories: `user_repo` (`UserRecord`/`UserRow` hydration, `WHERE`-before-`GROUP BY` fix),
+  `player_repo` (`c8c71f8d`), and `share_repo`/`user_props_repo` (raw `conn`, bypassing `execution.rs`).
+  **The other 17 repos only render SQL.** The real gap is not hydration alone: there is no shared row mapper
+  *and* no shared entity→`(columns, values)` marshaler, and nothing computes the media_file FTS columns. See
+  §Then item 2 for the scoping brief's findings. Pagination renders decimal literals with zero bound args, matching
   squirrel (`select.go:376-388,140-150`); `b78c01a2` fixed a crate-wide divergence where the port
   bound `LIMIT ?`/`OFFSET ?` as args. Offset-without-limit keeps the cited `LIMIT -1` deviation
   because squirrel's bare `OFFSET n` is a SQLite parse error. **Player repository landed**
@@ -35,7 +38,7 @@ The runtime spine has started, but nothing boots yet:
   `GuardedLimiter`. Open item: the documented `createAdmin` atomicity deviation needs its own ledger row.
 - `nd-db` player repository — **landed** `c8c71f8d`, and auth middleware now builds on it. `nd-stream` —
   Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body, limiter,
-  archiver, and **HTTP handler** all landed; only the transcoding-file **cache** remains. `nd-cli` `main()`
+  archiver, **HTTP handler**, and the **transcoding-file cache** all landed — **#15 is complete**. `nd-cli` `main()`
   is still empty and `nd-http`/`nd-api`/`nd-scanner` are scaffold-only, so **nothing boots**.
 
 ### Active lanes (user-approved 2026-11-10)
@@ -79,8 +82,8 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
    `media_file_codec` could not even be created without `codec`. Follow-up worth scoping: the golden DDL was
    derived by replaying migrations, so re-derive it once against this corrected shape to confirm nothing else
    silently fell out.
-5. **Finish #15** — transcode cache + rate-limiting semaphore (`core/stream/limiter.go`), archive, and the
-   HTTP handler that consumes Range/direct/transcode bodies.
+5. ~~Finish #15~~ — **COMPLETE**. Semaphore `164780ee`+`fc48ff3f`, archiver `8b9f48cf`…`b5c317f8`, HTTP handler
+   `db9f1e42`…`38b0b812`, transcode cache `8abefec1`/`46b2a1ca`/`d19526e3`. See item 10.
 6. ~~A real tag backend~~ (#08, A15) — **landed** `beaf63d7`, merged; gate 1270/0. `lofty = "=0.25.5"`
    (pure Rust, MIT/Apache-2.0, +11 new lock entries) reads MP3/FLAC/M4A/OGG with multi-values, comments,
    language-coded USLT/SYLT, TIPL/TMCL, MP4 atom precedence, pictures, and malformed-file skipping; five
@@ -110,17 +113,98 @@ uncommitted. Verify every report against `git log` / `git status` / the files th
    lifecycle tests each prove the pid is gone from the process table and the concurrency slot returns.
    Three Go-parity gaps were fixed on the way (a non-zero ffmpeg exit propagates through the stdout pipe
    as a read error, `Content-Encoding` suppresses the estimate length, `http.Error` overwrites the staged
-   Content-Type). **Remaining for #15:** the transcoding-file cache and its eviction contract
-   (`utils/cache`) — the handler already takes it as `TranscodeSource` and two tests drive
-   `TranscodeLease::Cached` with stand-in entries, so the cache is additive rather than a rewrite.
-10. **#17 scanner** (`nd-scanner`) — XL; starts after #16 (done). Symlink semantics, subprocess IPC, fsnotify,
-    phase ordering, idempotent second pass.
-11. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
-12. Specify + build the #12 maintenance/logging half.
-13. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
+   Content-Type).
+10. ~~#15 transcoding-file cache~~ — **landed** `8abefec1` (cache core) + `46b2a1ca` (lane tests + haunter walk) +
+    `d19526e3` (parent fix), gate **1442/0**. `utils/cache/file_caches.go` port behind the `TranscodeSource` seam:
+    sha1 spread layout (`root/xx/xx/<40hex>`), Go's `Cached` semantics, fan-out, background drain, scrub/eviction.
+    Findings worth keeping:
+    - **Go's `Cached` does not mean "complete."** It means *not the writer-side creator* (`file_caches.go:157-164`);
+      a joiner on an in-progress entry gets `Cached=true` with a nil writer. The first Get is `Cached=false`. Pinned
+      by the Go test at `file_caches_test.go:286-308`.
+    - **The seam was too narrow, so it changed** (deviation approved by the parent, documented in code):
+      `TranscodeLease::Cached` gained `signal` + `expected_size` and the pump arm in `handler.rs` now takes the signal
+      from the lease. A writer-side lease is `Cached=true` but non-seekable, so the old `Cached => None` would have
+      returned a **200 with 0 bytes** and skipped the disconnect race entirely. All 35 handler tests still pass.
+    - Dep delta: **one new third-party crate, `sha1` 0.10** (its deps already sit in the lock via `sha2`).
+    - `d19526e3` fixed a test-side deadlock: `assert_no_poller_leak` re-acquired `PROCESS_LOCK` while its caller held
+      it (tokio `Mutex` is not reentrant), and some baselines were sampled before the lock so a parallel test's poller
+      contaminated the comparison. Pass baseline-after-lock, never nested.
+10. **The `nd-db` shared marshal + hydration layer** — **now the critical path**; see §Then item 1. #17 cannot start
+    without it.
+11. **#17 scanner** (`nd-scanner`) — XL; starts after item 10. See §Then item 2 for the minimum executed surface
+    (8 repos + 1 shared mapper, not ~14) and the watcher licence answer.
+12. `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) — still deferred, its own lane.
+13. Specify + build the #12 maintenance/logging half.
+14. **First runnable slice** (`#27A`): fresh DB → scan a real track → authenticated API lookup → direct
    Range + forced transcode + client disconnect with **zero surviving child processes**. Full #27 needs
    share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`);
    deferrable #32 must **not** gate this minimal slice.
+
+## Then, in order (updated 2026-11-11 at `d19526e3`, gate 1442/0)
+
+Two read-only scoping briefs (2026-11-11) replace the old "hydration for the remaining ~14 repos" line. Every claim
+below was verified against the tree by the parent, not taken on faith.
+
+### 1. `nd-db` shared marshal + hydration layer (critical path)
+
+**The gap is two-sided and larger than hydration.** Go funnels every read through one reflection-based scanner
+(`dbx@v1.12.0/rows.go:65-103`, reached from `sql_base_repository.go:381,429,450,466`) and every write through
+`structs.Map` + `PostMapArgs` (`sql_base_repository.go:445,480`). Rust has **no counterpart to either**: exactly three
+hand-written mappers exist (`user_repo.rs:857`, `player_repo.rs:1074`, `share_repo.rs:449`), and `share_repo` plus
+`user_props_repo` bypass `execution.rs` entirely with raw `conn`.
+
+Executing surface (`grep -ln "use rusqlite::"`): `execution.rs`, `pool.rs`, `store.rs`, `user_repo.rs`, `player_repo.rs`,
+`share_repo.rs`, `user_props_repo.rs` — nothing else. The other 17 repos are render-only.
+
+Hazards, ranked by how silently they corrupt data:
+1. **media_file / album FTS columns are produced by nothing.** `mediafile_repo.rs:459-469` declares `FtsColumns` for
+   the caller to supply; the only producer in the tree is `artist_repo.rs:418`. Go computes them at Put
+   (`persistence/mediafile_repository.go:69-79`, `album_repository.go:68-96`). A scanner writing rows today would
+   persist empty `search_*`/`full_text` and break search with no error anywhere.
+2. `PostScan` aggregation for album/artist/mediafile/folder (`Discs`, `Participants`, `Tags`, `FolderIDs`,
+   `LibraryStatsJSON`) has no Rust counterpart; `artist_repo.rs:236` is an explicit stub.
+3. **Timestamp convention — decision needed before further repo work.** Go uses CGO `sqlite3` with the UTC layout
+   `2006-01-02 15:04:05.999999999-07` (`go-sqlite3@v1.14.52/sqlite3.go:132-134,583-603`); `nd-db/src/time.rs:43-69`
+   parses several layouts and `now_sql()` emits local-with-offset, while the port's own goldens are naive UTC. Rust is
+   internally consistent, so nothing fails visibly today — but a Go-written DB read by Rust (migration, dual-run parity)
+   diverges. Pick naive-UTC (matching the goldens) or Go's offset form, then pin it with a Go oracle rather than an
+   assertion.
+4. `playlist_repo.rs` reads `is_scheduled`/`owner_id`/`sync`/`path` from an existence map instead of a struct, and
+   `playlist_track_repo.rs:418` returns the media-file id where Go overwrites `ID = MediaFileID`
+   (`playlist_track_repository.go:27-33`).
+5. Genre `SongCount`/`AlbumCount` are never populated in Go (`model/genre.go:9-12`) yet `radio_repo.rs:95-97` maps
+   them; `user_props_repo.rs:108` maps `value` twice while Go reads `value->>'$.v'` (`user_props_repository.go:27`).
+
+**Shape to build:** one file, one seam — entity→`(columns, values)` marshal and row→entity mapper, both pinned against a
+Go oracle, with `PostScan`/`PostMapArgs` hooks; then per-repo adapters. DTOs stay **local to `nd-db`**: `nd-model` is
+#06's crate and a shared file, and `UserRecord`/`PlayerRecord`/`RadioRecord`/`Tag`/`Scrobble`/`Transcoding`/`Genre`
+already set that precedent. Do not touch `nd-model` for hydration. Harness precedent to reuse verbatim:
+`nd-db/tests/runtime_player_repo.rs:34-46` (`apply_fresh_schema` + `Pool` + `SQLStore`), `_foreign_keys=on` in the DSN
+(`db/db.go:55`), `SEEDEDRAND`/`NATSORT` registered per connection via `schema::open`.
+
+### 2. #17 scanner — minimum executed surface is 8 repos + 1 mapper, not ~14
+
+A fresh scan **reads back** what it wrote, so phases 2/3/4 and `finalize` need executed *reads*: an executed-read seam
+is unavoidable. Required executed repos: `library_repo`, `folder_repo`, `mediafile_repo`, `tag_repo`, `album_repo`,
+`artist_repo`, `property_repo`, `artwork_queue_repo`, plus item 1's shared mapper. `User().FindFirstAdmin`
+(`phase_4_playlists.go:56`) already executes (`user_repo.rs:693`).
+
+Writes already rendered today: `Property` Put/DefaultGet/Delete; `Library` ScanBegin/ScanEnd/SetScannedPID/AddArtist/
+RefreshStats; `Folder` Put/MarkMissing; `Tag` Add/UpdateCounts/purgeUnused; `Artist` Put/purgeEmpty/markMissing/
+refreshStats; `Album` Put/Touch/TouchByMissingFolder/ReassignAnnotation/CopyAttributes/RefreshPlayCounts/purgeEmpty;
+`MediaFile` Put/MarkMissing/MarkMissingByFolder/Delete/DeleteAllMissing; `Artwork` DeleteForItems; `ArtworkQueue`
+Enqueue/EnqueueIfMissing/EnqueueAllMissing; and `DataStore.GC` (11 sequential sub-ops, `persistence/persistence.go:246-277`).
+
+Orchestration order (`scanner/scanner.go:150-179`): phase 1 → 2 sequential, 3 ∥ 4, then GC → enqueue-missing-artwork →
+refresh-stats. Open sub-problems, each its own lane rather than one XL blob: symlink semantics (`core/storage/`);
+subprocess IPC — Go encodes tag-reader results with `gob` over pipes, so the Rust port needs a **wire-format decision**,
+not a translation; the file watcher; phase ordering; and the idempotent second pass.
+
+**Watcher licence answer:** Go pins `github.com/rjeczalik/notify v0.9.3`, which is **MIT** (verified in the module
+cache), so licensing is not a blocker — choose a Rust watcher on behaviour.
+
+**Sequencing conclusion:** item 1 gates a *vertical* #17 slice. The first honest #17 deliverable is phase 1 over a
+fixture tree with executed writes, not an end-to-end scan.
 
 ---
 

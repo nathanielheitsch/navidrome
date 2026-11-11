@@ -26,7 +26,10 @@ Measured at `38b0b812` (2026-11-11), `cd rust`:
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1406 passed / 0 FAILED** (1 ignored)
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1442 passed / 0 FAILED** (1 ignored)
+  across 52 test binaries; zero surviving `ffmpeg` processes afterwards
+- Branch `issue/planning-rust-sdhnn` is **pushed** to `origin` (`git@github.com:nathanielheitsch/navidrome.git`);
+  76 commits ahead of the remote branch before the push, all GPG-signed, no AI co-author trailers
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were
@@ -35,7 +38,7 @@ hardcoded paths from a retired worktree), `8152ac5a` (`process_group(0)` spawn +
 (Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body),
 `c8c71f8d` (player repository + API-key path, 19 executed tests), `15426bbc` (80 secondary indexes +
 the 8 dropped columns + index/column drift guards), `0fad9985` (auth wiring merged: mountable
-`nd-auth` middleware, `verifier.rs`, `login.rs`, `refresh.rs`, `setup_store.rs`, `guarded_limiter.rs),
+`nd-auth` middleware, `verifier.rs`, `login.rs`, `refresh.rs`, `setup_store.rs`, `guarded_limiter.rs`),
 `beaf63d7` (real `lofty` tag backend), `4463670b`/`5d12b5ad`/`b419472b` (#16 mapping + Go oracle),
 `164780ee`/`fc48ff3f`/`18f6bc5e` (transcode semaphore wired), `8b9f48cf`…`b5c317f8` (#15 archiver +
 Go zip oracle), and `db9f1e42`…`38b0b812` (**#15 HTTP handler**, 35 integration tests incl. the
@@ -81,9 +84,12 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   per-table declared column sets, both verified non-vacuous by mutation; keep that coverage
   when the schema changes.
 - `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, transcode body, semaphore,
-  archiver, and the **HTTP handler** (`StreamHandler<D>`, `handler.rs`) all exist. The only remainder is the
-  transcoding-file **cache** and its eviction contract (`utils/cache`); the handler already takes it through
-  the `TranscodeSource` seam and `TranscodeLease::{Process, Cached}`, so adding it does not change the handler.
+  archiver, the **HTTP handler** (`StreamHandler<D>`, `handler.rs`), and the transcoding-file **cache**
+  (`8abefec1`/`46b2a1ca`/`d19526e3`) are landed — **#15 is complete**. The cache took one new third-party crate,
+  `sha1` 0.10, and changed the seam by agreement: `TranscodeLease::Cached` gained `signal` + `expected_size` and
+  the pump arm takes the signal from the lease, because a writer-side lease is `Cached=true` but non-seekable
+  and the old `Cached => None` would have served a 200 with 0 bytes. The cache plugs into the same
+  `TranscodeSource` seam and `TranscodeLease::{Process, Cached}` the handler already used.
   The limiter is **wired** (no longer an unbounded ffmpeg count), and `FFCmd`/`DetachedChild` now group-kill in
   `Drop` and borrow the child across every await, so a cancelled or dropped future cannot orphan a live child —
   `dropping_the_serve_future_leaves_no_child` proves it by pid.
@@ -117,25 +123,30 @@ against `git log`, `git status`, and the actual files before integrating.
 Before consuming another lane's output, read its current code. Streaming consumes `nd-ffmpeg`'s `new_ffmpeg_cmd()`
 and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields stay private.
 
-## Then, in order (updated 2026-11-11 at `38b0b812`, gate 1406/0)
+## Then, in order (updated 2026-11-11 at `d19526e3`, gate 1442/0)
 
-1. **#15 transcode cache** (`media_streamer.go:224` builds a `cache.NewFileCache("Transcoding", …)` over
-   `utils/cache/file_caches.go`) plus its eviction contract, behind the existing
-   `TranscodeSource` seam, with the single-flight key dedupe Go's `cache.Get` provides
-   (`media_streamer.go:112-118`). Additive: the handler and its 35 tests already drive `TranscodeLease::Cached`
-   with stand-ins, so no handler change is expected. Small, isolated, high value.
-2. **Row hydration for the remaining ~14 `nd-db` repositories** (`sql_base_repository.go:445,480`), which today
-   only render SQL. This is the largest gap between "shaped" and "runnable" and it gates everything downstream.
-3. **#17 scanner** (`nd-scanner`) — XL, unblocked now that #08 and #16 landed. Symlink semantics, subprocess IPC,
-   fsnotify, phase ordering, idempotent second pass. Respect the declared #08/#16 gaps (ASF/WMA, bit depth,
-   bitrate estimates, and the pair-tag ordering hazard: persist no ordering from either side).
+1. ~~#15 transcode cache~~ — **landed** `8abefec1`/`46b2a1ca`/`d19526e3`. #15 is complete.
+2. **`nd-db` shared marshal + hydration layer** — **the critical path**. Go routes every read through one
+   reflection scanner (`dbx@v1.12.0/rows.go:65-103` via `sql_base_repository.go:381,429,450,466`) and every write
+   through `structs.Map` + `PostMapArgs` (`sql_base_repository.go:445,480`); Rust has **neither**, only three
+   hand-written `row_to_*` mappers, and **nothing computes the media_file/album FTS columns**
+   (`mediafile_repo.rs:459-469` makes the caller supply them; only `artist_repo.rs:418` does). A scanner writing
+   rows today would persist empty search text and break search silently. Also decide the **timestamp convention**
+   (Go CGO sqlite3 emits offset-bearing UTC; the port's goldens are naive UTC) and pin it with a Go oracle.
+   Keep DTOs local to `nd-db`; do not touch `nd-model`. Full brief: `next-work.md` §Then item 1.
+3. **#17 scanner** (`nd-scanner`) — XL, **gated by item 2**. Minimum executed surface is 8 repos + 1 mapper, not
+   ~14; a fresh scan reads back what it wrote, so executed reads are unavoidable. Split it into lanes: phase 1
+   over a fixture tree, tag-reader IPC (Go uses `gob` — needs a wire-format decision, not a translation), symlink
+   semantics, watcher (Go's `rjeczalik/notify` is MIT, so licensing is not a blocker), GC + finalize, idempotent
+   second pass. Respect the declared #08/#16 gaps (ASF/WMA, bit depth, bitrate estimates, pair-tag ordering:
+   persist no ordering from either side). Full brief: `next-work.md` §Then item 2.
 4. **`nd-http` shell + `nd-cli` bootstrap** (#24) — `main()` is empty, so nothing boots. Wire auth middleware →
    router → `StreamHandler` + the two stream callers.
 5. **First runnable slice (`#27A`)** — fresh DB → scan a real track → authenticated API lookup → direct Range +
-   forced transcode + client disconnect leaving **zero surviving child processes**. Steps 1-4 are its prerequisites;
-   the disconnect half is already proven at the handler level, so #27A mostly needs the bootstrap. Full #27 needs
-   share/playlists/artwork/external/quick-connect services (`server/nativeapi/native_api.go:38-55`); deferrable
-   #32 must not gate this minimal slice.
+   forced transcode + client disconnect leaving **zero surviving child processes**. Steps 2-4 are its prerequisites;
+   the disconnect half is already proven at the handler and cache level, so #27A mostly needs items 2 and 4. Full
+   #27 needs share/playlists/artwork/external/quick-connect services
+   (`server/nativeapi/native_api.go:38-55`); deferrable #32 must not gate this minimal slice.
 6. Independent, no dependencies: `nd-dbschema/src/repair.rs` (`db/repair.go`, 367L FTS5 verify/repair) —
    explicitly deferred, its own lane. And the #12 `nd-sched` maintenance/logging half (scheduler half is done).
 7. Re-derive the `nd-dbschema` golden DDL once against the corrected shape, and give the documented `createAdmin`
