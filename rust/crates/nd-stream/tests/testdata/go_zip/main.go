@@ -185,14 +185,14 @@ func goldens() []golden {
 			},
 		},
 		{
-			// zipArtist: artist image at the root plus one cover per album
-			// (core/archiver.go:57,95).
+			// zipArtist: each album's cover follows that album's tracks, and the
+			// artist image goes at the root last (core/archiver.go:76-97).
 			name:    "artist_root_and_albums",
 			comment: "Downloaded from Navidrome, transcoded to mp3 128bps",
 			entries: []entrySpec{
 				{name: "Album 1/01 - track1.mp3", modified: "fixed", data: []byte("test")},
-				{name: "Album 2/02 - track2.mp3", modified: "fixed", data: []byte("test")},
 				{name: "Album 1/folder.jpg", modified: "now", data: []byte("jpeg-bytes")},
+				{name: "Album 2/02 - track2.mp3", modified: "fixed", data: []byte("test")},
 				{name: "Album 2/folder.jpg", modified: "now", data: []byte("jpeg-bytes")},
 				{name: "folder.png", modified: "now", data: []byte("\x89PNG\r\n\x1a\n png")},
 			},

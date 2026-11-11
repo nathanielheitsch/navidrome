@@ -16,7 +16,7 @@
 //! authorized DB row; this module performs no authorization and no library
 //! scoping. For shares the share record *is* the authorization: Go returns
 //! `model.ErrNotAuthorized` when `!share.Downloadable` and elevates only the
-//! cover read (`core/archiver.go:157-174`).
+//! cover read (`core/archiver.go:182-191`).
 //!
 //! ## Divergences from Go, frozen here
 //!
@@ -36,26 +36,26 @@
 //!     zero `time.Time`, which `CreateHeader` treats as "no MS-DOS fields, no
 //!     extended timestamp" (`archive/zip/writer.go:326-349`).
 //!   - **Deflate is not ported.** The archiver only ever writes `Store`
-//!     (`core/archiver.go:302-306,336-339,296-299`), so [`ZipWriter::create_header`]
+//!     (`core/archiver.go:287-291,336-339,296-299`), so [`ZipWriter::create_header`]
 //!     rejects any other method with Go's `zip.ErrAlgorithm` equivalent. Go's
 //!     `Deflate` arm would need a flate encoder this crate does not depend on.
 //!   - **Only the limiter arm aborts.** Go checks exactly
-//!     `errors.Is(addErr, stream.ErrTooManyTranscodes)` (`core/archiver.go:80-88,
+//!     `errors.Is(addErr, stream.ErrTooManyTranscodes)` (`core/archiver.go:84-92,
 //!     186-192`): a missing file or a mid-copy read failure is logged and the
 //!     loop **continues**, which can leave a truncated entry — and in the
 //!     playlist case a track that failed to zip still lands in the M3U, because
-//!     Go assigns `mf.Path = file` unconditionally (`core/archiver.go:193-194`).
+//!     Go assigns `mf.Path = file` unconditionally (`core/archiver.go:217-218`).
 //!     Ported as written, not hardened.
 //!   - **Share cover pick is explicit.** Go chooses a random track
 //!     (`model/share.go:51-53`, `random.Int64N`), which no golden can reproduce;
 //!     [`Archiver::zip_share`] passes the pick to
 //!     [`ArchiveShare::cover_art_id`] as an index instead.
 //!   - **Track filters are a marker enum, not SQL.** Go builds `squirrel`
-//!     filters (`core/archiver.go:45,54-58`); SQL shaping belongs to `nd-db`
+//!     filters (`core/archiver.go:51,57-60`); SQL shaping belongs to `nd-db`
 //!     (#05). [`TrackFilter`] records the same two shapes so the wiring layer
 //!     compiles them and tests can assert which one was requested.
 //!   - **Cover art is read whole.** Go buffers the image too ("Buffered so a
-//!     failed read leaves no empty entry", `core/archiver.go:321-331`), so
+//!     failed read leaves no empty entry", `core/archiver.go:311-320`), so
 //!     `Vec<u8>` matches Go's observable behavior exactly.
 //!   - **The archive comment comes from the writer, not the method.** Go builds
 //!     the `zip.Writer` inside each `Zip*` call; here [`create_zip_writer`] is
@@ -77,10 +77,10 @@ use crate::types::Request;
 /// `Pin<Box<dyn Future>>` and callers `.await` them normally.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
-/// `archiveCoverArtSize` (`core/archiver.go:20`).
+/// `archiveCoverArtSize` (`core/archiver.go:29`).
 pub const ARCHIVE_COVER_ART_SIZE: i32 = 500;
 
-/// EOCD comment Go writes for `format == "raw"` or `""` (`core/archiver.go:103`).
+/// EOCD comment Go writes for `format == "raw"` or `""` (`core/archiver.go:107`).
 pub const DEFAULT_ZIP_COMMENT: &str = "Downloaded from Navidrome";
 
 /// Chunk size of the copy loop — Go's `io.Copy` internal buffer (`io.copyLoop`).
@@ -211,7 +211,7 @@ impl<W: AsyncSink> Sink<W> {
 }
 
 /// Minimal async byte sink. Go's archiver writes into an `io.Writer` supplied
-/// by the HTTP handler (`core/archiver.go:29-33`); the port uses async writes to
+/// by the HTTP handler (`core/archiver.go:31-36`); the port uses async writes to
 /// match the rest of the serving half (`crate::transcode_body::TranscodeBody::serve`).
 pub trait AsyncSink {
     /// Write every byte of `data` to the sink.
@@ -382,10 +382,7 @@ impl<W: AsyncSink> ZipWriter<W> {
                 flags |= 0x8; // data descriptor, always (writer.go:374)
             }
 
-            let (mod_date, mod_time) = header
-                .modified
-                .map(|secs| ms_dos_time(secs))
-                .unwrap_or((0, 0));
+            let (mod_date, mod_time) = header.modified.map(ms_dos_time).unwrap_or((0, 0));
             let extra = extended_timestamp(header.modified);
 
             let offset = self.sink.count + self.sink.buf.len() as u64;
@@ -435,7 +432,10 @@ impl<W: AsyncSink> ZipWriter<W> {
                 writer: self,
                 index,
                 directory,
-                closed: directory,
+                // Go's `dirWriter` is not a `fileWriter`: it has no closed
+                // state and `w.last` is nil for a directory, so `prepare`
+                // never finalizes it (`writer.go:376,404`).
+                closed: false,
             })
         })
     }
@@ -547,10 +547,7 @@ impl<W: AsyncSink> ZipWriter<W> {
         extra: &'a [u8],
     ) -> BoxFuture<'a, Result<(), ZipError>> {
         Box::pin(async move {
-            let (mod_date, mod_time) = entry
-                .modified
-                .map(|secs| ms_dos_time(secs))
-                .unwrap_or((0, 0));
+            let (mod_date, mod_time) = entry.modified.map(ms_dos_time).unwrap_or((0, 0));
             let uint32max: u64 = u32::MAX as u64;
             let mut cd: Vec<u8> = Vec::with_capacity(46 + entry.name.len() + extra.len());
             cd.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
@@ -616,7 +613,7 @@ impl<W: AsyncSink> ZipWriter<W> {
 
     /// Hand the sink back after [`ZipWriter::close`], so a caller that wrote
     /// into a `Vec<u8>` can read the archive.
-    pub fn into_inner<'a>(self) -> W {
+    pub fn into_inner(self) -> W {
         self.sink.inner
     }
 }
@@ -659,7 +656,7 @@ impl Crc32 {
 
 /// `crc32.ChecksumIEEE(data)`.
 #[must_use]
-pub fn crc32_ieee<'a>(data: &'a [u8]) -> u32 {
+pub fn crc32_ieee(data: &[u8]) -> u32 {
     let mut crc = Crc32::new();
     crc.update(data);
     crc.sum()
@@ -693,11 +690,11 @@ const fn build_crc32_table() -> [u32; 256] {
 /// bytes); `require` follows Go's rule, which also treats `~` (0x7e) and `\`
 /// (0x5c) as requiring UTF-8 because CP-437 readers map them elsewhere.
 #[must_use]
-fn detect_utf8<'a>(s: &'a str) -> (bool, bool) {
+fn detect_utf8(s: &str) -> (bool, bool) {
     let mut require = false;
     for r in s.chars() {
         let cp = u32::from(r);
-        if cp < 0x20 || cp > 0x7d || cp == 0x5c {
+        if !(0x20..=0x7d).contains(&cp) || cp == 0x5c {
             require = true;
         }
     }
@@ -731,8 +728,10 @@ pub fn ms_dos_time(unix_secs: i64) -> (u16, u16) {
     let hour = rem / 3_600;
     let minute = (rem % 3_600) / 60;
     let second = rem % 60;
-    let date = (i64::from(day) + i64::from(month) << 5 + (year - 1980) << 9) as u16;
-    let time = (second / 2 + minute << 5 + hour << 11) as u16;
+    // Go: `uint16(t.Day() + int(t.Month())<<5 + (t.Year()-1980)<<9)`; `<<` binds
+    // tighter than `+`, so each term is shifted before the sum.
+    let date = (i64::from(day) + (i64::from(month) << 5) + ((year - 1980) << 9)) as u16;
+    let time = (second / 2 + (minute << 5) + (hour << 11)) as u16;
     (date, time)
 }
 
@@ -753,7 +752,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let doe = z - era * 146_097; // 0..=146096
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // 0..=399
     let y = yoe + era * 400;
-    let doy = doe - (4 * yoe + yoe / 4 - yoe / 100); // 0..=365
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // 0..=365
     let mp = (5 * doy + 2) / 153; // 0..=11
     let d = doy - (153 * mp + 2) / 5 + 1; // 1..=31
     let m = if mp < 10 { mp + 3 } else { mp - 9 }; // 1..=12
@@ -777,10 +776,10 @@ const fn is_tt(b: u8) -> bool {
 
 /// `http.DetectContentType` (`net/http/sniff.go:15-24`), ported signature by
 /// signature in Go's table order. Go's `coverArtExtension`
-/// (`core/archiver.go:346-359`) maps only jpeg/png/webp/gif to an extension, so
+/// (`core/archiver.go:350-362`) maps only jpeg/png/webp/gif to an extension, so
 /// every other result means "no cover art added to the zip".
 #[must_use]
-pub fn detect_content_type<'a>(data: &'a [u8]) -> &'static str {
+pub fn detect_content_type(data: &[u8]) -> &'static str {
     let data = if data.len() > SNIFF_LEN {
         &data[..SNIFF_LEN]
     } else {
@@ -983,7 +982,7 @@ fn html_match<'a>(data: &'a [u8], first_non_ws: usize, sig: &'a str) -> bool {
     }
     for (i, &b) in sig.as_bytes().iter().enumerate() {
         let mut db = d[i];
-        if (b'A'..=b'Z').contains(&b) {
+        if b.is_ascii_uppercase() {
             db &= 0xDF;
         }
         if b != db {
@@ -1013,12 +1012,12 @@ fn masked<'a>(
 }
 
 /// `mp4Sig.match` (`net/http/internal/sniff.go:262-287`).
-fn mp4_match<'a>(data: &'a [u8]) -> bool {
+fn mp4_match(data: &[u8]) -> bool {
     if data.len() < 12 {
         return false;
     }
     let box_size = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-    if data.len() < box_size || box_size % 4 != 0 {
+    if data.len() < box_size || !box_size.is_multiple_of(4) {
         return false;
     }
     if &data[4..8] != b"ftyp" {
@@ -1039,10 +1038,10 @@ fn mp4_match<'a>(data: &'a [u8]) -> bool {
     false
 }
 
-/// `coverArtExtension` (`core/archiver.go:346-359`): the extension for the
+/// `coverArtExtension` (`core/archiver.go:350-362`): the extension for the
 /// sniffed type; `""` means Go does not add the image to the zip.
 #[must_use]
-pub fn cover_art_extension<'a>(data: &'a [u8]) -> &'static str {
+pub fn cover_art_extension(data: &[u8]) -> &'static str {
     match detect_content_type(data) {
         "image/jpeg" => "jpg",
         "image/png" => "png",
@@ -1059,65 +1058,82 @@ pub fn cover_art_extension<'a>(data: &'a [u8]) -> &'static str {
 /// `filepath.Join` on unix (`path/filepath/path.go:269-297`): drop empty
 /// elements, join with `/`, then `Clean`.
 #[must_use]
-pub fn file_path_join<'a>(parts: &[&'a str]) -> String {
-    let non_empty: Vec<&'a str> = parts.iter().copied().filter(|p| !p.is_empty()).collect();
-    if non_empty.is_empty() {
-        return String::new();
+pub fn file_path_join(parts: &[&str]) -> String {
+    // Go skips leading empty elements, then joins the rest (empties included)
+    // and cleans the result.
+    match parts.iter().position(|p| !p.is_empty()) {
+        Some(i) => path_clean(&parts[i..].join("/")),
+        None => String::new(),
     }
-    path_clean(&non_empty.join("/"))
 }
 
-/// `filepath.Clean` on unix (`path/filepath/path.go:106-166`).
+/// `filepath.Clean` on unix — a line-by-line port of `path.Clean`
+/// (`path/path.go:72-139`), which `path/filepath` reuses on unix. The `dotdot`
+/// marker is the index in the output where a `..` may not backtrack past, and
+/// trailing separators are dropped (Go never appends one at the end).
 #[must_use]
-pub fn path_clean<'a>(path: &'a str) -> String {
+pub fn path_clean(path: &str) -> String {
     if path.is_empty() {
         return ".".to_string();
     }
     let rooted = path.starts_with('/');
-    let mut out: Vec<&'a str> = Vec::new();
-    let mut appended_dot_dot = false;
-    for seg in path.split('/') {
-        if seg.is_empty() || seg == "." {
-            continue;
-        }
-        if seg == ".." {
-            if rooted {
-                // A rooted path never keeps a leading ".."; pop one element
-                // when there is a real one to pop.
-                if out.len() > 1 && out[out.len() - 1] != ".." {
-                    out.pop();
+    let bytes = path.as_bytes();
+    let n = bytes.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut dotdot = 0usize;
+    if rooted {
+        out.push(b'/');
+        dotdot = 1;
+    }
+    let mut r = 0usize;
+    while r < n {
+        if bytes[r] == b'/' {
+            // empty path element
+            r += 1;
+        } else if bytes[r] == b'.' && (r + 1 == n || bytes[r + 1] == b'/') {
+            // . element
+            r += 1;
+        } else if bytes[r] == b'.'
+            && r + 1 < n
+            && bytes[r + 1] == b'.'
+            && (r + 2 == n || bytes[r + 2] == b'/')
+        {
+            // .. element: remove to last '/'
+            r += 2;
+            if out.len() > dotdot {
+                let mut w = out.len() - 1;
+                while w > dotdot && out[w] != b'/' {
+                    w -= 1;
                 }
-            } else if out.is_empty() || out[out.len() - 1] == ".." {
-                out.push("..");
-                appended_dot_dot = true;
-            } else {
-                out.pop();
+                out.truncate(w);
+            } else if !rooted {
+                if !out.is_empty() {
+                    out.push(b'/');
+                }
+                out.extend_from_slice(b"..");
+                dotdot = out.len();
             }
-            continue;
+        } else {
+            // real path element: add a separator if needed, then copy it
+            if (rooted && out.len() != 1) || (!rooted && !out.is_empty()) {
+                out.push(b'/');
+            }
+            while r < n && bytes[r] != b'/' {
+                out.push(bytes[r]);
+                r += 1;
+            }
         }
-        out.push(seg);
     }
     if out.is_empty() {
-        return if rooted {
-            "/".to_string()
-        } else {
-            ".".to_string()
-        };
+        return ".".to_string();
     }
-    let mut joined = out.join("/");
-    if !rooted && appended_dot_dot && !joined.ends_with("/..") {
-        joined.push_str("/..");
-    }
-    if path.ends_with('/') && !joined.ends_with('/') {
-        joined.push('/');
-    }
-    joined
+    String::from_utf8(out).unwrap_or_else(|_| String::new())
 }
 
 /// `filepath.Split` on unix (`path/filepath/path.go:299-313`): split at the
 /// final separator, which stays in the first half.
 #[must_use]
-pub fn file_path_split<'a>(path: &'a str) -> (String, String) {
+pub fn file_path_split(path: &str) -> (String, String) {
     match path.rfind('/') {
         Some(i) => (path[..=i].to_string(), path[i + 1..].to_string()),
         None => (String::new(), path.to_string()),
@@ -1126,14 +1142,14 @@ pub fn file_path_split<'a>(path: &'a str) -> (String, String) {
 
 /// `model.MediaFile.AbsolutePath` (`model/mediafile.go:255-257`).
 #[must_use]
-pub fn absolute_path<'a>(library_path: &'a str, path: &'a str) -> String {
+pub fn absolute_path(library_path: &str, path: &str) -> String {
     file_path_join(&[library_path, path])
 }
 
 /// `str.SanitizeFilename` (`utils/str/sanitize_strings.go`): reserved
 /// filesystem characters become `_`. Reuses `nd-utils`' port.
 #[must_use]
-pub fn sanitize_filename<'a>(name: &'a str) -> String {
+pub fn sanitize_filename(name: &str) -> String {
     nd_utils::str::sanitize_filename(name)
 }
 
@@ -1148,7 +1164,7 @@ pub struct ArtworkId {
     /// Kind prefix: `mf`, `ar`, `al`, `pl`, `dc`, `ra` (`model/artwork_id.go:26-31`).
     pub prefix: &'static str,
     /// Entity id; `""` means no artwork, which Go skips
-    /// (`core/archiver.go:311-313`).
+    /// (`core/archiver.go:308-310`).
     pub id: String,
     /// Content-hash suffix; `""` = unknown/none.
     pub hash: String,
@@ -1223,7 +1239,7 @@ pub fn playlist_artwork_id(id: impl Into<String>, image_hash: impl Into<String>)
 /// `DiscArtworkID` (`model/artwork_id.go:134-136`). Kept for the disc-artwork
 /// fallback the archiver reaches through `mf.CoverArtID()` in the share arm.
 #[must_use]
-pub fn disc_artwork_id<'a>(album_id: &'a str, disc_number: i32) -> String {
+pub fn disc_artwork_id(album_id: &str, disc_number: i32) -> String {
     format!("{album_id}:{disc_number}")
 }
 
@@ -1255,8 +1271,14 @@ pub struct ArchiveMediaFile {
     pub album_id: String,
     /// `model.MediaFile.AlbumImage.ImageHash` — the album's content hash. Go
     /// uses `AlbumCoverArtID`, not the track's own image
-    /// (`core/archiver.go:88`, `model/mediafile.go:155-159`).
+    /// (`core/archiver.go:95`, `model/mediafile.go:155-159`).
     pub album_image_hash: String,
+    /// `model.MediaFile.HasCoverArt` — the track has embedded artwork. Only the
+    /// share arm consumes it, through `CoverArtID` (`model/mediafile.go:137-144`).
+    pub has_cover_art: bool,
+    /// `model.MediaFile.ItemImage.ImageHash` — the track's own content hash, used
+    /// by `CoverArtID` and by the disc fallback (`model/mediafile.go:148-153`).
+    pub image_hash: String,
     /// `model.MediaFile.DiscNumber`.
     pub disc_number: i32,
     /// `model.MediaFile.Year`.
@@ -1317,6 +1339,35 @@ impl ArchiveMediaFile {
         self.album.clone()
     }
 
+    /// `model.MediaFile.CoverArtID` (`model/mediafile.go:137-144`): the track's
+    /// own artwork when it has one and the feature is on, otherwise the disc
+    /// fallback, otherwise the album. Used by the share arm's random-track cover
+    /// (`model/share.go:50`).
+    #[must_use]
+    pub fn cover_art_id(&self, options: &ArchiverOptions) -> ArtworkId {
+        if self.has_cover_art && options.enable_media_file_cover_art {
+            return ArtworkId {
+                prefix: KIND_MEDIA_FILE,
+                id: self.id.clone(),
+                hash: self.image_hash.clone(),
+            };
+        }
+        self.disc_cover_art_id()
+    }
+
+    /// `model.MediaFile.DiscCoverArtID` (`model/mediafile.go:148-153`).
+    #[must_use]
+    pub fn disc_cover_art_id(&self) -> ArtworkId {
+        if self.disc_number > 0 {
+            return ArtworkId {
+                prefix: KIND_DISC,
+                id: disc_artwork_id(&self.album_id, self.disc_number),
+                hash: self.image_hash.clone(),
+            };
+        }
+        self.album_cover_art_id()
+    }
+
     /// `model.MediaFile.AlbumCoverArtID` (`model/mediafile.go:157-159`).
     #[must_use]
     pub fn album_cover_art_id(&self) -> ArtworkId {
@@ -1351,10 +1402,10 @@ pub fn append_suffix<'a>(base: &'a str, suffix: &'a str) -> String {
 /// shaping is `nd-db` (#05); this is the request marker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrackFilter {
-    /// `squirrel.Eq{"album_id": id}` (`core/archiver.go:45`).
+    /// `squirrel.Eq{"album_id": id}` (`core/archiver.go:51`).
     AlbumId(String),
     /// `squirrel.And{ParticipantIDFilter("media_file", id, RoleAlbumArtist),
-    /// squirrel.Eq{"missing": false}}` (`core/archiver.go:54-58`). Go matches
+    /// squirrel.Eq{"missing": false}}` (`core/archiver.go:57-60`). Go matches
     /// album-artist *participation*, not the deprecated `album_artist_id`
     /// column, so co-album-artists are included too.
     AlbumArtistParticipant {
@@ -1364,7 +1415,7 @@ pub enum TrackFilter {
 }
 
 /// `model.QueryOptions` narrowed to what `zipAlbums` sets
-/// (`Filters` plus `Sort: "album"`, `core/archiver.go:65`).
+/// (`Filters` plus `Sort: "album"`, `core/archiver.go:66`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackQuery {
     /// Which rows to load.
@@ -1396,7 +1447,7 @@ impl ArchivePlaylist {
 
 /// `model.Share` subset (`model/share.go:13-33`) as the archiver uses it. The
 /// record is **already loaded**: `Share.Load` records a visit, so re-loading
-/// here would double-count every download (`core/archiver.go:157-159`).
+/// here would double-count every download (`core/archiver.go:180-182`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ArchiveShare {
     /// `model.Share.ID`.
@@ -1420,7 +1471,7 @@ impl ArchiveShare {
     /// Go's `random.Int64N(len(tracks))` would have produced; the track arm is
     /// only reached for a resource type with no artwork of its own.
     #[must_use]
-    pub fn cover_art_id(&self, cover_pick: usize) -> ArtworkId {
+    pub fn cover_art_id(&self, cover_pick: usize, options: &ArchiverOptions) -> ArtworkId {
         let first = self.resource_ids.split(',').next().unwrap_or("");
         match self.resource_type.as_str() {
             "album" => album_artwork_id(first, ""),
@@ -1430,7 +1481,7 @@ impl ArchiveShare {
                 if self.tracks.is_empty() {
                     return ArtworkId::none();
                 }
-                self.tracks[cover_pick % self.tracks.len()].album_cover_art_id()
+                self.tracks[cover_pick % self.tracks.len()].cover_art_id(options)
             }
         }
     }
@@ -1441,12 +1492,12 @@ impl ArchiveShare {
 // ---------------------------------------------------------------------------
 
 /// The resolved transcode parameters the archiver consumes; `Format` also names
-/// the zip entry (`core/archiver.go:146-155`).
+/// the zip entry (`core/archiver.go:169-178`).
 pub use crate::types::Request as TranscodeRequest;
 
 /// Failure arms of `addFileToZip`. Go distinguishes exactly one of them
 /// (`errors.Is(err, stream.ErrTooManyTranscodes)`) and logs the rest
-/// (`core/archiver.go:266-299`).
+/// (`core/archiver.go:267-301`).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SourceError {
     /// `stream.ErrTooManyTranscodes` (`core/stream/limiter.go:14`): the
@@ -1473,7 +1524,7 @@ impl From<TooManyTranscodes> for SourceError {
 }
 
 /// A byte stream to copy into the zip entry — Go's `io.ReadCloser`, from
-/// `MediaStreamer.NewStream` or `os.Open` (`core/archiver.go:266-287`).
+/// `MediaStreamer.NewStream` or `os.Open` (`core/archiver.go:267-285`).
 pub trait ByteStream {
     /// Read up to `max` bytes; `None` is EOF. Chunk size does not affect the
     /// bytes written, so `ZIP_COPY_CHUNK_BYTES` matches Go's `io.Copy`.
@@ -1523,7 +1574,7 @@ impl ByteStream for CursorStream {
 }
 
 /// `tokio::fs::File` as a [`ByteStream`] — Go's `os.Open(path)` in
-/// `addFileToZip` (`core/archiver.go:272-274`).
+/// `addFileToZip` (`core/archiver.go:272-276`).
 #[derive(Debug)]
 pub struct FileByteStream {
     file: tokio::fs::File,
@@ -1570,7 +1621,7 @@ pub trait TranscodeStream {
 }
 
 /// A streamer that refuses every request: wiring that has no ffmpeg yet. Go
-/// always constructs the archiver with a real streamer (`core/archiver.go:41-43`).
+/// always constructs the archiver with a real streamer (`core/archiver.go:38-40`).
 #[derive(Debug, Default)]
 pub struct NoTranscodeStream;
 
@@ -1584,7 +1635,7 @@ impl TranscodeStream for NoTranscodeStream {
     }
 }
 
-/// Cover-art read arms (`core/archiver.go:322-331`): `artwork.ErrUnavailable`
+/// Cover-art read arms (`core/archiver.go:321-325`): `artwork.ErrUnavailable`
 /// and `model.ErrNotFound` are debug-level "no cover" outcomes; anything else is
 /// a warning that also skips the entry.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -1611,7 +1662,7 @@ impl CoverArtError {
 /// `artwork.Artwork.Get(ctx, artID, size, square)`
 /// (`core/artwork/artwork.go:43`), buffered. `elevated` replaces Go's
 /// `request.WithUser(ctx, model.User{IsAdmin: true})` on the share cover read
-/// (`core/archiver.go:171-173`).
+/// (`core/archiver.go:187-189`).
 pub trait CoverArt {
     /// Read the artwork whole, at `size` pixels, optionally squared, optionally
     /// with an elevated (admin) viewer.
@@ -1627,7 +1678,7 @@ pub trait CoverArt {
 /// `stream.TranscodeDecider.ResolveRequest(ctx, mf, format, bitRate, 0)`
 /// (`core/stream/decider.go:25`). `format`/`bit_rate` are the *requested*
 /// values; Go's `resolveRequest` short-circuits them when raw
-/// (`core/archiver.go:256-262`).
+/// (`core/archiver.go:257-262`).
 pub trait RequestResolver {
     /// Resolve the requested format/bitrate into the parameters to stream with.
     fn resolve(&self, mf: &ArchiveMediaFile, format: &str, bit_rate: i64) -> Request;
@@ -1651,7 +1702,7 @@ impl RequestResolver for LegacyResolver {
 }
 
 /// `model.MediaFileRepository.GetAll(ctx, QueryOptions{Filters, Sort})`
-/// (`core/archiver.go:65`).
+/// (`core/archiver.go:66`).
 pub trait TrackRepo {
     /// Load the tracks for `query`, in Go's query order.
     fn get_all<'a>(
@@ -1661,7 +1712,7 @@ pub trait TrackRepo {
 }
 
 /// `model.PlaylistRepository.GetWithTracks(ctx, id, true, false)`
-/// (`core/archiver.go:168`).
+/// (`core/archiver.go:189-190`).
 pub trait PlaylistRepo {
     /// Load a playlist with its tracks; the archiver always asks for
     /// `refresh_smart_playlists = true`, `include_missing = false`.
@@ -1674,7 +1725,7 @@ pub trait PlaylistRepo {
 }
 
 /// `model.DataStore` narrowed to the two repositories the archiver touches
-/// (`core/archiver.go:37`).
+/// (`core/archiver.go:46`).
 pub trait DataSource: TrackRepo + PlaylistRepo {}
 
 impl<T> DataSource for T where T: TrackRepo + PlaylistRepo {}
@@ -1689,12 +1740,49 @@ pub struct RepoError {
 }
 
 /// Everything the archiver reads from Go's global config.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchiverOptions {
     /// `conf.Server.Subsonic.AppendAlbumVersion` (Go default true,
     /// `conf/configuration.go:1075`): whether the album-version tag is part of
     /// the folder name.
     pub append_album_version: bool,
+    /// `conf.Server.EnableMediaFileCoverArt` (Go default true,
+    /// `conf/configuration.go:1003`): whether a track's own embedded artwork may
+    /// be used for a share cover (`model/mediafile.go:137-144`).
+    pub enable_media_file_cover_art: bool,
+}
+
+/// Go's defaults: both flags default to `true` in `conf/configuration.go`.
+impl Default for ArchiverOptions {
+    fn default() -> Self {
+        ArchiverOptions {
+            append_album_version: true,
+            enable_media_file_cover_art: true,
+        }
+    }
+}
+
+/// The scalar arguments of [`Archiver::zip_media_files`], mirroring Go's
+/// `zipMediaFiles(ctx, id, name, format, bitrate, out, mfs, coverCtx, coverArt,
+/// addM3U)` parameter list (`core/archiver.go:204`).
+#[derive(Debug, Clone, Copy)]
+pub struct ZipMediaFiles<'a> {
+    /// Go's `id` — the log/context identifier.
+    pub id: &'a str,
+    /// Go's `name`: the playlist name, or the share id for a share.
+    pub name: &'a str,
+    /// Requested format (`""`/`"raw"` means no transcoding).
+    pub format: &'a str,
+    /// Requested bitrate in kbps.
+    pub bitrate: i64,
+    /// `model.MediaFiles` to archive.
+    pub mfs: &'a [ArchiveMediaFile],
+    /// Cover to add at the archive root; `ArtworkId::none()` adds nothing.
+    pub cover_art: &'a ArtworkId,
+    /// Append the `.m3u` entry (playlist only).
+    pub add_m3u: bool,
+    /// Read the cover with an elevated (admin) viewer, as shares do.
+    pub elevated_cover: bool,
 }
 
 /// Errors [`Archiver`] can return. Go returns the underlying error verbatim in
@@ -1703,7 +1791,7 @@ pub struct ArchiverOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ArchiverError {
     /// `model.ErrNotAuthorized` — a share that is not downloadable
-    /// (`core/archiver.go:161-163`).
+    /// (`core/archiver.go:183-185`).
     #[error("not authorized")]
     NotAuthorized,
     /// Repository load failure.
@@ -1734,7 +1822,7 @@ impl From<io::Error> for ArchiverError {
     }
 }
 
-/// `createZipWriter` (`core/archiver.go:101-110`): the comment Go writes for a
+/// `createZipWriter` (`core/archiver.go:105-113`): the comment Go writes for a
 /// transcoded download is `"Downloaded from Navidrome, transcoded to <fmt> <n>bps"`.
 #[must_use]
 pub fn create_zip_writer<W: AsyncSink>(out: W, format: &str, bitrate: i64) -> ZipWriter<W> {
@@ -1749,7 +1837,7 @@ pub fn create_zip_writer<W: AsyncSink>(out: W, format: &str, bitrate: i64) -> Zi
     z
 }
 
-/// Port of the unexported `core.archiver` (`core/archiver.go:36-43`). Go's DI
+/// Port of the unexported `core.archiver` (`core/archiver.go:42-48`). Go's DI
 /// becomes explicit construction; there is no `shares` dependency because
 /// `ZipShare` takes the already-loaded share.
 #[derive(Debug)]
@@ -1776,7 +1864,7 @@ where
     C: CoverArt,
     D: DataSource,
 {
-    /// `NewArchiver(ms, decider, ds, shares, artwork)` (`core/archiver.go:41-43`)
+    /// `NewArchiver(ms, decider, ds, shares, artwork)` (`core/archiver.go:38-40`)
     /// with the config the layout reads. `now` supplies Unix seconds for the
     /// cover entries Go stamps with `time.Now()`.
     #[must_use]
@@ -1798,7 +1886,7 @@ where
         }
     }
 
-    /// `ZipAlbum` (`core/archiver.go:26-28`).
+    /// `ZipAlbum` (`core/archiver.go:50-52`).
     pub async fn zip_album<W: AsyncSink>(
         &mut self,
         z: &mut ZipWriter<W>,
@@ -1817,7 +1905,7 @@ where
         .await
     }
 
-    /// `ZipArtist` (`core/archiver.go:30-38`): the root cover is the artist's
+    /// `ZipArtist` (`core/archiver.go:54-62`): the root cover is the artist's
     /// `CoverArtID()`, added after every album's own cover.
     pub async fn zip_artist<W: AsyncSink>(
         &mut self,
@@ -1839,7 +1927,7 @@ where
         .await
     }
 
-    /// `zipAlbums` (`core/archiver.go:45-98`).
+    /// `zipAlbums` (`core/archiver.go:64-103`).
     pub async fn zip_albums<W: AsyncSink>(
         &mut self,
         z: &mut ZipWriter<W>,
@@ -1862,10 +1950,11 @@ where
         for album in &albums {
             let discs = album_count_discs(album);
             let is_multi_disc = discs > 1;
-            let folder = folders
-                .get(&album[0].album_id)
-                .cloned()
-                .unwrap_or_else(|| sanitize_filename(&album[0].full_album_name(false)));
+            // Go reads `folders[album[0].AlbumID]`, whose zero value is "".
+            // `album_folders` always fills the map (the album-id disambiguator
+            // is unique by construction), so the empty fallback is Go's
+            // unreachable arm, ported as written.
+            let folder = folders.get(&album[0].album_id).cloned().unwrap_or_default();
             for mf in album.iter().copied() {
                 let req = self.resolve_request(mf, format, bitrate);
                 let file = self.album_filename(mf, &req.format, is_multi_disc, &folder);
@@ -1875,15 +1964,15 @@ where
                         // rejections. Close finalizes the tracks already
                         // written; the rejected one is absent because the entry
                         // header is written after the source is opened.
-                        // `core/archiver.go:80-88`.
+                        // `core/archiver.go:84-92`.
                         let _ = z.close().await;
                         return Err(err);
                     }
-                    // Go logs and continues (`core/archiver.go:89-91`).
+                    // Go logs and continues (`core/archiver.go:89-92`).
                 }
             }
             // After the tracks, so a slow artwork lookup does not delay the
-            // first bytes (`core/archiver.go:93`).
+            // first bytes (`core/archiver.go:94`).
             self.add_cover_art_to_zip(z, &album[0].album_cover_art_id(), &folder, false)
                 .await;
         }
@@ -1892,7 +1981,7 @@ where
         z.close().await.map_err(ArchiverError::from)
     }
 
-    /// `ZipShare` (`core/archiver.go:157-174`). `cover_pick` selects the track
+    /// `ZipShare` (`core/archiver.go:182-191`). `cover_pick` selects the track
     /// Go would have chosen at random for a share whose resource has no artwork
     /// of its own; for `album`/`playlist`/`artist` resources it is unused.
     pub async fn zip_share<W: AsyncSink>(
@@ -1906,23 +1995,25 @@ where
         }
         // The share is the authorization (as in the public image handler): an
         // anonymous lookup would hide a private playlist. Only the cover read is
-        // elevated (`core/archiver.go:170-173`).
-        let cover_art = share.cover_art_id(cover_pick);
+        // elevated (`core/archiver.go:187-189`).
+        let cover_art = share.cover_art_id(cover_pick, &self.options);
         self.zip_media_files(
             z,
-            &share.id,
-            &share.id,
-            &share.format,
-            share.max_bit_rate,
-            &share.tracks,
-            &cover_art,
-            false,
-            true,
+            &ZipMediaFiles {
+                id: &share.id,
+                name: &share.id,
+                format: &share.format,
+                bitrate: share.max_bit_rate,
+                mfs: &share.tracks,
+                cover_art: &cover_art,
+                add_m3u: false,
+                elevated_cover: true,
+            },
         )
         .await
     }
 
-    /// `ZipPlaylist` (`core/archiver.go:176-188`).
+    /// `ZipPlaylist` (`core/archiver.go:193-202`).
     pub async fn zip_playlist<W: AsyncSink>(
         &mut self,
         z: &mut ZipWriter<W>,
@@ -1934,31 +2025,38 @@ where
         let cover_art = pls.cover_art_id();
         self.zip_media_files(
             z,
-            id,
-            &pls.name,
-            format,
-            bitrate,
-            &pls.tracks,
-            &cover_art,
-            true,
-            false,
+            &ZipMediaFiles {
+                id,
+                name: &pls.name,
+                format,
+                bitrate,
+                mfs: &pls.tracks,
+                cover_art: &cover_art,
+                add_m3u: true,
+                elevated_cover: false,
+            },
         )
         .await
     }
 
-    /// `zipMediaFiles` (`core/archiver.go:190-228`).
+    /// `zipMediaFiles` (`core/archiver.go:294-247`). The scalar arguments are
+    /// bundled in [`ZipMediaFiles`] to keep the signature readable; `id` is
+    /// Go's log/context argument and is carried for the same reason.
     pub async fn zip_media_files<W: AsyncSink>(
         &mut self,
         z: &mut ZipWriter<W>,
-        id: &str,
-        name: &str,
-        format: &str,
-        bitrate: i64,
-        mfs: &[ArchiveMediaFile],
-        cover_art: &ArtworkId,
-        add_m3u: bool,
-        elevated_cover: bool,
+        opts: &ZipMediaFiles<'_>,
     ) -> Result<(), ArchiverError> {
+        let ZipMediaFiles {
+            id,
+            name,
+            format,
+            bitrate,
+            mfs,
+            cover_art,
+            add_m3u,
+            elevated_cover,
+        } = *opts;
         let mut zipped: Vec<ArchiveMediaFile> = Vec::with_capacity(mfs.len());
         for (idx, mf) in mfs.iter().enumerate() {
             let req = self.resolve_request(mf, format, bitrate);
@@ -1967,7 +2065,7 @@ where
                 if err.is_too_many_transcodes() {
                     // Abort the whole archive: continuing would silently emit
                     // empty entries, since headers are already written
-                    // (`core/archiver.go:186-192`).
+                    // (`core/archiver.go:211-216`).
                     let _ = z.close().await;
                     return Err(err);
                 }
@@ -1981,7 +2079,7 @@ where
         self.add_cover_art_to_zip(z, cover_art, "", elevated_cover)
             .await;
 
-        if add_m3u && !zipped.is_empty() {
+        if add_m3u && !mfs.is_empty() {
             let pls_name = sanitize_filename(name);
             let content = to_m3u8(&zipped, &pls_name, false);
             let header = ZipFileHeader {
@@ -1999,7 +2097,7 @@ where
         z.close().await.map_err(ArchiverError::from)
     }
 
-    /// `resolveRequest` (`core/archiver.go:256-262`).
+    /// `resolveRequest` (`core/archiver.go:257-262`).
     #[must_use]
     pub fn resolve_request(&self, mf: &ArchiveMediaFile, format: &str, bitrate: i64) -> Request {
         if format.is_empty() || format == "raw" {
@@ -2011,7 +2109,7 @@ where
         self.resolver.resolve(mf, format, bitrate)
     }
 
-    /// `albumFilename` (`core/archiver.go:141-155`).
+    /// `albumFilename` (`core/archiver.go:169-178`).
     #[must_use]
     pub fn album_filename(
         &self,
@@ -2032,7 +2130,7 @@ where
         format!("{folder}/{file}")
     }
 
-    /// `playlistFilename` (`core/archiver.go:230-236`).
+    /// `playlistFilename` (`core/archiver.go:249-255`).
     #[must_use]
     pub fn playlist_filename(&self, mf: &ArchiveMediaFile, format: &str, idx: usize) -> String {
         let mut ext = mf.suffix.clone();
@@ -2048,7 +2146,7 @@ where
         )
     }
 
-    /// `addFileToZip` (`core/archiver.go:264-299`). The source is opened
+    /// `addFileToZip` (`core/archiver.go:264-304`). The source is opened
     /// **before** the entry header so a refusal cannot leave an empty entry.
     pub async fn add_file_to_zip<W: AsyncSink>(
         &mut self,
@@ -2095,7 +2193,7 @@ where
         entry.close().await.map_err(ArchiverError::from)
     }
 
-    /// `addCoverArtToZip` (`core/archiver.go:302-344`): errors are logged, never
+    /// `addCoverArtToZip` (`core/archiver.go:307-338`): errors are logged, never
     /// returned, and a failed read leaves no entry at all.
     pub async fn add_cover_art_to_zip<W: AsyncSink>(
         &mut self,
@@ -2134,7 +2232,7 @@ where
         let _ = entry.close().await;
     }
 
-    /// `readCoverArt` (`core/archiver.go:318-327`) — exposed so a caller can
+    /// `readCoverArt` (`core/archiver.go:340-347`) — exposed so a caller can
     /// reuse the same size/permission contract outside an archive.
     pub async fn read_cover_art(
         &mut self,
@@ -2166,7 +2264,7 @@ pub fn group_ordered<'a, T>(items: &'a [T], key_func: impl Fn(&T) -> String) -> 
 
 /// Number of distinct disc numbers in an album — Go's
 /// `len(slice.Group(album, func(mf) int { return mf.DiscNumber }))`
-/// (`core/archiver.go:74`).
+/// (`core/archiver.go:76`).
 #[must_use]
 pub fn album_count_discs(album: &[&ArchiveMediaFile]) -> usize {
     let mut discs: Vec<i32> = album.iter().map(|mf| mf.disc_number).collect();
@@ -2176,7 +2274,7 @@ pub fn album_count_discs(album: &[&ArchiveMediaFile]) -> usize {
 }
 
 /// The disambiguators tried in order (`albumDisambiguators`,
-/// `core/archiver.go:112-130`): the first field whose values are distinct across
+/// `core/archiver.go:117-131`): the first field whose values are distinct across
 /// the clashing albums wins.
 #[must_use]
 pub fn album_disambiguators(mf: &ArchiveMediaFile) -> Vec<String> {
@@ -2200,7 +2298,7 @@ pub fn album_disambiguators(mf: &ArchiveMediaFile) -> Vec<String> {
     ]
 }
 
-/// `albumFolders` (`core/archiver.go:132-163`): each album id maps to its zip
+/// `albumFolders` (`core/archiver.go:135-167`): each album id maps to its zip
 /// folder; albums whose names sanitize to the same folder get `" [suffix]"` from
 /// the first disambiguator that tells them all apart.
 #[must_use]
@@ -2260,7 +2358,7 @@ pub fn album_folders(
     folders
 }
 
-/// `strings.TrimSuffix(file, mf.Suffix)` (`core/archiver.go:149`).
+/// `strings.TrimSuffix(file, mf.Suffix)` (`core/archiver.go:172`).
 fn trimmed_suffix(file: &str, suffix: &str) -> String {
     if !suffix.is_empty() && file.ends_with(suffix) {
         file[..file.len() - suffix.len()].to_string()
@@ -2269,15 +2367,14 @@ fn trimmed_suffix(file: &str, suffix: &str) -> String {
     }
 }
 
-/// `path.Join(dir, "folder.ext")` (`core/archiver.go:333`): an empty dir yields
+/// `path.Join(dir, "folder.ext")` (`core/archiver.go:327`): an empty dir yields
 /// the bare name.
 #[must_use]
 pub fn path_join(dir: &str, name: &str) -> String {
-    if dir.is_empty() {
-        name.to_string()
-    } else {
-        format!("{dir}/{name}")
-    }
+    // `path.Join` (`path/path.go:166-173`), the same skip-then-clean rule as
+    // `filepath.Join` on unix. Go uses it for `dir/folder.<ext>`
+    // (`core/archiver.go:327`).
+    file_path_join(&[dir, name])
 }
 
 /// `model.MediaFiles.ToM3U8(title, absolutePaths)`
@@ -2436,10 +2533,9 @@ mod unit_tests {
     #[tokio::test]
     async fn writing_after_close_reports_go_error() {
         let mut z = ZipWriter::new(Vec::new());
-        let mut e = z
-            .create_header(&ZipFileHeader::stored("a.mp3"))
-            .await
-            .unwrap();
+        let header = ZipFileHeader::stored("a.mp3");
+
+        let mut e = z.create_header(&header).await.unwrap();
         e.write(b"x").await.unwrap();
         e.close().await.unwrap();
         assert_eq!(e.write(b"y").await.err(), Some(ZipError::WriteToClosedFile));

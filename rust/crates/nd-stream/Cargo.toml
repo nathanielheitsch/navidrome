@@ -20,6 +20,8 @@ jsonwebtoken = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util", "time"] }
 
 [dev-dependencies]
+# Oracle tests (#15): parse the Go-produced manifest and compare entry fields.
+serde = { workspace = true, features = ["derive"] }
 # `rt-multi-thread` for the concurrent contention lanes and `sync` for the
 # rendezvous primitives they use to hold permits open across threads.
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "fs", "io-util", "time", "sync", "test-util"] }
