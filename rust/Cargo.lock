@@ -981,6 +981,7 @@ dependencies = [
  "jsonwebtoken",
  "nd-conf",
  "nd-ffmpeg",
+ "nd-utils",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -28,12 +28,16 @@
 //! without a server. [`direct`] is the only I/O in that path and takes an
 //! **already-authorized** path; see the trust boundary in `direct.rs`.
 //! Still open in #15: the transcoding-file cache eviction contract
-//! (`utils/cache`), the archiver (`core/archiver.go`), and the HTTP handler that
-//! ties them together. The transcode limiter (`limiter.go`) is now **enforced**
-//! through [`transcode_body::open_transcode_gated`], and the process-backed
-//! transcode body (`media_streamer.go:101-133`) is ported in [`transcode_body`].
+//! (`utils/cache`) and the HTTP handler that ties them together. The transcode
+//! limiter (`limiter.go`) is now **enforced** through
+//! [`transcode_body::open_transcode_gated`], the process-backed transcode body
+//! (`media_streamer.go:101-133`) is ported in [`transcode_body`], and the
+//! archiver (`core/archiver.go`) is ported in [`archiver`] with its zip-layout
+//! contract pinned against a Go `archive/zip` oracle
+//! (`tests/data/go_zip/`).
 
 pub mod aliases;
+pub mod archiver;
 pub mod codec;
 pub mod decider;
 pub mod direct;
@@ -54,6 +58,16 @@ pub const OWNED_BY_ISSUE: u8 = 14;
 pub use aliases::{
     codec_alias_groups, container_alias_groups, contains_ignore_case, is_aac_codec, matches_codec,
     matches_container, matches_with_aliases,
+};
+pub use archiver::{
+    absolute_path, album_artwork_id, album_count_discs, album_disambiguators, album_folders,
+    append_suffix, cover_art_extension, crc32_ieee, detect_content_type, disc_artwork_id,
+    ms_dos_time, path_clean, sanitize_filename, to_m3u8, ArchiveMediaFile, ArchivePlaylist,
+    ArchiveShare, Archiver, ArchiverError, ArchiverOptions, ArtworkId, AsyncSink, ByteStream,
+    CoverArt, CoverArtError, CursorStream, DataSource, FileByteStream, LegacyResolver,
+    NoTranscodeStream, PlaylistRepo, RepoError, RequestResolver, SourceError, TrackFilter,
+    TrackQuery, TrackRepo, TranscodeRequest, TranscodeStream, ZipError, ZipFileHeader, ZipMethod,
+    ZipWriter, ARCHIVE_COVER_ART_SIZE, DEFAULT_ZIP_COMMENT, ZIP_COPY_CHUNK_BYTES,
 };
 pub use codec::{
     codec_fixed_output_sample_rate, codec_max_channels, codec_max_sample_rate, is_lossless_format,
