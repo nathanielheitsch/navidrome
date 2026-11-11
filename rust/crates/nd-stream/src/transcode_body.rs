@@ -364,8 +364,8 @@ impl TranscodeBody {
     ///
     /// This is the port of Go's `io.Copy(w, s)` (`media_streamer.go:180`) with
     /// the context cancellation Go gets for free replaced by `disconnect`.
-    /// When `disconnect` resolves, the child is killed and reaped before this
-    /// returns — never left running against a closed connection.
+    /// When `disconnect` resolves, cancellation is attempted. A teardown error
+    /// is reported and the child remains owned for a later retry.
     pub async fn serve<W, D>(&mut self, sink: &mut W, disconnect: D) -> ServeOutcome
     where
         W: AsyncWrite + Unpin,
@@ -378,10 +378,10 @@ impl TranscodeBody {
             let chunk = tokio::select! {
                 biased;
                 () = &mut disconnect => {
-                    self.cancel().await;
+                    let cleanup_error = self.cancel().await.err().map(|e| e.to_string());
                     return ServeOutcome {
                         written,
-                        error: None,
+                        error: cleanup_error,
                         truncated: false,
                         disconnected: true,
                         empty_output: false,
@@ -426,8 +426,8 @@ impl TranscodeBody {
     /// Go spawns a goroutine so the response returns immediately while ffmpeg
     /// is still drained; without draining, ffmpeg would block on a full pipe
     /// and the child would outlive the request. The port awaits the drain
-    /// instead of spawning, so the caller decides whether to spawn — and the
-    /// child is always reaped by the end of this call.
+    /// instead of spawning, so the caller decides whether to spawn. A teardown
+    /// error is reported rather than being mistaken for a completed reap.
     pub async fn drain(&mut self) -> ServeOutcome {
         let mut written: u64 = 0;
         loop {
@@ -445,40 +445,50 @@ impl TranscodeBody {
                 }
             }
         }
-        self.reap().await;
-        ServeOutcome::ok(written)
+        match self.reap().await {
+            Ok(_) => ServeOutcome::ok(written),
+            Err(e) => ServeOutcome {
+                written,
+                error: Some(e.to_string()),
+                truncated: written > 0,
+                disconnected: false,
+                empty_output: false,
+            },
+        }
     }
 
-    /// Kill and reap the child: the explicit answer to a client that went away.
-    pub async fn cancel(&mut self) -> ExitInfo {
+    /// Kill and reap the child. An error leaves cleanup unresolved and retryable.
+    pub async fn cancel(&mut self) -> io::Result<ExitInfo> {
         self.ended = true;
         self.reader = None;
-        let info = self.cmd.cancel().await;
-        info.unwrap_or(ExitInfo {
-            code: -1,
-            stderr: String::new(),
-        })
+        self.cmd.cancel().await
     }
 
     /// `ffCmd.Close` (`ffmpeg.go:361`-adjacent: Go's `defer stream.Close()` in
     /// the handler, `server/public/handle_streams.go`): stdout reached EOF, so
-    /// wait for the child that exits on its own and reap it. Returns its exit
-    /// info for the caller's log; a child already ended reports `None`.
-    pub async fn close(&mut self) -> Option<ExitInfo> {
+    /// wait for the child that exits on its own and reap it. A teardown error
+    /// is returned to the caller; an unresolved child remains owned for retry.
+    pub async fn close(&mut self) -> io::Result<ExitInfo> {
         self.reap().await
     }
 
     /// Wait for a child that exits on its own and reap it.
-    async fn reap(&mut self) -> Option<ExitInfo> {
+    async fn reap(&mut self) -> io::Result<ExitInfo> {
         self.ended = true;
         self.reader = None;
-        self.cmd.wait().await.ok()
+        self.cmd.wait().await
     }
 
     /// The ffmpeg binary this body launched, for the caller's log.
     #[must_use]
     pub fn exec(&self) -> &str {
         self.cmd.exec.as_str()
+    }
+
+    /// Whether cleanup still owns a child, including after a timeout or error.
+    #[must_use]
+    pub fn cleanup_pending(&self) -> bool {
+        self.cmd.is_available()
     }
 
     /// Whether stdout has been fully consumed or the stream ended.
@@ -616,6 +626,27 @@ pub async fn open_transcode(
 mod tests {
     use super::*;
     use crate::types::MediaFile;
+
+    #[tokio::test]
+    async fn close_reports_unresolved_reap_and_cancel_retries() {
+        let mut cmd = nd_ffmpeg::ffcmd::new_ffmpeg_cmd(
+            "/bin/sh".to_owned(),
+            vec!["-c".to_owned(), "sleep 30".to_owned()],
+        );
+        cmd.start().await.unwrap();
+        let reader = cmd.reader();
+        let mut body = TranscodeBody {
+            cmd,
+            reader,
+            patcher: None,
+            ended: false,
+        };
+        let result = body.close().await;
+        assert!(matches!(result, Err(ref e) if e.kind() == io::ErrorKind::TimedOut));
+        assert!(body.cleanup_pending(), "timed-out child must remain owned");
+        body.cancel().await.expect("retry must kill and reap");
+        assert!(!body.cleanup_pending());
+    }
 
     /// Fixtures live in the OS temp dir, addressed only through
     /// `std::env::temp_dir()` — never an absolute developer path (that is what
@@ -896,11 +927,11 @@ mod tests {
         assert!(!outcome.empty_output);
         assert!(!body.is_ended(), "EOF is not Close; the handler closes");
 
-        // Go's handler closes the stream, which waits and reaps the child.
-        let info = body.close().await;
+        // The Rust close explicitly waits; Go's stream Close does not wait for
+        // ffCmd's separate Wait goroutine (core/stream/limiter.go:63-66).
+        let info = body.close().await.expect("reap succeeds");
         assert!(body.is_ended());
-        let code = info.as_ref().map(|i| i.code);
-        assert_eq!(code, Some(0), "a clean encode exits 0");
+        assert_eq!(info.code, 0, "a clean encode exits 0");
     }
 
     #[tokio::test]
