@@ -33,6 +33,14 @@
 //! Drop attempts group termination only; reaping is best-effort and depends on
 //! Tokio's runtime driver. A killed child is a zombie until something reaps it,
 //! and Tokio makes no reaping timing guarantee (tokio process/mod.rs:218-223).
+//!
+//! A reap that exceeds [`TEARDOWN_TIMEOUT_MS`] is an **unresolved** cleanup,
+//! never a completed one: the child stays owned, so the caller can retry, and
+//! the group is force-killed so a child nobody reads stops producing into a
+//! pipe. [`FFCmd::detach`] hands the child (plus its stderr drain and pgid) to
+//! an owner that outlives this struct, which is what a caller holding a
+//! resource slot needs: [`DetachedChild::reap_once`] is awaited, and the child
+//! is only abandoned after a confirmed reap.
 
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -63,6 +71,17 @@ fn kill_group(child: &mut Child, pgid: Option<i32>) -> std::io::Result<bool> {
                 Err(e) if e == rustix::io::Errno::SRCH => {
                     let _ = child.start_kill();
                     return Ok(false);
+                }
+                // macOS/BSD report EPERM for a zombie, whose credentials have
+                // been cleared when the kernel dropped the process entry — the
+                // child is dead, not protected. Confirm it with `try_wait`
+                // rather than reporting a failed signal, which would otherwise
+                // leave an already-dead child unreaped and its capacity held.
+                Err(e) if e == rustix::io::Errno::PERM => {
+                    if let Ok(Some(_)) = child.try_wait() {
+                        return Ok(false);
+                    }
+                    return Err(std::io::Error::from_raw_os_error(e.raw_os_error()));
                 }
                 Err(e) => return Err(std::io::Error::from_raw_os_error(e.raw_os_error())),
             }
@@ -101,6 +120,7 @@ pub struct FFCmd {
 /// The wait result Go pushes into the pipe (`ffmpeg.go:387`'s exit code plus
 /// the `:359` stderr buffer), as the pair `transcode` needs to format
 /// [`go_error_message`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExitInfo {
     /// `exitErr.ExitCode()` (`ffmpeg.go:387`); `-1` when the process died of a
     /// signal, which is Go's own value there.
@@ -145,6 +165,171 @@ pub fn exit_info(status: std::io::Result<ExitStatus>, stderr_buf: Vec<u8>) -> Ex
     ExitInfo {
         code,
         stderr: String::from_utf8_lossy(&stderr_buf).into_owned(),
+    }
+}
+
+/// Shared teardown for `FFCmd::teardown` and [`DetachedChild::reap_once`]:
+/// optional group kill, bounded stderr join, stdout pipe dropped, bounded reap.
+///
+/// The child is borrowed, never taken, so a future cancelled mid-await still
+/// leaves it owned and killable by `Drop` (unlike Go's context-driven `ffCmd`,
+/// core/ffmpeg/ffmpeg.go:363-398, Rust futures may be dropped).
+///
+/// A reap timeout force-kills the group — a child we cannot reap must not keep
+/// running into pipes nobody reads — but it does **not** clear `pgid` and does
+/// not consume the child: the caller still owns it, so no caller can mistake a
+/// timeout for a completed reap.
+#[allow(clippy::too_many_arguments)]
+async fn teardown_child(
+    child: &mut Child,
+    stderr_task: &mut Option<tokio::task::JoinHandle<Vec<u8>>>,
+    pgid: &mut Option<i32>,
+    stderr: &mut Vec<u8>,
+    kill: bool,
+) -> std::io::Result<ExitInfo> {
+    // The group signal comes first, even for a root that already exited: its
+    // descendants may still be running in the group, and killing them is the
+    // whole point of the group kill. A signal error must not abort the teardown
+    // either — the reap below is what settles whether the process is gone, and
+    // macOS reports EPERM for a zombie (see `kill_group`).
+    let mut kill_error: Option<std::io::Error> = None;
+    if kill {
+        if let Err(error) = kill_group(child, *pgid) {
+            kill_error = Some(error);
+        }
+    }
+    if let Some(task) = stderr_task.as_mut() {
+        match timeout(Duration::from_millis(TEARDOWN_TIMEOUT_MS), &mut *task).await {
+            Ok(Ok(drained)) => {
+                let remaining = STDERR_CAP.saturating_sub(stderr.len());
+                stderr.extend_from_slice(&drained[..drained.len().min(remaining)]);
+            }
+            _ => task.abort(),
+        }
+        *stderr_task = None;
+    }
+    child.stdout.take();
+    match timeout(Duration::from_millis(TEARDOWN_TIMEOUT_MS), child.wait()).await {
+        Ok(status) => {
+            let status = status?;
+            *pgid = None;
+            Ok(exit_info(Ok(status), stderr.clone()))
+        }
+        Err(_) => {
+            let _ = kill_group(child, *pgid);
+            Err(kill_error.unwrap_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "ffmpeg reap timed out")
+            }))
+        }
+    }
+}
+
+/// Best-effort group termination for the non-awaiting `Drop` paths: signal the
+/// group (falling back to the direct-child kill), then stop the stderr drain.
+fn terminate_on_drop(
+    child: &mut Child,
+    pgid: Option<i32>,
+    stderr_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+) {
+    if kill_group(child, pgid).is_err() {
+        let _ = child.start_kill();
+    }
+    if let Some(task) = stderr_task {
+        task.abort();
+    }
+}
+
+/// The part of an [`FFCmd`] that has to outlive the object that launched it:
+/// the child handle, its stderr drain, the recorded process-group id, and the
+/// capped stderr buffer. Produced only by [`FFCmd::detach`].
+///
+/// This exists for callers that own a resource tied to the process — the
+/// transcode concurrency slot (`nd-stream/src/transcode_body.rs`) — and whose
+/// own object may be dropped before the child is reaped. Dropping it does the
+/// same best-effort group kill `FFCmd::drop` does; [`DetachedChild::reap`] is
+/// the awaiting version, and it hands the child back on failure so a slot is
+/// never released for a process that may still be running.
+pub struct DetachedChild {
+    child: Child,
+    stderr_task: Option<tokio::task::JoinHandle<Vec<u8>>>,
+    pgid: Option<i32>,
+    stderr: Vec<u8>,
+    /// Set only by a teardown that **confirmed** the reap. Until then `Drop`
+    /// must still signal the group, and a caller must still treat the process as
+    /// alive: SIGKILL leaves a zombie, so only `wait` proves the reap.
+    reaped: bool,
+}
+
+impl DetachedChild {
+    /// Pid of the detached child (also its process-group id, `process_group(0)`
+    /// at spawn), for a caller's log or liveness assertion.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// True once a teardown confirmed the reap. `Drop` then skips the group
+    /// signal — signalling a pid that the kernel may already have recycled is
+    /// not a cleanup.
+    #[must_use]
+    pub fn is_reaped(&self) -> bool {
+        self.reaped
+    }
+
+    /// The capped stderr captured so far — Go's `stderr` buffer (`ffmpeg.go:359`).
+    #[must_use]
+    pub fn stderr(&self) -> &[u8] {
+        self.stderr.as_slice()
+    }
+
+    /// Signal the process group **now**, without waiting for anything: the
+    /// non-awaiting counterpart of [`DetachedChild::reap`] for a cleanup that is
+    /// being abandoned. `Ok(true)` means the group signal was delivered,
+    /// `Ok(false)` that only the direct-child fallback ran; either way the child
+    /// cannot keep working. `Err` means no signal was delivered, so the caller
+    /// must assume the process is still running.
+    ///
+    /// This does not reap, so it does **not** prove the process is gone. A
+    /// resource tied to the process stays held until [`DetachedChild::reap`]
+    /// confirms it.
+    pub fn kill_now(&mut self) -> std::io::Result<bool> {
+        let delivered = kill_group(&mut self.child, self.pgid)?;
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
+        }
+        Ok(delivered)
+    }
+
+    /// Signal the group (when `kill`), join the stderr drain, drop stdout, and
+    /// reap — each phase bounded by [`TEARDOWN_TIMEOUT_MS`].
+    ///
+    /// `Ok` means the reap was **confirmed**. A timeout or a signal failure
+    /// returns the error with the child still owned here, so a caller keeps
+    /// tracking it — and whatever capacity is tied to it — instead of concluding
+    /// the process is gone. `kill_now` cannot settle that: SIGKILL leaves a
+    /// zombie, and only `wait` proves the reap.
+    pub async fn reap(&mut self, kill: bool) -> std::io::Result<ExitInfo> {
+        let info = teardown_child(
+            &mut self.child,
+            &mut self.stderr_task,
+            &mut self.pgid,
+            &mut self.stderr,
+            kill,
+        )
+        .await?;
+        self.reaped = true;
+        Ok(info)
+    }
+}
+
+// Same contract as `FFCmd`'s Drop: group termination is best effort and cannot
+// await the reap. A confirmed reap skips it.
+impl Drop for DetachedChild {
+    fn drop(&mut self) {
+        if self.reaped {
+            return;
+        }
+        terminate_on_drop(&mut self.child, self.pgid, self.stderr_task.take());
     }
 }
 
@@ -232,6 +417,10 @@ impl FFCmd {
 
     /// Shared teardown for `wait`/`cancel`: optional group kill, bounded
     /// concurrent stderr drain, stdout pipe dropped, bounded reap.
+    ///
+    /// On a confirmed reap the child is released; on a timeout or a signal
+    /// failure it stays owned so the caller can retry — see
+    /// [`teardown_child`] for the phase-by-phase contract.
     async fn teardown(&mut self, kill: bool) -> std::io::Result<ExitInfo> {
         let Some(child) = self.child.as_mut() else {
             self.pgid = None;
@@ -245,30 +434,42 @@ impl FFCmd {
         // Keep the child owned by self across every await: if this future is
         // cancelled, Drop can still kill its group. Unlike Go's context-driven
         // ffCmd (core/ffmpeg/ffmpeg.go:363-398), Rust futures may be dropped.
-        if kill {
-            kill_group(child, self.pgid)?;
-        }
-        if let Some(task) = self.stderr_task.as_mut() {
-            match timeout(Duration::from_millis(TEARDOWN_TIMEOUT_MS), &mut *task).await {
-                Ok(Ok(drained)) => {
-                    let remaining = STDERR_CAP.saturating_sub(self.stderr.len());
-                    self.stderr
-                        .extend_from_slice(&drained[..drained.len().min(remaining)]);
-                }
-                _ => task.abort(),
-            }
-            self.stderr_task = None;
-        }
-        child.stdout.take();
-        let status = timeout(Duration::from_millis(TEARDOWN_TIMEOUT_MS), child.wait())
-            .await
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "ffmpeg reap timed out")
-            })??;
+        let info = teardown_child(
+            child,
+            &mut self.stderr_task,
+            &mut self.pgid,
+            &mut self.stderr,
+            kill,
+        )
+        .await?;
         self.child = None;
-        self.pgid = None;
         self.closed = true;
-        Ok(exit_info(Ok(status), self.stderr.clone()))
+        Ok(info)
+    }
+
+    /// Hand the live child — handle, stderr drain, pgid and the stderr buffer
+    /// captured so far — to an owner that outlives this `FFCmd`. The receiver is
+    /// emptied, so `cancel`/`wait`/`close`/`reader` on it become the
+    /// already-teardown no-ops and this struct's `Drop` no longer signals the
+    /// group: the [`DetachedChild`] does that instead, and its `reap_once` is the
+    /// awaitable version.
+    ///
+    /// This is the seam a resource owner needs: a concurrency slot tied to the
+    /// process must be released only after a **confirmed** reap, which may happen
+    /// after the object that launched ffmpeg has been dropped
+    /// (`nd-stream/src/transcode_body.rs`). Returns `None` before start or after
+    /// teardown.
+    pub fn detach(&mut self) -> Option<DetachedChild> {
+        let child = self.child.take()?;
+        let pgid = self.pgid.take();
+        self.closed = true;
+        Some(DetachedChild {
+            child,
+            stderr_task: self.stderr_task.take(),
+            pgid,
+            stderr: std::mem::take(&mut self.stderr),
+            reaped: false,
+        })
     }
 
     /// `MockFFmpeg.Close` (`tests/mock_ffmpeg.go:88`) plus the cancel teardown:
@@ -294,11 +495,8 @@ impl FFCmd {
 impl Drop for FFCmd {
     fn drop(&mut self) {
         if let Some(child) = self.child.as_mut() {
-            if kill_group(child, self.pgid).is_err() {
-                let _ = child.start_kill();
-            }
-        }
-        if let Some(task) = self.stderr_task.take() {
+            terminate_on_drop(child, self.pgid, self.stderr_task.take());
+        } else if let Some(task) = self.stderr_task.take() {
             task.abort();
         }
     }

@@ -14,13 +14,13 @@
 //!
 //! ## What this is not (yet)
 //!
-//! Go's transcode path runs through the transcoding **cache** and its
-//! **rate-limiting semaphore** (`media_streamer.go:110-121`,
-//! `core/stream/limiter.go`, `utils/cache`), which is why a Go transcode body is
-//! a `*streamJob` reader rather than a bare process. Neither is ported here, so
-//! this body is one ffmpeg process per call with no concurrency cap and no
-//! shared cached file. That is an integration gap for #15, tracked in `lib.rs`.
-//!
+//! Go's transcode path also runs through the transcoding **cache**, whose
+//! single-flight key dedupes two identical pending transcodes
+//! (`media_streamer.go:110-121`, `utils/cache/file_caches.go`), and through the
+//! archiver, which reuses it. Neither is ported, so one call is one ffmpeg
+//! process. The **concurrency cap is ported and enforced**
+//! ([`open_transcode_gated`], [`crate::limiter`]); the cache is the remaining
+//! gap for #15, tracked in `lib.rs`.
 //! ## Divergences from Go, frozen here
 //!
 //!   - **No ambient context.** Go's `ffCmd` uses `exec.CommandContext` and dies
@@ -41,6 +41,55 @@
 //!     `panic(http.ErrAbortHandler)` (`media_streamer.go:186-189`). There is no
 //!     panic unwinding to a handler here, so [`ServeOutcome::truncated`] carries
 //!     that decision to the HTTP layer.
+//!   - **The limiter permit outlives the reader and releases only on a
+//!     confirmed reap.** Go hands the slot to `releasingReadCloser`, whose
+//!     `Close` frees it right *after closing the reader*, without waiting for the
+//!     child (`core/stream/limiter.go:55-67`); Go's `ffCmd.Close`
+//!     (`core/ffmpeg/ffmpeg.go:361`) is not even implemented, so nothing there
+//!     ever waits for `cmd.Wait` (`:384-398`) before capacity is free. Worse, the
+//!     producer runs inside the transcoding cache, so a cache-copy failure closes
+//!     the source and releases the slot while ffmpeg may still be running
+//!     (`utils/cache/file_caches.go:246-255`). This port holds the permit in
+//!     [`GatedTranscode`] — which owns the child, so it outlives the body, the
+//!     reader and the handler — and frees it only after a teardown that
+//!     **confirmed** the reap. A reap timeout is reported as
+//!     [`CleanupError::Unresolved`] and deliberately **keeps** the slot:
+//!     releasing it would mint capacity for a process that is still running, and
+//!     capacity for live ffmpeg processes is exactly what the cap exists to bound.
+//!   - **A disabled cancellation setting cannot leave the cap unserved.** When
+//!     the limiter is enabled, Go forces the request context onto the process
+//!     (`media_streamer.go:243-260`) so a client that disconnects immediately
+//!     cannot leave a cap's worth of ffmpeg draining in the background — the DoS
+//!     the limiter exists to prevent; with the limiter disabled it honours
+//!     `Transcoding.EnableCancellation` (`:256`). This port has no
+//!     `EnableCancellation` arm (issue #03 ported only the two caps,
+//!     `nd-conf/src/keys.rs:822-831`), so [`open_transcode_gated`] always
+//!     requires `disconnect`, and a gated launch that cannot be cancelled is
+//!     refused outright ([`GateError::CancellationRequired`]).
+//!
+//! ## Cancellation, cleanup and slot-lifetime invariants
+//!
+//!   - **Disconnect is honoured inside the read, not only around it.** `serve`
+//!     selects on `disconnect` *while* reading as well as before writing: the
+//!     response writer flushes its first buffer to the socket mid-`write_all`,
+//!     so that await can fail or hang forever with no further read and
+//!     `disconnect` would never be polled again — ffmpeg would keep producing
+//!     into a dead stream, holding its slot and its child.
+//!   - **EOF is not `close`.** `serve`/`drain` stop at stdout EOF and leave the
+//!     child owned; the caller must call `close` or `cancel` to reap it and free
+//!     the slot. That is Go's `defer stream.Close()`
+//!     (`server/public/handle_streams.go:78`), not implicit cleanup.
+//!   - **A cleanup timeout is an unresolved state, never a fake exit.** It is
+//!     `Err(CleanupError::Unresolved)`, and [`TranscodeBody::cleanup_pending`]
+//!     still reports the child: owned, along with its permit, and retryable with
+//!     `cancel` (SIGKILL, which reaps a child even while its pipes stay open).
+//!   - **Dropping frees nothing.** `GatedTranscode::drop` signals the process
+//!     group (`nd-ffmpeg/src/ffcmd.rs`, `impl Drop for FFCmd`) but cannot await
+//!     the reap, and an unreaped child keeps its permit by design: capacity is
+//!     minted again only by a confirmed reap.
+//!   - **A gated launch whose spawn fails frees the slot** before the error
+//!     leaves this crate — Go's `release()` in the `Transcode` error arm
+//!     (`media_streamer.go:273-277`).
 
 use std::future::Future;
 use std::io;
@@ -51,7 +100,9 @@ use nd_ffmpeg::flac_patcher::set_flac_total_samples;
 use nd_ffmpeg::transcode::transcode;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::limiter::{TooManyTranscodes, TranscodeLimiter, TranscodePermit};
 use crate::types::MediaFile;
+use nd_ffmpeg::ffcmd::DetachedChild;
 
 /// Bytes the write loop pulls from ffmpeg per iteration. Matches the
 /// `io.Copy` 32 KiB internal buffer Go uses (`io.copyLoop`), so the pipe
@@ -136,6 +187,109 @@ pub enum TranscodeBodyError {
     Ended,
 }
 
+/// Cleanup that did **not** confirm the reap.
+///
+/// Raising this instead of returning an [`ExitInfo`] is the whole point: a
+/// timeout says nothing about whether ffmpeg is still running. Go's equivalent
+/// is not even a failure — `ffCmd.Close` is not implemented
+/// (`core/ffmpeg/ffmpeg.go:361`, the struct at `:354-361` has no `Close`), and
+/// `releasingReadCloser.Close` frees the slot right after closing the reader
+/// without waiting for the child (`core/stream/limiter.go:58-67`). Reporting
+/// success there would mint capacity for a live process, which is exactly what
+/// `Transcoding.MaxConcurrent` exists to prevent.
+#[derive(Debug, thiserror::Error)]
+pub enum CleanupError {
+    /// The child is still owned and still tracked: [`GatedTranscode::cleanup_pending`]
+    /// and [`GatedTranscode::slot_held`] both stay true until a later cleanup
+    /// confirms the reap. The group was force-killed first, so the process cannot
+    /// keep working, but SIGKILL leaves a zombie and only `wait` proves the reap
+    /// (tokio process/mod.rs:218-223).
+    #[error("ffmpeg cleanup unresolved: {0}")]
+    Unresolved(
+        /// `ErrorKind::TimedOut` when the reap exceeded `TEARDOWN_TIMEOUT_MS`, or
+        /// the signal error when the group kill itself failed.
+        #[source]
+        io::Error,
+    ),
+}
+
+/// Refusing a transcode before it launches, plus the launch failures of a
+/// gated transcode.
+#[derive(Debug, thiserror::Error)]
+pub enum GateError {
+    /// The cap rejected the request before anything was launched
+    /// (`core/stream/limiter.go:87-111`, reached from `media_streamer.go:234-241`).
+    /// Go logs a warning here (`media_streamer.go:236-239`) and passes the error
+    /// through; `media_streamer.go:117-119` deliberately does **not** log it
+    /// again as a cache failure.
+    #[error("too many concurrent transcodes")]
+    Rejected(#[source] TooManyTranscodes),
+
+    /// A launch declared non-cancellable while the cap is enabled. Go picks the
+    /// context that drives ffmpeg at `media_streamer.go:243-260`: with the
+    /// limiter enabled it **forces** the request context, because a client that
+    /// opens transcodes and disconnects immediately would otherwise leave the
+    /// cap's worth of ffmpeg draining in the background — the DoS the comment at
+    /// `:245-250` names. This port has no `EnableCancellation` key to fall back
+    /// on (issue #03 ported only the two caps, `nd-conf/src/keys.rs:822-831`),
+    /// so it refuses the combination instead of serving a cap that no disconnect
+    /// can relieve.
+    #[error("a gated transcode needs a cancellation channel while the concurrency cap is enabled")]
+    CancellationRequired,
+
+    /// Resolution, argv or spawn failure. The slot was already released — Go's
+    /// `release()` in the `Transcode` error arm (`media_streamer.go:273-277`).
+    #[error(transparent)]
+    Body(#[from] TranscodeBodyError),
+}
+
+impl GateError {
+    /// True for the rate-limit rejection. Go distinguishes it with
+    /// `errors.Is(err, ErrTooManyTranscodes)` in three places: the no-double-log
+    /// arm (`media_streamer.go:117`), the archive swallow-and-finalize arm
+    /// (`server/subsonic/stream.go:139-144`), and the status mapping below.
+    #[must_use]
+    pub fn is_rejected(&self) -> bool {
+        matches!(self, GateError::Rejected(_))
+    }
+
+    /// HTTP status for the rejection: `http.StatusTooManyRequests` (429), from
+    /// `sendError` (`server/subsonic/api.go:319-323`) and the public share
+    /// handler (`server/public/handle_streams.go:66-68`). Every other failure is
+    /// Go's plain 500 (`server/public/handle_streams.go:72`).
+    #[must_use]
+    pub fn status_code(&self) -> u16 {
+        if self.is_rejected() {
+            429
+        } else {
+            500
+        }
+    }
+
+    /// `Retry-After` for the rejection — `server/subsonic/api.go:321` and
+    /// `server/public/handle_streams.go:67` both set `RetryAfterSeconds` (5).
+    /// `None` for every other failure, which sets no header.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<u64> {
+        self.is_rejected()
+            .then_some(crate::limiter::RETRY_AFTER_SECONDS)
+    }
+
+    /// The client-facing message both handlers use verbatim:
+    /// `server/public/handle_streams.go:68` (`http.Error`) and
+    /// `server/subsonic/api.go:309-310` (`newError(responses.ErrorGeneric, …)`,
+    /// Subsonic error code `0` = `responses.ErrorGeneric`,
+    /// `server/subsonic/responses/errors.go:4`).
+    #[must_use]
+    pub fn client_message(&self) -> &'static str {
+        if self.is_rejected() {
+            "too many concurrent transcodes, please retry shortly"
+        } else {
+            "invalid request"
+        }
+    }
+}
+
 /// Result of a serve/drain pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeOutcome {
@@ -158,10 +312,17 @@ pub struct ServeOutcome {
     /// returned empty output, ffmpeg may have failed" and does **not** treat it
     /// as an error (`media_streamer.go:190-193`).
     pub empty_output: bool,
+    /// Set when the cleanup attempted here did **not** confirm the reap, so the
+    /// child and its concurrency slot are still owned. This is the observable
+    /// unresolved state: the HTTP layer must not treat the transcode as finished.
+    pub cleanup_pending: bool,
+    /// Rendering of the [`CleanupError`] behind `cleanup_pending`, for the
+    /// handler's log. `None` when cleanup completed or none was attempted.
+    pub cleanup_error: Option<String>,
 }
 
 impl ServeOutcome {
-    /// A clean run: no error, not truncated, not disconnected.
+    /// A clean run: no error, not truncated, not disconnected, child reaped.
     #[must_use]
     pub fn ok(written: u64) -> Self {
         ServeOutcome {
@@ -170,6 +331,8 @@ impl ServeOutcome {
             truncated: false,
             disconnected: false,
             empty_output: written == 0,
+            cleanup_pending: false,
+            cleanup_error: None,
         }
     }
 
@@ -178,6 +341,24 @@ impl ServeOutcome {
     #[must_use]
     pub fn can_swap_status(&self) -> bool {
         self.error.is_some() && self.written == 0
+    }
+
+    /// Outcome carrying a cleanup that could not confirm the reap. `disconnected`
+    /// and `error` stay as the caller left them: an unresolved cleanup is a
+    /// separate fact from a failed stream, and Go's handlers report both
+    /// independently.
+    #[must_use]
+    pub fn unresolved(mut self, error: CleanupError) -> Self {
+        self.cleanup_pending = true;
+        self.cleanup_error = Some(error.to_string());
+        self
+    }
+
+    /// The unresolved variant for a pass that produced `written` bytes but whose
+    /// final cleanup could not confirm the reap.
+    #[must_use]
+    pub fn unresolved_from(written: u64, error: CleanupError) -> Self {
+        ServeOutcome::ok(written).unresolved(error)
     }
 }
 
@@ -247,177 +428,58 @@ impl TranscodeBody {
     }
 
     /// Read the next chunk of the (possibly FLAC-patched) stream. Returns `None`
-    /// at EOF.
+    /// at EOF. The read side lives in [`StreamState`] so the same loop can run
+    /// over a body that hands its process to a [`GatedTranscode`].
     pub async fn read_chunk(&mut self, max: usize) -> Result<Option<Vec<u8>>, TranscodeBodyError> {
-        if self.ended {
-            return Err(TranscodeBodyError::Ended);
-        }
-        let cap = if max < TRANSCODE_CHUNK_BYTES {
-            max
-        } else {
-            TRANSCODE_CHUNK_BYTES
+        let mut stream = StreamState {
+            reader: &mut self.reader,
+            patcher: &mut self.patcher,
+            ended: &mut self.ended,
         };
-        let cap = if cap == 0 { TRANSCODE_CHUNK_BYTES } else { cap };
-
-        match self.patcher.as_mut() {
-            Some(p) if p.served < p.prefix.len() => {
-                // Still feeding the patched prefix: hand out the remaining
-                // prefix bytes, capped by the caller's request.
-                let take = std::cmp::min(cap, p.prefix.len() - p.served);
-                let out = p.prefix[p.served..p.served + take].to_vec();
-                p.served += take;
-                return Ok(Some(out));
-            }
-            Some(_) => {}
-            None => {}
-        }
-
-        let mut buf = vec![0u8; cap];
-        let n = self.read_raw(&mut buf).await?;
-        if n == 0 {
-            return Ok(None);
-        }
-        buf.truncate(n);
-
-        if self.patcher_needs_prefix() {
-            // First read: Go fills exactly flacPrefixLen with io.ReadFull and
-            // patches only on a complete read (flac_streaminfo.go:31-40).
-            let mut prefix = vec![0u8; nd_ffmpeg::flac_patcher::FLAC_PREFIX_LEN];
-            let got = self.fill_prefix(prefix.as_mut_slice(), buf).await?;
-            let complete = got == prefix.len();
-            if complete {
-                let duration = self.patcher.as_ref().map(|p| p.duration).unwrap_or(0.0);
-                prefix = set_flac_total_samples(prefix, duration);
-            } else {
-                prefix.truncate(got);
-            }
-            if let Some(p) = self.patcher.as_mut() {
-                p.unpatched = !complete;
-                p.prefix = prefix;
-                p.served = 0;
-            }
-            if self
-                .patcher
-                .as_ref()
-                .map(|p| p.prefix.is_empty())
-                .unwrap_or(true)
-            {
-                return Ok(None);
-            }
-            let p = self.patcher.as_ref().unwrap();
-            let take = std::cmp::min(cap, p.prefix.len());
-            return Ok(Some(p.prefix[..take].to_vec()));
-        }
-
-        Ok(Some(buf))
-    }
-
-    /// True when a FLAC patcher is attached and its 26-byte prefix has not been
-    /// produced yet. Kept as a `&self` check so the `fill_prefix` await below
-    /// never holds a borrow of the patcher across a suspension point.
-    #[must_use]
-    fn patcher_needs_prefix(&self) -> bool {
-        match self.patcher.as_ref() {
-            Some(p) => p.prefix.is_empty() && !p.unpatched,
-            None => false,
-        }
-    }
-
-    /// Pull from the child stdout, treating EOF as `Ok(0)`.
-    async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, TranscodeBodyError> {
-        let reader = match self.reader.as_mut() {
-            Some(r) => r,
-            None => return Ok(0),
-        };
-        match reader.read(buf).await {
-            Ok(n) => Ok(n),
-            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => Ok(0),
-            Err(e) => Err(TranscodeBodyError::Read(e)),
-        }
-    }
-
-    /// Finish filling a 26-byte prefix, starting from `first` bytes already
-    /// read, the way `io.ReadFull` keeps reading until the buffer is full or
-    /// the source ends.
-    async fn fill_prefix(
-        &mut self,
-        prefix: &mut [u8],
-        first: Vec<u8>,
-    ) -> Result<usize, TranscodeBodyError> {
-        let mut filled = std::cmp::min(first.len(), prefix.len());
-        prefix[..filled].copy_from_slice(&first[..filled]);
-        if filled == prefix.len() {
-            return Ok(filled);
-        }
-        while filled < prefix.len() {
-            let n = self.read_raw(&mut prefix[filled..]).await?;
-            if n == 0 {
-                return Ok(filled);
-            }
-            filled += n;
-        }
-        Ok(filled)
+        stream.read_chunk(max).await
     }
 
     /// Write the stream to `sink` until EOF, the disconnect future resolves, or
-    /// the write fails.
+    /// the write fails; the process is torn down through this body's own handle.
     ///
     /// This is the port of Go's `io.Copy(w, s)` (`media_streamer.go:180`) with
     /// the context cancellation Go gets for free replaced by `disconnect`.
-    /// When `disconnect` resolves, cancellation is attempted. A teardown error
-    /// is reported and the child remains owned for a later retry.
+    /// When `disconnect` resolves, cancellation is attempted; a cleanup that
+    /// cannot confirm the reap is reported through
+    /// [`ServeOutcome::cleanup_pending`] and the child stays owned.
     pub async fn serve<W, D>(&mut self, sink: &mut W, disconnect: D) -> ServeOutcome
     where
         W: AsyncWrite + Unpin,
         D: Future<Output = ()>,
     {
-        tokio::pin!(disconnect);
-        let mut written: u64 = 0;
+        let stream = StreamState {
+            reader: &mut self.reader,
+            patcher: &mut self.patcher,
+            ended: &mut self.ended,
+        };
+        serve_stream(stream, sink, disconnect, &mut self.cmd).await
+    }
 
-        loop {
-            let chunk = tokio::select! {
-                biased;
-                () = &mut disconnect => {
-                    let cleanup_error = self.cancel().await.err().map(|e| e.to_string());
-                    return ServeOutcome {
-                        written,
-                        error: cleanup_error,
-                        truncated: false,
-                        disconnected: true,
-                        empty_output: false,
-                    };
-                }
-                r = self.read_chunk(TRANSCODE_CHUNK_BYTES) => r,
-            };
-
-            match chunk {
-                Ok(None) => break,
-                Err(e) => {
-                    let message = e.to_string();
-                    return ServeOutcome {
-                        written,
-                        error: Some(message),
-                        truncated: written > 0,
-                        disconnected: false,
-                        empty_output: false,
-                    };
-                }
-                Ok(Some(bytes)) => {
-                    if let Err(e) = sink.write_all(&bytes).await {
-                        return ServeOutcome {
-                            written,
-                            error: Some(e.to_string()),
-                            truncated: written > 0,
-                            disconnected: false,
-                            empty_output: false,
-                        };
-                    }
-                    written += bytes.len() as u64;
-                }
-            }
-        }
-
-        ServeOutcome::ok(written)
+    /// The same write loop, tearing the process down through `child` — the
+    /// [`DetachedChild`] a [`GatedTranscode`] owns, which is what holds the
+    /// concurrency slot. Use this whenever the process outlives the body.
+    pub async fn serve_with<W, D, C>(
+        &mut self,
+        sink: &mut W,
+        disconnect: D,
+        child: &mut C,
+    ) -> ServeOutcome
+    where
+        W: AsyncWrite + Unpin,
+        D: Future<Output = ()>,
+        C: Cleanup + ?Sized,
+    {
+        let stream = StreamState {
+            reader: &mut self.reader,
+            patcher: &mut self.patcher,
+            ended: &mut self.ended,
+        };
+        serve_stream(stream, sink, disconnect, child).await
     }
 
     /// Drain the stream without writing it — the HEAD arm
@@ -426,57 +488,57 @@ impl TranscodeBody {
     /// Go spawns a goroutine so the response returns immediately while ffmpeg
     /// is still drained; without draining, ffmpeg would block on a full pipe
     /// and the child would outlive the request. The port awaits the drain
-    /// instead of spawning, so the caller decides whether to spawn. A teardown
-    /// error is reported rather than being mistaken for a completed reap.
+    /// instead of spawning, so the caller decides whether to spawn. A cleanup
+    /// that cannot confirm the reap is reported as
+    /// [`ServeOutcome::cleanup_pending`], never mistaken for a completed one.
     pub async fn drain(&mut self) -> ServeOutcome {
-        let mut written: u64 = 0;
-        loop {
-            match self.read_chunk(TRANSCODE_CHUNK_BYTES).await {
-                Ok(None) => break,
-                Ok(Some(bytes)) => written += bytes.len() as u64,
-                Err(e) => {
-                    return ServeOutcome {
-                        written,
-                        error: Some(e.to_string()),
-                        truncated: written > 0,
-                        disconnected: false,
-                        empty_output: false,
-                    };
-                }
-            }
-        }
-        match self.reap().await {
-            Ok(_) => ServeOutcome::ok(written),
-            Err(e) => ServeOutcome {
-                written,
-                error: Some(e.to_string()),
-                truncated: written > 0,
-                disconnected: false,
-                empty_output: false,
-            },
-        }
+        let stream = StreamState {
+            reader: &mut self.reader,
+            patcher: &mut self.patcher,
+            ended: &mut self.ended,
+        };
+        drain_stream(stream, &mut self.cmd).await
     }
 
-    /// Kill and reap the child. An error leaves cleanup unresolved and retryable.
-    pub async fn cancel(&mut self) -> io::Result<ExitInfo> {
+    /// The same read loop as [`Self::drain`], tearing the process down through
+    /// `child` — the [`DetachedChild`] a [`GatedTranscode`] owns.
+    pub async fn drain_with<C>(&mut self, child: &mut C) -> ServeOutcome
+    where
+        C: Cleanup + ?Sized,
+    {
+        let stream = StreamState {
+            reader: &mut self.reader,
+            patcher: &mut self.patcher,
+            ended: &mut self.ended,
+        };
+        drain_stream(stream, child).await
+    }
+
+    /// Stop serving and drop the stdout reader, closing the pipe. The process is
+    /// untouched: whoever owns it still has to reap it.
+    pub fn end_reader(&mut self) {
         self.ended = true;
         self.reader = None;
-        self.cmd.cancel().await
     }
 
-    /// `ffCmd.Close` (`ffmpeg.go:361`-adjacent: Go's `defer stream.Close()` in
-    /// the handler, `server/public/handle_streams.go`): stdout reached EOF, so
-    /// wait for the child that exits on its own and reap it. A teardown error
-    /// is returned to the caller; an unresolved child remains owned for retry.
-    pub async fn close(&mut self) -> io::Result<ExitInfo> {
-        self.reap().await
-    }
-
-    /// Wait for a child that exits on its own and reap it.
-    async fn reap(&mut self) -> io::Result<ExitInfo> {
+    /// Kill and reap the child through this body's own handle. Cleanup that
+    /// cannot confirm the reap is [`CleanupError::Unresolved`] and leaves the
+    /// child owned; a gated body cleans up through [`GatedTranscode::cancel`],
+    /// which is what also frees the slot.
+    pub async fn cancel(&mut self) -> Result<ExitInfo, CleanupError> {
         self.ended = true;
         self.reader = None;
-        self.cmd.wait().await
+        reap_ffcmd(&mut self.cmd, true).await
+    }
+
+    /// Go's `defer stream.Close()` (`server/public/handle_streams.go:78`):
+    /// stdout reached EOF, so wait for the child that exits on its own and reap
+    /// it. Cleanup that cannot confirm the reap is [`CleanupError::Unresolved`],
+    /// never a fabricated [`ExitInfo`].
+    pub async fn close(&mut self) -> Result<ExitInfo, CleanupError> {
+        self.ended = true;
+        self.reader = None;
+        reap_ffcmd(&mut self.cmd, false).await
     }
 
     /// The ffmpeg binary this body launched, for the caller's log.
@@ -508,6 +570,330 @@ impl Drop for TranscodeBody {
     }
 }
 
+/// The process-side half of a transcode cleanup, so the write loop can tear the
+/// child down through whatever owns it rather than through the body itself.
+///
+/// Implemented by [`FFCmd`] (a body that owns its process) and by
+/// [`nd_ffmpeg::ffcmd::DetachedChild`] (a [`GatedTranscode`] that owns both the
+/// process and the concurrency slot). Both signal the **process group** and
+/// bound each phase by `TEARDOWN_TIMEOUT_MS`; both distinguish "reaped" from
+/// "could not confirm", which is the distinction a slot must not lose.
+pub trait Cleanup {
+    /// Kill the group and reap it. `Err` means the reap was not confirmed: the
+    /// process must still be assumed alive.
+    fn cancel(&mut self) -> impl Future<Output = Result<ExitInfo, CleanupError>> + Send;
+
+    /// Reap a child that exits on its own, without killing it.
+    fn close(&mut self) -> impl Future<Output = Result<ExitInfo, CleanupError>> + Send;
+}
+
+impl Cleanup for FFCmd {
+    fn cancel(&mut self) -> impl Future<Output = Result<ExitInfo, CleanupError>> + Send {
+        reap_ffcmd(self, true)
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<ExitInfo, CleanupError>> + Send {
+        reap_ffcmd(self, false)
+    }
+}
+
+impl Cleanup for DetachedChild {
+    fn cancel(&mut self) -> impl Future<Output = Result<ExitInfo, CleanupError>> + Send {
+        reap_detached(self, true)
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<ExitInfo, CleanupError>> + Send {
+        reap_detached(self, false)
+    }
+}
+
+/// `DetachedChild::reap` with the port's cleanup contract: an unconfirmed reap is
+/// [`CleanupError::Unresolved`] and the child stays owned.
+async fn reap_detached(child: &mut DetachedChild, kill: bool) -> Result<ExitInfo, CleanupError> {
+    child.reap(kill).await.map_err(CleanupError::Unresolved)
+}
+
+/// Translate an `FFCmd` teardown into the port's cleanup contract. A timeout is
+/// [`CleanupError::Unresolved`], never an `ExitInfo`: `FFCmd` keeps the child
+/// owned in that case, so `cleanup_pending` still reports it.
+async fn reap_ffcmd(cmd: &mut FFCmd, kill: bool) -> Result<ExitInfo, CleanupError> {
+    let teardown = if kill {
+        cmd.cancel().await
+    } else {
+        cmd.wait().await
+    };
+    teardown.map_err(CleanupError::Unresolved)
+}
+
+/// The read side of a transcode stream, borrowed out of [`TranscodeBody`] so
+/// the write loop can hold the child-owner borrow separately. Keeping the two
+/// borrows apart is what lets `serve_with` tear down a detached child while the
+/// reader and patcher are still in use.
+struct StreamState<'a> {
+    reader: &'a mut Option<tokio::process::ChildStdout>,
+    patcher: &'a mut Option<FlacPatcher>,
+    ended: &'a mut bool,
+}
+
+impl StreamState<'_> {
+    /// Pull from the child stdout, treating EOF as `Ok(0)`. Same contract as
+    /// `io.Copy`'s read side (`media_streamer.go:180`).
+    async fn read_raw(&mut self, buf: &mut [u8]) -> Result<usize, TranscodeBodyError> {
+        if *self.ended {
+            return Err(TranscodeBodyError::Ended);
+        }
+        let reader = match self.reader.as_mut() {
+            Some(r) => r,
+            None => return Ok(0),
+        };
+        match reader.read(buf).await {
+            Ok(n) => Ok(n),
+            Err(ref e) if e.kind() == io::ErrorKind::Interrupted => Ok(0),
+            Err(e) => Err(TranscodeBodyError::Read(e)),
+        }
+    }
+
+    /// True when a FLAC patcher is attached and its 26-byte prefix has not been
+    /// produced yet.
+    #[must_use]
+    fn patcher_needs_prefix(&self) -> bool {
+        match self.patcher.as_ref() {
+            Some(p) => p.prefix.is_empty() && !p.unpatched,
+            None => false,
+        }
+    }
+
+    /// Fill the patcher's prefix exactly as Go's `io.ReadFull` does
+    /// (`flac_streaminfo.go:31-40`): keep reading until the buffer is full or
+    /// the source ends, and patch only on a complete read.
+    async fn fill_prefix(
+        &mut self,
+        prefix: &mut [u8],
+        first: Vec<u8>,
+    ) -> Result<usize, TranscodeBodyError> {
+        let mut filled = std::cmp::min(first.len(), prefix.len());
+        prefix[..filled].copy_from_slice(&first[..filled]);
+        if filled == prefix.len() {
+            return Ok(filled);
+        }
+        while filled < prefix.len() {
+            let n = self.read_raw(&mut prefix[filled..]).await?;
+            if n == 0 {
+                return Ok(filled);
+            }
+            filled += n;
+        }
+        Ok(filled)
+    }
+
+    /// Read the next chunk of the (possibly FLAC-patched) stream; `None` at EOF.
+    async fn read_chunk(&mut self, max: usize) -> Result<Option<Vec<u8>>, TranscodeBodyError> {
+        if *self.ended {
+            return Err(TranscodeBodyError::Ended);
+        }
+        let cap = if max == 0 || max >= TRANSCODE_CHUNK_BYTES {
+            TRANSCODE_CHUNK_BYTES
+        } else {
+            max
+        };
+
+        match self.patcher.as_mut() {
+            Some(p) if p.served < p.prefix.len() => {
+                let take = std::cmp::min(cap, p.prefix.len() - p.served);
+                let out = p.prefix[p.served..p.served + take].to_vec();
+                p.served += take;
+                return Ok(Some(out));
+            }
+            Some(_) => {}
+            None => {}
+        }
+
+        let mut buf = vec![0u8; cap];
+        let n = self.read_raw(&mut buf).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.truncate(n);
+
+        if self.patcher_needs_prefix() {
+            let mut prefix = vec![0u8; nd_ffmpeg::flac_patcher::FLAC_PREFIX_LEN];
+            let got = self.fill_prefix(prefix.as_mut_slice(), buf).await?;
+            let complete = got == prefix.len();
+            if complete {
+                let duration = self.patcher.as_ref().map(|p| p.duration).unwrap_or(0.0);
+                prefix = set_flac_total_samples(prefix, duration);
+            } else {
+                prefix.truncate(got);
+            }
+            if let Some(p) = self.patcher.as_mut() {
+                p.unpatched = !complete;
+                p.prefix = prefix;
+                p.served = 0;
+            }
+            if self
+                .patcher
+                .as_ref()
+                .map(|p| p.prefix.is_empty())
+                .unwrap_or(true)
+            {
+                return Ok(None);
+            }
+            let p = self.patcher.as_ref().unwrap();
+            let take = std::cmp::min(cap, p.prefix.len());
+            return Ok(Some(p.prefix[..take].to_vec()));
+        }
+
+        Ok(Some(buf))
+    }
+
+    /// Stop serving and drop the reader, closing the stdout pipe.
+    fn end(&mut self) {
+        *self.ended = true;
+        *self.reader = None;
+    }
+}
+
+/// `io.Copy(w, s)` with the cancellation Go gets from `exec.CommandContext`
+/// replaced by an explicit `disconnect` future, and the teardown routed through
+/// `child` — whichever object owns the process.
+///
+/// `disconnect` is polled **inside the read** as well as around the write. A
+/// response writer flushes its first buffer to the socket mid-`write_all`, so
+/// that await can fail or hang with no further read; polling only around the
+/// write would leave ffmpeg producing into a dead stream forever, holding its
+/// slot and its child.
+async fn serve_stream<W, D, C>(
+    mut stream: StreamState<'_>,
+    sink: &mut W,
+    disconnect: D,
+    child: &mut C,
+) -> ServeOutcome
+where
+    W: AsyncWrite + Unpin,
+    D: Future<Output = ()>,
+    C: Cleanup + ?Sized,
+{
+    tokio::pin!(disconnect);
+    let mut written: u64 = 0;
+
+    loop {
+        let chunk = tokio::select! {
+            biased;
+            () = &mut disconnect => {
+                stream.end();
+                let outcome = ServeOutcome {
+                    written,
+                    error: None,
+                    truncated: false,
+                    disconnected: true,
+                    empty_output: false,
+                    cleanup_pending: false,
+                    cleanup_error: None,
+                };
+                return match child.cancel().await {
+                    Ok(_) => outcome,
+                    Err(e) => outcome.unresolved(e),
+                };
+            }
+            r = stream.read_chunk(TRANSCODE_CHUNK_BYTES) => r,
+        };
+
+        match chunk {
+            Ok(None) => break,
+            Err(e) => {
+                return ServeOutcome {
+                    written,
+                    error: Some(e.to_string()),
+                    truncated: written > 0,
+                    disconnected: false,
+                    empty_output: false,
+                    cleanup_pending: false,
+                    cleanup_error: None,
+                };
+            }
+            Ok(Some(bytes)) => {
+                // The write is raced against disconnect too: a client that went
+                // away mid-flush must reach the cancel arm, not stall here.
+                let result = tokio::select! {
+                    biased;
+                    () = &mut disconnect => Err(DisconnectDuringWrite),
+                    r = sink.write_all(&bytes) => Ok(r),
+                };
+                match result {
+                    Err(_) => {
+                        stream.end();
+                        let outcome = ServeOutcome {
+                            written,
+                            error: None,
+                            truncated: false,
+                            disconnected: true,
+                            empty_output: false,
+                            cleanup_pending: false,
+                            cleanup_error: None,
+                        };
+                        return match child.cancel().await {
+                            Ok(_) => outcome,
+                            Err(e) => outcome.unresolved(e),
+                        };
+                    }
+                    Ok(Err(e)) => {
+                        return ServeOutcome {
+                            written,
+                            error: Some(e.to_string()),
+                            truncated: written > 0,
+                            disconnected: false,
+                            empty_output: false,
+                            cleanup_pending: false,
+                            cleanup_error: None,
+                        };
+                    }
+                    Ok(Ok(())) => written += bytes.len() as u64,
+                }
+            }
+        }
+    }
+
+    // EOF is not Close: Go's handler closes the stream separately
+    // (`server/public/handle_streams.go:78`), so the child stays owned here and
+    // its slot stays held until the caller closes.
+    ServeOutcome::ok(written)
+}
+
+/// Marker for "the write was interrupted by disconnect", distinct from a write
+/// error, which Go reports (`media_streamer.go:182-183`) and must not be
+/// confused with a client cancellation.
+struct DisconnectDuringWrite;
+
+/// Read the stream to EOF without writing it, then reap through `child`.
+async fn drain_stream<C>(mut stream: StreamState<'_>, child: &mut C) -> ServeOutcome
+where
+    C: Cleanup + ?Sized,
+{
+    let mut written: u64 = 0;
+    loop {
+        match stream.read_chunk(TRANSCODE_CHUNK_BYTES).await {
+            Ok(None) => break,
+            Ok(Some(bytes)) => written += bytes.len() as u64,
+            Err(e) => {
+                return ServeOutcome {
+                    written,
+                    error: Some(e.to_string()),
+                    truncated: written > 0,
+                    disconnected: false,
+                    empty_output: false,
+                    cleanup_pending: false,
+                    cleanup_error: None,
+                };
+            }
+        }
+    }
+    stream.end();
+    match child.close().await {
+        Ok(_) => ServeOutcome::ok(written),
+        Err(e) => ServeOutcome::unresolved_from(written, e),
+    }
+}
+
 /// Go's `streamJob` (`core/stream/media_streamer.go:101-110`): the resolved
 /// transcode parameters a launch consumes, assembled by the caller from the
 /// decision (`TranscodeDecision`) plus the authorized media path.
@@ -536,16 +922,17 @@ pub struct TranscodeJob {
     pub command: String,
 }
 
-/// Launch ffmpeg for an authorized media file and hand back the body.
+/// Launch ffmpeg for an authorized media file, returning the live handle and
+/// its piped stdout.
 ///
 /// Mirrors Go's transcode arm end to end: `ffmpegCmd()` resolution and
 /// `fileExists` (`ffmpeg.go:129-135` via `transcode.rs`), argv built by
-/// `nd-ffmpeg` (`build_dynamic_args`/`build_template_args`, `ffmpeg.go:83-89`),
-/// then the FLAC wrapper (`ffmpeg.go:92`).
-pub async fn open_transcode(
+/// `nd-ffmpeg` (`build_dynamic_args`/`build_template_args`, `ffmpeg.go:83-89`).
+/// Split out so the gated and ungated entry points share one launch path.
+async fn launch_transcode(
     mf: &MediaFile,
     job: &TranscodeJob,
-) -> Result<TranscodeBody, TranscodeBodyError> {
+) -> Result<(FFCmd, tokio::process::ChildStdout, f32), TranscodeBodyError> {
     // Go's TranscodeOptions.Duration is the media file's duration
     // (`media_streamer.go:101-108` builds the job from the mf), and the FLAC
     // patch subtracts the offset.
@@ -590,11 +977,10 @@ pub async fn open_transcode(
         }
     })?;
 
-    let reader = cmd.reader();
-    match reader {
+    match cmd.reader() {
         None => {
-            // No piped stdout means the child is gone; reap it and report the
-            // exit in Go's message shape (ffmpeg.go:387-390).
+            // No piped stdout means nothing was launched, so this teardown is
+            // the already-empty no-op and cannot leave a process behind.
             let info = cmd.cancel().await.unwrap_or(ExitInfo {
                 code: -1,
                 stderr: String::new(),
@@ -607,19 +993,389 @@ pub async fn open_transcode(
                 ),
             })
         }
-        Some(r) => {
-            let mut body = TranscodeBody {
-                cmd,
-                reader: Some(r),
-                patcher: None,
-                ended: false,
-            };
-            if job.format == "flac" {
-                body.enable_flac_patch(duration, job.offset);
+        Some(reader) => Ok((cmd, reader, duration)),
+    }
+}
+
+/// Launch ffmpeg for an authorized media file and hand back the body — the
+/// ungated form, with **no** concurrency cap. A server that enforces
+/// `Transcoding.MaxConcurrent` must use [`open_transcode_gated`] instead.
+///
+/// The FLAC wrapper (`ffmpeg.go:92`) is attached for FLAC output.
+pub async fn open_transcode(
+    mf: &MediaFile,
+    job: &TranscodeJob,
+) -> Result<TranscodeBody, TranscodeBodyError> {
+    let (cmd, reader, duration) = launch_transcode(mf, job).await?;
+    Ok(build_body(cmd, reader, duration, job))
+}
+
+fn build_body(
+    cmd: FFCmd,
+    reader: tokio::process::ChildStdout,
+    duration: f32,
+    job: &TranscodeJob,
+) -> TranscodeBody {
+    let mut body = TranscodeBody {
+        cmd,
+        reader: Some(reader),
+        patcher: None,
+        ended: false,
+    };
+    if job.format == "flac" {
+        body.enable_flac_patch(duration, job.offset);
+    }
+    body
+}
+
+/// How a gated transcode learns that the client went away — the Rust shape of
+/// the request context Go hands `exec.CommandContext`
+/// (`core/ffmpeg/ffmpeg.go:366`).
+///
+/// Go's rule (`media_streamer.go:245-259`) is that a transcode launched while
+/// the limiter is **enabled** is always bound to the request context, because a
+/// client that opens transcodes and disconnects immediately would otherwise
+/// leave the cap's worth of ffmpeg draining in the background. With the limiter
+/// disabled it honours `Transcoding.EnableCancellation`, whose default is false
+/// (`nd-conf/src/keys.rs:833-837`), i.e. the process is not cancelled. The port
+/// has no `EnableCancellation` key (issue #03 ported only the two caps,
+/// `nd-conf/src/keys.rs:822-831`), so it reproduces both arms through this type:
+/// cancellable when the cap is on, and `Never` accepted only when it is off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Disconnect<D> {
+    /// No cancellation signal. Accepted only when the limiter is disabled —
+    /// Go's legacy `EnableCancellation = false` behavior.
+    Never,
+    /// Poll `future`; when it resolves, the client is gone and the process group
+    /// is killed.
+    When(D),
+}
+
+impl<D> Disconnect<D> {
+    /// True when the caller declared that nothing can cancel this transcode.
+    /// [`open_transcode_gated`] refuses that combination while the cap is
+    /// enabled, mirroring Go's forced request context
+    /// (`media_streamer.go:245-259`).
+    #[must_use]
+    pub fn is_never(&self) -> bool {
+        matches!(self, Disconnect::Never)
+    }
+}
+
+/// The process-and-slot owner for a capped transcode.
+///
+/// It holds the [`TranscodePermit`] and the [`DetachedChild`] together, so the
+/// slot cannot be released before the process's reap is confirmed, and the owner
+/// outlives the body, the reader and the handler future. Dropping the body frees
+/// nothing; only [`Self::close`], [`Self::cancel`] or [`Self::spawn_cleanup`]
+/// mint capacity again.
+///
+/// `D` is the cancellation channel, carried here the way Go carries the request
+/// context inside the stream it hands to the handler
+/// (`Stream` embeds `containedctx`, `media_streamer.go:66-67`).
+pub struct GatedTranscode<D> {
+    /// The concurrency slot. Released only by a confirmed reap.
+    permit: Option<TranscodePermit>,
+    /// The process, detached from [`TranscodeBody`] so it outlives the body.
+    child: Option<DetachedChild>,
+    /// The stream handed to the response; its process is owned by [`Self::child`],
+    /// so this body's own teardown handle is deliberately emptied.
+    body: TranscodeBody,
+    /// The user bucket the slot was reserved for (`limiterKey`,
+    /// `media_streamer.go:300-307`; "" = anonymous, which skips the per-user cap).
+    user: String,
+    /// How the client going away is observed.
+    disconnect: Disconnect<D>,
+}
+
+impl<D> GatedTranscode<D> {
+    /// Close the response reader without touching the process: Go's handler
+    /// closes the `io.ReadCloser` (`server/public/handle_streams.go:78`), which
+    /// in this port is not the reap and not the release. The lane still owns the
+    /// child and the slot until a reap confirms the process is gone.
+    pub fn end_reader(&mut self) {
+        self.body.end_reader();
+    }
+
+    /// Shared awaiting reap. The permit is dropped only after `reap` returned
+    /// `Ok`, i.e. after the kernel confirmed the child is gone.
+    pub async fn reap(&mut self, kill: bool) -> Result<ExitInfo, CleanupError> {
+        self.body.end_reader();
+        let child = self
+            .child
+            .as_mut()
+            .expect("a gated transcode owns its child until a reap confirms it");
+        let info = child.reap(kill).await.map_err(CleanupError::Unresolved)?;
+        self.permit = None;
+        Ok(info)
+    }
+
+    /// Kill the process group, reap it, and release the slot **only** if the
+    /// reap was confirmed. An unresolved cleanup keeps both.
+    pub async fn cancel(&mut self) -> Result<ExitInfo, CleanupError> {
+        self.reap(true).await
+    }
+
+    /// Go's `defer stream.Close()` after stdout reached EOF: reap a child that
+    /// exits on its own, releasing the slot only on a confirmed reap.
+    pub async fn close(&mut self) -> Result<ExitInfo, CleanupError> {
+        self.reap(false).await
+    }
+
+    /// Hand the remaining cleanup to a detached task: signal the group now, then
+    /// reap outside this future and release the slot once the reap is confirmed.
+    /// A handler calls this when its own future is being cancelled or dropped,
+    /// so the slot is neither held forever nor freed early.
+    ///
+    /// With no tokio runtime to run the tracker, the slot is left held (and the
+    /// group still signalled by the child's `Drop`) rather than released.
+    pub fn spawn_cleanup(&mut self) {
+        let permit = self.permit.take();
+        let child = self.child.take();
+        self.body.end_reader();
+        let (permit, mut child) = match (permit, child) {
+            (Some(permit), Some(child)) => (permit, child),
+            _ => return,
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let _ = child.kill_now();
+                handle.spawn(track_cleanup(child, permit));
             }
-            Ok(body)
+            // No runtime: the group dies with the child's Drop, and the slot
+            // stays held because nothing can confirm the reap.
+            Err(_) => {
+                drop(child);
+                std::mem::forget(permit);
+            }
         }
     }
+
+    /// Free the slot when — and only when — the child's reap has been confirmed.
+    ///
+    /// This is the release point for a serve or drain pass that tore the process
+    /// down itself (a client disconnect, or a HEAD drain that reached EOF and
+    /// reaped). Go releases capacity when its reader is closed after `io.Copy`
+    /// (`media_streamer.go:281` through `releasingReadCloser.Close`,
+    /// `core/stream/limiter.go:63-66`), i.e. without proving the child is reaped;
+    /// this port waits for the confirmation, so an unresolved cleanup leaves the
+    /// slot held. On plain EOF neither the child nor the slot is touched — the
+    /// handler still has to close, as Go's handler does.
+    fn release_if_reaped(&mut self) {
+        if self.child.as_ref().is_some_and(|c| c.is_reaped()) {
+            self.permit = None;
+        }
+    }
+
+    /// Test-only stand-in for Go's early release: free the slot while the
+    /// process is still running, exactly as `releasingReadCloser.Close` does
+    /// (`core/stream/limiter.go:63-66`). It exists so the contention tests can
+    /// prove their own non-vacuity — see
+    /// `early_release_defeats_the_cap_and_accumulates_processes`.
+    #[cfg(test)]
+    pub fn release_slot_early(&mut self) {
+        self.permit = None;
+    }
+
+    /// True while the slot is still held. It stays held after a cleanup that
+    /// could not confirm the reap — that is the fail-closed rule.
+    #[must_use]
+    pub fn slot_held(&self) -> bool {
+        self.permit.is_some()
+    }
+
+    /// True while a child is still owned and unreaped, including after a timeout.
+    #[must_use]
+    pub fn cleanup_pending(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| !c.is_reaped())
+    }
+
+    /// Whether stdout has been fully consumed or the stream ended.
+    #[must_use]
+    pub fn is_ended(&self) -> bool {
+        self.body.is_ended()
+    }
+
+    /// Pid of the ffmpeg process, for a log or a liveness assertion.
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(|c| c.pid())
+    }
+
+    /// The user bucket this slot was reserved for.
+    #[must_use]
+    pub fn user(&self) -> &str {
+        self.user.as_str()
+    }
+
+    /// The ffmpeg binary this transcode launched.
+    #[must_use]
+    pub fn exec(&self) -> &str {
+        self.body.exec()
+    }
+}
+
+impl<D> GatedTranscode<D> {
+    /// Write the response body, tearing the process down through the owner that
+    /// holds the slot. EOF leaves the child and the slot in place — the handler
+    /// must still call [`Self::close`] or [`Self::cancel`], exactly as Go's
+    /// handler defers `stream.Close()` (`server/public/handle_streams.go:78`).
+    pub async fn serve<W>(&mut self, sink: &mut W) -> ServeOutcome
+    where
+        W: AsyncWrite + Unpin,
+        D: Future<Output = ()> + Unpin,
+    {
+        let child = self
+            .child
+            .as_mut()
+            .expect("a gated transcode owns its child until a reap confirms it");
+        let outcome = match &mut self.disconnect {
+            // Go's legacy arm (`media_streamer.go:259-260`): the process runs on
+            // a detached context, so nothing cancels it.
+            Disconnect::Never => {
+                self.body
+                    .serve_with(sink, std::future::pending::<()>(), child)
+                    .await
+            }
+            Disconnect::When(future) => self.body.serve_with(sink, future, child).await,
+        };
+        self.release_if_reaped();
+        outcome
+    }
+
+    /// Drain to EOF (the HEAD arm, `media_streamer.go:174-177`) and reap,
+    /// releasing the slot only on a confirmed reap.
+    pub async fn drain(&mut self) -> ServeOutcome
+    where
+        D: Future<Output = ()> + Unpin,
+    {
+        let child = self
+            .child
+            .as_mut()
+            .expect("a gated transcode owns its child until a reap confirms it");
+        let outcome = self.body.drain_with(child).await;
+        self.release_if_reaped();
+        outcome
+    }
+}
+
+// Handler logs report a lane's state; the cancellation channel is not part of
+// what an operator needs to see.
+impl<D> std::fmt::Debug for GatedTranscode<D> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatedTranscode")
+            .field("user", &self.user)
+            .field("exec", &self.body.exec())
+            .field("pid", &self.pid())
+            .field("slot_held", &self.slot_held())
+            .field("cleanup_pending", &self.cleanup_pending())
+            .field("ended", &self.body.is_ended())
+            .finish()
+    }
+}
+
+/// Reap a handed-off child, retrying after each failed attempt, and release the
+/// permit only when a reap is confirmed. The group is re-signalled on each
+/// attempt, so a wedged ffmpeg is SIGKILLed again rather than waited on forever.
+///
+/// Attempts are bounded so the task cannot run forever. When they run out the
+/// permit is **leaked** rather than released: the process may still be alive, and
+/// minting capacity for a live ffmpeg is precisely what the cap exists to
+/// prevent. After a delivered SIGKILL the reap normally succeeds immediately, so
+/// this arm is a last resort, not the common path.
+async fn track_cleanup(mut child: DetachedChild, permit: TranscodePermit) {
+    for _ in 0..CLEANUP_TRACK_ATTEMPTS {
+        let result = child.reap(true).await;
+        if result.is_ok() {
+            return; // permit drops here: the reap was confirmed
+        }
+        let _ = child.kill_now();
+    }
+    // Unresolved: hold the slot rather than mint capacity.
+    // Dropping `child` signals the group one last time.
+    std::mem::forget(permit);
+}
+
+/// Bounded reap attempts for the detached tracker above.
+pub const CLEANUP_TRACK_ATTEMPTS: usize = 4;
+
+// Abandoning a gated transcode signals the process group but never releases the
+// slot from a non-awaiting path: nothing in `Drop` can confirm the reap, and
+// freeing capacity for a process that may still run is the failure the cap
+// exists to prevent. Handlers should call [`Self::close`], [`Self::cancel`] or
+// [`Self::spawn_cleanup`] before dropping; as a last resort the group is
+// signalled and the cleanup handed to a tracker when a runtime is present.
+impl<D> Drop for GatedTranscode<D> {
+    fn drop(&mut self) {
+        let permit = self.permit.take();
+        let child = self.child.take();
+        self.body.end_reader();
+        let (permit, mut child) = match (permit, child) {
+            (Some(permit), Some(child)) => (permit, child),
+            _ => return,
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let _ = child.kill_now();
+                handle.spawn(track_cleanup(child, permit));
+            }
+            Err(_) => {
+                drop(child);
+                std::mem::forget(permit);
+            }
+        }
+    }
+}
+
+/// Reserve a slot, then launch ffmpeg for an authorized media file.
+///
+/// Order mirrors Go exactly: `limiter.Acquire` happens **before** the process is
+/// created (`media_streamer.go:234-241`), a rejection returns before anything
+/// launches, and a launch failure releases the slot before the error escapes
+/// (`:273-277`). While the cap is enabled, a `Disconnect::Never` is refused
+/// first, mirroring Go forcing the request context onto the process
+/// (`:245-259`) — see [`Disconnect`].
+///
+/// `user` is Go's `limiterKey(ctx)`: the username, or `""` for anonymous
+/// requests (`media_streamer.go:300-307`).
+pub async fn open_transcode_gated<D>(
+    limiter: &TranscodeLimiter,
+    user: &str,
+    mf: &MediaFile,
+    job: &TranscodeJob,
+    disconnect: Disconnect<D>,
+) -> Result<GatedTranscode<D>, GateError> {
+    if limiter.enabled() && disconnect.is_never() {
+        return Err(GateError::CancellationRequired);
+    }
+    let permit = limiter.acquire(user).map_err(GateError::Rejected)?;
+
+    let launched = launch_transcode(mf, job).await;
+    let (mut cmd, reader, duration) = match launched {
+        Ok(built) => built,
+        Err(error) => {
+            // Nothing was spawned, so dropping the permit is the release Go
+            // performs in this arm (media_streamer.go:273-277).
+            drop(permit);
+            return Err(GateError::Body(error));
+        }
+    };
+
+    // Hand the process to the cleanup owner. `cmd` keeps the argv and the stderr
+    // rendering for logs, and its own teardown becomes the already-empty no-op:
+    // `child` is what owns the process from here on.
+    let child = cmd
+        .detach()
+        .expect("launch_transcode only returns a command that owns a child");
+    let body = build_body(cmd, reader, duration, job);
+
+    Ok(GatedTranscode {
+        permit: Some(permit),
+        child: Some(child),
+        body,
+        user: user.to_owned(),
+        disconnect,
+    })
 }
 
 #[cfg(test)]
@@ -642,7 +1398,13 @@ mod tests {
             ended: false,
         };
         let result = body.close().await;
-        assert!(matches!(result, Err(ref e) if e.kind() == io::ErrorKind::TimedOut));
+        let Err(ref e) = result else {
+            panic!("a reap that times out must not report a completed cleanup: {result:?}")
+        };
+        assert!(
+            matches!(e, CleanupError::Unresolved(ref src) if src.kind() == io::ErrorKind::TimedOut),
+            "a timed-out reap must be an unresolved cleanup, got {e}"
+        );
         assert!(body.cleanup_pending(), "timed-out child must remain owned");
         body.cancel().await.expect("retry must kill and reap");
         assert!(!body.cleanup_pending());
