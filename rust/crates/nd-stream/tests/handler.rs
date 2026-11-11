@@ -219,15 +219,23 @@ fn header<'a>(response: &'a StreamResponse, name: &str) -> Option<&'a str> {
 
 /// The pid of the ffmpeg child of this process running an encode to stdout.
 /// Used only where a handler response cannot report it (a dropped serve future).
-fn scan_ffmpeg_child() -> Option<u32> {
+/// Every live ffmpeg child of this test process. Tests run in parallel in one
+/// process, so a single-valued probe cannot tell "the child this test launched"
+/// from another lane's; the callers use the set to take a **baseline** and then
+/// require a pid that was not in it.
+fn ffmpeg_children() -> Vec<u32> {
     let out = Command::new("pgrep")
         .args(["-P", &std::process::id().to_string(), "ffmpeg"])
         .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse::<u32>().ok())
-        .find(|pid| pid_alive(*pid))
+        .ok();
+    match out {
+        Some(out) => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .filter(|pid| pid_alive(*pid))
+            .collect(),
+        None => Vec::new(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -474,6 +482,7 @@ fn content_type_lookup_and_small_helpers() {
             ..Request::default()
         },
         media_file: MediaFile {
+            id: "mf-1".to_string(),
             duration: 300.0,
             ..MediaFile::default()
         },
@@ -497,10 +506,12 @@ fn content_type_lookup_and_small_helpers() {
     // binary32... it is, but the multiply chain is not) and the int conversion
     // truncates to 4_915_200.
     assert_eq!(mp3.estimated_content_length(), 4_915_200);
-    // Go's `Stream.Name()` is `Title + "." + format` (media_streamer.go:147);
-    // the port has no title column, so it carries the id in that slot. What is
-    // pinned is the extension, which is what `http.ServeContent` sniffs.
-    assert_eq!(mp3.stream_name(), "mf-1.mp3");
+    assert_eq!(
+        mp3.stream_name(),
+        "mf-1.mp3",
+        "Go's `Stream.Name()` is `Title + \".\" + format` (`media_streamer.go:147`); \
+         the port has no title column, so it carries the id in that slot"
+    );
     let wav = StreamRequest {
         request: Request {
             format: "wav".to_string(),
@@ -893,7 +904,12 @@ async fn estimate_content_length_header_only_for_a_transcode_pipe() {
         .plan(&pipe)
         .await
         .expect("plan");
-    assert_eq!(plan.headers.get("Content-Length"), Some("16384"));
+    assert_eq!(
+        plan.headers.get("Content-Length"),
+        Some("4915200"),
+        "the float32 estimate Go computes (`media_streamer.go:149`), pinned in \
+         `content_type_lookup_and_small_helpers`"
+    );
     assert_eq!(plan.headers.get("Accept-Ranges"), Some("none"));
     assert_eq!(plan.headers.get("Content-Type"), Some("audio/mpeg"));
     assert_eq!(plan.kind, BodyKind::Transcoded);
@@ -1018,6 +1034,10 @@ async fn raising_the_cap_turns_the_429_into_a_served_transcode() {
 
     let limiter = TranscodeLimiter::new(2, 0);
     let held = hold_one_slot(&limiter, "alice");
+    // The refusal control needs its **own** occupied cap: a fresh limiter with
+    // nothing held admits the request, which would make the 429 assertion vacuous.
+    let strict = TranscodeLimiter::new(1, 0);
+    let held_strict = hold_one_slot(&strict, "alice");
 
     let mut req = transcode_request(&source, media_file(&source, "mp3", 60.0), "mp3", 128);
     req.command = Some(endless_mp3_command(bin.as_str()));
@@ -1035,8 +1055,9 @@ async fn raising_the_cap_turns_the_429_into_a_served_transcode() {
         "pid {pid} survived a serve that reached EOF — the handler must reap it"
     );
 
-    // The identical request against a cap of 1 is refused instead.
-    let mut refused = self::handler(TranscodeLimiter::new(1, 0));
+    // The identical request against a cap of 1 that is already occupied is
+    // refused instead.
+    let mut refused = self::handler(strict.clone());
     let (_tx2, rx2) = stays_connected();
     let mut sink2 = Vec::new();
     let denied = refused.serve(&req, &mut sink2, rx2).await;
@@ -1044,6 +1065,7 @@ async fn raising_the_cap_turns_the_429_into_a_served_transcode() {
     assert_eq!(denied.pid, None);
 
     drop(held);
+    drop(held_strict);
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,12 +1167,15 @@ async fn empty_output_is_reported_not_treated_as_a_stream_error() {
         None => return,
     };
 
-    // Map away the audio stream, so ffmpeg exits without writing stdout: Go's
-    // `c == 0` arm (`media_streamer.go:190-193`) — logged, not an error, but the
-    // share handler still answers 500 for `n == 0`.
+    // An encode to the `null` muxer: ffmpeg runs to completion, exits 0, and
+    // writes nothing to stdout. That is Go's `c == 0` arm (`media_streamer.go:190-193`) —
+    // logged, not an error, but the share handler still answers 500 for `n == 0`.
+    // A command that *fails* is the other arm: `ffCmd.wait` closes the pipe with
+    // the exit error (`core/ffmpeg/ffmpeg.go:387-393`), so `io.Copy` errors and
+    // the caller answers 500 (`failing_command_fails_at_serve_with_a_500_before_any_byte`).
     let mut req = transcode_request(&source, media_file(&source, "mp3", 1.0), "mp3", 128);
     req.command = Some(format!(
-        "{bin} -hide_banner -loglevel error -i %s -map 0:a -map -1 -f mp3 -"
+        "{bin} -hide_banner -loglevel error -i %s -map 0:a -f null -"
     ));
 
     let mut handler = handler(TranscodeLimiter::new(2, 1));
@@ -1177,7 +1202,7 @@ async fn empty_output_is_reported_not_treated_as_a_stream_error() {
 }
 
 #[tokio::test]
-async fn failing_command_is_a_500_serve_start_error() {
+async fn failing_command_fails_at_serve_with_a_500_before_any_byte() {
     let bin = match ffmpeg_bin() {
         Some(bin) => bin,
         None => return,
@@ -1187,9 +1212,13 @@ async fn failing_command_is_a_500_serve_start_error() {
         None => return,
     };
 
-    // A codec ffmpeg cannot resolve: the process runs and fails, which Go's
-    // callers turn into a 500 (`media_streamer.go:111-121` →
-    // `handle_streams.go:72` "invalid request"; `stream.go:52` → sendError).
+    // A codec ffmpeg cannot resolve: `NewStream` succeeds (the process launches,
+    // `media_streamer.go:234-277`), then `ffCmd.wait` closes the stdout pipe with
+    // the exit error (`core/ffmpeg/ffmpeg.go:384-393`) so `io.Copy` fails at 0
+    // bytes. Go's Serve deletes Content-Length and returns
+    // `sending transcoded file: …` (`media_streamer.go:181-185`), which the
+    // callers turn into a 500 (`handle_streams.go:72`, `stream.go:52` → sendError).
+    // It is a serve-time failure, not a launch failure.
     let mut req = transcode_request(&source, media_file(&source, "mp3", 1.0), "mp3", 128);
     req.command = Some(format!(
         "{bin} -hide_banner -loglevel error -i %s -c:a no-such-codec -f mp3 -"
@@ -1203,10 +1232,16 @@ async fn failing_command_is_a_500_serve_start_error() {
     assert_eq!(response.status, 500);
     assert_eq!(header(&response, "Content-Type"), Some(ERROR_CONTENT_TYPE));
     assert_eq!(response.written, 0);
-    let error = response.error.expect("launch failure arm");
+    let error = response.error.expect("serve-time failure at 0 bytes");
     assert!(
-        matches!(error, StreamError::ServeStart { .. }),
-        "expected ServeStart, got {error:?}"
+        matches!(error, StreamError::TruncatedBeforeFirstByte { .. }),
+        "expected TruncatedBeforeFirstByte, got {error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("exited with non-zero status code: 8"),
+        "Go's ffCmd.wait message reaches the caller: {error}"
     );
     assert_eq!(error.client_message(), Some(INTERNAL_ERROR));
     assert!(!response.cleanup_pending);
@@ -1250,7 +1285,7 @@ async fn per_user_cap_refuses_the_second_request_from_the_same_user() {
     req.command = Some(endless_mp3_command(bin.as_str()));
 
     let mut first = handler(limiter.clone());
-    let (_tx1, rx1) = stays_connected();
+    let (tx1, rx1) = stays_connected();
     let mut sink1 = ChannelSink::default();
     let mut client1 = sink1.take_receiver().expect("receiver");
     let serve1 = first.serve(&req, &mut sink1, rx1);
@@ -1275,7 +1310,11 @@ async fn per_user_cap_refuses_the_second_request_from_the_same_user() {
         "first lane sent {seen} bytes: it must still hold its slot when the second         request arrives"
     );
     drop(client1);
-
+    // Closing the socket *and* signalling the hang-up: `HangUp` is a oneshot
+    // receiver, so the cancel arm only runs once the sender goes away (Go's
+    // `r.Context()` being cancelled, `media_streamer.go:136`). Dropping the
+    // receiver alone would only make the write fail, which is a different arm.
+    drop(tx1);
     let mut second = handler(limiter.clone());
     let (_tx2, rx2) = stays_connected();
     let mut sink2 = Vec::new();
@@ -1329,7 +1368,7 @@ async fn disconnect_mid_body(lifetime_secs: f64) -> StreamResponse {
     req.command = Some(endless_mp3_command(bin.as_str()));
 
     let mut handler = handler(limiter);
-    let (_tx, rx) = stays_connected();
+    let (tx, rx) = stays_connected();
     let mut sink = ChannelSink::default();
     let mut client = sink.take_receiver().expect("receiver");
 
@@ -1361,6 +1400,7 @@ async fn disconnect_mid_body(lifetime_secs: f64) -> StreamResponse {
         "client received {seen} bytes before hanging up; the encode finished too         fast for a mid-body hang-up"
     );
     drop(client); // socket closed mid-body
+    drop(tx); // and the hang-up signal itself, which is what `HangUp` polls
 
     serve.await
 }
@@ -1428,7 +1468,7 @@ async fn no_children_accumulate_across_repeated_disconnects() {
         req.command = Some(endless_mp3_command(bin.as_str()));
 
         let mut handler = handler(limiter.clone());
-        let (_tx, rx) = stays_connected();
+        let (tx, rx) = stays_connected();
         let mut sink = ChannelSink::default();
         let mut client = sink.take_receiver().expect("receiver");
         let serve = handler.serve(&req, &mut sink, rx);
@@ -1444,7 +1484,7 @@ async fn no_children_accumulate_across_repeated_disconnects() {
         .expect("round produces bytes before the handler finished");
         assert!(!chunk.is_empty(), "round produced an empty chunk");
         drop(client);
-
+        drop(tx); // the hang-up signal, which is what drives the cancel arm
         let response = serve.await;
         assert!(
             response.disconnected,
@@ -1532,26 +1572,39 @@ async fn dropping_the_serve_future_leaves_no_child() {
     let mut req = transcode_request(&source, media_file(&source, "mp3", 900.0), "mp3", 128);
     req.command = Some(endless_mp3_command(bin.as_str()));
 
-    // The client stays connected: the *handler future* is what gets dropped.
+    // The client stays connected — an unbounded sink accepts every write — so
+    // the only teardown trigger here is the future being abandoned. Dropping the
+    // receiver instead would drive the disconnect arm, which is the test above.
     let (_tx, rx) = stays_connected();
     let mut sink = ChannelSink::default();
     let client = sink.take_receiver().expect("receiver");
-    drop(client); // unread; writes fail, which also drives teardown. Keep the pid
-                  // from the live process table instead.
 
-    let baseline = scan_ffmpeg_child();
-    {
+    let baseline = ffmpeg_children();
+    let pid = {
         let mut handler = handler(limiter.clone());
         let serve = handler.serve(&req, &mut sink, rx);
         tokio::pin!(serve);
-        // Poll briefly so the child exists and is mid-encode, then abandon it.
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(300), serve.as_mut()).await;
+        // Poll in slices so the child can be observed in the process table while
+        // the encode is in flight: a single 300 ms poll can complete (and be
+        // reaped) before the scan runs, which would make "no child appeared" a
+        // false failure rather than a leak check.
+        let mut found = None;
+        for _ in 0..20 {
+            tokio::select! {
+                _ = serve.as_mut() => break,
+                () = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+            }
+            let new = ffmpeg_children()
+                .into_iter()
+                .find(|pid| !baseline.contains(pid));
+            if let Some(pid) = new {
+                found = Some(pid);
+                break;
+            }
+        }
         // `serve` and `handler` are dropped at the end of this block.
-    }
-
-    let pid = scan_ffmpeg_child().expect("an ffmpeg child was launched");
-    assert_ne!(pid, baseline.unwrap_or(0), "a new child, not a leftover");
-    assert!(pid_alive(pid), "child was live when the future was dropped");
+        found.expect("an ffmpeg child launched and was observed mid-encode")
+    };
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while pid_alive(pid) && std::time::Instant::now() < deadline {
@@ -1562,6 +1615,7 @@ async fn dropping_the_serve_future_leaves_no_child() {
         "ACCEPTANCE: pid {pid} outlived the dropped serve future — the handoff \
          tracker neither killed nor reaped it"
     );
+    drop(client);
 }
 
 // ---------------------------------------------------------------------------
@@ -1670,14 +1724,28 @@ async fn complete_cache_entry_is_served_as_a_seekable_body() {
     let mut sink = Vec::new();
     let response = handler.serve(&req, &mut sink, rx).await;
 
+    // Go's seekable arm hands the cached file to `http.ServeContent`
+    // (`media_streamer.go:159-162`), which honors the Range the request carries —
+    // so the observable point of this test is that the cached body is seekable and
+    // range-addressable, not that it answers a bare 200.
     assert_eq!(
-        response.status, 200,
-        "a cached file re-plans as a direct body"
+        response.status, 206,
+        "the Range is honored like ServeContent's"
     );
     assert!(response.seekable);
-    assert_eq!(response.written as u64, size);
-    assert_eq!(sink.len() as u64, size);
+    assert_eq!(
+        response.written as u64, 1000,
+        "exactly the requested window, not the whole file"
+    );
+    assert_eq!(sink.len() as u64, 1000);
     assert_eq!(header(&response, "Accept-Ranges"), Some("bytes"));
+    let expected_range = format!("bytes 0-999/{size}");
+    assert_eq!(
+        header(&response, "Content-Range"),
+        Some(expected_range.as_str()),
+        "the window plus total size, as ServeContent writes it (`fs.go:1013-1016`)"
+    );
+    assert_eq!(header(&response, "Content-Length"), Some("1000"));
     assert_eq!(response.pid, None, "a cache hit launches no process");
     assert_eq!(response.error, None);
 }
