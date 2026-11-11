@@ -1892,6 +1892,22 @@ async fn a_missing_file_on_the_raw_arm_continues_like_go() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+async fn the_comment_is_untouched_when_set_comment_refuses_it() {
+    // Go ignores `SetComment`'s error (`_ = z.SetComment(comment)`), so an
+    // over-long comment leaves whatever was set before — here, nothing.
+    let mut z = create_zip_writer(Vec::new(), "mp3", 128);
+    assert_eq!(
+        z.comment(),
+        "Downloaded from Navidrome, transcoded to mp3 128bps"
+    );
+    assert!(z.set_comment("x".repeat(65_536)).is_err());
+    assert_eq!(
+        z.comment(),
+        "Downloaded from Navidrome, transcoded to mp3 128bps"
+    );
+}
+
+#[tokio::test]
 async fn deflate_is_refused_like_zip_err_algorithm() {
     let mut z = ZipWriter::new(Vec::new());
     let header = ZipFileHeader {
