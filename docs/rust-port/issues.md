@@ -71,9 +71,12 @@ crates read DONE while nothing can consume them:
 | Rust player repository (`persistence/player_repository.go`) | `rust/player-repo` | A9 | **LANDED** `c8c71f8d`, integrated `f198aa66` |
 | Auth wiring onto the DB spine (`AuthResult` → claims, `/player`, API-key issuance) | `rust/auth-wiring` | A10 | **LANDED** `bd8f7a84..cfea1e08` (11 commits, all signed), merged `0fad9985`; gate 1243 passed / 0 failed |
 | `nd-dbschema` secondary indexes + late-window columns + schema_diff guard | parent checkout | A13 | **LANDED** `15426bbc` |
-| Stream serving #15 remainder: transcode cache, rate-limit semaphore, HTTP handler | `rust/stream-complete` (`wks_42e00c2f618e927c`) | A14 | **IN PROGRESS** |
+| Stream serving #15 remainder: transcode cache, rate-limit semaphore, HTTP handler | `rust/stream-complete` (`wks_42e00c2f618e927c`) | A14 | **IN PROGRESS** — limiter primitive landed `92714f90` (signed, gate 1245/0), unwired; now also owns `nd-ffmpeg/src/ffcmd.rs` to fix the FFCmd no-Drop leak before wiring | 
+| #08 tag backend: lofty 0.25.5 pinned, real extraction behind the registry | `rust/tag-backend` (`wks_f6928aa9acb3892b`) | A15 | **IN PROGRESS** — network resolution approved after offline registry proved empty; ASF/WMA unsupported by lofty and reported as a gap |
+| [Advisor] FFCmd teardown + permit-lifetime design second opinion | current checkout (read-only) | A18 | **IN PROGRESS** |
 | #08 real tag backend (replace sidecar-only reader) | `rust/tag-backend` (`wks_f6928aa9acb3892b`) | A15 | **IN PROGRESS** |
-| Fresh read-only review of the A10 auth wiring | `rust/auth-wiring-review-2` (`wks_51d0ae84d5e4ecd1`) | A16 | **IN PROGRESS** |
+| Fresh read-only review of the A10 auth wiring | `rust/auth-wiring-review-2` | A16 | **DONE** — approve-with-fixes; 2 Go-parity bugs + 3 weak tests confirmed against Go | 
+| A10 review fixes (refresh on empty/204, filtered dev-admin count, test strength) | `rust/auth-fixes` (`wks_1342fcca9c6ee2d9`) | A17 | **IN PROGRESS** |
 
 Lanes are one-writer-per-worktree; the parent integrates and re-runs the gate. All four lanes above are now finished
 or dead: they died on provider limits (`429 max connections reached: 4`, Codex usage limit, OpenRouter budget), and

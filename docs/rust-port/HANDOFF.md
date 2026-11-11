@@ -54,8 +54,20 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   login with transactional first-admin, post-handler token refresh, trusted-header provisioning, and
   `GuardedLimiter` denying on a non-positive limit at the boundary. The reviewed `limiter.rs` primitive
   keeps Go parity (non-positive => allow-all, `server/subsonic/auth_limiter.go:39-48,54-56`); the deny
-  lives at the boundary. A fresh reviewer (A16) is auditing whether the allow-all path is still
-  reachable from a mountable route — check that verdict before trusting it.
+  lives at the boundary. Reviewed by a fresh read-only reviewer (A16): **approve-with-fixes**.
+  On the security questions: atomicity is sound (count+insert in one retryable tx, login.rs:222-249;
+  Go's createAdmin really is non-atomic, server/auth.go:122-160), the Go-parity allow-all limiter is
+  NOT reachable from a first-party mountable route (every login handler builds LoginState.limiter
+  through GuardedLimiter), and no token/password/secret leak was found. Two Go-parity BUGS were
+  confirmed and are being fixed on rust/auth-fixes: (1) refresh.rs:40-43 skips empty/204 bodies where
+  Go refreshes on WriteHeader and post-handler (server/auth.go:332-368, test auth_test.go:513-525), so
+  a password change returning an empty body leaves the client holding a revoked token; (2)
+  setup_store.rs:66-83 gates dev-admin creation on count_all() == 0 instead of checking the `admin`
+  username specifically (server/initial_setup.go:45-64), so a DB with a regular user and no admin skips
+  creation yet commits the setup flag permanently. Credential precedence is NOT a bug - it matches Go
+  (server/auth.go:186-197,257-276); neither implementation rejects conflicting sources. Known gap:
+  TokenEpochHolder::record_put has no production call site, so epoch propagation is wired but unproven
+  until a real user-update handler calls it.
 - `nd-dbschema`: `schema_ddl.rs` now carries the **80 secondary indexes** (4 UNIQUE) and the
   8 late-window columns that were missing (`album.rg_album_gain`/`rg_album_peak`,
   `artist.uploaded_image`, `media_file.codec`/`probe_data`, `playlist.uploaded_image`/
@@ -65,8 +77,15 @@ Do **not** trust the historical "969 passed / 0 failed" (2026-11-04) or "1067 pa
   per-table declared column sets, both verified non-vacuous by mutation; keep that coverage
   when the schema changes.
 - `nd-stream`: Range/conditional matrix, bounded direct adapter, probe adapter, and transcode body exist; the
-  transcoding cache, the rate-limiting semaphore (`core/stream/limiter.go`), and archive do not — today one ffmpeg
-  process per call with no concurrency cap. `nd-cli/src/main.rs` `main()` is empty and
+  transcoding cache, archive, and the HTTP handler do not. The limiter primitive landed (`92714f90`) but is NOT
+  wired, so ffmpeg count is still unbounded. **Confirmed leak bug**: `FFCmd` has no `impl Drop`
+  (`nd-ffmpeg/src/ffcmd.rs`), so `TranscodeBody::drop` (`transcode_body.rs:496-504`, whose comment claims FFCmd's
+  Drop signals the child) only closes the stdout pipe — a handler that returns without draining leaves ffmpeg
+  running. `FFCmd::teardown` also does `child.take()` before its awaits, so cancelling that future leaves a live,
+  un-killed, unreaped child. Fix in progress on `rust/stream-complete`, which now also owns `nd-ffmpeg/src/ffcmd.rs`:
+  group-kill in Drop (not `kill_on_drop` alone — that kills only the direct child and breaks the `8152ac5a`
+  group invariant), cancel-safe teardown, and a permit held until the child is reaped, mirroring Go's deferred
+  streamJob Close (`core/stream/media_streamer.go:101-110`). `nd-cli/src/main.rs` `main()` is empty and
   `nd-http`/`nd-api`/`nd-scanner`/`nd-mapping` are scaffold-only, so nothing boots.
 
 ## Active lanes (user-approved 2026-11-10 — IN PROGRESS, not done)
