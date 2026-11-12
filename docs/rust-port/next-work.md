@@ -3,10 +3,10 @@
 ## Current state (2026-11-11, at `12e270f7`) — supersedes the boundary below
 
 Measured gate (parent, integrated): fmt clean; workspace build clean; clippy `-D warnings` clean;
-`cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1490 passed / 0 failed** across
-56 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
+`cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1514 passed / 0 failed** across
+57 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
 `8c89aeb9` + `12e270f7` (INSERT alignment, playlist `INSERT … SET`, `0000-00-00` sentinel) 1459 →
-`2a99a681` + `3f8b5a8d` (**participant JSON column + album/mediafile FTS feeders — hazard 6 closed**) **1490**.
+`2a99a681` + `3f8b5a8d` (participant JSON + FTS feeders) 1490 → `cb11b645` (**remaining JSON codecs + checked Role bridge**) **1514**.
 
 Three silent-corruption defects, found while reviewing the shared-layer contract, were all **invisible to the
 existing renderer tests** — those only compared emitted SQL strings:
@@ -344,15 +344,16 @@ integrates, runs the gate, and commits.
 | **S-A participant JSON** | write | `sql_participations.rs`, `tests/participants_json.rs`, `testdata/go_participants/` | **LANDED `2a99a681`** |
 | **S-B search feeders** | write | new `sql_feeders.rs` + one `lib.rs` line, `tests/search_feeders.rs`, `testdata/go_feeders/` | **LANDED `3f8b5a8d`** |
 | **S-C PostScan contract brief** | read-only | → `docs/rust-port/hydrate-contract.md` | **LANDED `deeb837d`** |
-| **S-D1 JSON/Role bridge** | write, after review | `sql_participations.rs`, new `sql_json.rs` + one `lib.rs` line, `tests/sql_json.rs`, Go oracle | S-D2 |
-| **S-D2 entity marshal seam** | write, after S-D1 | new `marshal.rs` + one `lib.rs` line, album/mediafile/folder/playlist adapters and executed write→read tests | S-D3 |
-| **S-D3 row mapper/hydration** | write, after S-D2 | new `hydrate.rs` + one `lib.rs` line, hook-bearing repo adapters and executed reads | #17 |
+| **S-D1 JSON/Role bridge** | write | `sql_participations.rs`, new `sql_json.rs` + one `lib.rs` line, `tests/sql_json.rs`, Go oracle | **LANDED `cb11b645` (review APPROVE, gate 1514/0)** |
+| **S-D2a marshal core/hooks** | write, after S-D1 | new `marshal.rs` + one `lib.rs` line, sorted column/value unit + album/mediafile/folder PostMapArgs transformations + executed writes | S-D2b |
+| **S-D2b entity adapters** | write, after S-D2a | repo-local complete records/adapters for album/mediafile/folder/playlist; no caller-supplied column arrays | S-D3 |
+| **S-D3 row mapper/hydration** | write, after S-D2b | new `hydrate.rs` + one `lib.rs` line, hook-bearing repo adapters and executed reads | #17 |
 
-The original S-D was too large for one ownership-safe lane, so it is now sequenced into three slices. **S-D1** closes
-the remaining JSON and role-contract primitives (`discs`, `folder_ids`, `image_files`, one explicit conversion between
-`sql_participations::Role` and `nd_id::Role`, 14-key equivalence). **S-D2** owns the entity→sorted `(columns, values)`
-marshal seam and wires S-A/S-B outputs into existing `put_sql` APIs. **S-D3** owns row→entity hydration and the 8
-`PostScan` hooks from `hydrate-contract.md`. No writer overlaps another; the parent reviews and gates between slices.
+The original S-D was too large for one ownership-safe lane. **S-D1** is landed. **S-D2a** now builds only the shared
+sorted-column/value unit and faithful PostMapArgs transformations, with executed writes through the existing `put_sql`
+APIs. **S-D2b** must then eliminate caller-supplied column arrays with complete repo-local records/adapters — S-D2a is
+not allowed to declare victory by merely moving an arbitrary base map to another module. **S-D3** owns row→entity
+hydration and the 8 `PostScan` hooks from `hydrate-contract.md`. The parent reviews and gates between every slice.
 
 S-A and S-B are independent by construction: the feeder seam takes **participant names as `&[String]`**, so it does
 not depend on the participant type.
