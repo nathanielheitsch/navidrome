@@ -21,15 +21,23 @@ You are continuing an existing multi-session task. Do not re-plan from scratch, 
 
 ## State (verify, do not assume)
 
-Measured at `38b0b812` (2026-11-11), `cd rust`:
+Measured at `12e270f7` (2026-11-11), `cd rust`:
 
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1453 passed / 0 FAILED** (1 ignored)
-  across 53 test binaries; zero surviving `ffmpeg` processes afterwards
-- Branch `issue/planning-rust-sdhnn` is **pushed** to `origin` (`git@github.com:nathanielheitsch/navidrome.git`);
-  76 commits ahead of the remote branch before the push, all GPG-signed, no AI co-author trailers
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1459 passed / 0 FAILED**
+  across 54 test binaries; zero surviving `ffmpeg` processes afterwards
+- Branch `issue/planning-rust-sdhnn` tracks `origin`
+  (`git@github.com:nathanielheitsch/navidrome.git`); commits are GPG-signed with no AI co-author trailers.
+  The newest ones (`d18f0603`, `8c89aeb9`, `12e270f7`, and this docs commit) are local until pushed.
+
+Landed since the previous boundary (`a7afda2a`, timestamp convention, gate 1453/53): `8c89aeb9` + `12e270f7` — **INSERT column/value alignment in**
+`album_repo`/`folder_repo`/`mediafile_repo`, `playlist_repo` MySQL `INSERT … SET`, and the
+`0000-00-00` date sentinel (gate 1459/54). All three were invisible to the existing renderer tests, which
+only compared emitted SQL strings; they are now pinned by the executed
+`nd-db/tests/runtime_insert_alignment.rs` (includes a non-vacuity arm that reproduces the pre-fix argument
+order). **Every new write path needs an executed write→read-back test, not a string assertion.**
 
 Landed since the 1067/4 measurement: `dee593b5` (execution seam + `SQLStore` + executed `user_repo` with
 hydration), `5e56f7e8` (portable fixture resolution from `CARGO_MANIFEST_DIR` to the repo root — the 4 failures were

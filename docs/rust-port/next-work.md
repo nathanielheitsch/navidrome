@@ -1,6 +1,45 @@
 # Plan of record for the next body of work
 
-## Current state (2026-11-11) — supersedes the 2026-11-10 boundary below
+## Current state (2026-11-11, at `12e270f7`) — supersedes the boundary below
+
+Measured gate (parent, integrated): fmt clean; workspace build clean; clippy `-D warnings` clean;
+`cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1459 passed / 0 failed** across
+54 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
+`8c89aeb9` + `12e270f7` (**INSERT column/value alignment, playlist `INSERT … SET`, `0000-00-00` sentinel**) **1459**.
+
+Three silent-corruption defects, found while reviewing the shared-layer contract, were all **invisible to the
+existing renderer tests** — those only compared emitted SQL strings:
+- **INSERT columns and values misaligned** in `album_repo`, `folder_repo`, `mediafile_repo`: the column list ended
+  with `id` (`columns.chain(["id"])`) while the VALUES tuple began with it. Any multi-column insert stored every
+  value in the wrong column — verified against SQLite *before* the fix (`INSERT INTO album (name, album_artist, id)`
+  with `('alb-1','Song Title','Jane Doe')` stored `id = 'Jane Doe'`). Go cannot have this bug: squirrel `SetMap` sorts
+  column names and emits values positionally against that order (`squirrel@v1.5.4/insert.go:271-283`), and Go `put`
+  appends `id` to the values map (`sql_base_repository.go:637-641`). The invariant is **columns and args emitted
+  together**, not "id binds first" — the port's doc comments asserted the invented rule that encoded the bug.
+- **`playlist_repo`'s insert leg rendered `INSERT INTO playlist SET …`**, MySQL syntax SQLite rejects outright
+  (`near "SET": syntax error`), so that leg could never execute. Third instance of the class the timestamp lane found
+  in `radio_repo`/`artist_repo`.
+- **`get::<Option<DateTime>>` errored on the DDL `DEFAULT '0000-00-00 00:00:00'`** on `library.last_scan_at`,
+  `library.last_scan_started_at` and `album.imported_at`; chrono parses neither that sentinel (month/day are 0) nor
+  SQLite's naive `CURRENT_TIMESTAMP`. Go discards its parse error → zero `time.Time`, and callers test
+  `!LastScanAt.IsZero()` (`model/library.go:64`, `scanner/controller.go:124`), so `None` is the faithful spelling.
+  `time::optional_sentinel()` maps it to `None` while a genuinely malformed date remains an error. No caller changed
+  (nothing reads those columns yet) — a latent hazard removed for the scanner lane, not a behaviour change.
+
+`nd-db/tests/runtime_insert_alignment.rs` executes the statements against a fresh schema and reads the stored row
+back, with a non-vacuity arm reproducing the pre-fix argument order. Proven non-vacuous: restoring id-first makes the
+album test fail. **Lesson for the shared layer: renderer tests cannot catch this class — every write path needs an
+executed write→read-back test.**
+
+**Still open inside the shared layer's scope**: `mediafile_repo::upsert_sql` (the `importFiles` path) is a MySQL
+`ON DUPLICATE KEY UPDATE` stub returning only the UPDATE leg. It is outside the `put` contract, but scanner work must
+convert it to SQLite `ON CONFLICT(id) DO UPDATE SET` against the `media_file_pkey` unique index.
+`folder_repo::update_info_sql` and `album_repo::update_times_of_birth_sql` are honest `todo!()` stubs and correctly
+unreachable. The Go `PostScan`/`PostMapArgs` marshal contract the shared layer must implement is §1b below.
+
+The figures below (1442, 1230, 1183, and the 1453 in its progression line) are dated historical boundaries.
+
+## Previous state (2026-11-11, at `a7afda2a`) — record
 
 Measured gate at `a7afda2a` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
 clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` =
@@ -208,6 +247,14 @@ Hazards, ranked by how silently they corrupt data:
 5. **Two more brief claims are false — do not chase them.** `user_props_repo.rs:108` does *not* map `value` twice: its
    `get` selects the single `value` column exactly as Go does (`user_props_repository.go:30-40`, verified). And
    `artist_repo.rs:236` is not a `PostScan` stub; it is the annotation-column join inside `new_select_sql`.
+6. **INSERT column/value alignment and MySQL-only syntax — fixed for `put` (`8c89aeb9`), still open for `upsert`.**
+   `album_repo`, `folder_repo` and `mediafile_repo` appended `id` to the column list while prepending it to the args,
+   so every multi-column insert stored each value in the wrong column; `playlist_repo` emitted `INSERT … SET`, which
+   SQLite cannot parse. Both are now correct and pinned by `tests/runtime_insert_alignment.rs`. What remains is
+   `mediafile_repo::upsert_sql` (Go `importFiles`, `persistence/media_file_upserter.go:19`): still MySQL
+   `ON DUPLICATE KEY UPDATE` returning only the UPDATE leg, so it silently drops the insert leg. It needs SQLite
+   `ON CONFLICT(id) DO UPDATE SET` against the `media_file_pkey` unique index (`migrations/migration.go:236`), with
+   the DO UPDATE assignment list. The shared marshal layer is where that belongs — do not let a caller paper over it.
 
 **Shape to build:** one file, one seam — entity→`(columns, values)` marshal and row→entity mapper, both pinned against a
 Go oracle, with `PostScan`/`PostMapArgs` hooks; then per-repo adapters. DTOs stay **local to `nd-db`**: `nd-model` is
