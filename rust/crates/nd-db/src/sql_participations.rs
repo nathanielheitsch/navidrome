@@ -444,6 +444,96 @@ pub struct UpdateParticipants {
     pub insert: Option<(String, Vec<Value>)>,
 }
 
+/// The one explicit conversion seam between this module's owned-`String`
+/// [`Role`] and the domain [`nd_id::Role`].
+///
+/// Three equivalent role representations coexist (next-work.md §1c, pinned in
+/// commit `c7f8113b`): this owned `String` role, `nd_id::Role`
+/// (`&'static str`, `rust/crates/nd-id/src/participants.rs:13-93`), and
+/// `artist_repo::ALL_ROLES` (`&[&str; 14]`, `artist_repo.rs:86`). This bridge is
+/// the seam between the first two — not a fourth representation — and the three
+/// key lists must stay in lockstep (the `role_bridge_*` tests below pin all 14
+/// keys equivalent across the two lists this module can name, citing
+/// `artist_repo::ALL_ROLES` as the third member).
+///
+/// Directional asymmetry, matching the two Go spellings:
+/// - **Into the DB role** (`role_from_id`): unknown keys are an error, the same
+///   hard failure `Role::from_str`/`Role.UnmarshalText` produce
+///   (`invalid role: <key>`). The DB side must never hold a role that Go's
+///   `Role.UnmarshalText` would reject.
+/// - **Out of the DB role** (`into_id_role`): a DB role produced through
+///   [`FromStr`]/[`Deserialize`] is always in [`ALL_ROLES`], so the domain
+///   conversion can fail only on a role built through the unchecked
+///   [`From<&str>`]/[`From<String>`] constructors — in which case the
+///   [`RoleBridgeError::Invalid`] variant carries the offending key. It must never
+///   silently map to `nd_id::ROLE_INVALID`, which would hide a corrupt role.
+///
+/// S-D2's entity seam should use `role_from_id` for hydration (the
+/// `Role.UnmarshalText` half) and `into_id_role` for anything that feeds
+/// `nd_id::Participants`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RoleBridgeError {
+    /// A role key outside [`ALL_ROLES`] — `Role.UnmarshalText`'s error text
+    /// (`model/participants.go:62-69`), `"invalid role: <key>"`.
+    Invalid(String),
+}
+
+impl fmt::Display for RoleBridgeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Invalid(key) => write!(f, "invalid role: {key}"),
+        }
+    }
+}
+
+impl std::error::Error for RoleBridgeError {}
+
+/// `nd_id::Role` → this module's [`Role`].
+///
+/// `Err(RoleBridgeError::Invalid(key))` for a key outside [`ALL_ROLES`] (including
+/// `nd_id::ROLE_INVALID` itself, whose key is `"invalid"` — the domain
+/// sentinel must not leak into a DB role).
+pub fn role_from_id(role: nd_id::Role) -> Result<Role, RoleBridgeError> {
+    let key = role.as_str();
+    if ALL_ROLES.contains(&key) {
+        Ok(Role::from(key))
+    } else {
+        Err(RoleBridgeError::Invalid(key.to_string()))
+    }
+}
+
+/// This module's [`Role`] → `nd_id::Role`.
+///
+/// Fails only for a role built through the unchecked [`From<&str>`]/
+/// [`From<String>`] constructors with a key outside [`ALL_ROLES`]; a role
+/// produced by [`FromStr`] or deserialised from the `participants` column
+/// always succeeds and is never mapped to `nd_id::ROLE_INVALID`.
+pub fn into_id_role(role: &Role) -> Result<nd_id::Role, RoleBridgeError> {
+    nd_id::ALL_ROLES
+        .iter()
+        .find(|r| r.as_str() == role.as_str())
+        .copied()
+        .ok_or_else(|| RoleBridgeError::Invalid(role.as_str().to_string()))
+}
+
+/// [`Role`] ↔ `nd_id::Role` via the [`role_from_id`]/[`into_id_role`] seam,
+/// so callers can use `TryFrom` ergonomics in either direction.
+impl TryFrom<nd_id::Role> for Role {
+    type Error = RoleBridgeError;
+
+    fn try_from(role: nd_id::Role) -> Result<Self, Self::Error> {
+        role_from_id(role)
+    }
+}
+
+impl TryFrom<&Role> for nd_id::Role {
+    type Error = RoleBridgeError;
+
+    fn try_from(role: &Role) -> Result<Self, Self::Error> {
+        into_id_role(role)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -758,5 +848,69 @@ mod tests {
         let result = std::panic::catch_unwind(|| with_participant_roles(TABLE, ARTIST, &[]));
         // Assert:
         assert!(result.is_err());
+    }
+    #[test]
+    fn role_bridge_pins_all_14_keys_equivalent() {
+        // Arrange: the two production lists this slice may name. `artist_repo::`
+        // ALL_ROLES is the third member of the S-D role-unification criterion
+        // (commit `c7f8113b`); this slice must not edit `artist_repo.rs`, so the
+        // equivalence is pinned across the two lists in scope, which both pin the
+        // same Go source (`model.AllRoles`, `model/participants.go:28-48`).
+        let db: Vec<&str> = ALL_ROLES.to_vec();
+        let id: Vec<&str> = nd_id::ALL_ROLES.iter().map(|r| r.as_str()).collect();
+        // Assert: 14 keys, same set.
+        assert_eq!(db.len(), 14);
+        assert_eq!(id.len(), 14);
+        assert_eq!(
+            db.iter().copied().collect::<std::collections::HashSet<_>>(),
+            id.iter().copied().collect::<std::collections::HashSet<_>>(),
+            "sql_participations::ALL_ROLES and nd_id::ALL_ROLES must carry the same 14 keys"
+        );
+    }
+
+    #[test]
+    fn role_bridge_round_trips_all_14_keys_both_directions() {
+        // Arrange: every domain role (nd_id::ALL_ROLES is the 14 valid keys;
+        // `role_from_string` is not re-exported, so iterate the const slice
+        // directly).
+        for id_role in nd_id::ALL_ROLES.iter().copied() {
+            let key = id_role.as_str();
+            // Assert: into the DB role, and back, by both fn and TryFrom.
+            let db_role = role_from_id(id_role).expect("valid domain role converts");
+            assert_eq!(db_role.as_str(), key);
+            assert_eq!(key.parse::<Role>().expect("parse valid key"), db_role);
+            let back = into_id_role(&db_role).expect("valid DB role converts");
+            assert_eq!(back, id_role);
+            assert_eq!(Role::try_from(id_role).unwrap(), db_role);
+            assert_eq!(nd_id::Role::try_from(&db_role).unwrap(), id_role);
+        }
+        // Both directions cover all 14 keys; the DB list has no extras.
+        assert_eq!(ALL_ROLES.len(), nd_id::ALL_ROLES.len());
+    }
+
+    #[test]
+    fn role_bridge_into_db_role_rejects_unknown_keys() {
+        // Arrange: the domain sentinel, whose key is outside ALL_ROLES.
+        let err = role_from_id(nd_id::ROLE_INVALID).unwrap_err();
+        // Assert: a hard error, the same text UnmarshalText would give.
+        assert_eq!(err, RoleBridgeError::Invalid("invalid".into()));
+        assert_eq!(err.to_string(), "invalid role: invalid");
+    }
+
+    #[test]
+    fn role_bridge_out_of_db_role_never_yields_role_invalid() {
+        // Arrange: an unchecked-constructor role with an unknown key.
+        let bad = Role::from("bogus");
+        // Assert: the conversion errors rather than mapping to ROLE_INVALID —
+        // a silent sentinel would hide a corrupt role in the column.
+        let err = into_id_role(&bad).unwrap_err();
+        assert_eq!(err, RoleBridgeError::Invalid("bogus".into()));
+        let err = nd_id::Role::try_from(&bad).unwrap_err();
+        assert_eq!(err, RoleBridgeError::Invalid("bogus".into()));
+        // A valid role built the same unchecked way still converts.
+        assert_eq!(
+            into_id_role(&Role::from("composer")).unwrap(),
+            nd_id::ROLE_COMPOSER
+        );
     }
 }

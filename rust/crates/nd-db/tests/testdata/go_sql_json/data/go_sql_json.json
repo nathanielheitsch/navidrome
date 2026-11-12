@@ -1,0 +1,445 @@
+[
+  {
+    "name": "discs_nil",
+    "note": "json.Marshal of a nil map[int]string is `null` (album_repository.go:90 json.Marshal(a.Album.Discs))",
+    "discs_in": {
+      "nil": true,
+      "raw": null
+    },
+    "discs_out": "null"
+  },
+  {
+    "name": "discs_empty_non_nil",
+    "note": "json.Marshal of a non-nil empty map is {}",
+    "discs_in": {
+      "nil": false,
+      "raw": {}
+    },
+    "discs_out": "{}"
+  },
+  {
+    "name": "discs_integer_keys_string_order",
+    "note": "KEY ORDER CONTRACT: Go sorts integer map keys AS STRINGS — 1, 10, 2 (not numeric 1, 2, 10). Next key 100 sorts between 10 and 2.",
+    "discs_in": {
+      "nil": false,
+      "raw": {
+        "2": "Second Disc",
+        "10": "Bonus Disc",
+        "1": "Disc One",
+        "100": "Remixes"
+      }
+    },
+    "discs_out": "{\"1\":\"Disc One\",\"10\":\"Bonus Disc\",\"100\":\"Remixes\",\"2\":\"Second Disc\"}"
+  },
+  {
+    "name": "discs_i64_and_negative_keys",
+    "note": "Go int is 64-bit on the target: keys beyond i32 and negative keys are valid; encoding/json sorts their decimal strings lexicographically.",
+    "discs_in": {
+      "nil": false,
+      "raw": {
+        "2147483648": "Beyond i32",
+        "4294967296": "Beyond u32",
+        "-2": "Negative",
+        "1": "One"
+      }
+    },
+    "discs_out": "{\"-2\":\"Negative\",\"1\":\"One\",\"2147483648\":\"Beyond i32\",\"4294967296\":\"Beyond u32\"}"
+  },
+  {
+    "name": "discs_single",
+    "note": "single key",
+    "discs_in": {
+      "nil": false,
+      "raw": {
+        "1": "Deluxe Edition"
+      }
+    },
+    "discs_out": "{\"1\":\"Deluxe Edition\"}"
+  },
+  {
+    "name": "discs_escaping_unicode",
+    "note": "values with \u003c \u003e \u0026 and U+2028/U+2029 — Go's json.Marshal escapes them; serde_json does not (settled divergence: shape + round-trip, not bytes)",
+    "discs_in": {
+      "nil": false,
+      "raw": {
+        "1": "a\u003cb\u003ec\u0026d\u2028e\u2029f",
+        "2": "\u00e9\u00fc"
+      }
+    },
+    "discs_out": "{\"1\":\"a\\u003cb\\u003ec\\u0026d\\u2028e\\u2029f\",\"2\":\"éü\"}"
+  },
+  {
+    "name": "folder_ids_nil",
+    "note": "json.Marshal of a nil []string is `null` (album_repository.go:86 json.Marshal(a.Album.FolderIDs))",
+    "string_list_in": {
+      "nil": true,
+      "raw": null
+    },
+    "string_list_out": "null"
+  },
+  {
+    "name": "folder_ids_empty_non_nil",
+    "note": "json.Marshal of a non-nil empty []string is []",
+    "string_list_in": {
+      "nil": false,
+      "raw": []
+    },
+    "string_list_out": "[]"
+  },
+  {
+    "name": "folder_ids_values",
+    "note": "element order is preserved (slices keep input order)",
+    "string_list_in": {
+      "nil": false,
+      "raw": [
+        "/Library/2020/Album",
+        "/Library/Extras/Album",
+        "/Library/2021/Album (Remastered)"
+      ]
+    },
+    "string_list_out": "[\"/Library/2020/Album\",\"/Library/Extras/Album\",\"/Library/2021/Album (Remastered)\"]"
+  },
+  {
+    "name": "folder_ids_escaping",
+    "note": "\u003c \u003e \u0026 and U+2028/U+2029 in list elements",
+    "string_list_in": {
+      "nil": false,
+      "raw": [
+        "a\u003cb\u003ec\u0026d\u2028e\u2029f",
+        "/Library/Album \u0026 \"Singles\""
+      ]
+    },
+    "string_list_out": "[\"a\\u003cb\\u003ec\\u0026d\\u2028e\\u2029f\",\"/Library/Album \\u0026 \\\"Singles\\\"\"]"
+  },
+  {
+    "name": "image_files_nil_write",
+    "note": "folder_repository.go:48-50: ImageFiles == nil -\u003e the LITERAL \"[]\" arm, never json.Marshal(nil) (which would be null). The harness executes the exact PostMapArgs expression.",
+    "image_files_in": {
+      "nil": true,
+      "raw": null
+    },
+    "image_files_out": "[]"
+  },
+  {
+    "name": "image_files_empty_non_nil_write",
+    "note": "a non-nil empty []string takes the json.Marshal arm and yields [] anyway — both arms agree on [] for empty",
+    "image_files_in": {
+      "nil": false,
+      "raw": []
+    },
+    "image_files_out": "[]"
+  },
+  {
+    "name": "image_files_values_write",
+    "note": "non-nil image files: the json.Marshal arm, element order preserved, escaping per Go",
+    "image_files_in": {
+      "nil": false,
+      "raw": [
+        "cover.png",
+        "back.jpg\u2028front\u0026inner.jpg"
+      ]
+    },
+    "image_files_out": "[\"cover.png\",\"back.jpg\\u2028front\\u0026inner.jpg\"]"
+  },
+  {
+    "name": "read_discs_ok_string_order",
+    "note": "json.Unmarshal into map[int]string succeeds; Go's marshal order of the result is the string-sorted key order",
+    "read_case": {
+      "json": "{ \"2\": \"b\", \"1\": \"a\", \"10\": \"j\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "{\"1\":\"a\",\"10\":\"j\",\"2\":\"b\"}",
+      "keys": [
+        "2",
+        "1",
+        "10"
+      ]
+    }
+  },
+  {
+    "name": "read_discs_i64_boundary",
+    "note": "map[int]string accepts keys beyond i32 on the 64-bit Go target.",
+    "read_case": {
+      "json": "{ \"4294967296\": \"x\", \"2147483648\": \"y\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "{\"2147483648\":\"y\",\"4294967296\":\"x\"}",
+      "keys": [
+        "4294967296",
+        "2147483648"
+      ]
+    }
+  },
+  {
+    "name": "read_discs_negative_key",
+    "note": "negative integer keys are valid and string-sort before positive keys.",
+    "read_case": {
+      "json": "{ \"1\": \"one\", \"-2\": \"negative\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "{\"-2\":\"negative\",\"1\":\"one\"}",
+      "keys": [
+        "1",
+        "-2"
+      ]
+    }
+  },
+  {
+    "name": "read_discs_alias_keys_last_wins",
+    "note": "alternate decimal spellings parse to the same int key; the later object member wins.",
+    "read_case": {
+      "json": "{ \"1\": \"first\", \"01\": \"last\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "{\"1\":\"last\"}",
+      "keys": [
+        "1",
+        "01"
+      ]
+    }
+  },
+  {
+    "name": "read_discs_fractional_key",
+    "note": "a fractional object key is not an integer and must error.",
+    "read_case": {
+      "json": "{ \"1.5\": \"a\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal number 1.5 into .1.5 of type int"
+    }
+  },
+  {
+    "name": "read_discs_null",
+    "note": "json.Unmarshal of `null` into map[int]string: no error, map left nil (PostScan guard a.Discs != \"\" skips this for the empty string, but null is a legal column value)",
+    "read_case": {
+      "json": "",
+      "kind": "discs",
+      "nil": true
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "null"
+    }
+  },
+  {
+    "name": "read_discs_empty_string",
+    "note": "json.Unmarshal of the empty string into map[int]string errors (unexpected end of JSON input) — this is why the PostScan hook guards a.Discs != \"\"",
+    "read_case": {
+      "json": "",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "unexpected end of JSON input"
+    }
+  },
+  {
+    "name": "read_discs_non_integer_key",
+    "note": "a non-integer object key is a hard error into map[int]string",
+    "read_case": {
+      "json": "{ \"x\": \"a\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal number x into Go struct field .x of type int"
+    }
+  },
+  {
+    "name": "read_discs_non_integer_key_mixed",
+    "note": "a non-integer key among valid ones is still a hard error",
+    "read_case": {
+      "json": "{ \"1\": \"a\", \"2x\": \"b\" }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal number 2x into Go struct field .2x of type int"
+    }
+  },
+  {
+    "name": "read_discs_non_string_value",
+    "note": "a non-string value is a hard error into map[int]string",
+    "read_case": {
+      "json": "{ \"1\": 1 }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal number into .1 of type string"
+    }
+  },
+  {
+    "name": "read_discs_null_value",
+    "note": "a null value decodes to the zero value `\"\"` with no error (Go behaviour pinned in the golden)",
+    "read_case": {
+      "json": "{ \"1\": null }",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "{\"1\":\"\"}",
+      "keys": [
+        "1"
+      ]
+    }
+  },
+  {
+    "name": "read_discs_wrong_type_array",
+    "note": "a JSON array is a hard error into map[int]string",
+    "read_case": {
+      "json": "[1]",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal array into Go value of type map[int]string"
+    }
+  },
+  {
+    "name": "read_discs_empty_object",
+    "note": "an empty object yields an empty (non-nil) map, no error",
+    "read_case": {
+      "json": "{}",
+      "kind": "discs",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "{}"
+    }
+  },
+  {
+    "name": "read_list_ok",
+    "note": "json.Unmarshal into []string keeps element order",
+    "read_case": {
+      "json": "[\"/a\", \"/b \u0026 c\", \"/d\u003ce\u003e\"]",
+      "kind": "list",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "[\"/a\",\"/b \\u0026 c\",\"/d\\u003ce\\u003e\"]",
+      "is_array": true,
+      "items": [
+        "/a",
+        "/b \u0026 c",
+        "/d\u003ce\u003e"
+      ]
+    }
+  },
+  {
+    "name": "read_list_null",
+    "note": "json.Unmarshal of `null` into []string: no error, slice left nil (nil-vs-empty IS representable on the read side)",
+    "read_case": {
+      "json": "",
+      "kind": "list",
+      "nil": true
+    },
+    "read": {
+      "ok": true,
+      "error": ""
+    }
+  },
+  {
+    "name": "read_list_empty_string",
+    "note": "json.Unmarshal of the empty string into []string errors (unexpected end of JSON input) — why the folder hook guards ImageFiles != \"\"",
+    "read_case": {
+      "json": "",
+      "kind": "list",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "unexpected end of JSON input"
+    }
+  },
+  {
+    "name": "read_list_empty_array",
+    "note": "an empty array yields an empty (non-nil) slice, no error — distinct from null",
+    "read_case": {
+      "json": "[]",
+      "kind": "list",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "[]",
+      "is_array": true
+    }
+  },
+  {
+    "name": "read_list_non_string_element",
+    "note": "a non-string element is a hard error into []string",
+    "read_case": {
+      "json": "[\"/a\", 1]",
+      "kind": "list",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal number into .1 of type string"
+    }
+  },
+  {
+    "name": "read_list_null_element",
+    "note": "a null element decodes to the zero value `\"\"` with no error (Go behaviour pinned in the golden)",
+    "read_case": {
+      "json": "[null]",
+      "kind": "list",
+      "nil": false
+    },
+    "read": {
+      "ok": true,
+      "error": "",
+      "raw": "[\"\"]",
+      "is_array": true,
+      "items": [
+        null
+      ]
+    }
+  },
+  {
+    "name": "read_list_wrong_type_object",
+    "note": "a JSON object is a hard error into []string",
+    "read_case": {
+      "json": "{ \"1\": \"a\" }",
+      "kind": "list",
+      "nil": false
+    },
+    "read": {
+      "ok": false,
+      "error": "json: cannot unmarshal object into Go value of type []string"
+    }
+  }
+]

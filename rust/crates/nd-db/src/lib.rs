@@ -40,6 +40,7 @@ pub mod smart_playlist_repo;
 pub mod sql_annotations;
 pub mod sql_bookmarks;
 pub mod sql_feeders;
+pub mod sql_json;
 pub mod sql_participations;
 pub mod sql_restful;
 pub mod sql_search;
