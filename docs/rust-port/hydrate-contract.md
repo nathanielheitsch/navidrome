@@ -10,15 +10,24 @@ the `playlist_track` ID overwrite at `playlist_track_repository.go:32`, and
 `marshal_similar_artists` hand-escaping via `{:?}` at `artist_repo.rs:502-516`
 are all verified.
 
-**Parent-resolved open item.** The brief left one claim UNVERIFIED: whether
-`newSelect` joins `annotation` for album/artist/mediafile base reads. It does
-not. `newSelect` (`sql_base_repository.go:139-147`) is
-`Select().From(r.tableName)` plus options/filters only. Annotation joins are
-explicit and per-query (`album_repository.go:416`, `artist_repository.go:446`,
-gated in `mediafile_repository.go:152`). Consequence for S-D: base reads must
-not expect annotation columns, and only the queries that do join annotations
-need the `coalesce(...)` guards that avoid Go's NULL-into-non-pointer error
-(`playlist_track_repository.go:106-108` is the precedent).
+**Parent-resolved open item — CORRECTED 2026-11-06 (see
+[`hydrate-scan-contract.md`](hydrate-scan-contract.md)).** The earlier
+resolution here was wrong. `newSelect` itself (`sql_base_repository.go:139-147`)
+adds no join, but **every base entity SELECT calls `withAnnotation` on an
+unguarded line**: `album_repository.go:230` (`selectAlbum`),
+`mediafile_repository.go:207` (`selectMediaFile`), `artist_repository.go:214`
+(`selectArtist`), `playlist_repository.go:97`, `:218`, `:260`. The lines cited
+above (`album_repository.go:416`, `artist_repository.go:446`) belong to the
+`RefreshPlayCounts` UPDATE statement, a different site.
+Consequence for S-D: album/mediafile/artist/playlist hydrators must decode the
+annotation columns (`starred`, `rating`, `starred_at`, `play_date`, `rated_at`,
+`play_count`, `<table>.average_rating`) on every base read; `withAnnotation`
+already coalesces the non-pointer ones (`sql_annotations.go:63-91`). The
+mediafile base read additionally joins `bookmark` and emits
+`coalesce(position,0) as bookmark_position` (`sql_bookmarks.go:18-28`, called at
+`mediafile_repository.go:208`), which lighter queries (`getRandomHydrate`,
+`putByMatch`) do not emit — so the mapper must tolerate its absence. The shared
+row mapper therefore cannot assume a fixed column set per entity.
 
 The remaining UNVERIFIED items in section 7 are still open and must be
 re-derived by whoever builds S-D, not assumed.
@@ -93,7 +102,7 @@ Pointer fields per entity (model file:line):
 - **playlist**: `Rules *criteria.Criteria` `model/playlist.go:43`, `EvaluatedAt *time.Time` :44. (§1b "44" — **confirmed**.)
 - **user**: `LastLoginAt`/`LastAccessAt *time.Time` `model/user.go:16-17` (**confirmed**).
 - **share**: `ExpiresAt`/`LastVisitedAt *time.Time` `model/share.go:19-20` (**confirmed**).
-- **annotations (embedded in album, artist, mediafile, playlist)**: `PlayDate`/`RatedAt`/`StarredAt *time.Time` `model/annotation.go:10,12,14` (**confirmed**). Note `rating`/`starred`/`play_count` are non-pointer — Go's track reads coalesce them (`playlist_track_repository.go:106-108` `coalesce(starred,0) as starred` etc.), and playlist_tracks' annotation join is a LEFT JOIN, so **any select that joins annotations for these entities must coalesce or it NULL-errors on rows without annotations** (annotation rows are per-user; admin/no-user selects rely on defaults). The album/artist/mediafile base selects do not join annotation — UNVERIFIED whether `newSelect` does (see §7).
+- **annotations (embedded in album, artist, mediafile, playlist)**: `PlayDate`/`RatedAt`/`StarredAt *time.Time` `model/annotation.go:10,12,14` (**confirmed**). Note `rating`/`starred`/`play_count` are non-pointer — Go's track reads coalesce them (`playlist_track_repository.go:106-108` `coalesce(starred,0) as starred` etc.), and playlist_tracks' annotation join is a LEFT JOIN, so **any select that joins annotations for these entities must coalesce or it NULL-errors on rows without annotations** (annotation rows are per-user; admin/no-user selects rely on defaults). The album/artist/mediafile/playlist base selects DO join annotation, unguarded (`album_repository.go:230`, `mediafile_repository.go:207`, `artist_repository.go:214`, `playlist_repository.go:97`); `withAnnotation` coalesces `starred`/`rating`/`play_count` itself (`sql_annotations.go:63-91`).
 - `model/artwork.go:66-67` (`attempted_at`/`updated_at` non-pointer with the explicit "cannot scan NULL" comment) — **confirmed**, context only.
 
 Rust consequence: the mapper must read NULL into `Option<T>` for exactly the fields above and `NOT NULL` (or coalesced) columns as bare values — matching Go means NULL on a non-nullable column should be an **error**, not a silent zero.
@@ -162,10 +171,10 @@ Keep it as plain functions over `rusqlite::Row` in a new `nd-db/src/hydrate.rs` 
 **JSON traps (both confirmed relevant to S-D):**
 - Integer-key ordering: album `discs` JSON is the live instance. Go verified in §1b (`{"1","10","2"}` string order); the Rust discs marshaler must stringify-then-sort.
 - Participant ordering: `AllNames()` (`model/participants.go:174-185`) iterates `map[Role]ParticipantList` (type at `:94`) — non-deterministic role order, deduped by `slice.Unique` preserving first occurrence. Safe for `full_text` (sorted downstream by `SanitizeStrings`) but `search_participants` bytes depend on iteration order → **persist no inherited ordering** (same rule as #16, §7-item 7 of the doc). `marshalParticipants` (`sql_participations.go:50-65`) likewise marshals the map — role key order is sorted by encoding/json (map keys sort as strings: `albumartist` < `artist` < `composer`...), but **within a role the list order is whatever `model.Participants` held**. S-A's output (a `&[(String,String)]`-free, order-explicit representation) is what the seam consumes; the seam must not reorder.
-- Escaping: decision already made in §1b (match shape + round-trip, not Go's escaped bytes) — `marshal_similar_artists` (`artist_repo.rs:502-516`) already hand-escapes with `{:?}`, which does *not* match Go's `<`,`>`,`&`,U+2028/2029 escaping; per the documented decision that's fine, but the seam should use **one** JSON encoder for all hook JSON rather than per-call-site hand-escaping. UNVERIFIED whether the S-A participant golden was byte-compared or parsed (doc says parsed).
+- Escaping: decision already made in §1b (match shape + round-trip, not Go's escaped bytes) — `marshal_similar_artists` (`artist_repo.rs:502-516`) still hand-escapes with `{:?}`; per the §1b decision that is acceptable, and S-D1 landed `sql_json.rs` as the single serde encoder for the remaining column codecs. S-D3 needs a **decoder** for `similar_artists` and `library_stats_json`, neither of which exists yet. UNVERIFIED whether the S-A participant golden was byte-compared or parsed (doc says parsed).
 
 **S-A / S-B output the seam must consume:**
-- S-A (`nd-db/src/sql_participations.rs` + `tests/participants_json.rs` + `testdata/go_participants/`): a `marshalParticipants`/`unmarshalParticipants` pair. Current state verified: `sql_participations.rs` has only filter/subquery fns (`participant_id_column` :40, `participant_ids_subquery` :48, `with_participant_roles` :66, `participant_id_filter` :87, `not_participant_id_filter` :94) — no marshaler yet, so **S-A is not landed in this checkout** (HEAD `336f69ba` is docs-only since `12e270f7`). The seam's `participants` column reads/writes must be written *against* S-A's API once it lands (S-D is explicitly ordered after S-A+S-B per §1c).
+- S-A — **LANDED** (`sql_participations.rs` + `tests/participants_json.rs` + `testdata/go_participants/`): `marshal_participants` :319, `unmarshal_participants` :349, `marshal_flat_participants` :297, plus the checked `Role` bridge (`role_from_id`/`into_id_role`). S-D3 consumes these directly; the stale "S-A is not landed" claim written at HEAD `336f69ba` no longer holds.
 - S-B (new `nd-db/src/sql_feeders.rs` + `tests/search_feeders.rs`): `full_text`/`search_participants`/`search_normalized` producers able to express album's 7 input groups (`album_repository.go:72-80`) and mediafile's (`mediafile_repository.go:70-76`), replacing artist-only `format_full_text`/`search_normalized` (`artist_repo.rs:419,425` — §1b's correction of `:412,418` is **confirmed**: 419 and 425 are the fns, 412 an attribute). S-D's mediafile/album marshallers take feeder output as `FtsColumns`-shaped input.
 
 **Contradictions / confirmations vs next-work.md §1b-§1c:**
@@ -179,7 +188,7 @@ Keep it as plain functions over `rusqlite::Row` in a new `nd-db/src/hydrate.rs` 
 - §1b "dbx discards unknown columns" — confirmed, with one doc-level nuance worth pinning in S-D: discards are by *field-name map*, so a **joined query with an extra aliased column** (e.g. `library_path`, `libraries_json` has a home, `owner_name` doesn't for playlist) silently drops only the columns with no matching field.
 - §1c slice table matches the tree: `sql_participations.rs` exists with no marshaler (S-A not landed), no `sql_feeders.rs` (S-B not landed), no `hydrate.rs` (S-D pending) — **consistent**.
 - One thing §1b does *not* state that S-D needs: **`dbPlaylist` embeds `model.Playlist` by value and `dbPlaylistTrack` embeds `dbMediaFile` by value** (`playlist_repository.go:25`, `playlist_track_repository.go:23`) — the "initialize nil embedded pointers" rule doesn't help these; PostScan mutates through the value embed, and the Rust hydrator must construct the nested record before running the hook. Also `album`/`artist`/`mediafile`/`folder`/`user` embed **pointers** (`*model.Album` etc.) that dbx allocates lazily — the Rust equivalent is "construct, then hook", same order.
-- **UNVERIFIED**: whether `newSelect` (the shared SELECT builder, `sql_base_repository.go`) joins `annotation` for album/artist/mediafile base reads — the track read does explicitly (`playlist_track_repository.go:101-116`) and coalesces, but I did not trace every album/artist/mediafile select's annotation join; S-D must enumerate the actual SELECT column sets per repo when writing hydrators, not assume `*`.
+- **RESOLVED (see the correction at the top)**: base reads join `annotation` via `withAnnotation`, and mediafile also joins `bookmark`. S-D must still enumerate the actual SELECT column set per repo rather than assume `*`, because the joined column set varies with logged user (`withAnnotation` emits only `<table>.average_rating` when there is no logged user, and `withBookmark` returns the query unchanged).
 - **UNVERIFIED**: exact `new_tag_id`/`nd_id` call the tag hook uses — `sql_tags.rs:129` uses `nd_id::new_tag_id` per its own doc comment (:126-128); I did not re-derive tag ids.
 
 **VERIFIED vs UNVERIFIED tally:**

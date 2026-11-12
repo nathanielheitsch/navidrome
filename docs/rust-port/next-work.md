@@ -349,7 +349,15 @@ integrates, runs the gate, and commits.
 | **S-D2b1 records: folder+playlist** | write, after S-D2a | `folder_repo.rs`, `playlist_repo.rs`, executed write->read tests | S-D2b2 |
 | **S-D2b2 records: album+mediafile** | write, after S-D2b1 | `album_repo.rs`, `mediafile_repo.rs`, executed write->read tests | S-D3 |
 | **S-D3 row mapper/hydration scout** | read-only, now | none (contract brief) | S-D3 |
-| **S-D3 row mapper/hydration** | write, after S-D2b | new `hydrate.rs` + one `lib.rs` line, hook-bearing repo adapters and executed reads | #17 |
+| **S-D3 scout brief** | read-only | `hydrate-scan-contract.md` (8-hook inventory, decoder gaps, seam design) | **DONE** |
+| **S-D3a hydrate core + folder/user** | write, after S-D2b1 | new `hydrate.rs` + `lib.rs`, folder/user hooks, executed reads | S-D3b |
+| **S-D3b album/mediafile hydration** | write, after S-D3a | album/mediafile repo read adapters + annotation/bookmark/ToGenres readers | S-D3c |
+| **S-D3c artist/playlist/track/scrobble** | write, after S-D3b | stats/similar-artists/criteria decoders + delegating hooks | #17 |
+
+S-D3 is pre-scoped in [`hydrate-scan-contract.md`](hydrate-scan-contract.md): all 8 `PostScan` hooks inventoried
+with exact guards/prefixes, column-to-decoder map, the six missing decoders (annotation columns, `bookmark_position`,
+`criteria` rules, `similar_artists`, `library_stats_json`, `ToGenres`), and the ownership decision that hooks and record
+DTOs live in nd-db, not nd-mapping. It corrects this repo's earlier claim that base reads do not join `annotation`.
 
 The entity write contract for S-D2b is pinned in [`entity-write-contract.md`](entity-write-contract.md):
 executed `structs.Map` column sets, db-wrapper shims, PostMapArgs add/overwrite/delete lines, `selectUpdateColumns`
