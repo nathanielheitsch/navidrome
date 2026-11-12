@@ -327,7 +327,7 @@
   },
   {
     "name": "nil_participants",
-    "note": "Go's `json.Marshal((model.Participants)(nil))` yields `null`; unmarshalling `null` back gives an empty, non-nil map — nil-vs-empty collapses through the column. The oracle's `raw` is `null` here, and `unmarshal_roundtrip` shows Go re-parsing it without error",
+    "note": "The production marshalParticipants shape starts with make(map[Role]...), so a nil model input stores `{}`; raw_direct separately records json.Marshal((model.Participants)(nil)) as `null`. Both unmarshal to an empty, non-nil map, so nil-vs-empty collapses through the column.",
     "raw": {},
     "raw_direct": null,
     "unmarshal_ok": true,

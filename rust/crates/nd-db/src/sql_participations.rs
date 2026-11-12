@@ -322,8 +322,10 @@ pub fn marshal_participants(participants: &Participants) -> String {
 
 /// `unmarshalParticipants` (`persistence/sql_participations.go:61-76`): the
 /// `participants` column → [`Participants`]. Two-value return, this crate's
-/// spelling of Go's, carrying Go's `parsing participants:` error prefix and
-/// `""` for no error.
+/// spelling of Go's, carrying the contractual `parsing participants:` error
+/// prefix and `""` for no error. Only invalid-role text is byte-identical;
+/// serde and encoding/json use different structural-error wording, and callers
+/// must not depend on text beyond the prefix.
 ///
 /// Go semantics carried over:
 /// - **`""` is an error** — `json.Unmarshal` of empty input fails
@@ -519,6 +521,23 @@ mod tests {
         let (participants, err) = unmarshal_participants(r#"{"bogus":[{"id":"a","name":"n"}]}"#);
         assert!(participants.is_empty());
         assert_eq!(err, "parsing participants: invalid role: bogus");
+    }
+
+    #[test]
+    fn unmarshal_participants_duplicate_role_key_keeps_last_value() {
+        // Go's encoding/json assigns object members in input order when
+        // decoding into a map, so a duplicate role key keeps the final list.
+        // serde_json's BTreeMap decoder has the same semantics.
+        let (participants, err) = unmarshal_participants(
+            r#"{"artist":[{"id":"first","name":"First"}],"artist":[{"id":"last","name":"Last"}]}"#,
+        );
+        assert_eq!(err, "");
+        let artists = participants
+            .get(&Role::from("artist"))
+            .expect("artist role exists");
+        assert_eq!(artists.len(), 1);
+        assert_eq!(artists[0].id, "last");
+        assert_eq!(artists[0].name, "Last");
     }
 
     #[test]

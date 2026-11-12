@@ -121,9 +121,10 @@ func main() {
 
 		// marshalParticipants (sql_participations.go:50-59), reproduced
 		// exactly: same map build, same json.Marshal (Role keys via
-		// Role.MarshalText). Even a nil input yields `{}` here — Go's
-		// `make(map…)` at :51 means production never stores `null` through
-		// this function.
+		// Role.MarshalText). The replicated function always starts with a
+		// fresh non-nil map, so its `raw` is `{}` even when the model input is
+		// nil. `raw_direct` separately captures json.Marshal on the real nil
+		// model.Participants, whose spelling is `null`.
 		dbParticipants := make(map[model.Role][]participant)
 		for role, artists := range participants {
 			for _, artist := range artists {

@@ -349,18 +349,23 @@ integrates, runs the gate, and commits.
 S-A and S-B are independent by construction: the feeder seam takes **participant names as `&[String]`**, so it does
 not depend on the participant type.
 
-**Two things learned while verifying these lanes (both matter for S-D's oracle):**
-- **Go's participant golden is NOT byte-stable.** Re-running the harness reorders entries within a role (observed:
-  `conductor` and `lyricist` entries swapped between regenerations) because `Participants` is a map. So participant
-  goldens must be compared as **multisets**, never byte-compared — which is what `participants_json.rs` does. The
-  `go_feeders` golden *is* byte-stable (verified by regeneration), because `SanitizeStrings` sorts words and
-  `NormalizeForFTS` preserves input order.
+**Review findings that matter for S-D's oracle:**
+- **Neither Go golden is wholly byte-stable.** `go_participants` reorders entries/flat rows across runs because
+  `Participants` is a map (observed `conductor`/`lyricist` swaps). `go_feeders` is stable except for
+  `search_participants`, whose `AllNames` input has the same map-order instability (reviewer reproduced two orderings
+  in 5 runs at golden lines 41 and 73). Compare those fields as **multisets**, never bytes. All other feeder fields
+  are byte-stable after regeneration. The committed Rust tests follow these rules.
 - **The two oracle harnesses take different third arguments** — `go_participants` wants a **directory**, `go_feeders`
-  wants the **output file**. Invoking either wrongly exits non-zero *without writing*, so a `diff` against the
-  committed golden then matches trivially and looks like a passing reproducibility check. Run exactly as each
-  README documents and confirm the harness printed its "wrote …" line before trusting a golden diff. `serde_json` is already a dependency of `nd-db` (`Cargo.toml:24`), so neither slice
-adds a crate. Oracle precedent to copy: `nd-mapping/tests/go_oracle.rs` + `tests/testdata/go_oracle/` (a `go run`
-harness dumps JSON goldens; the Rust test parses them and never byte-compares JSON).
+  wants the **output file**. Invoking either wrongly exits non-zero without writing, so an unchecked `diff` against
+  the old committed golden matches trivially and looks green. Run exactly as each README documents, require exit 0,
+  and confirm its `wrote …` line before trusting a diff.
+- **Role unification is an S-D acceptance criterion.** Three equivalent representations currently exist:
+  `sql_participations::Role` (owned `String`), `artist_repo::ALL_ROLES` (`&str`), and `nd_id::Role` (`&'static str`).
+  S-D must define one explicit conversion seam and pin all 14 keys equivalent; it must not silently invent a fourth.
+
+`serde_json` is already an `nd-db` dependency (`Cargo.toml:24`), so these slices added no crate. Oracle precedent:
+`nd-mapping/tests/go_oracle.rs` + `tests/testdata/go_oracle/` (Go harness dumps parsed goldens; unstable collections
+compare canonically rather than byte-for-byte).
 
 ### 2. #17 scanner — minimum executed surface is 8 repos + 1 mapper, not ~14
 
