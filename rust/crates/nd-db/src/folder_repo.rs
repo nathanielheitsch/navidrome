@@ -324,8 +324,8 @@ pub struct PutFolderSql {
     /// `Update(folder).SetMap(...).Where(Eq{"id": id})` — the set pairs bind
     /// before `id`.
     pub update: Sql,
-    /// `Insert(folder).SetMap(values)` — `id` binds first, then the set
-    /// pairs in column order.
+    /// `Insert(folder).SetMap(values)` — the set pairs in column order, then
+    /// `id`, matching the column list (`sql_base_repository.go:637-641`).
     pub insert: Sql,
 }
 
@@ -345,8 +345,10 @@ pub fn put_sql(id: &str, columns: &[String], values: Vec<Value>) -> PutFolderSql
         .chain(["id"])
         .collect::<Vec<_>>()
         .join(", ");
-    let mut insert_args = vec![Value::from(id)];
-    insert_args.extend(values);
+    // Columns end with `id` (above), so the VALUES tuple must end with it too
+    // (`squirrel@v1.5.4/insert.go:271-283`); binding id first rotates values.
+    let mut insert_args = values;
+    insert_args.push(Value::from(id));
     let placeholders = vec!["?"; insert_args.len()].join(", ");
     PutFolderSql {
         update: (
@@ -685,9 +687,9 @@ mod tests {
             (
                 "INSERT INTO folder (name, image_files, id) VALUES (?, ?, ?)".to_string(),
                 vec![
-                    Value::Text("f-1".to_string()),
                     Value::Text("Rock".to_string()),
                     Value::Text("[]".to_string()),
+                    Value::Text("f-1".to_string()),
                 ],
             )
         );

@@ -512,13 +512,24 @@ pub fn put_sql(id: &str, cols: &[Col], all_cols: &[Col], cols_to_update: &[&str]
         format!("UPDATE {TABLE} SET {set} WHERE id = ?"),
         update_args,
     );
-    let insert_set = cols
-        .iter()
-        .map(|c| format!("{} = ?", c.column))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let insert_args: Vec<Value> = cols.iter().map(|c| c.value.clone()).collect();
-    let insert = (format!("INSERT INTO {TABLE} SET {insert_set}"), insert_args);
+    // Go's `put` adds `id` to the values map before inserting — either the
+    // caller's id or a freshly minted one (`sql_base_repository.go:637-641`).
+    // `INSERT INTO t SET …` is MySQL syntax that SQLite rejects ("near \"SET\":
+    // syntax error"); squirrel renders a sorted column list plus a positional
+    // VALUES tuple (`squirrel@v1.5.4/insert.go:271-283`), so the column list
+    // and the args must be emitted together.
+    let mut insert_cols: Vec<String> = cols.iter().map(|c| c.column.clone()).collect();
+    let mut insert_args: Vec<Value> = cols.iter().map(|c| c.value.clone()).collect();
+    insert_cols.push("id".to_string());
+    insert_args.push(Value::Text(id.to_string()));
+    let placeholders = vec!["?"; insert_args.len()].join(", ");
+    let insert = (
+        format!(
+            "INSERT INTO {TABLE} ({}) VALUES ({placeholders})",
+            insert_cols.join(", ")
+        ),
+        insert_args,
+    );
     (update, insert)
 }
 
@@ -848,9 +859,21 @@ mod tests {
             update.0,
             "UPDATE playlist SET name = ?, rules = ? WHERE id = ?"
         );
+        // The INSERT is a column list + positional VALUES tuple (SQLite has no
+        // `INSERT … SET`), with `id` appended to both like Go's `put`
+        // (`sql_base_repository.go:637-641`).
         assert_eq!(
             insert.0,
-            "INSERT INTO playlist SET name = ?, created_at = ?, rules = ?"
+            "INSERT INTO playlist (name, created_at, rules, id) VALUES (?, ?, ?, ?)"
+        );
+        assert_eq!(
+            insert.1,
+            vec![
+                Value::from("Mix"),
+                Value::from("old"),
+                Value::from("{}"),
+                Value::from("pl-1"),
+            ]
         );
         // A partial update keeps only the requested columns, still minus created_at.
         let (partial, _) = put_sql("pl-1", &all, &all, &["created_at"]);

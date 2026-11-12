@@ -476,7 +476,8 @@ pub struct FtsColumns {
 pub struct PutMediaFileSql {
     /// The `r.put` update leg (`WHERE id = ?`; set pairs bind first).
     pub update: Sql,
-    /// The `r.put` insert leg (`id` binds first).
+    /// The `r.put` insert leg: column list + positional VALUES, `id` last in
+    /// both (`sql_base_repository.go:637-641`).
     pub insert: Sql,
     /// `Delete(media_file_artists) WHERE media_file_id = ?`.
     pub participants_delete: Sql,
@@ -535,7 +536,8 @@ pub fn put_sql(
 }
 
 /// `r.put`'s two legs (`sql_base_repository.go:618-642`): the UPDATE matched
-/// by `id` (set pairs bind before `id`) and the INSERT (`id` binds first).
+/// by `id` (set pairs bind before `id`) and the INSERT (columns and values
+/// emitted together, `id` last in both).
 fn put_legs(id: &str, columns: &[String], values: Vec<crate::sqlrepo::Value>) -> (Sql, Sql) {
     let set_pairs = columns
         .iter()
@@ -550,8 +552,10 @@ fn put_legs(id: &str, columns: &[String], values: Vec<crate::sqlrepo::Value>) ->
         .chain(["id"])
         .collect::<Vec<_>>()
         .join(", ");
-    let mut insert_args = vec![crate::sqlrepo::Value::from(id)];
-    insert_args.extend(values);
+    // Columns end with `id` (above), so the VALUES tuple must end with it too
+    // (`squirrel@v1.5.4/insert.go:271-283`); binding id first rotates values.
+    let mut insert_args = values;
+    insert_args.push(crate::sqlrepo::Value::from(id));
     let placeholders = vec!["?"; insert_args.len()].join(", ");
     (
         (
@@ -1134,7 +1138,10 @@ mod tests {
             "INSERT INTO media_file (title, full_text, search_participants, search_normalized, id) \
              VALUES (?, ?, ?, ?, ?)"
         );
-        assert_eq!(put.insert.1.first(), Some(&Value::Text("mf-1".to_string())));
+        // `id` is the last column, so it binds last; the caller columns keep their
+        // order ahead of it.
+        assert_eq!(put.insert.1.last(), Some(&Value::Text("mf-1".to_string())));
+        assert_eq!(put.insert.1.first(), Some(&Value::Text("Song".to_string())));
         assert_eq!(
             put.participants_delete.0,
             "DELETE FROM media_file_artists WHERE media_file_id = ?"

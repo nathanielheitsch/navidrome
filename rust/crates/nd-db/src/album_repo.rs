@@ -436,7 +436,9 @@ fn annotation_bool(field: &str, value: &str) -> String {
 pub struct PutAlbumSql {
     /// The `r.put` update leg (`WHERE id = ?`; set pairs bind first).
     pub update: Sql,
-    /// The `r.put` insert leg (`id` binds first).
+    /// The `r.put` insert leg: a column list plus a positional VALUES tuple,
+    /// with `id` appended to both (Go adds it to the values map,
+    /// `sql_base_repository.go:637-641`).
     pub insert: Sql,
     /// `Delete(album_artists) WHERE album_id = ?`.
     pub participants_delete: Sql,
@@ -486,7 +488,8 @@ pub fn put_sql(
 }
 
 /// `r.put`'s two legs (`sql_base_repository.go:618-642`): the UPDATE matched
-/// by `id` (set pairs bind before `id`) and the INSERT (`id` binds first).
+/// by `id` (set pairs bind before `id`) and the INSERT (columns and values
+/// emitted together, `id` last in both).
 fn put_legs(id: &str, columns: &[String], values: Vec<Value>) -> (Sql, Sql) {
     let set_pairs = columns
         .iter()
@@ -501,8 +504,12 @@ fn put_legs(id: &str, columns: &[String], values: Vec<Value>) -> (Sql, Sql) {
         .chain(["id"])
         .collect::<Vec<_>>()
         .join(", ");
-    let mut insert_args = vec![Value::from(id)];
-    insert_args.extend(values);
+    // Columns end with `id` (above), so the VALUES tuple must end with it too.
+    // squirrel's `SetMap` sorts columns and emits values positionally
+    // (`squirrel@v1.5.4/insert.go:271-283`); binding id first rotates every
+    // value into the wrong column.
+    let mut insert_args = values;
+    insert_args.push(Value::from(id));
     let placeholders = vec!["?"; insert_args.len()].join(", ");
     (
         (
@@ -1111,15 +1118,16 @@ mod tests {
                 ],
             )
         );
-        // The insert binds id first.
+        // The VALUES tuple follows the column list, so `id` is LAST — binding it
+        // first rotated every value into the wrong column.
         assert_eq!(
             put.insert,
             (
                 "INSERT INTO album (name, tags, id) VALUES (?, ?, ?)".to_string(),
                 vec![
-                    Value::Text("al-1".to_string()),
                     Value::Text("Abbey Road".to_string()),
                     Value::Text("{}".to_string()),
+                    Value::Text("al-1".to_string()),
                 ],
             )
         );
