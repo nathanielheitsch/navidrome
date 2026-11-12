@@ -344,7 +344,15 @@ integrates, runs the gate, and commits.
 | **S-A participant JSON** | write | `sql_participations.rs`, `tests/participants_json.rs`, `testdata/go_participants/` | **LANDED `2a99a681`** |
 | **S-B search feeders** | write | new `sql_feeders.rs` + one `lib.rs` line, `tests/search_feeders.rs`, `testdata/go_feeders/` | **LANDED `3f8b5a8d`** |
 | **S-C PostScan contract brief** | read-only | → `docs/rust-port/hydrate-contract.md` | **LANDED `deeb837d`** |
-| **S-D row mapper + marshal seam** | write, after S-A+S-B land and are reviewed | new `nd-db/src/hydrate.rs` + `lib.rs`, repo adapters | #17 |
+| **S-D1 JSON/Role bridge** | write, after review | `sql_participations.rs`, new `sql_json.rs` + one `lib.rs` line, `tests/sql_json.rs`, Go oracle | S-D2 |
+| **S-D2 entity marshal seam** | write, after S-D1 | new `marshal.rs` + one `lib.rs` line, album/mediafile/folder/playlist adapters and executed write→read tests | S-D3 |
+| **S-D3 row mapper/hydration** | write, after S-D2 | new `hydrate.rs` + one `lib.rs` line, hook-bearing repo adapters and executed reads | #17 |
+
+The original S-D was too large for one ownership-safe lane, so it is now sequenced into three slices. **S-D1** closes
+the remaining JSON and role-contract primitives (`discs`, `folder_ids`, `image_files`, one explicit conversion between
+`sql_participations::Role` and `nd_id::Role`, 14-key equivalence). **S-D2** owns the entity→sorted `(columns, values)`
+marshal seam and wires S-A/S-B outputs into existing `put_sql` APIs. **S-D3** owns row→entity hydration and the 8
+`PostScan` hooks from `hydrate-contract.md`. No writer overlaps another; the parent reviews and gates between slices.
 
 S-A and S-B are independent by construction: the feeder seam takes **participant names as `&[String]`**, so it does
 not depend on the participant type.
