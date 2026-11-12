@@ -28,9 +28,9 @@
 //! Go's `db/db.go:55` DSN parameter.
 
 use nd_db::album_repo;
-use nd_db::folder_repo;
+use nd_db::folder_repo::{self, FolderRecord};
 use nd_db::mediafile_repo;
-use nd_db::playlist_repo::{self, Col};
+use nd_db::playlist_repo::{self, PlaylistRecord};
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::sqlrepo::Value;
 use nd_db::store::SQLStore;
@@ -148,21 +148,32 @@ fn album_insert_stores_each_value_in_its_own_column() {
     std::fs::remove_file(path).ok();
 }
 
+/// Superseded in scope by `runtime_marshal_records.rs::folder_record_insert_update_readback`,
+/// but the rotation regression itself stays pinned here: the INSERT leg renders a
+/// column list plus a positional VALUES tuple with `id` appended to both, and each
+/// value lands in its own column. A [`FolderRecord`] carries a distinct value per
+/// column, so a rotation is detectable without hand-building a column list the
+/// record API no longer accepts.
 #[test]
 fn folder_insert_stores_each_value_in_its_own_column() {
     let (store, path) = store();
     seed_library(&store);
     // folder.library_id is NOT NULL without a default in the fresh DDL.
-    let columns = [
-        "name".to_string(),
-        "num_audio_files".to_string(),
-        "library_id".to_string(),
-    ];
-    let put = folder_repo::put_sql(
-        "f-1",
-        &columns,
-        vec![Value::from("Rock"), Value::from(3_i64), Value::from(1_i64)],
-    );
+    let record = FolderRecord {
+        library_id: 1,
+        path: "music/rock".to_string(),
+        name: "Rock".to_string(),
+        parent_id: String::new(),
+        num_audio_files: 3,
+        num_playlists: 0,
+        image_files: None,
+        images_updated_at: stamp(),
+        hash: "H-1".to_string(),
+        missing: false,
+        updated_at: stamp(),
+        created_at: Some(stamp()),
+    };
+    let put = folder_repo::put_sql("f-1", &record, stamp(), &[]).expect("renders");
 
     assert_eq!(insert(&store, &put.insert), 1);
 
@@ -174,6 +185,14 @@ fn folder_insert_stores_each_value_in_its_own_column() {
     );
     drop(store);
     std::fs::remove_file(path).ok();
+}
+
+/// An explicit timestamp bind: the DDL's localtime defaults are never relied on
+/// (next-work.md's 2026-11-11 decision).
+fn stamp() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc)
 }
 
 #[test]
@@ -218,13 +237,30 @@ fn mediafile_insert_stores_each_value_in_its_own_column() {
 fn playlist_insert_is_sqlite_syntax_and_stores_each_value() {
     let (store, path) = store();
     seed_user(&store);
-    let cols = vec![
-        Col::text("name", "Mix"),
-        Col::text("owner_id", "u-1"),
-        Col::text("created_at", "2024-01-01 00:00:00+00:00"),
-        Col::text("rules", "{}"),
-    ];
-    let (_, insert_stmt) = playlist_repo::put_sql("pl-1", &cols, &cols, &[]);
+    // Non-smart record: PostMapArgs deletes `rules`, so that column is absent
+    // from the INSERT — exactly the value that previously rotated into the
+    // `created_at` position when a caller supplied a rules column.
+    let record = PlaylistRecord {
+        name: "Mix".to_string(),
+        comment: String::new(),
+        duration: 0.0,
+        size: 0,
+        song_count: 0,
+        owner_id: "u-1".to_string(),
+        public: false,
+        path: String::new(),
+        sync: false,
+        uploaded_image: String::new(),
+        external_image_url: String::new(),
+        created_at: Some(stamp()),
+        updated_at: stamp(),
+        imported_hash: String::new(),
+        rules: None,
+        evaluated_at: None,
+    };
+    let insert_stmt = playlist_repo::put_sql("pl-1", &record, stamp(), &[])
+        .expect("renders")
+        .insert;
 
     assert!(
         !insert_stmt.0.contains(" SET "),
@@ -236,13 +272,18 @@ fn playlist_insert_is_sqlite_syntax_and_stores_each_value() {
     assert_eq!(text(&store, "SELECT id FROM playlist"), "pl-1");
     assert_eq!(text(&store, "SELECT name FROM playlist"), "Mix");
     assert_eq!(
-        text(&store, "SELECT rules FROM playlist"),
-        "{}",
-        "rules must not be rotated into created_at"
+        text(&store, "SELECT owner_id FROM playlist"),
+        "u-1",
+        "owner_id must not be rotated into id or name"
     );
     assert_eq!(
         text(&store, "SELECT created_at FROM playlist"),
         "2024-01-01 00:00:00+00:00"
+    );
+    assert_eq!(
+        text(&store, "SELECT CAST(rules IS NULL AS TEXT) FROM playlist"),
+        "1",
+        "non-smart put deletes rules: the column is not written"
     );
     drop(store);
     std::fs::remove_file(path).ok();
