@@ -96,7 +96,36 @@ pub fn optional_value(dt: Option<&DateTime<Utc>>) -> Value {
 pub fn col(column: &str, dt: &DateTime<Utc>) -> (String, Value) {
     (column.to_string(), value(dt))
 }
+/// Fresh DDL defaults several `datetime` columns to the sentinel
+/// `'0000-00-00 00:00:00'` (`nd-dbschema`: `library.last_scan_at`/
+/// `last_scan_started_at`, `album.imported_at`). chrono cannot parse it
+/// (month and day are 0), so a strict read of a default row would fail.
+///
+/// Go reaches the same place and resolves it the same way: parsing that text
+/// errors and yields the zero `time.Time`, and the scanner tests
+/// `!lib.LastScanAt.IsZero()` (`scanner/controller.go:124`,
+/// `model/library.go:64`), so the sentinel means "never scanned" rather than
+/// a date. This port maps it to `None` for the same reason — `None` is the
+/// port's "absent" spelling, mirroring Go's `*time.Time` nils above.
+pub const ZERO_DATE_SENTINEL: &str = "0000-00-00 00:00:00";
 
+/// Read a nullable timestamp column, treating the DDL's
+/// [`ZERO_DATE_SENTINEL`] as absent (`None`) rather than a parse failure.
+///
+/// # Errors
+/// Propagates a genuine decode failure — a malformed date is an error, but
+/// the sentinel is not.
+pub fn optional_sentinel(
+    row: &rusqlite::Row<'_>,
+    column: &str,
+) -> rusqlite::Result<Option<DateTime<Utc>>> {
+    let raw: Option<String> = row.get(column)?;
+    match raw {
+        None => Ok(None),
+        Some(text) if text == ZERO_DATE_SENTINEL => Ok(None),
+        Some(_) => row.get(column).map(Some),
+    }
+}
 /// A `SET column = <timestamp>` pair where `None` sets the column to NULL
 /// (`artist_repo.rs`'s `external_info_updated_at`, Go's nil `*time.Time`).
 #[must_use]
@@ -225,6 +254,59 @@ mod tests {
         for row in &stored {
             assert_eq!(row.2, "text", "timestamp columns must be text");
         }
+    }
+
+    #[test]
+    fn sentinel_reads_as_absent_and_a_real_date_reads_as_a_time() {
+        // The fresh DDL defaults library.last_scan_at/last_scan_started_at and
+        // album.imported_at to '0000-00-00 00:00:00', which chrono cannot parse
+        // (month and day are 0). Go's equivalent parse errors and yields the
+        // zero time.Time, and the scanner tests !LastScanAt.IsZero()
+        // (model/library.go:64, scanner/controller.go:124), so the sentinel means
+        // "never scanned" — this port spells that None.
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE t (id text primary key, last_scan_at datetime not null default '0000-00-00 00:00:00');",
+        )
+        .expect("table creates");
+        conn.execute(
+            "INSERT INTO t (id, last_scan_at) VALUES ('sentinel', '0000-00-00 00:00:00')",
+            [],
+        )
+        .expect("sentinel row writes");
+        conn.execute(
+            "INSERT INTO t (id, last_scan_at) VALUES ('real', ?)",
+            rusqlite::params![value(&at(2024, 1, 1, 0, 0, 0, 0))],
+        )
+        .expect("real row writes");
+        conn.execute("INSERT INTO t (id) VALUES ('default')", [])
+            .expect("default row writes via the DDL default");
+
+        let read = |id: &str| {
+            conn.query_row("SELECT last_scan_at FROM t WHERE id = ?", [id], |row| {
+                optional_sentinel(row, "last_scan_at")
+            })
+            .expect("row reads")
+        };
+        assert_eq!(read("sentinel"), None, "the sentinel is absent");
+        assert_eq!(read("default"), None, "the DDL default is absent too");
+        assert_eq!(read("real"), Some(at(2024, 1, 1, 0, 0, 0, 0)));
+
+        // A genuinely malformed date is still an error, not silently absent.
+        conn.execute(
+            "INSERT INTO t (id, last_scan_at) VALUES ('garbage', 'not a date')",
+            [],
+        )
+        .expect("garbage row writes");
+        assert!(
+            conn.query_row(
+                "SELECT last_scan_at FROM t WHERE id = ?",
+                ["garbage"],
+                |row| { optional_sentinel(row, "last_scan_at") }
+            )
+            .is_err(),
+            "a malformed date must not read as absent"
+        );
     }
 
     #[test]
