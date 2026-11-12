@@ -1,0 +1,80 @@
+[
+  {
+    "name": "empty_participants",
+    "note": "Go's `json.Marshal(model.Participants{})` — non-nil empty map — yields `{}`",
+    "inputs": {}
+  },
+  {
+    "name": "single_role",
+    "note": "one role, one entry, no subRole",
+    "inputs": {
+      "artist": [
+        { "id": "a-1", "name": "Solo Artist" }
+      ]
+    }
+  },
+  {
+    "name": "multi_role",
+    "note": "four roles inserted out of string order; role keys must sort as strings",
+    "inputs": {
+      "performer": [
+        { "id": "p-1", "name": "The Performer", "subRole": "vocals" }
+      ],
+      "artist": [
+        { "id": "a-1", "name": "Lead" }
+      ],
+      "conductor": [
+        { "id": "c-1", "name": "Conductor" },
+        { "id": "c-2", "name": "Second Conductor", "subRole": "assisting" }
+      ],
+      "albumartist": [
+        { "id": "aa-1", "name": "The Band" }
+      ]
+    }
+  },
+  {
+    "name": "sub_role_present_and_absent",
+    "note": "subRole omitted when empty, present when set — `omitempty`",
+    "inputs": {
+      "composer": [
+        { "id": "c-1", "name": "With Sub", "subRole": "melody" },
+        { "id": "c-2", "name": "Without Sub" },
+        { "id": "c-3", "name": "Empty Sub", "subRole": "" }
+      ]
+    }
+  },
+  {
+    "name": "escaping_and_unicode",
+    "note": "names with < > & and U+2028/U+2029 — Go escapes, serde_json does not (settled divergence: shape and round-trip fidelity, not bytes)",
+    "inputs": {
+      "lyricist": [
+        { "id": "l-1", "name": "a<b>c&d", "subRole": "verse 1" }
+      ],
+      "composer": [
+        { "id": "c-1", "name": "Line1\u2028Line2\u2029End", "subRole": "\u2028only" }
+      ],
+      "producer": [
+        { "id": "pr-1", "name": "Zoë \u00fcber \u00e9poque \u4e2d\u6587" }
+      ]
+    }
+  },
+  {
+    "name": "repeated_artists_in_role",
+    "note": "the same artist twice in one role: the column stores both entries (duplicates live in the join table, ON CONFLICT dedupes there)",
+    "inputs": {
+      "artist": [
+        { "id": "a-1", "name": "First", "subRole": "part 1" },
+        { "id": "a-1", "name": "First", "subRole": "part 2" },
+        { "id": "a-1", "name": "First" }
+      ],
+      "performer": [
+        { "id": "a-1", "name": "First" }
+      ]
+    }
+  },
+  {
+    "name": "nil_participants",
+    "note": "Go's `json.Marshal((model.Participants)(nil))` yields `null`; unmarshalling `null` back gives an empty, non-nil map — nil-vs-empty collapses through the column. The oracle's `raw` is `null` here, and `unmarshal_roundtrip` shows Go re-parsing it without error",
+    "inputs": "nil"
+  }
+]
