@@ -31,11 +31,12 @@ back, with a non-vacuity arm reproducing the pre-fix argument order. Proven non-
 album test fail. **Lesson for the shared layer: renderer tests cannot catch this class — every write path needs an
 executed write→read-back test.**
 
-**Still open inside the shared layer's scope**: `mediafile_repo::upsert_sql` (the `importFiles` path) is a MySQL
-`ON DUPLICATE KEY UPDATE` stub returning only the UPDATE leg. It is outside the `put` contract, but scanner work must
-convert it to SQLite `ON CONFLICT(id) DO UPDATE SET` against the `media_file_pkey` unique index.
-`folder_repo::update_info_sql` and `album_repo::update_times_of_birth_sql` are honest `todo!()` stubs and correctly
-unreachable. The Go `PostScan`/`PostMapArgs` marshal contract the shared layer must implement is §1b below.
+**Verified against the tree, not from memory** (three claims previously written here were fabricated and are
+removed): there is **no** `mediafile_repo::upsert_sql`, **no** `ON DUPLICATE KEY UPDATE` anywhere in `nd-db` or in
+Go `persistence/`, **no** `todo!()`/`unimplemented!()` in `nd-db`, and **no** `media_file_pkey` index. Go's
+`mediaFileRepository.Put` (`persistence/mediafile_repository.go:184-197`) uses `putByMatch` — a SELECT-then-`put`,
+not an upsert — and the Rust `put_match_sql` + `put_sql` pair already models that correctly. Do not "fix" an upsert
+that does not exist.
 
 The figures below (1442, 1230, 1183, and the 1453 in its progression line) are dated historical boundaries.
 
@@ -247,14 +248,21 @@ Hazards, ranked by how silently they corrupt data:
 5. **Two more brief claims are false — do not chase them.** `user_props_repo.rs:108` does *not* map `value` twice: its
    `get` selects the single `value` column exactly as Go does (`user_props_repository.go:30-40`, verified). And
    `artist_repo.rs:236` is not a `PostScan` stub; it is the annotation-column join inside `new_select_sql`.
-6. **INSERT column/value alignment and MySQL-only syntax — fixed for `put` (`8c89aeb9`), still open for `upsert`.**
-   `album_repo`, `folder_repo` and `mediafile_repo` appended `id` to the column list while prepending it to the args,
-   so every multi-column insert stored each value in the wrong column; `playlist_repo` emitted `INSERT … SET`, which
-   SQLite cannot parse. Both are now correct and pinned by `tests/runtime_insert_alignment.rs`. What remains is
-   `mediafile_repo::upsert_sql` (Go `importFiles`, `persistence/media_file_upserter.go:19`): still MySQL
-   `ON DUPLICATE KEY UPDATE` returning only the UPDATE leg, so it silently drops the insert leg. It needs SQLite
-   `ON CONFLICT(id) DO UPDATE SET` against the `media_file_pkey` unique index (`migrations/migration.go:236`), with
-   the DO UPDATE assignment list. The shared marshal layer is where that belongs — do not let a caller paper over it.
+6. **The write feeders exist as types but nothing produces them.** `mediafile_repo::FtsColumns` (`:459`) documents
+   that the caller supplies `full_text`/`search_participants`/`search_normalized`, and `put_sql` takes
+   `participants_json` as an already-marshalled string — but **no production code computes either**. Verified: the
+   only `full_text`/`search_normalized` producer in the crate is `artist_repo.rs:576-581` (2-arg and 1-arg helpers),
+   which cannot express album's inputs (disc values, album-version/catalog-number tags) or mediafile's (participants,
+   sort fields, `FullTitle` subtitle). `sql_tags::marshal_tags` (`:129`) is faithful and unused outside its own tests,
+   and there is **no participant marshaller at all** (`sql_participations.rs` has only filter/subquery helpers, vs Go
+   `sql_participations.go:50-65`). No `discs`/`folder_ids` JSON marshaler exists either. A scanner writing rows today
+   would persist empty search columns and no participant/tag rows with **no error anywhere**. §1b "Search feeders are
+   artist-only" states this precisely; it is the first thing the shared layer must close.
+7. **`put` alignment is fixed; the executed-read half is not.** `album_repo`/`folder_repo`/`mediafile_repo` appended
+   `id` to the column list while prepending it to the args, so every multi-column insert stored each value in the
+   wrong column; `playlist_repo` emitted `INSERT … SET`, which SQLite cannot parse. Both are corrected in `8c89aeb9`
+   and pinned by `tests/runtime_insert_alignment.rs`. Nothing in this hazard list is a hypothetical — it is the
+   measured state.
 
 **Shape to build:** one file, one seam — entity→`(columns, values)` marshal and row→entity mapper, both pinned against a
 Go oracle, with `PostScan`/`PostMapArgs` hooks; then per-repo adapters. DTOs stay **local to `nd-db`**: `nd-model` is
@@ -277,11 +285,13 @@ scans via `ScanStruct` (`:429`); `queryAll` at `:441`; `queryAllSlice` at `:460`
 embedded pointers, and **discards unknown columns into `sql.NullString`** (`dbx@v1.12.0/rows.go:65-104`,
 `struct.go:160-206,249-257`).
 
-**Only 6 repos have row hooks** — album, artist, mediafile, folder, playlist, playlist_track (+ scrobble_buffer, which
-delegates to mediafile's `PostScan` and overwrites `MediaFile.ID = media_file_id`,
-`scrobble_buffer_repository.go:18-29`). library, tag, genre, radio, share, scrobble, transcoding, property, artwork,
-artwork_queue, plugin, user, user_props, smart_playlist hydrate a **plain model with no hooks** — Rust must not invent
-any. `smart_playlist` is not a separate repository at all (`smart_playlist_repository.go:15-23`). Note
+**8 models have `PostScan` row hooks** (`grep -c 'func.*PostScan' persistence/*.go` = 8): album, artist, folder,
+mediafile, playlist, playlist_track, scrobble_buffer (delegates to mediafile's and overwrites
+`MediaFile.ID = media_file_id`, `scrobble_buffer_repository.go:23`), and **user** — `dbUser.PostScan` unmarshals
+`LibrariesJSON` (`user_repository.go:36-42`), so user is *not* hook-free as an earlier revision of this doc claimed.
+5 have `PostMapArgs` write hooks: album, artist, folder, mediafile, playlist. library, tag, genre, radio, share,
+scrobble, transcoding, property, artwork, artwork_queue, plugin, user_props and smart_playlist hydrate a **plain
+model with no hooks** — Rust must not invent any. `smart_playlist` is not a separate repository at all (`smart_playlist_repository.go:15-23`). Note
 `sql_tags.go:15-20`'s `dbTag` is the **JSON column representation**, not the tag repo's row.
 
 **NULL semantics differ from Go and must be pinned, not assumed.** Go delegates to `database/sql`: NULL into a
