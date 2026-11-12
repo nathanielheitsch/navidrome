@@ -216,6 +216,61 @@ already set that precedent. Do not touch `nd-model` for hydration. Harness prece
 `nd-db/tests/runtime_player_repo.rs:34-46` (`apply_fresh_schema` + `Pool` + `SQLStore`), `_foreign_keys=on` in the DSN
 (`db/db.go:55`), `SEEDEDRAND`/`NATSORT` registered per connection via `schema::open`.
 
+### 1b. Go contract for that layer (lane `e189495e…`, 2026-11-11, parent-verified)
+
+A high-reasoning lane produced the Go-side contract; its corrections and my own verification follow. Two of *my* brief's
+claims were wrong and are fixed here: `Discs` is `map[int]string` (`model/album.go:124`), not `map[string]Disc`; and the
+Rust search helpers are at `artist_repo.rs:419,425`, not `:412,418` (`:412` is an attribute).
+
+**Write funnel** — `toSQLArgs` (`persistence/helpers.go:20-42`) is **one** per-value type switch, not two passes:
+`structs.Map` → for each value, unwrap a non-nil `*time.Time` else call `driver.Valuer` → then `PostMapArgs`. A **nil**
+`*time.Time` stays nil and therefore binds NULL. Read funnel: `queryWithStableResults` (`sql_base_repository.go:411`)
+scans via `ScanStruct` (`:429`); `queryAll` at `:441`; `queryAllSlice` at `:460`. dbx maps columns by **`db` tags** (not
+`structs` tags), recurses into anonymous/nested non-scanner structs, prefers shallower shadowing fields, initializes nil
+embedded pointers, and **discards unknown columns into `sql.NullString`** (`dbx@v1.12.0/rows.go:65-104`,
+`struct.go:160-206,249-257`).
+
+**Only 6 repos have row hooks** — album, artist, mediafile, folder, playlist, playlist_track (+ scrobble_buffer, which
+delegates to mediafile's `PostScan` and overwrites `MediaFile.ID = media_file_id`,
+`scrobble_buffer_repository.go:18-29`). library, tag, genre, radio, share, scrobble, transcoding, property, artwork,
+artwork_queue, plugin, user, user_props, smart_playlist hydrate a **plain model with no hooks** — Rust must not invent
+any. `smart_playlist` is not a separate repository at all (`smart_playlist_repository.go:15-23`). Note
+`sql_tags.go:15-20`'s `dbTag` is the **JSON column representation**, not the tag repo's row.
+
+**NULL semantics differ from Go and must be pinned, not assumed.** Go delegates to `database/sql`: NULL into a
+non-pointer numeric/string/time field **errors**, it does not zero (`convert.go:489-535`); pointer fields become nil.
+Go's nullable pointers: album RG + `external_info_updated_at` (`album.go:53-54,62`), mediafile bit depth/BPM/RG
+(`mediafile.go:67,84,95-98`), artist timestamps (`artist.go:39,45-46`), playlist evaluated (`playlist.go:44`), user
+last login/access (`user.go:16-17`), share expiry/last visited (`share.go:19-20`), annotation timestamps
+(`annotation.go:10-14`). `model/artwork.go:65-67` explicitly warns about non-pointer `attempted_at`/`updated_at`.
+
+**JSON: two traps, both verified empirically.**
+1. **Tags are not a plain map dump.** `marshalTags` (`sql_tags.go:37-47`) emits role-keyed arrays of `{id, value}` where
+   `id = model.NewTag(name, value).ID`, drops empty value lists, and serializes nil/empty as `{}`. Rust already has a
+   faithful port — `sql_tags.rs:129 marshal_tags` using `nd_id::new_tag_id` — **but nothing calls it** (only its own
+   tests), and **there is no participant marshaller at all**: `sql_participations.rs` has only filter/subquery helpers,
+   no `marshalParticipants`/`unmarshalParticipants` equivalent (`sql_participations.go:50-65`, which also errors on an
+   empty participant string).
+2. **Integer-key ordering.** Go marshals `map[int]string` with keys sorted **as strings**: verified `{"1":"a","10":"j",
+   "2":"b"}`. A Rust `BTreeMap<i32,String>` emits `"1","2","10"` — different bytes. Keys must be stringified before
+   sorting.
+3. **Escaping.** Go escapes `<`, `>`, `&`, U+2028, U+2029 (verified: `"a<b>c&d"`); serde_json does not.
+   **Decision given the user's no-migration rule: match Go's *shape and round-trip fidelity*, not its escaped bytes.**
+   The JSON is internal, self-consistent, and the existing `nd-mapping` goldens are *parsed*, not byte-compared
+   (`go_oracle.rs:88`; zero `u0026`/`u003c` occurrences), so serde's raw output is fine as long as decode is exact and
+   key ordering is stable. Document this as a deliberate divergence rather than silently diverging.
+
+**Search feeders are artist-only and cannot express album/mediafile.** `formatFullText` = one leading space +
+`SanitizeStrings` (`sql_search.go:15-17`); `SanitizeStrings` trims/concats, `Clear`, slash→space, lowercases,
+transliterates, strips quote/bracket/comma chars, splits, **sorts and dedupes** (`str/sanitize_strings.go:14-36`).
+`NormalizeForFTS` preserves input order and adds transliterated variants, skipping empty/unchanged/case-dupes
+(`str/normalize_fts.go:10-44`). Album's inputs are name, sort name, album artist, participant names, disc values,
+album-version and catalog-number tag values (`album_repository.go:71-80`); mediafile's are title/album/artists/sort
+fields/disc subtitle/participants (`mediafile_repository.go:69-78`), and `FullTitle` may append a subtitle
+(`mediafile.go:109-113`). The two existing Rust helpers take 2 and 1 args. `Participants.AllNames` iterates a Go map,
+so participant ordering is **not stable** (`participants.go:174-185`) — safe for `full_text` because it sorts words, but
+`search_participants` bytes depend on order, so **persist no ordering inherited from either side** (same rule as #16).
+
 ### 2. #17 scanner — minimum executed surface is 8 repos + 1 mapper, not ~14
 
 A fresh scan **reads back** what it wrote, so phases 2/3/4 and `finalize` need executed *reads*: an executed-read seam
