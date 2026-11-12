@@ -26,8 +26,8 @@ Measured at `38b0b812` (2026-11-11), `cd rust`:
 - `cargo fmt --all -- --check` — clean
 - `cargo build --locked --workspace` — clean
 - `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` — clean
-- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1442 passed / 0 FAILED** (1 ignored)
-  across 52 test binaries; zero surviving `ffmpeg` processes afterwards
+- `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` — **1453 passed / 0 FAILED** (1 ignored)
+  across 53 test binaries; zero surviving `ffmpeg` processes afterwards
 - Branch `issue/planning-rust-sdhnn` is **pushed** to `origin` (`git@github.com:nathanielheitsch/navidrome.git`);
   76 commits ahead of the remote branch before the push, all GPG-signed, no AI co-author trailers
 
@@ -127,13 +127,13 @@ and its `cancel()`/`wait()` verbs only; `FFCmd`'s `pgid`/`closed`/`child` fields
 
 1. ~~#15 transcode cache~~ — **landed** `8abefec1`/`46b2a1ca`/`d19526e3`. #15 is complete.
 2. **`nd-db` shared marshal + hydration layer** — **the critical path**.
-   **Timestamp convention is decided** (2026-11-11, user): the Rust standard, no Go compatibility, because this is not
-   a migration target. Use **rusqlite's `chrono` feature with `DateTime<Utc>`** (`types/chrono.rs:88-93` binds RFC3339
-   `%F %T%.f%:z`, `:117-136` parses it and falls back to naive), so no hand-rolled helper. Add `chrono` to the three
-   identical rusqlite feature pins; it is already in `Cargo.lock`. Fix the live bug while you are there:
-   `share_repo.rs`, `radio_repo.rs:124`, `artist_repo.rs:566` bind epoch-second `Value::Integer` into `datetime`
-   columns, which SQLite stores as `integer` — TEXT-bound range predicates (`mediafile_repository.go:533,559`) then
-   silently drop those rows and `ORDER BY created_at DESC` mis-orders them.
+   **Timestamp convention is DECIDED and PARTIALLY LANDED** (2026-11-11): rusqlite's `chrono` feature with
+   `DateTime<Utc>`, one shared helper `nd-db/src/time.rs`; `e13bd31a`…`a7afda2a`, gate 1453/0. Converted: `share_repo`,
+   `radio_repo`, `artist_repo`, `artwork_queue_repo`. **Still binding epoch integers** (listed in `time.rs:42-49`):
+   `library_repo`, `mediafile_repo`, `folder_repo`, `album_repo`, `playqueue_repo`, `artwork_repo`, `plugin_repo` —
+   `library_repo` must move together with `artist`'s `RefreshStats` (`artist_repository.go:479`), so it belongs to the
+   hydration/#17 lane below. The bug class: INTEGER affinity beats `datetime`, so a TEXT-bound range predicate
+   (`mediafile_repository.go:533,559`) silently drops those rows and `ORDER BY` is non-chronological both ways.
  Go routes every read through one
    reflection scanner (`dbx@v1.12.0/rows.go:65-103` via `sql_base_repository.go:381,429,450,466`) and every write
    through `structs.Map` + `PostMapArgs` (`sql_base_repository.go:445,480`); Rust has **neither**, only three

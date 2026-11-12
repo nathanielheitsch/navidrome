@@ -36,11 +36,12 @@ Global rules:
 
 Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo test --locked --all-targets --all-features --no-fail-fast`
 
-**Reproducible gate at `d19526e3` (measured by the parent, not reported):** fmt clean; workspace clippy clean
+**Reproducible gate at `a7afda2a` (measured by the parent, not reported):** fmt clean; workspace clippy clean
 `-D warnings`; `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1442 passed / 0 FAILED**
 (1 ignored) across 52 test binaries, workspace build clean, zero surviving `ffmpeg` processes after the suite.
 Progression: `b5c317f8` (#15 archiver) 1371 → `38b0b812` (#15 HTTP handler) 1406 → `8abefec1`/`46b2a1ca`/`d19526e3`
-(**#15 transcode cache, i.e. #15 is complete**) **1442**. Earlier figures — `a462b1f2` 1183, `29d9d9d0` 1067 passed /
+(**#15 transcode cache, i.e. #15 is complete**) 1442 → `a7afda2a` (**timestamp convention, `nd-db`**) **1453**
+across 53 test binaries. Earlier figures — `a462b1f2` 1183, `29d9d9d0` 1067 passed /
 4 FAILED — are dated. The earlier 4 `nd-ffmpeg` failures were fixture-path portability (absolute paths from a retired
 worktree, so the live `ffmpeg`/`ffprobe` cases **executed zero fixtures** off that host); `5e56f7e8` resolves fixtures
 from `CARGO_MANIFEST_DIR` up to the repo root containing `go.mod`, and the fixture-backed tests now run rather than
@@ -83,8 +84,8 @@ crates read DONE while nothing can consume them:
   `share_repo.rs:32,87-101`, `radio_repo.rs:23-24,124`, and `artist_repo.rs:566` bind **epoch-second `Value::Integer`
   into `datetime` columns**, and the divergence is admitted in their own doc comments. Parent-verified against SQLite:
   INTEGER affinity beats `datetime`, so the stored value keeps `typeof() = integer` and INTEGER sorts before TEXT — a
-  TEXT-bound `Gt`/`Lt` predicate (`mediafile_repository.go:533,559`) **silently excludes** integer rows, and
-  `ORDER BY created_at DESC` orders them first regardless of chronology. `user_repo`/`player_repo` use TEXT but in two
+  TEXT-bound `Gt`/`Lt` predicate (`mediafile_repository.go:533,559`) **silently excludes** integer rows, and `ORDER BY`
+  is non-chronological in both directions (INTEGER sorts before TEXT: first in ASC, last in DESC). `user_repo`/`player_repo` use TEXT but in two
   different shapes (`runtime_user_repo.rs:17` `...T00:00:00Z` vs `runtime_player_repo.rs:27` `2024-01-02 03:04:05`).
   **Convention: rusqlite's `chrono` feature + `DateTime<Utc>`** — the Rust standard, no hand-rolled helper.
   `rusqlite-0.32.1/src/types/chrono.rs:88-93` binds `%F %T%.f%:z` (`2024-01-01 00:00:00+00:00`) and `:117-136` parses
@@ -93,6 +94,22 @@ crates read DONE while nothing can consume them:
   `Cargo.lock`, so no new crate enters the lock. Parent-verified in SQLite: RFC3339 rows sort correctly, are included
   by `Gt` bounds, and the naive default sorts last instead of first. Set timestamps explicitly rather than lean on the
   DDL default, as Go does. Pin with an executed write→read→compare round-trip, not a string assertion.
+- **Timestamp convention LANDED** (`e13bd31a`…`a7afda2a`, 5 signed commits, gate 1453/0, parent-verified). One shared
+  helper `nd-db/src/time.rs`; `share_repo`, `radio_repo`, `artist_repo`, `artwork_queue_repo` converted to
+  `DateTime<Utc>`/`Option<DateTime<Utc>>` mirroring Go's `*time.Time` nullability; rusqlite's `chrono` feature added to
+  the three pins (`chrono` 0.4.45 was already in the lock — **no new package entered it**, the diff is two feature
+  lines). Executed round-trip + non-vacuous non-regression tests in `tests/runtime_timestamp_convention.rs` (678L).
+  Two things this surfaced beyond the convention:
+  - **`radio_repo::put_sql` and `artist_repo::put_sql` emitted `INSERT INTO t SET c = ?`**, which is MySQL syntax SQLite
+    rejects (`near "SET": syntax error`, parent-verified) — so those INSERT legs could never execute. Fixed to the
+    column-list + VALUES form Go's squirrel renders.
+  - **The parent's own `ORDER BY … DESC` claim was wrong and is corrected here**: INTEGER sorts *before* TEXT, so ASC
+    puts integer rows first and DESC puts them last. Both are non-chronological; the new test pins both directions.
+  - **Still unconverted, stated in `time.rs:42-49` so nobody assumes otherwise**: `library_repo`, `mediafile_repo`,
+    `folder_repo`, `album_repo`, `playqueue_repo` (`:136` binds an epoch integer), `artwork_repo`, `plugin_repo`.
+    `library_repo` was deliberately left because its `last_scan_at` feeds `artist`'s `RefreshStats` comparison
+    (`artist_repository.go:479`), so both sides must move together — that is part of the #17/hydration lane, not a
+    follow-up nit.
 - **#15 stream serving is COMPLETE** (`d19526e3`, gate 1442/0) — Range/conditional matrix, bounded direct adapter, probe
   adapter, process-backed transcode body (`aa9b280e`, `a462b1f2`), rate-limiting semaphore (`164780ee`+`fc48ff3f`),
   archiver (`8b9f48cf`…`b5c317f8`), HTTP handler (`db9f1e42`…`38b0b812`), and the **transcoding-file cache**

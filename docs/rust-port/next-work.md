@@ -2,12 +2,13 @@
 
 ## Current state (2026-11-11) — supersedes the 2026-11-10 boundary below
 
-Measured gate at `d19526e3` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
+Measured gate at `a7afda2a` (2026-11-11, parent-measured, integrated): fmt clean, workspace build clean, workspace
 clippy `-D warnings` clean, and `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` =
 **1442 passed / 0 FAILED** (1 ignored) across 52 test binaries, and zero surviving `ffmpeg` processes after the suite.
 Progression: `94ffa0ca` 1281 → `18f6bc5e` (#15 limiter wired) 1291 → `b419472b` (#16 mapping + Go oracle) 1301 →
 `b5c317f8` (#15 archiver + zip oracle) 1371 → `38b0b812` (#15 HTTP handler + Go duration oracle) 1406 →
-`d19526e3` (**#15 transcode cache — #15 is now COMPLETE**) **1442**. The `a462b1f2` figure below — 1183 —
+`d19526e3` (**#15 transcode cache — #15 is now COMPLETE**) 1442 → `a7afda2a` (**timestamp convention**) **1453**.
+The `a462b1f2` figure below — 1183 —
 and the `29d9d9d0` figure — 1067 passed / 4 FAILED —
 are dated: the latter had `nd-ffmpeg` fixture paths hardcoded to a retired worktree, so the container fixtures executed
 **zero** files off that host; `5e56f7e8` resolves them from `CARGO_MANIFEST_DIR` to the repo root. The
@@ -182,7 +183,8 @@ Hazards, ranked by how silently they corrupt data:
    - a `Gt{"media_file.created_at": since}` / `Lt` predicate bound as TEXT (`mediafile_repository.go:533,559` — Go
      binds `time.Time`) **excludes** INTEGER-stored rows entirely: `where created_at > '2020-01-01 00:00:00'` returned
      only the text row and skipped the integer one. That is the recent-files / scanner-missing path.
-   - `ORDER BY created_at DESC` puts INTEGER rows first regardless of chronology.
+   - `ORDER BY` is non-chronological in **both** directions: INTEGER sorts before TEXT, so ASC yields INTEGER rows
+     first and DESC yields them last — verified (an epoch row holding a 2100 instant came first ASC and last DESC).
    - `share` expiry (`core/share.go:44-47`) is currently self-consistent because both sides are integers, so it works —
      but it will break the moment anything else reads those columns.
 
