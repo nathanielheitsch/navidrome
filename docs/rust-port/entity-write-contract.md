@@ -189,3 +189,35 @@ Per the 2026-11-11 decision (next-work.md :208-246), bind `DateTime<Utc>` explic
 **Blockers:** (a) S-D2a core seam signature must land first (S-D2b is explicitly ordered after it — correct); (b) nothing else blocks the write-side contract — all Go/DDL/code facts are verified above.
 
 **Recommended order:** S-D2a core → S-D2b folder → album → playlist → mediafile (each with the executed write→read test above before the next).
+---
+
+## Write-side decisions pinned during S-D2b
+
+Two behaviours the field tables above do not cover, resolved against Go source and now binding:
+
+1. **FTS participant names need an input the persisted column cannot carry.**
+   `Participants.AllNames()` (`model/participants.go:174-185`) emits `artist.Name` plus
+   `artist.SortArtistName` when non-empty, and **never** `SubRole`. Go has the sort name at
+   marshal time because `model.Participant` embeds `Artist` (`model/participants.go:78-81`), while
+   the persisted db participant is only `{id, name, subRole}` (`persistence/sql_participations.go:13-17`).
+   Rust therefore carries `album_repo::NamedParticipant { id, name, sort_name, sub_role }` beside
+   `participants` on `AlbumRecord`/`MediaFileRecord`: `sort_name` is **input-only** and must never be
+   serialized. Feeding `sub_role` instead of `sort_name` was caught in review and is a silent
+   every-row search divergence (`full_text` + `search_participants`), so S-D3 hydration **must**
+   populate both fields from one `model.Participants` (sort name via the artist lookup). Verified
+   against Go: `AllNames()` for name `Nils Frahm` / sort `Frahm, Nils` / subRole `Vocals` yields
+   exactly `["Nils Frahm", "Frahm, Nils"]`; the sorted join is `"Frahm, Nils Nils Frahm"` and it
+   never contains `Vocals`.
+
+2. **Repo-layer timestamp stamping is entity-specific; do not blanket-stamp `updated_at`.**
+   - `albumRepository.Put` (`persistence/album_repository.go:208-219`) stamps **only**
+     `ImportedAt = time.Now()`; `CreatedAt`/`UpdatedAt` pass through the record unchanged.
+   - `mediaFileRepository.Put` (`persistence/mediafile_repository.go:184-190`) stamps `CreatedAt`
+     **only when it is zero** and never touches `UpdatedAt`.
+   - `folderRepository.Put` (`persistence/folder_repository.go:255-259`) writes the caller's
+     `UpdateAt` unchanged (stamped at folder-entry construction, `model/folder.go:72`).
+   - `playlistRepository.Put` (`persistence/playlist_repository.go:118-123`) stamps `CreatedAt`
+     when new and `UpdatedAt` always.
+
+   `created_at`/`birth_time` remain INSERT-only via `selectUpdateColumns`
+   (`persistence/sql_base_repository.go:601-603`) regardless of the above.

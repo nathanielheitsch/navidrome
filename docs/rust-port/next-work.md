@@ -6,7 +6,7 @@ Measured gate (parent, integrated): fmt clean; workspace build clean; clippy `-D
 `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1514 passed / 0 failed** across
 57 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
 `8c89aeb9` + `12e270f7` (INSERT alignment, playlist `INSERT … SET`, `0000-00-00` sentinel) 1459 →
-`2a99a681` + `3f8b5a8d` (participant JSON + FTS feeders) 1490 → `cb11b645` (JSON codecs + Role bridge) 1514 → S-D2a (**marshal core + PostMap hooks**) **1536**.
+`2a99a681` + `3f8b5a8d` (participant JSON + FTS feeders) 1490 → `cb11b645` (JSON codecs + Role bridge) 1514 → S-D2a (marshal core + PostMap hooks) 1536 → S-D2b1 (folder/playlist records) 1550 → S-D2b2 (**album/mediafile records**) **1558**.
 
 Three silent-corruption defects, found while reviewing the shared-layer contract, were all **invisible to the
 existing renderer tests** — those only compared emitted SQL strings:
@@ -347,7 +347,7 @@ integrates, runs the gate, and commits.
 | **S-D1 JSON/Role bridge** | write | `sql_participations.rs`, new `sql_json.rs` + one `lib.rs` line, `tests/sql_json.rs`, Go oracle | **LANDED `cb11b645` (review APPROVE, gate 1514/0)** |
 | **S-D2a marshal core/hooks** | write | `marshal.rs`, `lib.rs`, album/mediafile/folder adapters, `runtime_marshal.rs` | **LANDED (review APPROVE, gate 1536/0)** |
 | **S-D2b1 records: folder+playlist** | write, after S-D2a | `folder_repo.rs`, `playlist_repo.rs`, executed write->read tests | S-D2b2 |
-| **S-D2b2 records: album+mediafile** | write, after S-D2b1 | `album_repo.rs`, `mediafile_repo.rs`, executed write->read tests | S-D3 |
+| **S-D2b2 records: album+mediafile** | write | `album_repo.rs`, `mediafile_repo.rs`, executed write->read tests | **LANDED (review APPROVE, gate 1558/0)** |
 | **S-D3 row mapper/hydration scout** | read-only, now | none (contract brief) | S-D3 |
 | **S-D3 scout brief** | read-only | `hydrate-scan-contract.md` (8-hook inventory, decoder gaps, seam design) | **DONE** |
 | **S-D3a hydrate core + folder/user** | write, after S-D2b1 | new `hydrate.rs` + `lib.rs`, folder/user hooks, executed reads | S-D3b |

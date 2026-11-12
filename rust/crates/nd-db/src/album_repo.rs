@@ -17,10 +17,12 @@
 //!
 //! `dbAlbum.PostScan`/`PostMapArgs` (`:30-86`) marshal the JSON columns
 //! (`discs`, `participants`, `tags`, `folder_ids`, `full_text`,
-//! `search_participants`, `search_normalized`) — Go computes `full_text` via
-//! `formatFullText` (`sql_search.go:15`), which wraps `utils/str`
-//! `SanitizeStrings`, machinery this crate does not own. Only the SQL shapes
-//! pin here: the caller marshals column/value pairs itself ([`put_sql`]).
+//! `search_participants`, `search_normalized`) — the write path is the
+//! record-driven [`put_sql`] (S-D2b): [`AlbumRecord`] → [`album_row`] (the
+//! `structs.Map(dbAlbum)` + `dbAlbum.PostMapArgs` map, with the derived FTS
+//! inputs computed atomically from the record's own participants/discs/
+//! tags) → the shared [`crate::marshal::MarshalledRow`] seam — no
+//! caller-supplied column arrays for the write path.
 //!
 //! Deliberately absent (other lanes/slices own them): `hydrateArtwork`
 //! (`:180-183`, the artwork-hydration slice), the streaming/cursor machinery
@@ -40,13 +42,14 @@
 use std::collections::BTreeMap;
 
 use crate::sql_annotations::ANNOTATION_TABLE;
-use crate::sql_participations::participant_id_filter;
+use crate::sql_participations::{participant_id_filter, Participants};
 use crate::sql_restful::{boolean_filter, Filter};
 use crate::sql_search::{do_search, SearchConfig, SearchOutcome, SearchStrategy, Sql};
 use crate::sql_search_fts::{new_fts_search, SearchStrategy as FtsFallback};
 use crate::sql_search_like::{new_legacy_search, new_like_search};
-use crate::sql_tags::{album_genres, delete_tags_sql, genre_id_filter, insert_tags_sql};
+use crate::sql_tags::{album_genres, delete_tags_sql, genre_id_filter, insert_tags_sql, DbTags};
 use crate::sqlrepo::{Repository, SqlError, Value};
+use chrono::{DateTime, Utc};
 
 /// `r.tableName` (`NewAlbumRepository`, `album_repository.go:120`).
 pub const ALBUM_TABLE: &str = "album";
@@ -424,101 +427,414 @@ fn annotation_bool(field: &str, value: &str) -> String {
     crate::sql_annotations::annotation_bool_filter(field, value)
 }
 
-/// `Put` (`album_repository.go:164-172`): `al.ImportedAt = time.Now()` is the
-/// caller's (bind it as the `imported_at` column value). The SQL is `r.put`
-/// (update-then-insert, `sql_base_repository.go:618-642`) then
-/// `updateParticipants` (`sql_participations.go:78-119`: delete-all, then the
-/// json_each INSERT) then `updateTags` (`sql_tags.go:57-79`:
-/// delete-then-insert). `columns`/`values` pair one column per value and must
-/// not include `id`/`created_at` (the update drops them,
-/// `sql_base_repository.go:591-604`).
+/// `model.Album`'s persisted row (`model/album.go:15-73`) — the 45 non-id
+/// persisted album columns (the contract's 46 minus `id`, which the seam
+/// forbids in the map; the id is appended last by [`put_sql`]).
+///
+/// Deliberately absent (entity write contract): the DDL orphan column
+/// `releases` (no Go field, no Go writer — a put never emits it, so it stays
+/// at its DDL default 0), `average_rating` (annotation-managed, never
+/// written by entity Put), and the non-persisted fields (`LibraryPath`/
+/// `LibraryName`/`Genres` are `structs:"-"` join-only; the `Annotations`/
+/// `ItemImage` embeds carry no columns). The Go `RgAlbumGain`/`RgAlbumPeak`
+/// dbx shims (`album_repository.go:37-38`) exist only because dbx's default
+/// field-map cannot render `RGAlbumGain` to `rg_album_gain`; Rust binds the
+/// real column names directly, no shim. `discs`/`participants`/`tags`/
+/// `folder_ids` hold the *typed* values the Go shims shadow —
+/// PostMapArgs overwrites their column keys with JSON, which
+/// [`album_row`] routes through [`crate::marshal::album_post_map_args`].
+///
+/// Timestamps are `DateTime<Utc>` bound through `crate::time`. `created_at`/
+/// `updated_at`/`external_info_updated_at` are nullable (Go zero
+/// `time.Time` / `*time.Time` nil → NULL); `imported_at` is NOT NULL — Go
+/// stamps `ImportedAt = Now` at `Put` entry (`album_repository.go:210`),
+/// mirrored in [`put_sql`].
 #[derive(Debug, Clone, PartialEq)]
-pub struct PutAlbumSql {
-    /// The `r.put` update leg (`WHERE id = ?`; set pairs bind first).
-    pub update: Sql,
-    /// The `r.put` insert leg: a column list plus a positional VALUES tuple,
-    /// with `id` appended to both (Go adds it to the values map,
-    /// `sql_base_repository.go:637-641`).
-    pub insert: Sql,
-    /// `Delete(album_artists) WHERE album_id = ?`.
-    pub participants_delete: Sql,
-    /// The `updateParticipants` json_each INSERT
-    /// (`sql_participations.go:103-118`): album_id and the flat-participants
-    /// JSON bind as the two `?`s; the INNER JOIN artist drops non-existent
-    /// artist ids.
-    pub participants_insert: Sql,
-    /// `Delete(album_tags) WHERE album_id = ?` (`sql_tags.go:57-60`).
-    pub tags_delete: Sql,
-    /// The `updateTags` scoped INSERT (`sql_tags.go:66-79`), absent when no
-    /// indexed tag ids survived.
-    pub tags_insert: Option<Sql>,
+pub struct AlbumRecord {
+    /// `library_id` (Go `LibraryID`) — FK to `library`.
+    pub library_id: i64,
+    /// `name` (Go `Name`).
+    pub name: String,
+    /// `embed_art_path` (Go `EmbedArtPath`).
+    pub embed_art_path: String,
+    /// `album_artist` (Go `AlbumArtist`).
+    pub album_artist: String,
+    /// `album_artist_id` (Go `AlbumArtistID`, deprecated).
+    pub album_artist_id: String,
+    /// `min_year` (Go `MinYear`).
+    pub min_year: i32,
+    /// `max_year` (Go `MaxYear`).
+    pub max_year: i32,
+    /// `date` (Go `Date`).
+    pub date: String,
+    /// `min_original_year` (Go `MinOriginalYear`).
+    pub min_original_year: i32,
+    /// `max_original_year` (Go `MaxOriginalYear`).
+    pub max_original_year: i32,
+    /// `original_date` (Go `OriginalDate`).
+    pub original_date: String,
+    /// `release_date` (Go `ReleaseDate`).
+    pub release_date: String,
+    /// `compilation` (Go `Compilation`).
+    pub compilation: bool,
+    /// `comment` (Go `Comment`).
+    pub comment: String,
+    /// `song_count` (Go `SongCount`).
+    pub song_count: i32,
+    /// `duration` (Go `Duration`, `float32` at `model/album.go:41`). The DDL
+    /// column is `real` either way; `f64` matches the column affinity (same
+    /// precedent as `PlaylistRecord::duration`).
+    pub duration: f64,
+    /// `size` (Go `Size`).
+    pub size: i64,
+    /// `discs` (Go `Discs`, `map[int]string`). `None` (Go nil map) stores
+    /// `null`; `Some(empty)` stores `{}`. Marshalled via
+    /// `sql_json::marshal_discs` (string-key order `1`, `10`, `2`).
+    pub discs: Option<BTreeMap<i64, String>>,
+    /// `sort_album_name` (Go `SortAlbumName`).
+    pub sort_album_name: String,
+    /// `sort_album_artist_name` (Go `SortAlbumArtistName`).
+    pub sort_album_artist_name: String,
+    /// `order_album_name` (Go `OrderAlbumName`).
+    pub order_album_name: String,
+    /// `order_album_artist_name` (Go `OrderAlbumArtistName`).
+    pub order_album_artist_name: String,
+    /// `catalog_num` (Go `CatalogNum`).
+    pub catalog_num: String,
+    /// `mbz_album_id` (Go `MbZAlbumID`).
+    pub mbz_album_id: String,
+    /// `mbz_album_artist_id` (Go `MbZAlbumArtistID`).
+    pub mbz_album_artist_id: String,
+    /// `mbz_album_type` (Go `MbZAlbumType`).
+    pub mbz_album_type: String,
+    /// `mbz_album_comment` (Go `MbZAlbumComment`).
+    pub mbz_album_comment: String,
+    /// `mbz_release_group_id` (Go `MbZReleaseGroupID`).
+    pub mbz_release_group_id: String,
+    /// `folder_ids` (Go `FolderIDs []string`). `None` (Go nil) stores
+    /// `null`; `Some(empty)` stores `[]`.
+    pub folder_ids: Option<Vec<String>>,
+    /// `explicit_status` (Go `ExplicitStatus`).
+    pub explicit_status: String,
+    /// `rg_album_gain` (Go `RGAlbumGain *float64`, read through the
+    /// `RgAlbumGain` shim). `None` binds NULL.
+    pub rg_album_gain: Option<f64>,
+    /// `rg_album_peak` (Go `RGAlbumPeak *float64`). `None` binds NULL.
+    pub rg_album_peak: Option<f64>,
+    /// `description` (Go `Description`) — an external-metadata column.
+    pub description: String,
+    /// `small_image_url` (Go `SmallImageUrl`).
+    pub small_image_url: String,
+    /// `medium_image_url` (Go `MediumImageUrl`).
+    pub medium_image_url: String,
+    /// `large_image_url` (Go `LargeImageUrl`).
+    pub large_image_url: String,
+    /// `external_url` (Go `ExternalUrl`).
+    pub external_url: String,
+    /// `external_info_updated_at` (Go `ExternalInfoUpdatedAt *time.Time`).
+    /// `None` binds NULL.
+    pub external_info_updated_at: Option<DateTime<Utc>>,
+    /// `genre` (Go `Genre` — the most common genre; a plain column distinct
+    /// from the `Genres` tag set).
+    pub genre: String,
+    /// `tags` (Go `Tags`) — all imported tags; PostMapArgs marshals them to
+    /// the `tags` JSON column and indexes them into `album_tags`.
+    pub tags: DbTags,
+    /// `participants` (Go `Participants`) — marshalled to the
+    /// `participants` column and the `album_artists` junction rows.
+    pub participants: Participants,
+    /// FTS participant-name input (Go `Participants.AllNames()`), carried
+    /// beside the JSON source so the FTS columns are derived from the same
+    /// `model.Participants` the JSON is. S-D3 hydration fills both from one
+    /// read; there is no write path that accepts a free-standing name list.
+    pub participant_names: Vec<NamedParticipant>,
+    /// `missing` (Go `Missing`).
+    pub missing: bool,
+    /// `imported_at` (Go `ImportedAt`) — required: NOT NULL in the DDL, and
+    /// Go stamps it to Now at `Put` entry (`:210`), which [`put_sql`] does.
+    pub imported_at: DateTime<Utc>,
+    /// `created_at` (Go `CreatedAt`); `None` binds NULL.
+    pub created_at: Option<DateTime<Utc>>,
+    /// `updated_at` (Go `UpdatedAt`); `None` binds NULL. Passed through
+    /// unchanged by [`put_sql`] (Go `Put` never touches it,
+    /// `album_repository.go:208-219`).
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
-/// See [`PutAlbumSql`].
+/// One artist name input for the FTS participant columns — Go's
+/// `Participants.AllNames()` (`model/participants.go:174-185`) reads
+/// `artist.Name` plus `artist.SortArtistName` when non-empty, and NEVER
+/// `SubRole`. The persisted `participants` JSON stays the `{id, name, subRole}`
+/// shape (`sql_participations.go:13-17`) — `sort_name` is input-only FTS
+/// metadata that `sql_participations::Participant` cannot carry (it is
+/// hydration-owned) without changing that file, so the records carry it
+/// here.
+///
+/// **S-D2b consistency:** the record holds the `participants` JSON source
+/// and its `NamedParticipant` view side by side — hydration/S-D3 or the
+/// caller fills both from the same `model.Participants`, and there is no
+/// write path that accepts a free-standing name list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NamedParticipant {
+    /// The artist id (`model.Artist.ID`) — matches the JSON entry.
+    pub id: String,
+    /// The artist name (`model.Artist.Name`) — always contributes.
+    pub name: String,
+    /// The artist sort name (`model.Artist.SortArtistName`); contributes
+    /// only when non-empty (Go `if artist.SortArtistName != ""`).
+    pub sort_name: String,
+    /// `SubRole` — deliberately NOT a name source (Go `AllNames` ignores
+    /// it); kept on the type so a wrong construction cannot smuggle a
+    /// sub-role into the FTS input.
+    pub sub_role: String,
+}
+
+/// `Participants.AllNames()` (`model/participants.go:174-185`): every
+/// participant's name plus its non-empty sort name, deduplicated (Go's
+/// `slice.Unique` — order-preserving dedup). The FTS consumers
+/// (`format_full_text`/`search_participants`) are insensitive to the order
+/// within the list, so input order stands in for Go's unspecified
+/// map-iteration order. `sub_role` is never a name source.
 #[must_use]
-pub fn put_sql(
-    id: &str,
-    columns: &[String],
-    values: Vec<Value>,
-    participants_json: &str,
-    indexed_tag_ids: Vec<String>,
-) -> PutAlbumSql {
-    let (update, insert) = put_legs(id, columns, values);
-    PutAlbumSql {
-        update,
-        insert,
-        participants_delete: (
-            "DELETE FROM album_artists WHERE album_id = ?".to_string(),
-            vec![Value::from(id)],
-        ),
-        participants_insert: (
-            "INSERT INTO album_artists (album_id, artist_id, role, sub_role)\n\t\t\
-                 SELECT ?,\n\t\t       json_extract(value, '$.artist_id') as artist_id,\n\t\t\
-                 json_extract(value, '$.role') as role,\n\t\t\
-                 COALESCE(json_extract(value, '$.sub_role'), '') as sub_role\n\t\t\
-                 FROM json_each(?)\n\t\t\
-                 JOIN artist ON artist.id = json_extract(value, '$.artist_id')\n\t\t\
-                 ON CONFLICT (artist_id, album_id, role, sub_role) DO NOTHING"
-                .to_string(),
-            vec![Value::from(id), Value::from(participants_json)],
-        ),
-        tags_delete: delete_tags_sql(ALBUM_TABLE.to_string(), id.to_string()),
-        tags_insert: insert_tags_sql(ALBUM_TABLE.to_string(), id.to_string(), indexed_tag_ids),
+pub fn participant_names(names: &[NamedParticipant]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in names {
+        if !out.contains(&p.name) {
+            out.push(p.name.clone());
+        }
+        if !p.sort_name.is_empty() && !out.contains(&p.sort_name) {
+            out.push(p.sort_name.clone());
+        }
+    }
+    out
+}
+/// The album-version tag name (`model.TagAlbumVersion`, `model/tag.go:197`).
+const TAG_ALBUM_VERSION: &str = "albumversion";
+/// The catalog-number tag name (`model.TagCatalogNumber`, `model/tag.go:206`).
+const TAG_CATALOG_NUMBER: &str = "catalognumber";
+
+/// `structs.Map(dbAlbum)` + `dbAlbum.PostMapArgs` (`album_repository.go:71-97`)
+/// as one sorted [`crate::marshal::ColumnMap`]: exactly the 45 non-id
+/// persisted album columns (`id` is appended last by [`put_sql`]), with the
+/// PostMapArgs overwrites routed through the S-D2a hook so the
+/// transformation lives in one place.
+///
+/// **S-D2b consistency invariant:** the FTS inputs are derived *atomically*
+/// from the record's own `participants`/`discs`/`tags` (see
+/// [`album_derived`]) — the derived values and the JSON/junction values
+/// share one source, so they can never contradict each other.
+#[must_use]
+pub fn album_row(a: &AlbumRecord) -> crate::marshal::ColumnMap {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "album_artist".to_string(),
+        Value::Text(a.album_artist.clone()),
+    );
+    map.insert(
+        "album_artist_id".to_string(),
+        Value::Text(a.album_artist_id.clone()),
+    );
+    map.insert(
+        "catalog_num".to_string(),
+        Value::Text(a.catalog_num.clone()),
+    );
+    map.insert("comment".to_string(), Value::Text(a.comment.clone()));
+    map.insert("compilation".to_string(), Value::Bool(a.compilation));
+    map.insert(
+        "created_at".to_string(),
+        crate::time::optional_value(a.created_at.as_ref()),
+    );
+    map.insert("date".to_string(), Value::Text(a.date.clone()));
+    map.insert(
+        "description".to_string(),
+        Value::Text(a.description.clone()),
+    );
+    // `discs`/`participants`/`tags`/`folder_ids` land as typed values and
+    // are overwritten with their JSON by PostMapArgs below.
+    map.insert("discs".to_string(), Value::Null);
+    map.insert("duration".to_string(), Value::Real(a.duration));
+    map.insert(
+        "embed_art_path".to_string(),
+        Value::Text(a.embed_art_path.clone()),
+    );
+    map.insert(
+        "explicit_status".to_string(),
+        Value::Text(a.explicit_status.clone()),
+    );
+    map.insert(
+        "external_info_updated_at".to_string(),
+        crate::time::optional_value(a.external_info_updated_at.as_ref()),
+    );
+    map.insert(
+        "external_url".to_string(),
+        Value::Text(a.external_url.clone()),
+    );
+    map.insert("folder_ids".to_string(), Value::Null);
+    map.insert("genre".to_string(), Value::Text(a.genre.clone()));
+    map.insert(
+        "imported_at".to_string(),
+        crate::time::value(&a.imported_at),
+    );
+    map.insert(
+        "large_image_url".to_string(),
+        Value::Text(a.large_image_url.clone()),
+    );
+    map.insert("library_id".to_string(), Value::Integer(a.library_id));
+    map.insert(
+        "medium_image_url".to_string(),
+        Value::Text(a.medium_image_url.clone()),
+    );
+    map.insert(
+        "min_original_year".to_string(),
+        Value::Integer(i64::from(a.min_original_year)),
+    );
+    map.insert(
+        "min_year".to_string(),
+        Value::Integer(i64::from(a.min_year)),
+    );
+    map.insert(
+        "max_original_year".to_string(),
+        Value::Integer(i64::from(a.max_original_year)),
+    );
+    map.insert(
+        "max_year".to_string(),
+        Value::Integer(i64::from(a.max_year)),
+    );
+    map.insert(
+        "mbz_album_id".to_string(),
+        Value::Text(a.mbz_album_id.clone()),
+    );
+    map.insert(
+        "mbz_album_artist_id".to_string(),
+        Value::Text(a.mbz_album_artist_id.clone()),
+    );
+    map.insert(
+        "mbz_album_type".to_string(),
+        Value::Text(a.mbz_album_type.clone()),
+    );
+    map.insert(
+        "mbz_album_comment".to_string(),
+        Value::Text(a.mbz_album_comment.clone()),
+    );
+    map.insert(
+        "mbz_release_group_id".to_string(),
+        Value::Text(a.mbz_release_group_id.clone()),
+    );
+    map.insert("missing".to_string(), Value::Bool(a.missing));
+    map.insert("name".to_string(), Value::Text(a.name.clone()));
+    map.insert(
+        "order_album_name".to_string(),
+        Value::Text(a.order_album_name.clone()),
+    );
+    map.insert(
+        "order_album_artist_name".to_string(),
+        Value::Text(a.order_album_artist_name.clone()),
+    );
+    map.insert(
+        "original_date".to_string(),
+        Value::Text(a.original_date.clone()),
+    );
+    map.insert("participants".to_string(), Value::Null);
+    map.insert(
+        "release_date".to_string(),
+        Value::Text(a.release_date.clone()),
+    );
+    map.insert(
+        "rg_album_gain".to_string(),
+        a.rg_album_gain.map(Value::Real).unwrap_or(Value::Null),
+    );
+    map.insert(
+        "rg_album_peak".to_string(),
+        a.rg_album_peak.map(Value::Real).unwrap_or(Value::Null),
+    );
+    map.insert("size".to_string(), Value::Integer(a.size));
+    map.insert(
+        "small_image_url".to_string(),
+        Value::Text(a.small_image_url.clone()),
+    );
+    map.insert(
+        "song_count".to_string(),
+        Value::Integer(i64::from(a.song_count)),
+    );
+    map.insert(
+        "sort_album_name".to_string(),
+        Value::Text(a.sort_album_name.clone()),
+    );
+    map.insert(
+        "sort_album_artist_name".to_string(),
+        Value::Text(a.sort_album_artist_name.clone()),
+    );
+    map.insert("tags".to_string(), Value::Null);
+    map.insert(
+        "updated_at".to_string(),
+        crate::time::optional_value(a.updated_at.as_ref()),
+    );
+    crate::marshal::album_post_map_args(crate::marshal::ColumnMap::new(map), album_derived(a)).0
+}
+
+/// `AlbumDerived` computed atomically from the record — the S-D2b
+/// consistency invariant made type-level: there is no constructor that takes
+/// a free-standing `participant_names`/`album_version`/`catalog_number`, so
+/// the FTS inputs cannot diverge from the stored JSON/junction data.
+/// `disc_values` uses the BTreeMap's sorted key order; Go's
+/// `maps.Values` order is non-deterministic and irrelevant (`format_full_text`
+/// sorts its words).
+#[must_use]
+fn album_derived(a: &AlbumRecord) -> crate::marshal::AlbumDerived {
+    crate::marshal::AlbumDerived {
+        name: a.name.clone(),
+        sort_album_name: a.sort_album_name.clone(),
+        album_artist: a.album_artist.clone(),
+        participant_names: participant_names(&a.participant_names),
+        disc_values: a
+            .discs
+            .as_ref()
+            .map(|d| d.values().cloned().collect())
+            .unwrap_or_default(),
+        album_version: a.tags.get(TAG_ALBUM_VERSION).cloned().unwrap_or_default(),
+        catalog_number: a.tags.get(TAG_CATALOG_NUMBER).cloned().unwrap_or_default(),
+        tags: a.tags.clone(),
+        participants: a.participants.clone(),
+        folder_ids: a.folder_ids.clone(),
+        discs: a.discs.clone(),
     }
 }
 
-/// `Put` (`album_repository.go:164-172`) through the S-D2 shared marshal path.
+/// `Put` (`album_repository.go:164-172`), record-driven (S-D2b): the record
+/// is the only write input — no caller-supplied column arrays.
 ///
-/// The caller computes the PostMapArgs-applied map once via
-/// [`crate::marshal::album_post_map_args`] (the base row columns with the
-/// derived `full_text`/`search_*`/`tags`/`participants`/`folder_ids`/`discs`
-/// keys overwritten) and passes it here with the maintenance bundle. This
-/// adapter is the S-D2 write path: rendering is centralized in
-/// [`crate::marshal::MarshalledRow`], so the two legs share one unit and
-/// cannot desync:
+/// `now` stamps the row exactly like Go's `Put`
+/// (`album_repository.go:208-219`): `imported_at` to `now`
+/// (`al.ImportedAt = time.Now()`, `:210`); `created_at` and `updated_at`
+/// pass through the record unchanged — Go stamps neither in `Put`.
+/// `created_at` is still dropped from the UPDATE set by the seam.
 ///
-/// * the UPDATE leg renders the `selectUpdateColumns`-filtered set — no
-///   `created_at`, no `id` in the SET; `id` binds last via `WHERE id = ?`;
-/// * the INSERT leg renders the full sorted column list with `id` last in
-///   both the column list and the VALUES tuple.
+/// **Consistency invariant:** the PostMapArgs hook is fed the FTS inputs
+/// derived from the record's own `participants`/`discs`/`tags"
+/// ([`album_derived`]) — the same values the JSON columns and the
+/// `album_artists`/`album_tags` junction maintenance are built from — so the
+/// FTS columns can never contradict the stored JSON.
 ///
-/// The legacy [`put_sql`] (caller-supplied parallel `columns`/`values`) is
-/// retained for the S-D2a base-map boundary and is superseded by this adapter;
-/// S-D2b replaces the base map with a complete `AlbumRecord` so no caller
-/// column list survives.
+/// Both legs render through the shared [`crate::marshal::MarshalledRow`]:
+/// UPDATE = the `selectUpdateColumns`-filtered set (no `created_at`; `id"
+/// binds last via `WHERE id = ?`), INSERT = the full sorted columns with
+/// `id` last in both lists (`sql_base_repository.go:637-641`). Go's `put"
+/// runs the UPDATE first and only INSERTs on a 0-row match; the caller
+/// picks the leg.
 ///
-/// `cols_to_update`: optional `colsToUpdate` (`sql_base_repository.go:595-601`);
-/// each entry is Go-`toSnakeCase`-normalized before matching the snake_case
-/// columns. Empty applies no restriction. An update set empty after the
-/// `created_at`/`birth_time` drop is a [`crate::marshal::MarshalError`].
+/// `cols_to_update`: optional `colsToUpdate`
+/// (`sql_base_repository.go:595-601`); empty applies no restriction. The
+/// entries are `toSnakeCase`-normalized by the seam
+/// ([`crate::marshal::to_snake_case`]). An update set empty after the
+/// `created_at`/`birth_time` drop is
+/// [`crate::marshal::MarshalError::EmptyUpdateSet`].
 ///
-/// **Execution is the caller's.** This struct renders Go's `put`
-/// alternatives; Go tries the `update` leg first when `id != ""` and returns
-/// when its match count is `> 0`, running the `insert` leg only on an update
-/// miss (no row) or a new id, with the participant/tag maintenance legs in
-/// the same transaction.
+/// # Errors
+///
+/// Returns [`crate::marshal::MarshalError`] when the map carries `id"
+/// (impossible from [`album_row`]) or the UPDATE set is empty.
 #[derive(Debug, Clone, PartialEq)]
-pub struct PutAlbumMarshalled {
+pub struct PutAlbumSql {
     /// The `r.put` update leg (filtered columns, `id` last in args).
     pub update: Sql,
     /// The `r.put` insert leg (sorted columns, `id` last in both).
@@ -527,10 +843,10 @@ pub struct PutAlbumMarshalled {
     pub participants_delete: Sql,
     /// The `updateParticipants` json_each INSERT
     /// (`sql_participations.go:102-124`), built by
-    /// [`crate::sql_participations::update_participants_sql`] from the bundle's
-    /// participants. `None` when the album has no participants (Go returns
-    /// before building the insert, `sql_participations.go:87-89`) — the
-    /// delete still runs, so a put with empty participants clears the table.
+    /// [`crate::sql_participations::update_participants_sql`] from the
+    /// record's participants. `None` when the album has no participants
+    /// (Go returns before building the insert, `:87-89`) — the delete still
+    /// runs, so a put with empty participants clears the table.
     pub participants_insert: Option<Sql>,
     /// `Delete(album_tags) WHERE album_id = ?`.
     pub tags_delete: Sql,
@@ -538,20 +854,42 @@ pub struct PutAlbumMarshalled {
     pub tags_insert: Option<Sql>,
 }
 
-/// See [`PutAlbumMarshalled`].
-pub fn put_marshalled_sql(
+/// See [`PutAlbumSql`].
+pub fn put_sql(
+    id: &str,
+    a: &AlbumRecord,
+    now: DateTime<Utc>,
+    cols_to_update: &[&str],
+) -> Result<PutAlbumSql, crate::marshal::MarshalError> {
+    // Go's Put (album_repository.go:208-219): only ImportedAt is stamped;
+    // CreatedAt/UpdatedAt pass through the record unchanged.
+    let stamped = AlbumRecord {
+        imported_at: now,
+        ..a.clone()
+    };
+    let (map, maintenance) =
+        crate::marshal::album_post_map_args(album_row(&stamped), album_derived(&stamped));
+    put_from_map(id, &map, &maintenance, cols_to_update)
+}
+
+/// `put` over a PostMapArgs-applied map plus the maintenance bundle — the
+/// S-D2a base-map adapter. [`put_sql`] delegates here (record → row → map →
+/// this); `tests/runtime_marshal.rs` drives this directly with
+/// caller-supplied base maps, which keeps the S-D2a transformation boundary
+/// exercised.
+pub fn put_from_map(
     id: &str,
     map: &crate::marshal::ColumnMap,
     maintenance: &crate::marshal::AlbumMaintenance,
     cols_to_update: &[&str],
-) -> Result<PutAlbumMarshalled, crate::marshal::MarshalError> {
+) -> Result<PutAlbumSql, crate::marshal::MarshalError> {
     let row = crate::marshal::MarshalledRow::new(ALBUM_TABLE, id, map, cols_to_update)?;
     let up = crate::sql_participations::update_participants_sql(
         ALBUM_TABLE.to_string(),
         id.to_string(),
         &maintenance.participants,
     );
-    Ok(PutAlbumMarshalled {
+    Ok(PutAlbumSql {
         update: (row.update_sql, row.update_args),
         insert: (row.insert_sql, row.insert_args),
         participants_delete: up.delete,
@@ -564,49 +902,48 @@ pub fn put_marshalled_sql(
         ),
     })
 }
-
-/// `r.put`'s two legs (`sql_base_repository.go:618-642`): the UPDATE matched
-/// by `id` (set pairs bind before `id`) and the INSERT (columns and values
-/// emitted together, `id` last in both).
-fn put_legs(id: &str, columns: &[String], values: Vec<Value>) -> (Sql, Sql) {
-    let set_pairs = columns
-        .iter()
-        .map(|c| format!("{c} = ?"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut update_args = values.clone();
-    update_args.push(Value::from(id));
-    let insert_cols = columns
-        .iter()
-        .map(|c| c.as_str())
-        .chain(["id"])
-        .collect::<Vec<_>>()
-        .join(", ");
-    // Columns end with `id` (above), so the VALUES tuple must end with it too.
-    // squirrel's `SetMap` sorts columns and emits values positionally
-    // (`squirrel@v1.5.4/insert.go:271-283`); binding id first rotates every
-    // value into the wrong column.
-    let mut insert_args = values;
-    insert_args.push(Value::from(id));
-    let placeholders = vec!["?"; insert_args.len()].join(", ");
-    (
-        (
-            format!("UPDATE {ALBUM_TABLE} SET {set_pairs} WHERE id = ?"),
-            update_args,
-        ),
-        (
-            format!("INSERT INTO {ALBUM_TABLE} ({insert_cols}) VALUES ({placeholders})"),
-            insert_args,
-        ),
-    )
+/// Thin alias for [`put_from_map`] retained so the S-D2a `put_marshalled_sql`
+/// call sites in `tests/runtime_marshal.rs` keep compiling; there is exactly
+/// one put-result type per repo (no `PutAlbumMarshalled`).
+///
+/// # Errors
+///
+/// As [`put_from_map`].
+pub fn put_marshalled_sql(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    maintenance: &crate::marshal::AlbumMaintenance,
+    cols_to_update: &[&str],
+) -> Result<PutAlbumSql, crate::marshal::MarshalError> {
+    put_from_map(id, map, maintenance, cols_to_update)
 }
 
-/// `UpdateExternalInfo` (`album_repository.go:176-178`): `r.put` restricted
-/// to the external-metadata `colsToUpdate` — same legs, only those columns
-/// set (`filterUpdateValues` keeps `id`).
-#[must_use]
-pub fn update_external_info_sql(id: &str, columns: &[String], values: Vec<Value>) -> (Sql, Sql) {
-    put_legs(id, columns, values)
+/// `UpdateExternalInfo` (`album_repository.go:223`) — the six external-
+/// metadata columns, the only columns the restricted update may touch.
+pub const EXTERNAL_INFO_COLS: [&str; 6] = [
+    "description",
+    "small_image_url",
+    "medium_image_url",
+    "large_image_url",
+    "external_url",
+    "external_info_updated_at",
+];
+
+/// `UpdateExternalInfo` (`album_repository.go:223-225`): `r.put` restricted
+/// to [`EXTERNAL_INFO_COLS`] — record-driven; the UPDATE leg sets only the
+/// six external columns, the INSERT leg is the full row (Go's `put` is
+/// full-column on the insert leg regardless of `colsToUpdate`,
+/// `sql_base_repository.go:637-641`).
+///
+/// # Errors
+///
+/// As [`put_sql`].
+pub fn update_external_info_sql(
+    id: &str,
+    a: &AlbumRecord,
+    now: DateTime<Utc>,
+) -> Result<PutAlbumSql, crate::marshal::MarshalError> {
+    put_sql(id, a, now, &EXTERNAL_INFO_COLS)
 }
 
 /// `Touch` (`album_repository.go:258-270`): one `imported_at = ?` UPDATE per
@@ -868,6 +1205,7 @@ pub fn cursor_chunk_sql(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sql_participations::{Participant, Role};
 
     fn lib_filter() -> Option<Sql> {
         Some((
@@ -1171,44 +1509,111 @@ mod tests {
         assert!(album_filter("role_lead_id", "x").is_none());
     }
 
+    fn test_record() -> AlbumRecord {
+        let mut participants = Participants::new();
+        participants.insert(
+            Role::from("albumartist"),
+            vec![Participant {
+                id: "ar-1".to_string(),
+                name: "Beatles".to_string(),
+                sub_role: String::new(),
+            }],
+        );
+        AlbumRecord {
+            library_id: 7,
+            album_artist: "The Beatles".to_string(),
+            album_artist_id: String::new(),
+            catalog_num: "CAT-1".to_string(),
+            comment: "c".to_string(),
+            compilation: false,
+            created_at: None,
+            date: "".to_string(),
+            description: "".to_string(),
+            discs: None,
+            duration: 0.0,
+            embed_art_path: String::new(),
+            explicit_status: "".to_string(),
+            external_info_updated_at: None,
+            external_url: String::new(),
+            folder_ids: None,
+            genre: String::new(),
+            imported_at: chrono::Utc::now(),
+            large_image_url: String::new(),
+            medium_image_url: String::new(),
+            min_original_year: 0,
+            min_year: 0,
+            max_original_year: 0,
+            max_year: 0,
+            mbz_album_id: String::new(),
+            mbz_album_artist_id: String::new(),
+            mbz_album_type: String::new(),
+            mbz_album_comment: String::new(),
+            mbz_release_group_id: String::new(),
+            missing: false,
+            name: "Abbey Road".to_string(),
+            order_album_name: String::new(),
+            order_album_artist_name: String::new(),
+            original_date: String::new(),
+            release_date: String::new(),
+            rg_album_gain: None,
+            rg_album_peak: None,
+            size: 0,
+            small_image_url: String::new(),
+            song_count: 0,
+            sort_album_name: String::new(),
+            sort_album_artist_name: String::new(),
+            tags: crate::sql_tags::DbTags::new(),
+            participants,
+            participant_names: vec![NamedParticipant {
+                id: "ar-1".to_string(),
+                name: "Beatles".to_string(),
+                sort_name: String::new(),
+                sub_role: String::new(),
+            }],
+            updated_at: None,
+        }
+    }
     #[test]
     fn put_sql_pins_put_then_participants_then_tags() {
-        // Arrange: Put (:164-172): r.put legs, updateParticipants
+        // Arrange: Put (:164-172), record-driven: the legs, updateParticipants
         // (sql_participations.go:78-119), updateTags (sql_tags.go:57-79).
-        let columns = vec!["name".to_string(), "tags".to_string()];
+        let rec = test_record();
+        let now = chrono::Utc::now();
         // Act:
-        let put = put_sql(
-            "al-1",
-            &columns,
-            vec![Value::from("Abbey Road"), Value::from("{}")],
-            "[{\"artist_id\":\"ar-1\",\"role\":\"albumartist\"}]",
-            vec!["tg-1".to_string()],
-        );
-        // Assert: the update sets before the WHERE id.
+        let put = put_sql("al-1", &rec, now, &[]).expect("put renders");
+        // Assert: 48 map columns (45 base row + 3 FTS from PostMapArgs; the
+        // 4 JSON columns are overwritten in place) + id = 49 insert args;
+        // update drops created_at (selectUpdateColumns) = 48 args; id last.
+        assert!(put.update.0.starts_with("UPDATE album SET "));
+        assert!(put.update.0.ends_with("WHERE id = ?"));
+        assert_eq!(put.update.1.len(), 48);
+        assert_eq!(put.update.1.last(), Some(&Value::Text("al-1".to_string())));
+        assert!(put.insert.0.starts_with("INSERT INTO album ("));
+        let tuple = put
+            .insert
+            .0
+            .rsplit("VALUES (")
+            .next()
+            .unwrap()
+            .strip_suffix(")")
+            .unwrap();
         assert_eq!(
-            put.update,
-            (
-                "UPDATE album SET name = ?, tags = ? WHERE id = ?".to_string(),
-                vec![
-                    Value::Text("Abbey Road".to_string()),
-                    Value::Text("{}".to_string()),
-                    Value::Text("al-1".to_string()),
-                ],
-            )
+            tuple.matches('?').count(),
+            49, // 48 map columns + id
+            "the VALUES tuple must pair one ? per column"
         );
-        // The VALUES tuple follows the column list, so `id` is LAST — binding it
-        // first rotated every value into the wrong column.
-        assert_eq!(
-            put.insert,
-            (
-                "INSERT INTO album (name, tags, id) VALUES (?, ?, ?)".to_string(),
-                vec![
-                    Value::Text("Abbey Road".to_string()),
-                    Value::Text("{}".to_string()),
-                    Value::Text("al-1".to_string()),
-                ],
-            )
-        );
+        assert_eq!(put.insert.1.len(), 49);
+        assert_eq!(put.insert.1.last(), Some(&Value::Text("al-1".to_string())));
+        // The full write set carries the PostMapArgs FTS columns and drops
+        // the DDL orphan `releases` (no Go field, never written).
+        assert!(put.insert.0.contains("full_text"));
+        assert!(put.insert.0.contains("search_participants"));
+        assert!(put.insert.0.contains("search_normalized"));
+        assert!(!put.insert.0.contains("releases"));
+        // imported_at is stamped to `now` at Put entry (:210) and is in the
+        // UPDATE set (created_at is dropped by selectUpdateColumns).
+        assert!(!put.update.0.contains("created_at"));
+        assert!(put.update.0.contains("imported_at"));
         // updateParticipants: delete-all then the json_each INSERT.
         assert_eq!(
             put.participants_delete,
@@ -1217,22 +1622,15 @@ mod tests {
                 vec![Value::Text("al-1".to_string())],
             )
         );
-        assert!(put
+        let p_ins = put
             .participants_insert
-            .0
-            .contains("INSERT INTO album_artists"));
-        assert!(put
-            .participants_insert
+            .as_ref()
+            .expect("participants insert");
+        assert!(p_ins.0.contains("INSERT INTO album_artists"));
+        assert!(p_ins
             .0
             .contains("JOIN artist ON artist.id = json_extract(value, '$.artist_id')"));
-        assert_eq!(
-            put.participants_insert.1,
-            vec![
-                Value::Text("al-1".to_string()),
-                Value::Text("[{\"artist_id\":\"ar-1\",\"role\":\"albumartist\"}]".to_string()),
-            ]
-        );
-        // updateTags: delete-then-insert (sql_tags.go:57-79).
+        // updateTags: delete-then-insert; empty indexed tags -> no insert.
         assert_eq!(
             put.tags_delete,
             (
@@ -1240,16 +1638,92 @@ mod tests {
                 vec![Value::Text("al-1".to_string())],
             )
         );
-        assert!(put.tags_insert.is_some());
-        // Empty indexed tags → no insert (:66-79 guards).
-        let bare = put_sql(
-            "al-1",
-            &["tags".to_string()],
-            vec![Value::from("{}")],
-            "[]",
-            Vec::new(),
+        assert!(put.tags_insert.is_none());
+    }
+
+    #[test]
+    fn put_sql_restricted_external_info_touches_only_the_six() {
+        // Arrange: UpdateExternalInfo (:223) — record-driven restriction.
+        let rec = test_record();
+        let now = chrono::Utc::now();
+        // Act:
+        let put = update_external_info_sql("al-1", &rec, now).expect("restricted put");
+        // Assert: the UPDATE SET is exactly the six external columns, none
+        // other; created_at/updated_at/name untouched.
+        let set = put
+            .update
+            .0
+            .strip_prefix("UPDATE album SET ")
+            .and_then(|s| s.strip_suffix(" WHERE id = ?"))
+            .expect("set clause");
+        let cols: Vec<&str> = set
+            .split(", ")
+            .map(|pair| pair.split(" = ?").next().unwrap())
+            .collect();
+        assert_eq!(
+            cols,
+            vec![
+                "description",
+                "external_info_updated_at",
+                "external_url",
+                "large_image_url",
+                "medium_image_url",
+                "small_image_url",
+            ]
         );
-        assert!(bare.tags_insert.is_none());
+        assert_eq!(put.update.1.len(), 7); // six + the WHERE id
+                                           // The INSERT leg stays full-column (Go's put inserts the whole row).
+        assert_eq!(put.insert.1.len(), 49);
+    }
+
+    #[test]
+    fn put_sql_empty_update_set_errors() {
+        // cols_to_update naming only created_at drops everything ->
+        // EmptyUpdateSet, not degenerate SQL.
+        let rec = test_record();
+        let err = put_sql("al-1", &rec, chrono::Utc::now(), &["created_at"]).unwrap_err();
+        assert!(matches!(err, crate::marshal::MarshalError::EmptyUpdateSet));
+    }
+
+    #[test]
+    fn participant_names_pins_name_plus_sort_name_and_never_sub_role() {
+        // AllNames (model/participants.go:174-185): name + non-empty
+        // SortArtistName, unique, NEVER SubRole.
+        let names = [
+            NamedParticipant {
+                id: "ar-1".to_string(),
+                name: "Nils Frahm".to_string(),
+                sort_name: "Frahm, Nils".to_string(),
+                sub_role: "Vocals".to_string(),
+            },
+            // Duplicate name (dedup) with an empty sort name.
+            NamedParticipant {
+                id: "ar-2".to_string(),
+                name: "Nils Frahm".to_string(),
+                sort_name: String::new(),
+                sub_role: "Piano".to_string(),
+            },
+            // Empty sort name contributes nothing new.
+            NamedParticipant {
+                id: "ar-3".to_string(),
+                name: "Jana Firla".to_string(),
+                sort_name: String::new(),
+                sub_role: String::new(),
+            },
+        ];
+        let out = participant_names(&names);
+        assert_eq!(
+            out,
+            vec![
+                "Nils Frahm".to_string(),
+                "Frahm, Nils".to_string(),
+                "Jana Firla".to_string(),
+            ],
+        );
+        // SubRole text must never leak into the FTS input.
+        assert!(!out
+            .iter()
+            .any(|n| n.contains("Vocals") || n.contains("Piano")));
     }
 
     #[test]
