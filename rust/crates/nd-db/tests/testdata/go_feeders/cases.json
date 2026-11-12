@@ -1,0 +1,227 @@
+[
+  {
+    "id": "album:discs_version_catalog",
+    "kind": "album",
+    "name": "Deep (Live)",
+    "sort_album_name": "Deep Live",
+    "album_artist": "Nils Frahm",
+    "participants": {
+      "artist": [
+        {"name": "Nils Frahm", "sort_artist_name": "Frahm, Nils"},
+        {"name": "Quintão", "sort_artist_name": ""}
+      ]
+    },
+    "discs": {"1": "Bonus [Deluxe]", "2": ""},
+    "tags": {
+      "albumversion": ["Deluxe Edition", "2024 reissue"],
+      "catalognumber": ["NIFCD 042"]
+    }
+  },
+  {
+    "id": "album:unicode_punctuation_no_participants",
+    "kind": "album",
+    "name": "Söhne der Nacht — 'Requiem' (Live)",
+    "sort_album_name": "Soehne der Nacht Requiem Live",
+    "album_artist": "Bjørk & Øystein (feat. Ærøe)",
+    "participants": {},
+    "discs": {},
+    "tags": {}
+  },
+  {
+    "id": "album:unstable_name_order",
+    "kind": "album",
+    "name": "Deep (Live)",
+    "sort_album_name": "",
+    "album_artist": "",
+    "participants": {
+      "artist": [
+        {"name": "Aurora", "sort_artist_name": ""},
+        {"name": "Deep Purple", "sort_artist_name": "Purple, Deep"},
+        {"name": "Zeta Trio", "sort_artist_name": ""}
+      ]
+    },
+    "discs": {},
+    "tags": {}
+  },
+  {
+    "id": "album:empty_everything",
+    "kind": "album",
+    "name": "",
+    "sort_album_name": "",
+    "album_artist": "",
+    "participants": {},
+    "discs": {},
+    "tags": {}
+  },
+  {
+    "id": "album:single_char_and_empty_disc",
+    "kind": "album",
+    "name": "Ærøe",
+    "sort_album_name": "",
+    "album_artist": "St-Étienne",
+    "participants": {
+      "composer": [
+        {"name": "R.E.M.", "sort_artist_name": "REMs"},
+        {"name": "Bjørk", "sort_artist_name": "bjork"}
+      ]
+    },
+    "discs": {"1": ""},
+    "tags": {
+      "albumversion": ["Deluxe"]
+    }
+  },
+  {
+    "id": "mediafile:subtitle_bracketed",
+    "kind": "mediafile",
+    "title": "Deep",
+    "subtitle": "[Deluxe Edition]",
+    "append_subtitle": true,
+    "album": "Deep (Live)",
+    "artist": "Nils Frahm",
+    "album_artist": "Nils Frahm",
+    "sort_title": "",
+    "sort_album_name": "",
+    "sort_artist_name": "Frahm, Nils",
+    "sort_album_artist_name": "Frahm, Nils",
+    "disc_subtitle": "Bonus [Deluxe]",
+    "participants": {
+      "artist": [
+        {"name": "Nils Frahm", "sort_artist_name": "Frahm, Nils"}
+      ],
+      "performer": [
+        {"name": "Quintão", "sort_artist_name": ""}
+      ]
+    }
+  },
+  {
+    "id": "mediafile:subtitle_flag_off",
+    "kind": "mediafile",
+    "title": "Deep",
+    "subtitle": "[Deluxe Edition]",
+    "append_subtitle": false,
+    "album": "Deep (Live)",
+    "artist": "Nils Frahm",
+    "album_artist": "",
+    "sort_title": "Deep",
+    "sort_album_name": "",
+    "sort_artist_name": "",
+    "sort_album_artist_name": "",
+    "disc_subtitle": "",
+    "participants": {
+      "artist": [
+        {"name": "Nils Frahm", "sort_artist_name": "Frahm, Nils"}
+      ]
+    }
+  },
+  {
+    "id": "mediafile:no_subtitle",
+    "kind": "mediafile",
+    "title": "Deep",
+    "subtitle": "",
+    "append_subtitle": true,
+    "album": "Deep (Live)",
+    "artist": "",
+    "album_artist": "",
+    "sort_title": "",
+    "sort_album_name": "",
+    "sort_artist_name": "",
+    "sort_album_artist_name": "",
+    "disc_subtitle": "",
+    "participants": {}
+  },
+  {
+    "id": "mediafile:whitespace_only_subtitle",
+    "kind": "mediafile",
+    "title": "Deep",
+    "subtitle": "   ",
+    "append_subtitle": true,
+    "album": "",
+    "artist": "",
+    "album_artist": "",
+    "sort_title": "",
+    "sort_album_name": "",
+    "sort_artist_name": "",
+    "sort_album_artist_name": "",
+    "disc_subtitle": "",
+    "participants": {}
+  },
+  {
+    "id": "mediafile:unicode_punctuation",
+    "kind": "mediafile",
+    "title": "Söhne der Nacht — 'Requiem' (Live 2024)",
+    "subtitle": "",
+    "append_subtitle": true,
+    "album": "Söhne der Nacht",
+    "artist": "Bjørk & Øystein",
+    "album_artist": "Ærøe",
+    "sort_title": "Soehne der Nacht Requiem Live",
+    "sort_album_name": "Soehne der Nacht",
+    "sort_artist_name": "Bjork & Oystein",
+    "sort_album_artist_name": "Aeroe",
+    "disc_subtitle": "",
+    "participants": {
+      "artist": [
+        {"name": "Bjørk & Øystein", "sort_artist_name": "Bjork & Oystein"},
+        {"name": "AC/DC", "sort_artist_name": ""}
+      ],
+      "performer": [
+        {"name": "R.E.M.", "sort_artist_name": "REMs"}
+      ]
+    }
+  },
+  {
+    "id": "mediafile:unstable_name_order",
+    "kind": "mediafile",
+    "title": "Deep",
+    "subtitle": "",
+    "append_subtitle": true,
+    "album": "Deep (Live)",
+    "artist": "Nils Frahm",
+    "album_artist": "",
+    "sort_title": "",
+    "sort_album_name": "",
+    "sort_artist_name": "",
+    "sort_album_artist_name": "",
+    "disc_subtitle": "",
+    "participants": {
+      "artist": [
+        {"name": "Aurora", "sort_artist_name": ""},
+        {"name": "Deep Purple", "sort_artist_name": "Purple, Deep"},
+        {"name": "Zeta Trio", "sort_artist_name": ""},
+        {"name": "Quintão", "sort_artist_name": ""}
+      ]
+    }
+  },
+  {
+    "id": "mediafile:empty_everything",
+    "kind": "mediafile",
+    "title": "",
+    "subtitle": "",
+    "append_subtitle": true,
+    "album": "",
+    "artist": "",
+    "album_artist": "",
+    "sort_title": "",
+    "sort_album_name": "",
+    "sort_artist_name": "",
+    "sort_album_artist_name": "",
+    "disc_subtitle": "",
+    "participants": {}
+  },
+  {
+    "id": "mediafile:unbalanced_bracket_subtitle",
+    "kind": "mediafile",
+    "title": "Track s",
+    "subtitle": "[unbalanced",
+    "append_subtitle": true,
+    "album": "",
+    "artist": "",
+    "album_artist": "",
+    "sort_title": "",
+    "sort_album_name": "",
+    "sort_artist_name": "",
+    "sort_album_artist_name": "",
+    "disc_subtitle": "",
+    "participants": {}
+  }
+]
