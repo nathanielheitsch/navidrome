@@ -39,15 +39,17 @@
 //! Converted here: `share_repo`, `radio_repo` (including the `artwork_queue`
 //! row its `Put` enqueues), `artist_repo`, and the `artwork_queue_repo`
 //! stamps/predicates (`retry_at <= now`, `artwork_queue_repository.go:167`).
-//! Repositories still binding epoch integers into `datetime`/`timestamp`
-//! columns, which must move to this module before their range predicates and
-//! ordering are trustworthy: `library_repo`, `mediafile_repo`, `folder_repo`,
-//! `album_repo`, `playqueue_repo`, `artwork_repo`, `plugin_repo`,
-//! `playlist_repo` (`now: &str` — TEXT already, but in the `T`-separated
-//! shape), `smart_playlist_repo`, `sql_annotations`, `sql_bookmarks`, and
-//! `user_repo`'s caller-supplied `&str` stamps (`user_repo.rs:227-230`).
-//! `user_repo`'s record keeps the stored TEXT opaquely on purpose
-//! (`user_repo.rs:490-492`); only the bytes it writes had to be unified.
+//! Remaining work, stated so nobody assumes it is done: `library_repo`,
+//! `mediafile_repo`, `folder_repo`, `album_repo`, `playqueue_repo`,
+//! `artwork_repo` and `plugin_repo` still bind epoch integers into
+//! `datetime`/`timestamp` columns, so their range predicates and ordering are
+//! still affected by the affinity rule above. `playlist_repo`,
+//! `smart_playlist_repo`, `sql_annotations`, `sql_bookmarks` and `user_repo`
+//! already bind TEXT through a caller-supplied `&str` stamp
+//! (`user_repo.rs:227-230`); their fixtures now use this module's shape, and
+//! their signatures are the natural next conversion. `user_repo`'s record
+//! keeps the stored TEXT opaquely on purpose (`user_repo.rs:490-492`); only
+//! the bytes it writes had to be unified.
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 
