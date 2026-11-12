@@ -152,10 +152,12 @@ pub fn sanitize_strings(text: &[&str]) -> String {
         sanitized.push(' ');
     }
 
-    // Remove special symbols, accents, extra spaces and slashes
+    // Remove special symbols, accents, extra spaces and slashes, matching
+    // `sanitize_strings.go:25-27`. Use Go's [`to_lower`] before accent
+    // folding; `str::to_lowercase` has different Unicode behavior.
     let mut s = sanitized.replace(['\\', '/'], " ");
     s = clear(&s);
-    s = accents(&s).to_lowercase();
+    s = accents(&to_lower(&s));
     s.retain(|c| {
         !matches!(
             c,
@@ -337,7 +339,11 @@ fn html_unescape(s: &str) -> String {
 #[must_use]
 pub fn sanitize_field_for_sorting(original: &str) -> String {
     let v = accents(original.trim());
-    clear(&v.to_lowercase())
+    // `str.SanitizeFieldForSorting` = Clear(strings.ToLower(...)); the
+    // lowercasing must be Go's [`to_lower`]. This result is persisted into the
+    // order_*/sort_* columns, so a divergence would disagree with a
+    // Go-written database.
+    clear(&to_lower(&v))
 }
 
 /// [`sanitize_field_for_sorting`] with the leading article removed
@@ -345,11 +351,7 @@ pub fn sanitize_field_for_sorting(original: &str) -> String {
 #[must_use]
 pub fn sanitize_field_for_sorting_no_article(original: &str, ignored_articles: &str) -> String {
     let v = accents(original.trim());
-    clear(
-        &remove_article(v.trim(), ignored_articles)
-            .trim()
-            .to_lowercase(),
-    )
+    clear(to_lower(remove_article(v.trim(), ignored_articles).trim()).as_str())
 }
 
 /// Removes a leading article (`str.RemoveArticle`). Articles are the
@@ -391,7 +393,9 @@ pub fn normalize_for_fts(values: &[&str]) -> String {
         if variant.is_empty() || variant == orig {
             return;
         }
-        let lower = variant.to_lowercase();
+        // Dedupe key only, but it decides which variants land in the persisted
+        // search_* columns, so it must match Go's strings.ToLower.
+        let lower = to_lower(&variant);
         if !seen.insert(lower) {
             return;
         }
@@ -465,6 +469,39 @@ fn split_filename(filename: &str) -> (String, String) {
 
 const fn is_bidi_control(r: char) -> bool {
     matches!(r, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Go `strings.ToLower`, byte-exact.
+///
+/// `str::to_lowercase()` is **not** equivalent and must not be used where a Go
+/// string feeds an id, a lookup key, or a comparison:
+///
+/// - It applies Unicode *final-sigma* context folding (U+03A3 at a word end
+///   becomes U+03C2). Go's `strings.ToLower` is rune-independent
+///   (`Map(unicode.ToLower, s)`) and always yields U+03C3.
+/// - It maps U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE to `i` plus U+0307
+///   (two code points); Go's simple per-rune table maps it to plain `i`.
+///
+/// A differential sweep of every scalar value (0..=0x10FFFF, surrogates
+/// excluded) against `strings.ToLower` -- 1488 runes change in Go -- found
+/// **exactly** these two behaviours differing and nothing else, including no
+/// rune Go lowers that Rust leaves unchanged. Sigma examples: the Greek word
+/// for "Odysseus" in capitals lowers to Go `οδυσσ` but Rust `οδυσς`; "ΙΣ"
+/// lowers to Go `ισ` but Rust `ις`.
+///
+/// Go's ASCII fast path and `Map` both lower each rune independently, so a
+/// per-rune mapping is faithful. ASCII is the common case and short-circuits.
+#[must_use]
+pub fn to_lower(s: &str) -> String {
+    if s.is_ascii() {
+        return s.to_ascii_lowercase();
+    }
+    s.chars()
+        .map(|c| match c {
+            '\u{130}' => '\u{69}',
+            _ => c.to_lowercase().next().unwrap_or(c),
+        })
+        .collect()
 }
 
 /// Go `path.Ext`: the suffix beginning at the final dot.
@@ -880,6 +917,15 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_strings_uses_go_lowercase_before_accent_fold() {
+        // Go oracle: sanitize.Accents(strings.ToLower("ΟΔΥΣΣΕΙΑ")) preserves
+        // the sigma as σ; Rust's context-sensitive str::to_lowercase used ς.
+        assert_eq!(sanitize_strings(&["ΟΔΥΣΣΕΙΑ"]), "οδυσσεια");
+        assert_eq!(sanitize_strings(&["ΙΣ"]), "ισ");
+        assert_eq!(sanitize_strings(&["İstanbul Jazz"]), "istanbul jazz");
+    }
+
+    #[test]
     fn sanitize_strings_cases() {
         assert_eq!(sanitize_strings(&["Some Text"]), "some text");
         assert_eq!(sanitize_strings(&["Quintão"]), "quintao");
@@ -901,6 +947,20 @@ mod tests {
         assert_eq!(
             sanitize_strings(&["Bob Marley", "Marley, Bob"]),
             "bob marley"
+        );
+    }
+
+    #[test]
+    fn go_lowercase_parity_flows_into_persisted_sort_fields() {
+        // Go oracles from utils/str/sanitize_strings.go and model/map_mediafile.go:
+        // strings.ToLower("ΟΔΥΣΣΕΙΑ") = "οδυσσεια" (never final sigma), and
+        // strings.ToLower("İstanbul Jazz") = "istanbul jazz" (U+0130 -> i).
+        assert_eq!(sanitize_field_for_sorting("ΟΔΥΣΣΕΙΑ"), "οδυσσεια");
+        assert_eq!(sanitize_field_for_sorting("ΙΣ"), "ισ");
+        assert_eq!(sanitize_field_for_sorting("İstanbul Jazz"), "istanbul jazz");
+        assert_eq!(
+            sanitize_field_for_sorting_no_article("ΟΔΥΣΣΕΙΑ", "The"),
+            "οδυσσεια"
         );
     }
 
@@ -969,5 +1029,50 @@ mod tests {
             remove_article("Thelonious Monk", articles),
             "Thelonious Monk"
         );
+    }
+}
+
+#[cfg(test)]
+mod to_lower_go_parity {
+    use super::to_lower;
+
+    // Golden pairs produced by the actual Go `strings.ToLower` (go run against
+    // this repo's Go tree), covering both divergences:
+    //   "ΟΔΥΣΣ"      -> "οδυσσ"   (Rust str::to_lowercase gives "οδυσς")
+    //   "ΙΣ"         -> "ισ"      (Rust str::to_lowercase gives "ις")
+    //   "İstanbul"   -> "istanbul"(Rust gives "i\u{307}stanbul")
+    #[test]
+    fn greek_final_sigma_matches_go() {
+        assert_eq!(to_lower("ΟΔΥΣΣ"), "οδυσσ");
+        assert_eq!(to_lower("ΙΣ"), "ισ");
+        assert_eq!(to_lower("ΑΣ ΠΟΛΗ"), "ασ πολη");
+        assert_eq!(to_lower("ΟΔΥΣΣΕΙΑ"), "οδυσσεια");
+        assert_eq!(to_lower("KOREA Σ"), "korea σ");
+    }
+
+    #[test]
+    fn u0130_maps_to_plain_i() {
+        assert_eq!(to_lower("İstanbul"), "istanbul");
+        assert_eq!(to_lower("İstanbul Jazz"), "istanbul jazz");
+        assert_eq!(to_lower("\u{130}"), "i");
+        assert_eq!(to_lower("\u{130}").chars().count(), 1);
+    }
+
+    #[test]
+    fn other_special_cases_are_unchanged() {
+        assert_eq!(to_lower("ß"), "ß");
+        assert_eq!(to_lower("\u{1E9E}"), "ß");
+        assert_eq!(to_lower("ÅNGSTRÖM"), "ångström");
+        assert_eq!(to_lower("Ünïcode"), "ünïcode");
+        assert_eq!(to_lower("ı"), "ı");
+        assert_eq!(to_lower("ς"), "ς");
+    }
+
+    #[test]
+    fn ascii_and_noop_paths() {
+        assert_eq!(to_lower("Rock"), "rock");
+        assert_eq!(to_lower("rock"), "rock");
+        assert_eq!(to_lower(""), "");
+        assert_eq!(to_lower("中文 123"), "中文 123");
     }
 }

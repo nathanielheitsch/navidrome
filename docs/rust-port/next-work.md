@@ -627,3 +627,68 @@ Commits GPG-signed, no co-author trailers, no gpgsign bypass.
   are now DECIDED in the plan above — workers implement, they don't re-derive.
 - **`bench/`, `docs/perf/`**: COMMITTED (2026-11-03) as the crew-run perf
   baseline for future comparison; worktree is fully clean.
+## S-D3a landed + a Go lowercasing divergence (2026-11-12)
+
+**S-D3a (shared hydration seam)** — `nd-db/src/hydrate.rs` (new) provides the
+row→record seam for the eight PostScan hooks: `RowGet` (NULL-into-non-pointer
+errors like Go's `database/sql`, `get_opt_dt` routed through
+`time::optional_sentinel`, `has_column` for absent joined columns),
+`HydrateError::Decoded` carrying Go's wrapper prefix verbatim, and the two-phase
+raw-row → decode shape (`row_to_user` + `user_post_scan`). `user_repo` is
+re-pointed at it with no behaviour change.
+
+**Go `strings.ToLower` divergence (found by the S-D3 verification lane, fixed by
+parent).** Go derives tag ids with `NewHash(strings.ToLower(name),
+strings.ToLower(value))` (`model/id/id.go:46-48`); Rust used
+`str::to_lowercase()`. A differential sweep of every scalar value against the
+real Go function (1488 runes change in Go) found exactly two divergences:
+
+- Go's non-ASCII path is `Map(unicode.ToLower, s)` — rune-independent, so it
+  never applies Unicode final-sigma folding. Rust folds: `ΟΔΥΣΣ` → Go `οδυσσ`,
+  Rust `οδυσς`; `ΙΣ` → Go `ισ`, Rust `ις`.
+- Go maps U+0130 to plain `i`; Rust yields `i` + U+0307 (two code points).
+
+Because tag ids are persisted and tag *values* are arbitrary user text, this
+would have minted different ids than an existing Go-written database for the
+same tag. `nd_utils::str::to_lower` now replicates Go exactly, and
+`nd_id::new_tag_id` uses it, with Go-measured goldens
+(`ΟΔΥΣΣ` = `0UEOhdgRzYCxNU4pOSozfz`, `ΙΣ` = `3iW1R9fgXXkzfoV7433up2`,
+`İstanbul Jazz` = `3zPshTNGcEwd2fDkQE5r0A`, `İ` = `6JztUNsZpP9q8P7zDbGeMs`).
+
+`nd-mapping/src/title_tables.rs::LOWER_SPECIAL` is *not* affected: it models Go's
+`Title()` title-casing path, a different function that intentionally matches
+Rust-style folding.
+
+**Reviewer follow-up (agent `59273ee5…`, APPROVE; full scalar sweep + Go goldens):**
+three more `to_lowercase` callsites produce persisted identity/search/sort values
+and are fixed in this worktree before scanner writes are wired:
+
+- `nd-mapping/src/persistent_ids.rs`: PID album-artist/album values and
+  `legacy_album_id` are hashed into persisted `pid`/`album_id`; those values now
+  use `nd_utils::str::to_lower` (the spec/attribute name itself is config, but
+  it uses the same helper). This is the same class/severity as `new_tag_id`.
+- `nd-utils/src/str.rs`: `sanitize_field_for_sorting*` produce persisted
+  `sort_*`/`order_*` fields; `sanitize_strings` feeds FTS columns; and
+  `normalize_for_fts` uses lowercase to dedupe which variants get persisted.
+  All now use `to_lower`; tests pin Greek final sigma and U+0130 through the
+  persisted sort and sanitization paths.
+
+Other usages are safe to defer: criteria/map keys are normalized on both sides
+inside the Rust process and configuration tag names are ASCII; extension/codec
+comparisons are likewise ASCII; `nd-playlists` M3U keys are built and looked up
+symmetrically in Rust; `nd-auth` username comparison has only a non-ASCII edge
+case, not persisted identity. `nd-mapping/title_tables.rs::LOWER_SPECIAL` models
+Go `Title()` (not `strings.ToLower`) and remains unchanged.
+
+**Verification lane results (lanes `61acbfa8…`, parent-confirmed):** integer-key
+JSON ordering is string-sorted lexicographically ({1,2,10} →
+`{"1","10","2"}`), confirming `marshal_discs`; `new_tag_id` matches Go byte-for-byte
+on ASCII; S-A participant goldens are **parse**-compared, and Rust reads Go's
+escaped bytes (`\u003c \u003e \u0026 \u2028 \u2029`) correctly, so reading a
+Go-written DB is safe; `AllNames()` order is genuinely non-reproducible (6
+distinct orderings over 300 iterations), which is why `search_participants` sorts
+and dedupes; all Rust read decoders accept Go-written album/participant/tag/disc/
+folder_ids bytes with no divergence.
+
+Final workspace gate after the PID/sort/FTS lowercasing follow-up and review: fmt
+clean, clippy `-D warnings` clean, **1579 passed / 0 failed** across 60 binaries.

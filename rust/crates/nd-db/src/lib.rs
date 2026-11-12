@@ -23,6 +23,7 @@ pub mod criteria_sql;
 pub mod execution;
 pub mod folder_repo;
 pub mod genre_repo;
+pub mod hydrate;
 pub mod library_repo;
 pub mod marshal;
 pub mod mediafile_repo;

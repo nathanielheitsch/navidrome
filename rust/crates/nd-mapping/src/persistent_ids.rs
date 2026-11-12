@@ -8,7 +8,7 @@
 
 use md5::Digest;
 use nd_id::encode;
-use nd_utils::str::clear;
+use nd_utils::str::{clear, to_lower};
 
 use crate::config::PidConfig;
 use crate::mdfile::MediaFile;
@@ -81,7 +81,11 @@ fn get_pid_attr(
     album_spec: &str,
     hash: &HashFunc,
 ) -> String {
-    let attr = attr.trim().to_lowercase();
+    // Go: strings.TrimSpace(strings.ToLower(attr)) (`persistent_ids.go:67`).
+    // `to_lower` is Go's ToLower, not `str::to_lowercase`: the hashed values
+    // below are persisted as `pid`/`album_id`.
+    let attr = attr.trim();
+    let attr = to_lower(attr);
     match attr.as_str() {
         "albumid" => {
             if spec == album_spec {
@@ -94,12 +98,9 @@ fn get_pid_attr(
         "folder" => dir(&mf.path),
         // Go hashes the attribute value here (`persistent_ids.go:74`), so
         // `computePID` hashes this already-hashed value again at `:59`.
-        "albumartistid" => hash(&clear(&mf.album_artist.to_lowercase())),
+        "albumartistid" => hash(&clear(&to_lower(&mf.album_artist))),
         "title" => mf.title.clone(),
-        "album" => clear(
-            &md.string(crate::tag_names::TAG_ALBUM.as_str())
-                .to_lowercase(),
-        ),
+        "album" => clear(&to_lower(&md.string(crate::tag_names::TAG_ALBUM.as_str()))),
         _ => md.string(attr.as_str()),
     }
 }
@@ -165,7 +166,8 @@ pub fn validate_pid_spec(spec: &str, is_album: bool) -> Result<(), String> {
     }
     for field in spec.split('|') {
         for attr in field.split(',') {
-            let attr = attr.trim().to_lowercase();
+            let attr = attr.trim();
+            let attr = to_lower(attr);
             match attr.as_str() {
                 "" => return Err(format!("empty attribute in {spec:?}")),
                 "albumid" => {
@@ -218,11 +220,14 @@ pub fn legacy_track_id(mf: &MediaFile, prepend_lib_id: bool) -> String {
 #[must_use]
 pub fn legacy_album_id(mf: &MediaFile, md: &Metadata, prepend_lib_id: bool) -> String {
     let (_date, _original, release_date) = md.map_dates();
-    let mut album_path = format!(
+    // Go lowercases the whole `artist\album` key (`legacy_ids.go:29`) before
+    // MD5'ing it into a persisted album id, so the lowercasing must be Go's
+    // `to_lower` and must wrap the joined key (not each part).
+    let mut album_path = to_lower(&format!(
         "{}{FIELD_SEP}{}",
-        legacy_map_album_artist_name(md).to_lowercase(),
-        legacy_map_album_name(md).to_lowercase()
-    );
+        legacy_map_album_artist_name(md),
+        legacy_map_album_name(md)
+    ));
     if !md.options().group_album_releases && !release_date.is_empty() {
         album_path = format!("{album_path}{FIELD_SEP}{release_date}");
     }

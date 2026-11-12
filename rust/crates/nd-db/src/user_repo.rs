@@ -557,29 +557,22 @@ impl UserRow {
     /// [`UserError::Sqlite`] carrying the JSON failure — Go's scan error
     /// (`parsing user libraries from db`) surfaces the same way, from the read.
     pub fn into_record(self) -> Result<UserRecord, UserError> {
-        let mut record = self.record;
-        record.libraries = parse_libraries_json(&self.libraries_json).map_err(|err| {
-            UserError::Sqlite(rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(err),
-            ))
-        })?;
-        Ok(record)
+        // Thin delegation onto the S-D3 seam: the same decode, the same Go
+        // prefix, surfaced the same way Go's ScanStruct error does — a
+        // sqlite conversion failure out of the read.
+        crate::hydrate::user_post_scan(self).map_err(|err| UserError::Sqlite(err.into_sqlite()))
     }
 }
 
-/// `PostScan`'s decode (`user_repository.go:37-41`). Empty input is the
-/// skip-and-return-nil branch; otherwise the JSON array of the select's
-/// `libraries_json`.
+/// `PostScan`'s decode (`user_repository.go:37-41`): delegates to
+/// [`crate::hydrate::parse_libraries_json`], the shared S-D3 seam. Empty
+/// input is the skip-and-return-nil branch; otherwise the JSON array of the
+/// select's `libraries_json`.
 ///
 /// # Errors
 /// The `serde_json` failure Go's `json.Unmarshal` would return.
 pub fn parse_libraries_json(json: &str) -> Result<Vec<UserLibrary>, serde_json::Error> {
-    if json.is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_str(json)
+    crate::hydrate::parse_libraries_json(json)
 }
 
 /// Failures surfaced by the executed user repository.
@@ -855,24 +848,9 @@ impl<'a> UserRepo<'a> {
 /// `scrobble_filter` still reads (`persistence/user_repository_test.go:87-99`
 /// pins that case; the column's DEFAULT supplies the value here).
 fn row_to_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<UserRow> {
-    Ok(UserRow {
-        record: UserRecord {
-            id: row.get("id")?,
-            user_name: row.get("user_name")?,
-            name: row.get("name")?,
-            email: row.get("email")?,
-            is_admin: row.get("is_admin")?,
-            last_login_at: row.get("last_login_at")?,
-            last_access_at: row.get("last_access_at")?,
-            created_at: row.get("created_at")?,
-            updated_at: row.get("updated_at")?,
-            scrobble_filter: row.get("scrobble_filter")?,
-            password: row.get("password")?,
-            token_epoch: row.get("token_epoch")?,
-            libraries: Vec::new(),
-        },
-        libraries_json: row.get("libraries_json")?,
-    })
+    // Re-pointed at the S-D3 seam: the same reads, through the shared
+    // RowGet accessors (identical behaviour, one seam for the eight hooks).
+    crate::hydrate::row_to_user(row)
 }
 
 #[cfg(test)]

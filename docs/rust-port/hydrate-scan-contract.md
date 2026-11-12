@@ -209,27 +209,27 @@ S-D2b1 (folder+playlist records) and S-D2b2 (album+mediafile records) must land 
 
 **Ordering rationale:** a→b→c→d→e (e reuses c). f is independent and last. Each has disjoint repo files, so lanes can run in parallel once the `hydrate.rs` core (S-D3a) lands.
 
-## 7. Staleness / unverified flags at HEAD 60198cec
+## 7. Staleness / verification notes (S-D3a, verified 2026-11-12)
 
 **Stale in the docs (corrected in source):**
 - hydrate-contract "Parent-resolved open item" + §7: *"newSelect … is not the annotation join … base reads must not expect annotation columns."* **STALE.** `selectAlbum:230`, `selectMediaFile:207`, `selectArtist:214` call `withAnnotation` unconditionally → base reads **do** carry the 6 annotation columns (+ `average_rating`), and `selectMediaFile` also carries `bookmark_position`. The hydrators must decode them on every base read.
 - hydrate-contract §top + next-work §1c: *"S-A/S-B/S-D1 not landed … HEAD 336f69ba is docs-only."* **STALE.** S-A `2a99a681`, S-B `3f8b5a8d`, S-D1 `cb11b645`, S-D2a `60198cec` all landed (verified in `git log` + the files exist: `sql_participations.rs` has `marshal_participants`/`unmarshal_participants`, `sql_feeders.rs`, `sql_json.rs`, `marshal.rs` all present). HEAD is `60198cec`, not `336f69ba`.
 
-**Doc claims I could NOT verify in source (flag, do not assume):**
-- The two *empirical* Go JSON orderings — integer-key `{"1","10","2"}` string-sort and `AllNames()` map-order instability (hydrate-contract §7, next-work §1b "JSON traps"). Taken from the doc's stated `go run` verification; I did not re-run the Go programs. The *consequence* (stringify-then-sort for `discs`; persist-no-inherited-ordering for `search_participants`) is still the right rule, but the exact byte examples are doc-asserted.
-- `nd_id::new_tag_id` id derivation (hydrate-contract §7 UNVERIFIED; `sql_tags.rs:135` uses it) — the `ToGenres` Rust port depends on it being byte-faithful; not re-derived here.
-- Whether the S-A participant golden is byte-compared or parse-compared (doc says parsed) — affects whether the `participants` read test can assert exact bytes; I did not inspect the golden diff mode.
+**Formerly unverified claims — now closed by live Go/Rust probes (lane `61acbfa8…`):**
+- Integer-key JSON ordering is string-sorted (`{"1":"a","10":"c","2":"b"}`), confirming `marshal_discs`' stringify-then-sort rule; `AllNames()` map ordering is non-reproducible, and `search_participants` sorts/dedupes.
+- `nd_id::new_tag_id` matches Go byte-for-byte, including Unicode final-sigma and U+0130 goldens. `nd_utils::str::to_lower` is exhaustively checked against Go `strings.ToLower` over all Unicode scalar values.
+- S-A participant goldens are parse-compared, not byte-compared; Rust reads Go-written `\u003c`, `\u003e`, `\u0026`, `\u2028`, and `\u2029` escapes. All Rust decoders accept the probed Go-written album, participant, tag, discs, and folder_ids bytes. See `next-work.md`'s S-D3a verification entry for details.
+
 
 **Verified against source (spot-checks of the doc's own claims):** all 8 PostScan file:lines and bodies; the 5 PostMapArgs; `withAnnotation`/`withBookmark` coalesce+pointer column sets; the 4 RG shim fields on `dbAlbum`/`dbMediaFile`; `album/artist/mediafile` base selects' unconditional annotation join; `library_stats_json` alias column; `user` `libraries_json` `COALESCE(…, '[]')`; `Artist.Stats/Size/SongCount/AlbumCount` `structs:"-"`; `MediaFile.Lyrics` plain column; `dbPlaylist` by-value embed + `sql.NullString` Rules shim; `dbPlaylistTrack`/`dbScrobbleBuffer` value embed + `media_file_id` overwrite; `time::optional_sentinel` at `time.rs:118`; `UserRow`/`into_record` at `user_repo.rs:542/559`; the `sql_json`/`sql_tags`/`sql_participations` decoder signatures.
 
 ## VERIFIED / UNVERIFIED tally
-- **VERIFIED (re-derived at HEAD 60198cec):** 8/8 PostScan hooks + exact guards/prefixes/zero-value; the two plan-changing corrections (base-read annotation join; mediafile bookmark col); all 5 PostMapArgs; all landed Rust decoders (`sql_json`×3, `sql_tags::unmarshal_tags`, `sql_participations::unmarshal_participants`+role bridge, `user` `parse_libraries_json`, `time::optional_sentinel`); all model pointer-field shapes (annotation `*time.Time`×3, RG `*float64`, `bit_depth`/`bpm *int`, artist/playlist/user timestamps); the `UserRow`/`UserRecord` precedent; S-A/S-B/S-D1/S-D2a landed state.
-- **UNVERIFIED (doc-asserted, flagged, not re-run):** the two Go JSON-order byte examples; `nd_id::new_tag_id` id derivation; S-A golden byte-vs-parse mode.
+- **VERIFIED:** 8/8 PostScan hooks + exact guards/prefixes/zero-value; the two plan-changing corrections (base-read annotation join; mediafile bookmark col); all 5 PostMapArgs; all landed Rust decoders (`sql_json`×3, `sql_tags::unmarshal_tags`, `sql_participations::unmarshal_participants`+role bridge, `user` `parse_libraries_json`, `time::optional_sentinel`); all model pointer-field shapes (annotation `*time.Time`×3, RG `*float64`, `bit_depth`/`bpm *int`, artist/playlist/user timestamps); the `UserRow`/`UserRecord` precedent; S-A/S-B/S-D1/S-D2 landed state; and the three empirical claims above.
+- **UNVERIFIED:** none of the former JSON-order, `new_tag_id`, or participant-golden-mode claims remain open. `nd_id::new_tag_id` and `nd_utils::str::to_lower` are byte-pinned against the actual Go implementation.
 
-## Blockers
-1. **S-D2b1/S-D2b2 must land first** — S-D3's read records should be the same structs the write side produces (the `UserRow`/`UserRecord` pattern); you cannot write a stable read record while the write record is unsettled. This is the hard ordering gate.
-2. **`ToGenres` has no Rust home** — it is a *decoder*, not a hook; must be added (recommend `sql_tags::tags_to_genres`) before S-D3c can be "complete."
-3. **No shared `Annotations`/`Bookmarkable` record exists** — corrections 1&2 mean S-D3c needs a new annotation-column reader + record; budget for it.
+## Remaining blockers and order (updated 2026-11-12)
+1. **`ToGenres` has no Rust home** — it is a decoder, not a hook; add `sql_tags::tags_to_genres` before S-D3c can be complete.
+2. **No shared `Annotations`/`Bookmarkable` record exists** — S-D3c needs a new annotation-column reader + record.
 
 ## Recommended order
-Land S-D2b1 → S-D2b2 → **S-D3a** (core + user) → **S-D3b** (folder+playlist) → **S-D3c** (album+mediafile, incl. `tags_to_genres` + annotation/bookmark readers) → **S-D3d** (artist) → **S-D3e** (track+scrobble, reuses c) → **S-D3f** (artwork, independent). One writer per repo file per lane; no `nd-model` edits; parent gates between each.
+S-D2b1/S-D2b2 and S-D3a are landed. Continue **S-D3b** (folder+playlist) → **S-D3c** (album+mediafile, incl. `tags_to_genres` + annotation/bookmark readers) → **S-D3d** (artist) → **S-D3e** (track+scrobble, reuses c) → **S-D3f** (artwork, independent). One writer per repo file per lane; no `nd-model` edits; parent gates between each.

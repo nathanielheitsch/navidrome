@@ -135,8 +135,21 @@ pub fn new_hash1(data: &str) -> String {
 }
 
 /// Tag id: `NewHash(strings.ToLower(name), strings.ToLower(value))`.
+///
+/// Lowercasing goes through [`nd_utils::str::to_lower`], **not**
+/// `str::to_lowercase`: Go's `strings.ToLower` is rune-independent, so it maps
+/// U+03A3 to U+03C3 regardless of context and U+0130 to a plain `i`, while
+/// `str::to_lowercase` applies final-sigma folding and yields `i\u{307}`. Tag
+/// values are arbitrary user text and these ids are persisted, so the
+/// difference is a real divergence: a tag value containing a capital sigma at a
+/// word end or a dotted capital I would get a different id in Rust than in Go,
+/// and would not match an existing Go-written database.
+#[must_use]
 pub fn new_tag_id(name: &str, value: &str) -> String {
-    new_hash(&[&name.to_lowercase(), &value.to_lowercase()])
+    new_hash(&[
+        &nd_utils::str::to_lower(name),
+        &nd_utils::str::to_lower(value),
+    ])
 }
 
 /// Errors from [`decode`].
@@ -331,5 +344,44 @@ mod tests {
         );
         assert_eq!(PID_TRACK_LEGACY, "track_legacy");
         assert_eq!(PID_ALBUM_LEGACY, "album_legacy");
+    }
+}
+
+#[cfg(test)]
+mod go_parity_tag_ids {
+    use super::new_tag_id;
+
+    // Golden pairs produced by the actual Go `model/id.NewTagID` (go run
+    // against this repo's Go tree), pinned so the lowercasing divergence cannot
+    // silently return:
+    //   NewTagID("genre", "ΟΔΥΣΣ")          -> 0UEOhdgRzYCxNU4pOSozfz
+    //   NewTagID("genre", "ΙΣ")             -> 3iW1R9fgXXkzfoV7433up2
+    //   NewTagID("genre", "İstanbul Jazz")  -> 3zPshTNGcEwd2fDkQE5r0A
+    //   NewTagID("genre", "İ")              -> 6JztUNsZpP9q8P7zDbGeMs
+    #[test]
+    fn greek_sigma_tag_values_match_go() {
+        assert_eq!(new_tag_id("genre", "ΟΔΥΣΣ"), "0UEOhdgRzYCxNU4pOSozfz");
+        assert_eq!(new_tag_id("genre", "ΙΣ"), "3iW1R9fgXXkzfoV7433up2");
+        assert_eq!(new_tag_id("genre", "ΑΣ ΠΟΛΗ"), "4rAOGvdV4wjQhcuX69jjLm");
+    }
+
+    #[test]
+    fn dotted_capital_i_tag_values_match_go() {
+        assert_eq!(
+            new_tag_id("genre", "İstanbul Jazz"),
+            "3zPshTNGcEwd2fDkQE5r0A"
+        );
+        assert_eq!(new_tag_id("genre", "İ"), "6JztUNsZpP9q8P7zDbGeMs");
+    }
+
+    #[test]
+    fn ascii_goldens_still_match() {
+        assert_eq!(new_tag_id("genre", "Rock"), "5qDZoz1FBC36K73YeoJ2lF");
+        assert_eq!(new_tag_id("genre", "ROCK"), "5qDZoz1FBC36K73YeoJ2lF");
+        assert_eq!(new_tag_id("genre", "electronic"), "7bLYq0Np81m1Wgy5N31nuG");
+        assert_eq!(
+            new_tag_id("album", "Some <Best> & \"Worst\" Album\u{2028}Vol. 1"),
+            "29Z0VteXsNEUEqimJJl89d"
+        );
     }
 }
