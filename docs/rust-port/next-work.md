@@ -328,6 +328,25 @@ fields/disc subtitle/participants (`mediafile_repository.go:69-78`), and `FullTi
 so participant ordering is **not stable** (`participants.go:174-185`) — safe for `full_text` because it sorts words, but
 `search_participants` bytes depend on order, so **persist no ordering inherited from either side** (same rule as #16).
 
+### 1c. Shared-layer slice plan (lanes launched 2026-11-11, provider `pi/bifrost/openrouter/coding`)
+
+No configured Paseo profile names that model, so the lanes use provider discovery as a deliberate fallback.
+`PASEO_WORKSPACE_ID` is unset for the parent, so children inherit the parent workspace by agent-scoped creation;
+no new workspace or worktree is created. **One writer per file, no overlap, children do not commit** — the parent
+integrates, runs the gate, and commits.
+
+| Slice | Kind | Owns | Blocks |
+|---|---|---|---|
+| **S-A participant JSON** | write | `nd-db/src/sql_participations.rs`, `nd-db/tests/participants_json.rs`, `nd-db/tests/testdata/go_participants/` | hazard 6, S-D |
+| **S-B search feeders** | write | new `nd-db/src/sql_feeders.rs` + one `lib.rs` module line, `nd-db/tests/search_feeders.rs`, `nd-db/tests/testdata/go_feeders/` | hazard 6, S-D |
+| **S-C PostScan contract brief** | read-only | nothing | S-D |
+| **S-D row mapper + marshal seam** | write, after S-A+S-B land and are reviewed | new `nd-db/src/hydrate.rs` + `lib.rs`, repo adapters | #17 |
+
+S-A and S-B are independent by construction: the feeder seam takes **participant names as `&[String]`**, so it does
+not depend on the participant type. `serde_json` is already a dependency of `nd-db` (`Cargo.toml:24`), so neither slice
+adds a crate. Oracle precedent to copy: `nd-mapping/tests/go_oracle.rs` + `tests/testdata/go_oracle/` (a `go run`
+harness dumps JSON goldens; the Rust test parses them and never byte-compares JSON).
+
 ### 2. #17 scanner — minimum executed surface is 8 repos + 1 mapper, not ~14
 
 A fresh scan **reads back** what it wrote, so phases 2/3/4 and `finalize` need executed *reads*: an executed-read seam
