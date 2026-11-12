@@ -6,7 +6,7 @@ Measured gate (parent, integrated): fmt clean; workspace build clean; clippy `-D
 `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1514 passed / 0 failed** across
 57 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
 `8c89aeb9` + `12e270f7` (INSERT alignment, playlist `INSERT … SET`, `0000-00-00` sentinel) 1459 →
-`2a99a681` + `3f8b5a8d` (participant JSON + FTS feeders) 1490 → `cb11b645` (**remaining JSON codecs + checked Role bridge**) **1514**.
+`2a99a681` + `3f8b5a8d` (participant JSON + FTS feeders) 1490 → `cb11b645` (JSON codecs + Role bridge) 1514 → S-D2a (**marshal core + PostMap hooks**) **1536**.
 
 Three silent-corruption defects, found while reviewing the shared-layer contract, were all **invisible to the
 existing renderer tests** — those only compared emitted SQL strings:
@@ -345,11 +345,18 @@ integrates, runs the gate, and commits.
 | **S-B search feeders** | write | new `sql_feeders.rs` + one `lib.rs` line, `tests/search_feeders.rs`, `testdata/go_feeders/` | **LANDED `3f8b5a8d`** |
 | **S-C PostScan contract brief** | read-only | → `docs/rust-port/hydrate-contract.md` | **LANDED `deeb837d`** |
 | **S-D1 JSON/Role bridge** | write | `sql_participations.rs`, new `sql_json.rs` + one `lib.rs` line, `tests/sql_json.rs`, Go oracle | **LANDED `cb11b645` (review APPROVE, gate 1514/0)** |
-| **S-D2a marshal core/hooks** | write, after S-D1 | new `marshal.rs` + one `lib.rs` line, sorted column/value unit + album/mediafile/folder PostMapArgs transformations + executed writes | S-D2b |
-| **S-D2b entity adapters** | write, after S-D2a | repo-local complete records/adapters for album/mediafile/folder/playlist; no caller-supplied column arrays | S-D3 |
+| **S-D2a marshal core/hooks** | write | `marshal.rs`, `lib.rs`, album/mediafile/folder adapters, `runtime_marshal.rs` | **LANDED (review APPROVE, gate 1536/0)** |
+| **S-D2b1 records: folder+playlist** | write, after S-D2a | `folder_repo.rs`, `playlist_repo.rs`, executed write->read tests | S-D2b2 |
+| **S-D2b2 records: album+mediafile** | write, after S-D2b1 | `album_repo.rs`, `mediafile_repo.rs`, executed write->read tests | S-D3 |
+| **S-D3 row mapper/hydration scout** | read-only, now | none (contract brief) | S-D3 |
 | **S-D3 row mapper/hydration** | write, after S-D2b | new `hydrate.rs` + one `lib.rs` line, hook-bearing repo adapters and executed reads | #17 |
 
-The original S-D was too large for one ownership-safe lane. **S-D1** is landed. **S-D2a** now builds only the shared
+The entity write contract for S-D2b is pinned in [`entity-write-contract.md`](entity-write-contract.md):
+executed `structs.Map` column sets, db-wrapper shims, PostMapArgs add/overwrite/delete lines, `selectUpdateColumns`
+drops, DDL reconciliation (`releases` orphan, annotation-only `average_rating`), nullable time/RG fields, partial
+`colsToUpdate` callers, and per-entity executed write->read requirements. Follow it literally; do not re-derive.
+
+The original S-D was too large for one ownership-safe lane. **S-D1** is landed. **S-D2a** built the shared
 sorted-column/value unit and faithful PostMapArgs transformations, with executed writes through the existing `put_sql`
 APIs. **S-D2b** must then eliminate caller-supplied column arrays with complete repo-local records/adapters — S-D2a is
 not allowed to declare victory by merely moving an arbitrary base map to another module. **S-D3** owns row→entity

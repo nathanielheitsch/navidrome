@@ -535,6 +535,75 @@ pub fn put_sql(
     }
 }
 
+/// `Put` (`mediafile_repository.go:181-189`) through the S-D2 shared marshal
+/// path: a [`crate::marshal::MarshalledRow`] from the PostMapArgs-applied map
+/// (see [`crate::marshal::mediafile_post_map_args`]) plus the maintenance
+/// bundle. Same rendering contract as `album_repo::put_marshalled_sql` — the
+/// UPDATE leg is the `selectUpdateColumns`-filtered set (no `created_at`;
+/// the `birth_time` drop is the media_file guard, `sql_base_repository.go:598-603`;
+/// `id` binds last via `WHERE id = ?`), the INSERT leg is the full sorted list
+/// with `id` last in both. The legacy [`put_sql`] remains for the S-D2a base-map
+/// boundary and is superseded by this adapter.
+///
+/// `cols_to_update`: optional `colsToUpdate` (`sql_base_repository.go:595-601`);
+/// each entry is Go-`toSnakeCase`-normalized before matching the snake_case
+/// columns. Empty applies no restriction. An update set empty after the
+/// `created_at`/`birth_time` drop is a [`crate::marshal::MarshalError`].
+///
+/// **Execution is the caller's.** This struct renders Go's `put`
+/// alternatives; Go tries the `update` leg first when `id != ""` and returns
+/// when its match count is `> 0`, running the `insert` leg only on an update
+/// miss (no row) or a new id, with the participant/tag maintenance legs in
+/// the same transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PutMediaFileMarshalled {
+    /// The `r.put` update leg (filtered columns, `id` last in args).
+    pub update: Sql,
+    /// The `r.put` insert leg (sorted columns, `id` last in both).
+    pub insert: Sql,
+    /// `Delete(media_file_artists) WHERE media_file_id = ?`.
+    pub participants_delete: Sql,
+    /// The `updateParticipants` json_each INSERT
+    /// (`sql_participations.go:102-124`), built by
+    /// [`crate::sql_participations::update_participants_sql`] from the bundle's
+    /// participants. `None` when the media file has no participants (Go
+    /// returns before building the insert, `sql_participations.go:87-89`) —
+    /// the delete still runs, so a put with empty participants clears the
+    /// table.
+    pub participants_insert: Option<Sql>,
+    /// `Delete(media_file_tags) WHERE media_file_id = ?`.
+    pub tags_delete: Sql,
+    /// The `updateTags` scoped INSERT, absent when no indexed tag ids.
+    pub tags_insert: Option<Sql>,
+}
+
+/// See [`PutMediaFileMarshalled`].
+pub fn put_marshalled_sql(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    maintenance: &crate::marshal::MediaFileMaintenance,
+    cols_to_update: &[&str],
+) -> Result<PutMediaFileMarshalled, crate::marshal::MarshalError> {
+    let row = crate::marshal::MarshalledRow::new(TABLE, id, map, cols_to_update)?;
+    let up = crate::sql_participations::update_participants_sql(
+        TABLE.to_string(),
+        id.to_string(),
+        &maintenance.participants,
+    );
+    Ok(PutMediaFileMarshalled {
+        update: (row.update_sql, row.update_args),
+        insert: (row.insert_sql, row.insert_args),
+        participants_delete: up.delete,
+        participants_insert: up.insert,
+        tags_delete: crate::sql_tags::delete_tags_sql(TABLE.to_string(), id.to_string()),
+        tags_insert: crate::sql_tags::insert_tags_sql(
+            TABLE.to_string(),
+            id.to_string(),
+            maintenance.indexed_tag_ids.clone(),
+        ),
+    })
+}
+
 /// `r.put`'s two legs (`sql_base_repository.go:618-642`): the UPDATE matched
 /// by `id` (set pairs bind before `id`) and the INSERT (columns and values
 /// emitted together, `id` last in both).

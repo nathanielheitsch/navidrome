@@ -487,6 +487,84 @@ pub fn put_sql(
     }
 }
 
+/// `Put` (`album_repository.go:164-172`) through the S-D2 shared marshal path.
+///
+/// The caller computes the PostMapArgs-applied map once via
+/// [`crate::marshal::album_post_map_args`] (the base row columns with the
+/// derived `full_text`/`search_*`/`tags`/`participants`/`folder_ids`/`discs`
+/// keys overwritten) and passes it here with the maintenance bundle. This
+/// adapter is the S-D2 write path: rendering is centralized in
+/// [`crate::marshal::MarshalledRow`], so the two legs share one unit and
+/// cannot desync:
+///
+/// * the UPDATE leg renders the `selectUpdateColumns`-filtered set — no
+///   `created_at`, no `id` in the SET; `id` binds last via `WHERE id = ?`;
+/// * the INSERT leg renders the full sorted column list with `id` last in
+///   both the column list and the VALUES tuple.
+///
+/// The legacy [`put_sql`] (caller-supplied parallel `columns`/`values`) is
+/// retained for the S-D2a base-map boundary and is superseded by this adapter;
+/// S-D2b replaces the base map with a complete `AlbumRecord` so no caller
+/// column list survives.
+///
+/// `cols_to_update`: optional `colsToUpdate` (`sql_base_repository.go:595-601`);
+/// each entry is Go-`toSnakeCase`-normalized before matching the snake_case
+/// columns. Empty applies no restriction. An update set empty after the
+/// `created_at`/`birth_time` drop is a [`crate::marshal::MarshalError`].
+///
+/// **Execution is the caller's.** This struct renders Go's `put`
+/// alternatives; Go tries the `update` leg first when `id != ""` and returns
+/// when its match count is `> 0`, running the `insert` leg only on an update
+/// miss (no row) or a new id, with the participant/tag maintenance legs in
+/// the same transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PutAlbumMarshalled {
+    /// The `r.put` update leg (filtered columns, `id` last in args).
+    pub update: Sql,
+    /// The `r.put` insert leg (sorted columns, `id` last in both).
+    pub insert: Sql,
+    /// `Delete(album_artists) WHERE album_id = ?`.
+    pub participants_delete: Sql,
+    /// The `updateParticipants` json_each INSERT
+    /// (`sql_participations.go:102-124`), built by
+    /// [`crate::sql_participations::update_participants_sql`] from the bundle's
+    /// participants. `None` when the album has no participants (Go returns
+    /// before building the insert, `sql_participations.go:87-89`) — the
+    /// delete still runs, so a put with empty participants clears the table.
+    pub participants_insert: Option<Sql>,
+    /// `Delete(album_tags) WHERE album_id = ?`.
+    pub tags_delete: Sql,
+    /// The `updateTags` scoped INSERT, absent when no indexed tag ids.
+    pub tags_insert: Option<Sql>,
+}
+
+/// See [`PutAlbumMarshalled`].
+pub fn put_marshalled_sql(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    maintenance: &crate::marshal::AlbumMaintenance,
+    cols_to_update: &[&str],
+) -> Result<PutAlbumMarshalled, crate::marshal::MarshalError> {
+    let row = crate::marshal::MarshalledRow::new(ALBUM_TABLE, id, map, cols_to_update)?;
+    let up = crate::sql_participations::update_participants_sql(
+        ALBUM_TABLE.to_string(),
+        id.to_string(),
+        &maintenance.participants,
+    );
+    Ok(PutAlbumMarshalled {
+        update: (row.update_sql, row.update_args),
+        insert: (row.insert_sql, row.insert_args),
+        participants_delete: up.delete,
+        participants_insert: up.insert,
+        tags_delete: delete_tags_sql(ALBUM_TABLE.to_string(), id.to_string()),
+        tags_insert: insert_tags_sql(
+            ALBUM_TABLE.to_string(),
+            id.to_string(),
+            maintenance.indexed_tag_ids.clone(),
+        ),
+    })
+}
+
 /// `r.put`'s two legs (`sql_base_repository.go:618-642`): the UPDATE matched
 /// by `id` (set pairs bind before `id`) and the INSERT (columns and values
 /// emitted together, `id` last in both).

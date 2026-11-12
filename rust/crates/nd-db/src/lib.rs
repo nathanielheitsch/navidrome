@@ -24,6 +24,7 @@ pub mod execution;
 pub mod folder_repo;
 pub mod genre_repo;
 pub mod library_repo;
+pub mod marshal;
 pub mod mediafile_repo;
 pub mod player_repo;
 pub mod playlist_repo;

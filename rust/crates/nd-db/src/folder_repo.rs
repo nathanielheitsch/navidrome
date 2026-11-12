@@ -362,6 +362,39 @@ pub fn put_sql(id: &str, columns: &[String], values: Vec<Value>) -> PutFolderSql
     }
 }
 
+/// `Put` (`folder_repository.go:255-259`) through the S-D2 shared marshal
+/// path: a [`crate::marshal::MarshalledRow`] from the PostMapArgs-applied map
+/// (see [`crate::marshal::folder_post_map_args`] — the only derived key is
+/// `image_files`, nil→`"[]"`). Same rendering contract as the album/
+/// mediafile adapters: UPDATE leg = the `selectUpdateColumns`-filtered set
+/// (no `created_at`; `id` binds last via `WHERE id = ?`), INSERT leg = the
+/// full sorted list with `id` last in both. The legacy [`put_sql`] remains
+/// for the S-D2a base-map boundary and is superseded by this adapter.
+///
+/// `cols_to_update`: optional `colsToUpdate` (`sql_base_repository.go:595-601`);
+/// empty applies no restriction. An update set empty after the
+/// `created_at`/`birth_time` drop is a [`crate::marshal::MarshalError`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PutFolderMarshalled {
+    /// The `r.put` update leg (filtered columns, `id` last in args).
+    pub update: Sql,
+    /// The `r.put` insert leg (sorted columns, `id` last in both).
+    pub insert: Sql,
+}
+
+/// See [`PutFolderMarshalled`].
+pub fn put_marshalled_sql(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    cols_to_update: &[&str],
+) -> Result<PutFolderMarshalled, crate::marshal::MarshalError> {
+    let row = crate::marshal::MarshalledRow::new(FOLDER_TABLE, id, map, cols_to_update)?;
+    Ok(PutFolderMarshalled {
+        update: (row.update_sql, row.update_args),
+        insert: (row.insert_sql, row.insert_args),
+    })
+}
+
 /// `MarkMissing` (`folder_repository.go:261-273`): one UPDATE per 200-id
 /// chunk (`slices.Chunk(ids, 200)`, `:265`), setting `missing` and
 /// `updated_at` (the caller binds the timestamp).
