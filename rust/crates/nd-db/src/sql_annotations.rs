@@ -425,7 +425,7 @@ mod tests {
 
     const TABLE: &str = "media_file";
     const USER: &str = "user1";
-    const STAMP: &str = "2024-01-02T03:04:05Z";
+    const STAMP: &str = "2024-01-02 03:04:05+00:00";
 
     #[test]
     fn with_annotation_renders_join_star_rating_defaults_and_skips_invalid_user() {

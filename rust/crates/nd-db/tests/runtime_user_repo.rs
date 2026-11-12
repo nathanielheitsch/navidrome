@@ -14,9 +14,9 @@ use nd_db::store::SQLStore;
 use nd_db::user_repo::{parse_libraries_json, UserError, UserPutValues, UserRepo, USER_TABLE};
 use nd_dbschema::schema::apply_fresh_schema;
 
-const T0: &str = "2024-01-01T00:00:00Z";
-const T1: &str = "2024-02-02T00:00:00Z";
-const T2: &str = "2024-03-03T00:00:00Z";
+const T0: &str = "2024-01-01 00:00:00+00:00";
+const T1: &str = "2024-02-02 00:00:00+00:00";
+const T2: &str = "2024-03-03 00:00:00+00:00";
 
 /// One isolated on-disk DB per invocation: a unique temp path (never a fixed
 /// `/tmp` name two runs could share), freshly migrated, pooled through

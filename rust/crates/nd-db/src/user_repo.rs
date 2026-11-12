@@ -881,7 +881,7 @@ mod tests {
 
     const USER_ID: &str = "user-1";
     const USERNAME: &str = "jdoe";
-    const NOW: &str = "2024-01-02T03:04:05Z";
+    const NOW: &str = "2024-01-02 03:04:05+00:00";
 
     fn user_values(password: &'static str) -> UserPutValues<'static> {
         UserPutValues {
@@ -1063,7 +1063,7 @@ mod tests {
         // Arrange: the isNewUser INSERT fallback (user_repository.go:140-147):
         // created_at is the fresh `time.Now()` stamp, not the struct's value.
         // Act:
-        let (sql, args) = put_insert_sql(&user_values("enc-secret"), "2025-06-07T08:09:10Z");
+        let (sql, args) = put_insert_sql(&user_values("enc-secret"), "2025-06-07 08:09:10+00:00");
         // Assert:
         assert_eq!(
             sql,
@@ -1071,7 +1071,10 @@ mod tests {
              last_login_at, last_access_at, created_at, updated_at, scrobble_filter) \
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         );
-        assert_eq!(args[8], Value::Text("2025-06-07T08:09:10Z".to_string()));
+        assert_eq!(
+            args[8],
+            Value::Text("2025-06-07 08:09:10+00:00".to_string())
+        );
         assert_eq!(args[4], Value::Text("enc-secret".to_string()));
     }
 

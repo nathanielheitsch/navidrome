@@ -329,7 +329,7 @@ mod tests {
             "pl-9",
             &criteria,
             "u1",
-            "2024-01-01T00:00:00",
+            "2024-01-01 00:00:00+00:00",
             lib.as_ref(),
             vec![],
         );
@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(
             refresh.stamp_evaluated_at.1,
             vec![
-                Value::Text("2024-01-01T00:00:00".to_string()),
+                Value::Text("2024-01-01 00:00:00+00:00".to_string()),
                 Value::Text("pl-9".to_string()),
             ]
         );

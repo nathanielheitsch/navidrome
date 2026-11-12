@@ -624,13 +624,22 @@ pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str
         format!("UPDATE {TABLE} SET {set} WHERE id = ?"),
         update_args,
     );
-    let insert_set = all_cols
+    // squirrel's Insert().SetMap renders a column list plus one VALUES tuple
+    // (`insert.go:92-105,269-287`), not MySQL's `SET col = ?` — SQLite rejects
+    // the latter, so the INSERT leg has to be the VALUES form to execute. Go
+    // sorts the column keys (`sort.Strings`, `insert.go:276`); the order is
+    // irrelevant here because the column list and the values stay aligned.
+    let insert_cols = all_cols
         .iter()
-        .map(|(col, _)| format!("{col} = ?"))
+        .map(|(col, _)| col.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    let insert_placeholders = all_cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let insert_args: Vec<Value> = all_cols.iter().map(|(_, v)| v.clone()).collect();
-    let insert = (format!("INSERT INTO {TABLE} SET {insert_set}"), insert_args);
+    let insert = (
+        format!("INSERT INTO {TABLE} ({insert_cols}) VALUES ({insert_placeholders})"),
+        insert_args,
+    );
     (update, insert)
 }
 
@@ -1606,7 +1615,7 @@ mod tests {
             "the appended updated_at"
         );
         assert_eq!(update_args[8], Value::Text("ar-1".to_string()));
-        assert!(insert_sql.starts_with("INSERT INTO artist SET"));
+        assert!(insert_sql.starts_with("INSERT INTO artist (id, name, "));
     }
 
     #[test]

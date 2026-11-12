@@ -299,13 +299,20 @@ pub fn put_sql(radio: &RadioRecord, now: DateTime<Utc>, cols_to_update: &[&str])
         format!("UPDATE {TABLE} SET {set} WHERE id = ?"),
         update_args,
     );
-    let insert_set = all_cols
+    // squirrel's Insert().SetMap renders a column list plus one VALUES tuple
+    // (`insert.go:92-105,269-287`), not MySQL's `SET col = ?` — SQLite rejects
+    // the latter, so the INSERT leg has to be the VALUES form to execute.
+    let insert_cols = all_cols
         .iter()
-        .map(|c| format!("{} = ?", c.column))
+        .map(|c| c.column.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    let insert_placeholders = all_cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let insert_args: Vec<Value> = all_cols.iter().map(|c| c.value.clone()).collect();
-    let insert = (format!("INSERT INTO {TABLE} SET {insert_set}"), insert_args);
+    let insert = (
+        format!("INSERT INTO {TABLE} ({insert_cols}) VALUES ({insert_placeholders})"),
+        insert_args,
+    );
     PutSql {
         id: id.clone(),
         update,
@@ -526,7 +533,7 @@ mod tests {
         let (sql, args) = &put.insert;
         // Assert:
         assert_eq!(put.id.len(), 22, "id2.NewRandom() is 22 base62 chars");
-        assert!(sql.starts_with("INSERT INTO radio SET id = ?"));
+        assert!(sql.starts_with("INSERT INTO radio (id, stream_url, "));
         assert_eq!(args[0], Value::Text(put.id.clone()));
         assert_eq!(
             args[5],

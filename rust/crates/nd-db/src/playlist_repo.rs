@@ -784,7 +784,7 @@ mod tests {
     #[test]
     fn refresh_counters_pins_aggregate_and_update_shapes() {
         // Arrange/Act: refreshCounters (:329-363).
-        let (select, update) = refresh_counters_sql("pl-1", "2024-01-01T00:00:00");
+        let (select, update) = refresh_counters_sql("pl-1", "2024-01-01 00:00:00+00:00");
         // Assert:
         assert_eq!(
             select.0,
@@ -800,7 +800,7 @@ mod tests {
         assert_eq!(
             update.1,
             vec![
-                Value::Text("2024-01-01T00:00:00".to_string()),
+                Value::Text("2024-01-01 00:00:00+00:00".to_string()),
                 Value::Text("pl-1".to_string()),
             ]
         );
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn enqueue_cover_rebuild_pins_the_upsert() {
         // Arrange/Act: enqueueCoverRebuild (:365-372, artwork_queue_repository.go:47-50).
-        let (sql, args) = enqueue_cover_rebuild_sql("pl-1", "2024-01-01T00:00:00");
+        let (sql, args) = enqueue_cover_rebuild_sql("pl-1", "2024-01-01 00:00:00+00:00");
         // Assert:
         assert_eq!(
             sql,
@@ -827,8 +827,8 @@ mod tests {
                 Value::Text("pl-1".to_string()),
                 Value::Text("primary".to_string()),
                 Value::Integer(50),
-                Value::Text("2024-01-01T00:00:00".to_string()),
-                Value::Text("2024-01-01T00:00:00".to_string()),
+                Value::Text("2024-01-01 00:00:00+00:00".to_string()),
+                Value::Text("2024-01-01 00:00:00+00:00".to_string()),
             ]
         );
     }

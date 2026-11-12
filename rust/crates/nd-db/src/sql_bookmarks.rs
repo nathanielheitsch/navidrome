@@ -295,8 +295,8 @@ mod tests {
         let upsert = BookmarkUpsert {
             comment: "checkpoint",
             position: 42,
-            created_at: "2024-01-02T03:04:05Z",
-            updated_at: "2024-01-02T03:04:06Z",
+            created_at: "2024-01-02 03:04:05+00:00",
+            updated_at: "2024-01-02 03:04:06+00:00",
             changed_by: "player",
         };
         let (upd_sql, upd_args) = bmk_update_sql(TABLE, USER, "mf1", &upsert);
@@ -312,7 +312,7 @@ mod tests {
             vec![
                 Value::Text("checkpoint".to_string()),
                 Value::Integer(42),
-                Value::Text("2024-01-02T03:04:06Z".to_string()),
+                Value::Text("2024-01-02 03:04:06+00:00".to_string()),
                 Value::Text("player".to_string()),
                 Value::Text(USER.to_string()),
                 Value::Text(TABLE.to_string()),
@@ -332,8 +332,8 @@ mod tests {
                 Value::Text("mf1".to_string()),
                 Value::Text("checkpoint".to_string()),
                 Value::Integer(42),
-                Value::Text("2024-01-02T03:04:05Z".to_string()),
-                Value::Text("2024-01-02T03:04:06Z".to_string()),
+                Value::Text("2024-01-02 03:04:05+00:00".to_string()),
+                Value::Text("2024-01-02 03:04:06+00:00".to_string()),
                 Value::Text("player".to_string()),
             ]
         );

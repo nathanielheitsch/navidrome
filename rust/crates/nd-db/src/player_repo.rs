@@ -37,10 +37,9 @@
 //!   the bare `username`, so no parenthesized expression with embedded spaces
 //!   can reach it.
 //!
-//! Timestamps: `last_seen` is the stored datetime TEXT the caller stamps (Go
-//! binds `time.Time`, which go-sqlite3 writes as datetime text), so stored bytes
-//! stay identical to the Go writer's — unlike `share_repo.rs`'s epoch-seconds
-//! convention. `None` binds NULL, which Go cannot produce through `Put` (its
+//! Timestamps: `last_seen` is the stored datetime TEXT the caller stamps, in
+//! [`crate::time`]'s convention so it matches the bytes a `params![DateTime]`
+//! bind writes. `None` binds NULL, which Go cannot produce through `Put` (its
 //! `LastSeen` is a non-pointer `time.Time`).
 //!
 //! Schema dependency: the unique index that settles key races is added by the Go
@@ -1486,7 +1485,7 @@ mod tests {
             user_id: OWNER.to_string(),
             client: "NavidromeUI".to_string(),
             ip: "127.0.0.1".to_string(),
-            last_seen: Some("2024-01-02 03:04:05".to_string()),
+            last_seen: Some("2024-01-02 03:04:05+00:00".to_string()),
             transcoding_id: String::new(),
             max_bit_rate: 128,
             report_real_path: true,
@@ -1617,14 +1616,14 @@ mod tests {
         // lives inside QueryOptions.Filters.
         let parsed = Options {
             filters: Some("last_seen > ?".to_string()),
-            filter_args: vec![Value::from("2026-01-01 00:00:00")],
+            filter_args: vec![Value::from("2026-01-01 00:00:00+00:00")],
             ..Options::default()
         };
         // Act:
         let (sql, args) = count_all_sql(Some(&parsed), &admin());
         // Assert: the value rides the statement instead of being dropped.
         assert!(sql.ends_with("AND last_seen > ? ORDER BY player.id"));
-        assert_eq!(args, vec![Value::from("2026-01-01 00:00:00")]);
+        assert_eq!(args, vec![Value::from("2026-01-01 00:00:00+00:00")]);
     }
 
     #[test]
@@ -1671,7 +1670,7 @@ mod tests {
         // squirrel.Gt{"last_seen": now-7d} — the value must bind.
         let parsed = Options {
             filters: Some("last_seen > ?".to_string()),
-            filter_args: vec![Value::from("2026-01-01 00:00:00")],
+            filter_args: vec![Value::from("2026-01-01 00:00:00+00:00")],
             ..Options::default()
         };
         // Act:
@@ -1682,7 +1681,7 @@ mod tests {
             "SELECT case when client = 'NavidromeUI' then name else client end as player, \
              count(*) as count FROM player WHERE last_seen > ? GROUP BY client"
         );
-        assert_eq!(args, vec![Value::from("2026-01-01 00:00:00")]);
+        assert_eq!(args, vec![Value::from("2026-01-01 00:00:00+00:00")]);
     }
 
     #[test]

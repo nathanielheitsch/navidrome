@@ -26,10 +26,13 @@
 //! lanes; the REST shims `Count`/`Read`/`ReadAll` (`:210-224`) are
 //! `sql_restful.rs`'s options parsing.
 //!
-//! Timestamps: Go binds `time.Time` (go-sqlite3 writes datetime text); the
-//! port binds epoch-second integers per the crate convention pinned in
-//! `share_repo.rs` (module header), with `ZERO_TIME` as the zero `time.Time`
-//! constant `ScanEnd`/`ScanInProgress` bind (`:164-170`, `:177-179`).
+//! Timestamps: Go binds `time.Time` (go-sqlite3 writes datetime text). This
+//! repository still binds epoch-second integers — a documented divergence from
+//! [`crate::time`]'s TEXT convention, listed as remaining work there — with
+//! `ZERO_TIME` as the zero `time.Time` constant `ScanEnd`/`ScanInProgress`
+//! bind (`:164-170`, `:177-179`). Converting it is a separate lane: `library`
+//! timestamps feed `artist`'s `RefreshStats` comparison
+//! (`artist_repository.go:479`), so both sides must move together.
 //!
 //! Safety rule (`sqlrepo.rs`): identifiers (table/column names) are this
 //! repository's registered constants; every value binds to a `?`.

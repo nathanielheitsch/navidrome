@@ -24,7 +24,7 @@ use nd_dbschema::schema::apply_fresh_schema;
 
 const KEY_A: &str = "nds_0123456789abcdefghijkl";
 const KEY_B: &str = "nds_ABCDEFGHIJKLMNOPQRSTUV";
-const LAST_SEEN: &str = "2024-01-02 03:04:05";
+const LAST_SEEN: &str = "2024-01-02 03:04:05+00:00";
 
 /// One isolated on-disk DB per invocation: a unique temp path, freshly
 /// migrated, pooled through `nd_db::pool::Pool` so `SEEDEDRAND`/`NATSORT` are
@@ -59,8 +59,8 @@ fn insert_user(store: &SQLStore, id: &str, name: &str, is_admin: bool) {
                     format!("{name}@example.com"),
                     "encrypted",
                     Value::from(is_admin),
-                    "2024-01-01 00:00:00",
-                    "2024-01-01 00:00:00",
+                    "2024-01-01 00:00:00+00:00",
+                    "2024-01-01 00:00:00+00:00",
                 ],
             )?;
             Ok(())
@@ -975,7 +975,7 @@ fn count_by_client_groups_unrestricted_and_substitutes_the_ui_name() {
     let recent = on(&store, |conn| {
         PlayerRepo::new(conn).count_by_client(Some(&Options {
             filters: Some("last_seen > ?".to_string()),
-            filter_args: vec![Value::from("2023-01-01 00:00:00")],
+            filter_args: vec![Value::from("2023-01-01 00:00:00+00:00")],
             ..Options::default()
         }))
     })
@@ -986,7 +986,7 @@ fn count_by_client_groups_unrestricted_and_substitutes_the_ui_name() {
     let stale = on(&store, |conn| {
         PlayerRepo::new(conn).count_by_client(Some(&Options {
             filters: Some("last_seen > ?".to_string()),
-            filter_args: vec![Value::from("2099-01-01 00:00:00")],
+            filter_args: vec![Value::from("2099-01-01 00:00:00+00:00")],
             ..Options::default()
         }))
     })
