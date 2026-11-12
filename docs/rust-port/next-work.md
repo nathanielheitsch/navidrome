@@ -3,9 +3,10 @@
 ## Current state (2026-11-11, at `12e270f7`) — supersedes the boundary below
 
 Measured gate (parent, integrated): fmt clean; workspace build clean; clippy `-D warnings` clean;
-`cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1459 passed / 0 failed** across
-54 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
-`8c89aeb9` + `12e270f7` (**INSERT column/value alignment, playlist `INSERT … SET`, `0000-00-00` sentinel**) **1459**.
+`cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1490 passed / 0 failed** across
+56 test binaries. Progression: `d19526e3` (#15 transcode cache) 1442 → `a7afda2a` (timestamp convention) 1453 →
+`8c89aeb9` + `12e270f7` (INSERT alignment, playlist `INSERT … SET`, `0000-00-00` sentinel) 1459 →
+`2a99a681` + `3f8b5a8d` (**participant JSON column + album/mediafile FTS feeders — hazard 6 closed**) **1490**.
 
 Three silent-corruption defects, found while reviewing the shared-layer contract, were all **invisible to the
 existing renderer tests** — those only compared emitted SQL strings:
@@ -248,7 +249,10 @@ Hazards, ranked by how silently they corrupt data:
 5. **Two more brief claims are false — do not chase them.** `user_props_repo.rs:108` does *not* map `value` twice: its
    `get` selects the single `value` column exactly as Go does (`user_props_repository.go:30-40`, verified). And
    `artist_repo.rs:236` is not a `PostScan` stub; it is the annotation-column join inside `new_select_sql`.
-6. **The write feeders exist as types but nothing produces them.** `mediafile_repo::FtsColumns` (`:459`) documents
+6. **The write feeders exist as types but nothing produces them.** *(CLOSED by `2a99a681` + `3f8b5a8d`:
+   `sql_participations.rs` now marshals/unmarshals the participant column, `sql_feeders.rs` produces all three
+   FTS columns for album and mediafile, both pinned by Go oracles that drive the real Go types. What remains for
+   this hazard is only the `discs`/`folder_ids` JSON marshalers and wiring the feeders into repo call sites — S-D.)* `mediafile_repo::FtsColumns` (`:459`) documents
    that the caller supplies `full_text`/`search_participants`/`search_normalized`, and `put_sql` takes
    `participants_json` as an already-marshalled string — but **no production code computes either**. Verified: the
    only `full_text`/`search_normalized` producer in the crate is `artist_repo.rs:576-581` (2-arg and 1-arg helpers),
@@ -337,13 +341,24 @@ integrates, runs the gate, and commits.
 
 | Slice | Kind | Owns | Blocks |
 |---|---|---|---|
-| **S-A participant JSON** | write | `nd-db/src/sql_participations.rs`, `nd-db/tests/participants_json.rs`, `nd-db/tests/testdata/go_participants/` | hazard 6, S-D |
-| **S-B search feeders** | write | new `nd-db/src/sql_feeders.rs` + one `lib.rs` module line, `nd-db/tests/search_feeders.rs`, `nd-db/tests/testdata/go_feeders/` | hazard 6, S-D |
-| **S-C PostScan contract brief** | read-only | nothing | S-D |
+| **S-A participant JSON** | write | `sql_participations.rs`, `tests/participants_json.rs`, `testdata/go_participants/` | **LANDED `2a99a681`** |
+| **S-B search feeders** | write | new `sql_feeders.rs` + one `lib.rs` line, `tests/search_feeders.rs`, `testdata/go_feeders/` | **LANDED `3f8b5a8d`** |
+| **S-C PostScan contract brief** | read-only | → `docs/rust-port/hydrate-contract.md` | **LANDED `deeb837d`** |
 | **S-D row mapper + marshal seam** | write, after S-A+S-B land and are reviewed | new `nd-db/src/hydrate.rs` + `lib.rs`, repo adapters | #17 |
 
 S-A and S-B are independent by construction: the feeder seam takes **participant names as `&[String]`**, so it does
-not depend on the participant type. `serde_json` is already a dependency of `nd-db` (`Cargo.toml:24`), so neither slice
+not depend on the participant type.
+
+**Two things learned while verifying these lanes (both matter for S-D's oracle):**
+- **Go's participant golden is NOT byte-stable.** Re-running the harness reorders entries within a role (observed:
+  `conductor` and `lyricist` entries swapped between regenerations) because `Participants` is a map. So participant
+  goldens must be compared as **multisets**, never byte-compared — which is what `participants_json.rs` does. The
+  `go_feeders` golden *is* byte-stable (verified by regeneration), because `SanitizeStrings` sorts words and
+  `NormalizeForFTS` preserves input order.
+- **The two oracle harnesses take different third arguments** — `go_participants` wants a **directory**, `go_feeders`
+  wants the **output file**. Invoking either wrongly exits non-zero *without writing*, so a `diff` against the
+  committed golden then matches trivially and looks like a passing reproducibility check. Run exactly as each
+  README documents and confirm the harness printed its "wrote …" line before trusting a golden diff. `serde_json` is already a dependency of `nd-db` (`Cargo.toml:24`), so neither slice
 adds a crate. Oracle precedent to copy: `nd-mapping/tests/go_oracle.rs` + `tests/testdata/go_oracle/` (a `go run`
 harness dumps JSON goldens; the Rust test parses them and never byte-compares JSON).
 
