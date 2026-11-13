@@ -338,15 +338,10 @@ mod tests {
             .expect("the unscoped aggregate select materializes");
         // Assert:
         assert!(!sql.contains("user_library"));
-        assert!(sql.ends_with(" GROUP BY tag.id, tag.tag_name, tag.tag_value LIMIT ? OFFSET ?"));
-        assert_eq!(
-            args,
-            vec![
-                Value::Text("genre".to_string()),
-                Value::Integer(10),
-                Value::Integer(20),
-            ]
-        );
+        assert!(sql.ends_with(" GROUP BY tag.id, tag.tag_name, tag.tag_value LIMIT 10 OFFSET 20"));
+        // Assert: the bounds are squirrel literals (`select.go:139-147`), so
+        // only the tag type binds.
+        assert_eq!(args, vec![Value::Text("genre".to_string())]);
     }
 
     #[test]

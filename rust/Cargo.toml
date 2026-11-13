@@ -63,6 +63,9 @@ chrono = "^2"
 uuid = { version = "^1", features = ["v4"] }
 base64 = "^0.8"
 md5 = "^0.1"
+# Safe killpg wrapper for the ffmpeg process-group kill (#07/#15). Already in
+# Cargo.lock via tempfile; the `process` feature gates rustix::process.
+rustix = { version = "^1", features = ["process"] }
 
 # Shared lint policy: every crate opts in with `[lints] workspace = true`.
 [workspace.lints.rust]
@@ -71,3 +74,13 @@ missing_docs = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Reduce future dev/test cache size; this does not alter release artifacts.
+# `cargo clean` from this workspace reclaims generated artifacts when needed.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

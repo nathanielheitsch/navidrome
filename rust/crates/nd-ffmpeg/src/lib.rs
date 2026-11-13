@@ -20,6 +20,10 @@ pub mod probe;
 pub mod probe_exec;
 pub mod transcode;
 
+#[cfg(test)]
+#[path = "../tests/support/fixtures.rs"]
+mod test_fixtures;
+
 pub use args::{
     bit_depth_to_sample_fmt, build_dynamic_args, build_template_args, create_ffmpeg_command,
     ffprobe_path, fix_cmd, inject_before_output, inject_dynamic_audio_flags, is_default_command,

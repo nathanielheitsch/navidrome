@@ -11,8 +11,11 @@
 //!
 //! `PostScan`/`PostMapArgs` (`:25-53`) marshal the `image_files` JSON column
 //! (TEXT in the table, `json.Unmarshal` into `model.Folder.ImageFiles`,
-//! `"[]"` for a nil slice). Only the SQL shapes pin here; the JSON row codec
-//! belongs to the model/execution slice.
+//! `"[]"` for a nil slice). The write path is the record-driven
+//! [`put_sql`] (S-D2b): [`FolderRecord`] → [`folder_row`] (the
+//! `structs.Map(dbFolder)` + `dbFolder.PostMapArgs` map) → the shared
+//! [`crate::marshal::MarshalledRow`] seam — no caller-supplied column
+//! arrays for the write path.
 //!
 //! `GetTouchedWithPlaylists`/`GetAllWithPlaylists` (`:282-297`) wrap Go's
 //! `queryWithStableResults` cursor machinery, which is the streaming slice's
@@ -28,8 +31,11 @@
 //! every value — paths, ids, LIKE patterns — is bound to a `?` parameter.
 //! [`escape_like_prefix`] keeps a LIKE prefix literal even when the path
 //! contains `%`/`_`/`\`.
+//!
+use std::collections::BTreeMap;
 
 use crate::sqlrepo::{Repository, Value};
+use chrono::{DateTime, Utc};
 
 /// `r.tableName` (`newFolderRepository`, `folder_repository.go:56`).
 pub const FOLDER_TABLE: &str = "folder";
@@ -311,6 +317,159 @@ pub fn has_audio_outside_folders_sql(
     (sql, args)
 }
 
+/// `model.Folder`'s persisted row (`model/folder.go:18-33`) — the 12
+/// non-id persisted folder columns (the contract's 13 minus `id`, which
+/// the seam forbids in the map
+/// (`crate::marshal::MarshalError::IdInMap`); the id is appended last by
+/// [`put_sql`]. Field → column: `LibraryID`→`library_id`, `Path`→`path`,
+/// `Name`→`name`, `ParentID`→`parent_id`, `NumAudioFiles`→`num_audio_files`,
+/// `NumPlaylists`→`num_playlists`, `ImageFiles`→`image_files` (JSON, nil→
+/// `"[]"`), `ImagesUpdatedAt`→`images_updated_at`, `Hash`→`hash`,
+/// `Missing`→`missing`, **`UpdateAt`→`updated_at`** (Go's field name is
+/// `UpdateAt`; the `structs` tag is `updated_at`),
+/// `CreatedAt`→`created_at`. Non-persisted: `LibraryPath`
+/// (`structs:"-"`, join-only).
+///
+/// Timestamps are `DateTime<Utc>` bound through `crate::time` (explicit
+/// `'%F %T%.f%:z'` TEXT; the DDL's localtime defaults are never relied on).
+/// `created_at` is `None` for a never-stamped row (Go zero `time.Time`);
+/// [`put_sql`] stamps it like Go's `NewFolder` (`folder.go:65-67`).
+///
+/// There is deliberately no `Default`: a write record must name every persisted
+/// column, so the hydration-owned fields can only arrive through the read path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderRecord {
+    /// The row's `id` (Go `Folder.ID`, `structs:"id"`). Read-path identity:
+    /// [`crate::hydrate::row_to_folder`] fills it from the row, so a bulk read
+    /// keeps every row's own id. [`folder_row`] does NOT emit it — the id is
+    /// appended by the repo's write legs ([`put_sql`] takes it as its own
+    /// argument, matching Go's `put(ctx, id, …)`, `sql_base_repository.go:618`).
+    pub id: String,
+    /// `library_id` (Go `LibraryID`) — FK to `library`.
+    pub library_id: i64,
+    /// `path` (Go `Path`) — library-relative directory.
+    pub path: String,
+    /// `name` (Go `Name`).
+    pub name: String,
+    /// `parent_id` (Go `ParentID`).
+    pub parent_id: String,
+    /// `num_audio_files` (Go `NumAudioFiles`).
+    pub num_audio_files: i64,
+    /// `num_playlists` (Go `NumPlaylists`).
+    pub num_playlists: i64,
+    /// `image_files` (Go `ImageFiles []string`); `None` (Go nil) stores the
+    /// literal `"[]"` via `dbFolder.PostMapArgs` (`:48-59`) — never `null`.
+    pub image_files: Option<Vec<String>>,
+    /// `images_updated_at` (Go `ImagesUpdatedAt`).
+    pub images_updated_at: DateTime<Utc>,
+    /// `hash` (Go `Hash`).
+    pub hash: String,
+    /// `missing` (Go `Missing`).
+    pub missing: bool,
+    /// `updated_at` (Go **`UpdateAt`**, `structs:"updated_at"`).
+    ///
+    /// Asymmetry inherited from Go: the WRITE side emits `updated_at` (the
+    /// `structs` tag governs `structs.Map`), but the READ side cannot hydrate
+    /// it — `ScanStruct` maps by field name, `UpdateAt` → `update_at`, and no
+    /// SELECT emits `update_at`, so Go's `Folder.UpdateAt` is always the zero
+    /// `time.Time` ([`crate::hydrate::go_zero_time`]). Do not "fix" the read by
+    /// reading the column: that would diverge from Go.
+    pub updated_at: DateTime<Utc>,
+    /// `created_at` (Go `CreatedAt`); `None` = never stamped (Go zero
+    /// `time.Time`), stamped to `now` by [`put_sql`].
+    pub created_at: Option<DateTime<Utc>>,
+    /// The select's `library.path as library_path` (`folder_repository.go:60`),
+    /// **join-only**: Go's `Folder.LibraryPath` is `structs:"-"`
+    /// (`model/folder.go:21`), so [`folder_row`] deliberately does NOT emit it
+    /// and the write SQL is unchanged. Read onto the record by
+    /// [`crate::hydrate::row_to_folder`]; only the library's `path` is selected
+    /// (`library.name` is not).
+    pub library_path: String,
+}
+
+/// `structs.Map(dbFolder)` + `dbFolder.PostMapArgs` (`folder_repository.go`
+/// `:48-59`) as one sorted [`crate::marshal::ColumnMap`]: exactly the 12
+/// non-id persisted folder columns (the 13th, `id`, is appended by the
+/// repo), with `image_files`
+/// PostMapArgs-overwritten by its marshalled JSON (Go's `"[]"` nil arm is
+/// byte-identical to `crate::sql_json::marshal_image_files(None)`, so the
+/// seam's transformation is the single implementation of both arms).
+///
+/// `id` never appears in the map — the seam rejects it.
+#[must_use]
+pub fn folder_row(f: &FolderRecord) -> crate::marshal::ColumnMap {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "created_at".to_string(),
+        crate::time::optional_value(f.created_at.as_ref()),
+    );
+    map.insert("hash".to_string(), Value::Text(f.hash.clone()));
+    map.insert(
+        "image_files".to_string(),
+        Value::Text(crate::sql_json::marshal_image_files(
+            f.image_files.as_deref(),
+        )),
+    );
+    map.insert(
+        "images_updated_at".to_string(),
+        crate::time::value(&f.images_updated_at),
+    );
+    map.insert("library_id".to_string(), Value::Integer(f.library_id));
+    map.insert("missing".to_string(), Value::Bool(f.missing));
+    map.insert("name".to_string(), Value::Text(f.name.clone()));
+    map.insert(
+        "num_audio_files".to_string(),
+        Value::Integer(f.num_audio_files),
+    );
+    map.insert("num_playlists".to_string(), Value::Integer(f.num_playlists));
+    map.insert("parent_id".to_string(), Value::Text(f.parent_id.clone()));
+    map.insert("path".to_string(), Value::Text(f.path.clone()));
+    map.insert("updated_at".to_string(), crate::time::value(&f.updated_at));
+    // PostMapArgs overwrites image_files (identity here — same codec Go's
+    // :50/:56 arms run); routed through the seam so the folder's
+    // PostMapArgs lives in exactly one place.
+    crate::marshal::folder_post_map_args(
+        crate::marshal::ColumnMap::new(map),
+        crate::marshal::FolderDerived {
+            image_files: f.image_files.clone(),
+        },
+    )
+}
+
+/// `dbFolder` raw row (phase 1 of the two-phase hydration seam,
+/// `persistence/folder_repository.go:25-31`): the columns `selectFolder`'
+/// `folder.*` + `library.path as library_path` scan into, with the
+/// `image_files` JSON shim **still unparsed** (it is a non-pointer `string`
+/// on the raw struct, exactly like Go's `dbFolder.ImageFiles`). Phase 2 is
+/// [`crate::hydrate::folder_post_scan`], which decodes it onto the record.
+///
+/// The `library_path` join column is read straight onto the record (Go
+/// scans it into `Folder.LibraryPath`, `structs:"-"`); it is not duplicated
+/// here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderRow {
+    /// The folder columns scanned from the row, `image_files` still empty.
+    pub record: FolderRecord,
+    /// The raw `image_files` TEXT column, unparsed (Go's `dbFolder.ImageFiles`,
+    /// `folder_repository.go:26`). Empty means the shim was not scanned: Go's
+    /// `PostScan` guard (`:40`) skips the decode and leaves `ImageFiles` nil.
+    pub image_files: String,
+}
+
+impl FolderRow {
+    /// `dbFolder.PostScan` (`folder_repository.go:38-46`): thin delegation onto
+    /// [`crate::hydrate::folder_post_scan`], surfaced the way Go's `ScanStruct`
+    /// error leaves the read (a sqlite conversion failure carrying Go's prefix).
+    ///
+    /// # Errors
+    /// [`crate::hydrate::HydrateError::Decoded`] carrying
+    /// [`crate::hydrate::FOLDER_IMAGE_FILES_PREFIX`] + the decode failure — the
+    /// same shape Go's `ScanStruct` error takes out of the read.
+    pub fn into_record(self) -> Result<FolderRecord, crate::hydrate::HydrateError> {
+        crate::hydrate::folder_post_scan(self)
+    }
+}
+
 /// `Put` (`folder_repository.go:255-259`): `r.put(ctx, f.ID, dbFolder)` —
 /// the update-then-insert upsert of `sql_base_repository.go:618-642`. The
 /// UPDATE matches rows by `id` and the INSERT runs only when it matched
@@ -324,40 +483,99 @@ pub struct PutFolderSql {
     /// `Update(folder).SetMap(...).Where(Eq{"id": id})` — the set pairs bind
     /// before `id`.
     pub update: Sql,
-    /// `Insert(folder).SetMap(values)` — `id` binds first, then the set
-    /// pairs in column order.
+    /// `Insert(folder).SetMap(values)` — the set pairs in column order, then
+    /// `id`, matching the column list (`sql_base_repository.go:637-641`).
     pub insert: Sql,
 }
 
 /// See [`PutFolderSql`].
-#[must_use]
-pub fn put_sql(id: &str, columns: &[String], values: Vec<Value>) -> PutFolderSql {
-    let set_pairs = columns
-        .iter()
-        .map(|c| format!("{c} = ?"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut update_args = values.clone();
-    update_args.push(Value::from(id));
-    let insert_cols = columns
-        .iter()
-        .map(|c| c.as_str())
-        .chain(["id"])
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut insert_args = vec![Value::from(id)];
-    insert_args.extend(values);
-    let placeholders = vec!["?"; insert_args.len()].join(", ");
-    PutFolderSql {
-        update: (
-            format!("UPDATE {FOLDER_TABLE} SET {set_pairs} WHERE id = ?"),
-            update_args,
-        ),
-        insert: (
-            format!("INSERT INTO {FOLDER_TABLE} ({insert_cols}) VALUES ({placeholders})"),
-            insert_args,
-        ),
-    }
+///
+/// The record is the only write input (S-D2b — no caller-supplied column
+/// arrays): it stamps the row like Go's `NewFolder`/`Put` (`model/folder.go`
+/// `:65-67`) — `created_at` to `now` when the record carries none,
+/// `updated_at` to `now` — and renders both legs through the shared
+/// [`crate::marshal::MarshalledRow`] from the [`folder_row`] map. The
+/// UPDATE leg is the `selectUpdateColumns`-filtered set (no `created_at`;
+/// `id` binds last via `WHERE id = ?`), the INSERT leg the full sorted
+/// columns with `id` last in both lists
+/// (`sql_base_repository.go:637-641`). Go's `put` runs the UPDATE first and
+/// only INSERTs on a 0-row match; the caller picks the leg.
+///
+/// `cols_to_update`: optional `colsToUpdate`
+/// (`sql_base_repository.go:595-601`); empty applies no restriction. The
+/// entries are `toSnakeCase`-normalized by the seam
+/// ([`crate::marshal::to_snake_case`]), so camelCase names such as
+/// `"UpdatedAt"` behave like Go's. An update set empty after the
+/// `created_at`/`birth_time` drop is
+/// [`crate::marshal::MarshalError::EmptyUpdateSet`], not degenerate SQL.
+///
+/// # Errors
+///
+/// Returns [`crate::marshal::MarshalError`] when the map carries `id`
+/// (impossible from [`folder_row`]) or the UPDATE set is empty.
+///
+/// **Deliberate divergence — `updated_at` is always re-stamped.** Go's
+/// `folderRepository.Put` (`folder_repository.go:255-259`) writes the caller's
+/// `UpdateAt` unchanged: the stamp happens at entry-construction time
+/// (`scanner/phase_1_folders.go:389` → `toFolder` → `model.NewFolder`,
+/// `folder_entry.go:94` → `model/folder.go:72`), so a re-scan can commit a
+/// `updated_at` slightly older than commit time. This seam takes `now` and
+/// always stamps it, keeping the render-time value explicit instead of relying
+/// on a caller-side stamp. The drift is bounded by the scan interval, and the
+/// only consumer (`GetTouchedWithPlaylists`, `folder_repository.go:282-289`)
+/// compares against `library.last_scan_at`. A future wiring slice can pass the
+/// caller's `UpdateAt` in as `now`.
+pub fn put_sql(
+    id: &str,
+    f: &FolderRecord,
+    now: DateTime<Utc>,
+    cols_to_update: &[&str],
+) -> Result<PutFolderSql, crate::marshal::MarshalError> {
+    let stamped = FolderRecord {
+        created_at: f.created_at.or(Some(now)),
+        updated_at: now,
+        ..f.clone()
+    };
+    let map = folder_row(&stamped);
+    let row = crate::marshal::MarshalledRow::new(FOLDER_TABLE, id, &map, cols_to_update)?;
+    Ok(PutFolderSql {
+        update: (row.update_sql, row.update_args),
+        insert: (row.insert_sql, row.insert_args),
+    })
+}
+
+/// The S-D2a base-map boundary, retained so the caller-supplied
+/// [`crate::marshal::ColumnMap`] seam stays exercisable (S-D2a's
+/// `tests/runtime_marshal.rs` drives it): a [`crate::marshal::MarshalledRow`]
+/// from the PostMapArgs-applied map (see
+/// [`crate::marshal::folder_post_map_args`] — the only derived key is
+/// `image_files`, nil→`"[]"`). Same rendering contract as the record-driven
+/// [`put_sql`] write path: UPDATE leg = the `selectUpdateColumns`-filtered
+/// set (no `created_at`; `id` binds last via `WHERE id = ?`), INSERT leg =
+/// the full sorted list with `id` last in both.
+///
+/// `cols_to_update`: optional `colsToUpdate` (`sql_base_repository.go:595-601`);
+/// empty applies no restriction. An update set empty after the
+/// `created_at`/`birth_time` drop is a [`crate::marshal::MarshalError`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct PutFolderMarshalled {
+    /// The `r.put` update leg (filtered columns, `id` last in args).
+    pub update: Sql,
+    /// The `r.put` insert leg (sorted columns, `id` last in both).
+    pub insert: Sql,
+}
+
+/// See [`PutFolderMarshalled`].
+pub fn put_marshalled_sql(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    cols_to_update: &[&str],
+) -> Result<PutFolderMarshalled, crate::marshal::MarshalError> {
+    let row = crate::marshal::MarshalledRow::new(FOLDER_TABLE, id, map, cols_to_update)?;
+    Ok(PutFolderMarshalled {
+        update: (row.update_sql, row.update_args),
+        insert: (row.insert_sql, row.insert_args),
+    })
 }
 
 /// `MarkMissing` (`folder_repository.go:261-273`): one UPDATE per 200-id
@@ -516,14 +734,15 @@ mod tests {
         // Act:
         let (sql, args) = get_all_sql(None, vec!["folder.name asc".to_string()], 10, 20);
         let (bare_sql, _) = get_all_sql(None, Vec::new(), 0, 0);
-        // Assert:
+        // Assert: the bounds render as squirrel literals (`select.go:139-147`),
+        // so the page contributes no args.
         assert_eq!(
             sql,
             "SELECT folder.*, library.path as library_path FROM folder \
              INNER JOIN library ON library.id = folder.library_id \
-             ORDER BY folder.name asc LIMIT ? OFFSET ?"
+             ORDER BY folder.name asc LIMIT 10 OFFSET 20"
         );
-        assert_eq!(args, vec![Value::Integer(10), Value::Integer(20)]);
+        assert!(args.is_empty());
         assert_eq!(
             bare_sql,
             "SELECT folder.*, library.path as library_path FROM folder \
@@ -656,40 +875,159 @@ mod tests {
         assert_eq!(bare_args[..3], args[..3]);
     }
 
+    fn test_dt(hms: &str) -> DateTime<Utc> {
+        use chrono::TimeZone;
+        let parts: Vec<u32> = hms.split(':').map(|v| v.parse().unwrap()).collect();
+        chrono::Utc
+            .with_ymd_and_hms(2024, 7, 1, parts[0], parts[1], parts[2])
+            .unwrap()
+    }
+
+    /// A record with a value in every column, each distinct and typed per
+    /// column — a value rotation fails one of the assertions below.
+    fn test_record() -> FolderRecord {
+        FolderRecord {
+            // Read-path identity: never in folder_row (the repo appends the id).
+            id: "f-42".to_string(),
+            library_id: 42,
+            path: "music/rock".to_string(),
+            name: "Rock".to_string(),
+            parent_id: "p-abc".to_string(),
+            num_audio_files: 31,
+            num_playlists: 5,
+            image_files: Some(vec!["a.jpg".to_string(), "b.jpg".to_string()]),
+            images_updated_at: test_dt("10:11:12"),
+            hash: "H-777".to_string(),
+            missing: true,
+            updated_at: test_dt("08:09:10"),
+            created_at: Some(test_dt("01:02:03")),
+            // Join-only, hydration-owned: never in folder_row.
+            library_path: String::new(),
+        }
+    }
+
     #[test]
-    fn put_sql_pins_update_then_insert_with_go_bind_order() {
-        // Arrange: Put → r.put (sql_base_repository.go:618-642): the update
-        // binds the set pairs before id; the insert binds id first.
-        let columns = vec!["name".to_string(), "image_files".to_string()];
+    fn folder_row_is_sorted_and_id_free() {
+        // Arrange/Act:
+        let row = folder_row(&test_record());
+        // Assert: the 12 non-id persisted columns (the 13th, `id`, is
+        // appended by the repo, never in the map), sorted keys.
+        assert_eq!(row.len(), 12);
+        assert!(!row.contains("id"));
+        let cols: Vec<&str> = row.iter().map(|(c, _)| c).collect();
+        let mut sorted = cols.clone();
+        sorted.sort();
+        assert_eq!(cols, sorted);
+    }
+
+    #[test]
+    fn put_sql_renders_record_driven_update_and_insert() {
+        // Arrange: full record (see test_record) + a distinct `now`.
+        let f = test_record();
+        let now = test_dt("14:15:16");
         // Act:
-        let put = put_sql(
-            "f-1",
-            &columns,
-            vec![Value::from("Rock"), Value::from("[]")],
-        );
-        // Assert:
+        let put = put_sql("f-1", &f, now, &[]).expect("renders");
+        // Assert: UPDATE — sorted SET columns, no created_at, no id in
+        // SET; the id binds last in WHERE.
         assert_eq!(
-            put.update,
-            (
-                "UPDATE folder SET name = ?, image_files = ? WHERE id = ?".to_string(),
-                vec![
-                    Value::Text("Rock".to_string()),
-                    Value::Text("[]".to_string()),
-                    Value::Text("f-1".to_string()),
-                ],
-            )
+            put.update.0,
+            "UPDATE folder SET hash = ?, image_files = ?, images_updated_at = ?, \
+             library_id = ?, missing = ?, name = ?, num_audio_files = ?, \
+             num_playlists = ?, parent_id = ?, path = ?, updated_at = ? WHERE id = ?"
         );
         assert_eq!(
-            put.insert,
-            (
-                "INSERT INTO folder (name, image_files, id) VALUES (?, ?, ?)".to_string(),
-                vec![
-                    Value::Text("f-1".to_string()),
-                    Value::Text("Rock".to_string()),
-                    Value::Text("[]".to_string()),
-                ],
-            )
+            put.update.1,
+            vec![
+                Value::Text("H-777".to_string()),
+                Value::Text(r#"["a.jpg","b.jpg"]"#.to_string()),
+                Value::Text(crate::time::to_text(&f.images_updated_at)),
+                Value::Integer(42),
+                Value::Bool(true),
+                Value::Text("Rock".to_string()),
+                Value::Integer(31),
+                Value::Integer(5),
+                Value::Text("p-abc".to_string()),
+                Value::Text("music/rock".to_string()),
+                Value::Text(crate::time::to_text(&now)),
+                Value::Text("f-1".to_string()),
+            ]
         );
+        // Assert: INSERT — sorted columns incl. created_at, id appended
+        // LAST in both lists (the 8c89aeb9 invariant).
+        assert_eq!(
+            put.insert.0,
+            "INSERT INTO folder (created_at, hash, image_files, images_updated_at, library_id, missing, name, num_audio_files, num_playlists, parent_id, path, updated_at, id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        );
+        assert_eq!(
+            put.insert.1,
+            vec![
+                Value::Text(crate::time::to_text(&f.created_at.unwrap())),
+                Value::Text("H-777".to_string()),
+                Value::Text(r#"["a.jpg","b.jpg"]"#.to_string()),
+                Value::Text(crate::time::to_text(&f.images_updated_at)),
+                Value::Integer(42),
+                Value::Bool(true),
+                Value::Text("Rock".to_string()),
+                Value::Integer(31),
+                Value::Integer(5),
+                Value::Text("p-abc".to_string()),
+                Value::Text("music/rock".to_string()),
+                Value::Text(crate::time::to_text(&now)),
+                Value::Text("f-1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn put_sql_image_files_none_binds_empty_json_array() {
+        // Arrange: Go nil ImageFiles — PostMapArgs' "[]" arm.
+        let mut f = test_record();
+        f.image_files = None;
+        // Act:
+        let put = put_sql("f-1", &f, Utc::now(), &[]).expect("renders");
+        // Assert: image_files binds the literal "[]" (never NULL) at its
+        // position in both legs.
+        assert_eq!(
+            put.insert.1[2],
+            Value::Text("[]".to_string()),
+            "insert position of image_files"
+        );
+        assert_eq!(put.update.1[1], Value::Text("[]".to_string()));
+    }
+
+    #[test]
+    fn put_sql_stamps_created_at_and_rejects_empty_update_set() {
+        // Arrange: a never-stamped row (Go zero CreatedAt).
+        let mut f = test_record();
+        f.created_at = None;
+        // Act:
+        let put = put_sql("f-1", &f, Utc::now(), &[]).expect("renders");
+        // Assert: created_at was stamped (TEXT, not NULL) on the insert.
+        assert!(matches!(put.insert.1[0], Value::Text(_)));
+        // And a created_at-only restriction is the typed error, not a
+        // degenerate UPDATE.
+        let err = put_sql("f-1", &f, Utc::now(), &["created_at"])
+            .expect_err("must be empty after the drop");
+        assert_eq!(err, crate::marshal::MarshalError::EmptyUpdateSet);
+    }
+
+    #[test]
+    fn put_sql_restricted_update_normalizes_camel_case_cols() {
+        // Arrange: Go's toSnakeCase'd colsToUpdate ("UpdatedAt" →
+        // updated_at).
+        let f = test_record();
+        // Act:
+        let put = put_sql("f-1", &f, Utc::now(), &["UpdatedAt"]).expect("renders");
+        // Assert: only the requested column is SET; the id closes the args.
+        assert_eq!(
+            put.update.0,
+            "UPDATE folder SET updated_at = ? WHERE id = ?"
+        );
+        assert_eq!(put.update.1.len(), 2);
+        assert_eq!(put.update.1[1], Value::Text("f-1".to_string()));
+        // A full update never SETs created_at.
+        let full = put_sql("f-1", &f, Utc::now(), &[]).expect("renders");
+        assert!(!full.update.0.contains("created_at = ?"));
     }
 
     #[test]

@@ -15,5 +15,7 @@ md-5 = "0.10"
 thiserror = "1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 rand = "0.9"
+# nd-utils::str::to_lower replicates Go strings.ToLower exactly (see its doc).
+nd-utils = { version = "0.1.0", path = "../nd-utils" }
 
 [dev-dependencies]

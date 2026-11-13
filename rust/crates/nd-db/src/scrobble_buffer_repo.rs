@@ -189,19 +189,19 @@ mod tests {
         // Arrange/Act: Next's select (:70-76).
         let (sql, args) = next_sql("lastfm", "user1");
         // Assert: m.* first so s.id wins; LEFT JOIN sits after FROM, before WHERE.
+        // `LIMIT 1` is a squirrel literal (`select.go:139-142`), so it is not an arg.
         assert_eq!(
             sql,
             "SELECT m.*, s.* FROM scrobble_buffer s \
              LEFT JOIN media_file m on m.id = s.media_file_id \
              WHERE s.service = ? AND s.user_id = ? \
-             ORDER BY play_time, s.rowid LIMIT ?"
+             ORDER BY play_time, s.rowid LIMIT 1"
         );
         assert_eq!(
             args,
             vec![
                 Value::Text("lastfm".to_string()),
                 Value::Text("user1".to_string()),
-                Value::Integer(1),
             ]
         );
     }

@@ -1,0 +1,1071 @@
+[
+ {
+  "name": "comment_truncation_8192",
+  "file_path": "albums/test/track.mp3",
+  "tags": {
+   "COMMENT": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ],
+   "TITLE": [
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+   ],
+   "LYRICIST": [
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+   ]
+  },
+  "props": {
+   "duration_seconds": 1.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 16,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "comment_truncation_rune_boundary",
+  "file_path": "albums/test/track.mp3",
+  "tags": {
+   "COMMENT": [
+    "ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé中"
+   ]
+  },
+  "props": {
+   "duration_seconds": 1.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 16,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "artist_split_and_sort",
+  "file_path": "albums/a/01.mp3",
+  "tags": {
+   "ARTIST": [
+    "Queen / David Bowie"
+   ],
+   "ARTISTSORT": [
+    "Queen"
+   ],
+   "ALBUM": [
+    "Operation Mix"
+   ],
+   "ALBUMARTIST": [
+    "David Bowie feat. Queen"
+   ],
+   "TITLE": [
+    "Under Pressure"
+   ],
+   "TRACK": [
+    "1/10"
+   ],
+   "DISC": [
+    "1/2"
+   ]
+  },
+  "props": {
+   "duration_seconds": 212.0,
+   "bit_rate": 320,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 16,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "artists_plural_wins",
+  "file_path": "albums/a/02.mp3",
+  "tags": {
+   "ARTIST": [
+    "Solo One"
+   ],
+   "ARTISTS": [
+    "Multi A",
+    "Multi B"
+   ],
+   "TITLE": [
+    "Plural Wins"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "multi_values_not_split",
+  "file_path": "albums/a/03.mp3",
+  "tags": {
+   "ARTIST": [
+    "A / B",
+    "C / D"
+   ],
+   "TITLE": [
+    "No Split Of Multiple"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "compilation_album_artist",
+  "file_path": "albums/c/01.mp3",
+  "tags": {
+   "COMPILATION": [
+    "1"
+   ],
+   "TITLE": [
+    "Sampler Track"
+   ],
+   "ALBUM": [
+    "Sampler"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "album_artist_falls_back_to_track_artist",
+  "file_path": "albums/c/02.mp3",
+  "tags": {
+   "ARTIST": [
+    "Sola Cuties"
+   ],
+   "TITLE": [
+    "No Album Artist"
+   ],
+   "ALBUM": [
+    "Self Titled"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "roles_and_mbid_sync",
+  "file_path": "albums/r/01.flac",
+  "tags": {
+   "ARTIST": [
+    "The Beatles"
+   ],
+   "MUSICBRAINZ_ARTISTID": [
+    "b10abc96-3c5b-4a6c-a5f9-c70461532f84"
+   ],
+   "COMPOSER": [
+    "John Lennon / Paul McCartney"
+   ],
+   "COMPOSERSORT": [
+    "Lennon, John"
+   ],
+   "LYRICIST": [
+    "John Lennon"
+   ],
+   "PRODUCER": [
+    "George Martin"
+   ],
+   "ENGINEER": [
+    "Geoff Emerick; Peter Bown"
+   ],
+   "MIXER": [
+    "XXX"
+   ],
+   "REMIXER": [
+    "YYY"
+   ],
+   "DJMIXER": [
+    "ZZZ"
+   ],
+   "CONDUCTOR": [
+    "Howard Jones"
+   ],
+   "ARRANGER": [
+    "Billy Strayhorn"
+   ],
+   "DIRECTOR": [
+    "Tony Visconti"
+   ],
+   "MUSICBRAINZ_COMPOSERID": [
+    "c1",
+    "c2"
+   ],
+   "TITLE": [
+    "Something"
+   ],
+   "ALBUM": [
+    "Abbey Road"
+   ]
+  },
+  "props": {
+   "duration_seconds": 180.0,
+   "bit_rate": 1000,
+   "sample_rate": 96000,
+   "channels": 2,
+   "bit_depth": 24,
+   "codec": "FLAC"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "performer_pairs_and_subroles",
+  "file_path": "albums/p/01.flac",
+  "tags": {
+   "PERFORMER:guitar": [
+    "Jimmy Page"
+   ],
+   "PERFORMER:vocals": [
+    "Robert Plant"
+   ],
+   "PERFORMER": [
+    "John Bonham; Bonham; John"
+   ],
+   "PERFORMER:drums (drum set) and organ": [
+    "John Paul Jones"
+   ],
+   "MUSICBRAINZ_PERFORMERID:guitar": [
+    "mbid-guitar-1"
+   ],
+   "MUSICBRAINZ_PERFORMERID:vocals": [
+    "mbid-vocals-1"
+   ],
+   "MUSICBRAINZ_PERFORMERID:drums (drum set) and organ": [
+    "mbid-drums-1"
+   ],
+   "TITLE": [
+    "Since I've Been Loving You"
+   ],
+   "ARTIST": [
+    "Led Zeppelin"
+   ]
+  },
+  "props": {
+   "duration_seconds": 476.0,
+   "bit_rate": 900,
+   "sample_rate": 48000,
+   "channels": 2,
+   "bit_depth": 24,
+   "codec": "FLAC"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "lyrics_pairs_and_lang",
+  "file_path": "albums/l/01.mp3",
+  "tags": {
+   "LYRICS": [
+    "[00:00.00]line one\n[00:05.00]line two"
+   ],
+   "LYRICS:eng": [
+    "[00:00.00]eng line"
+   ],
+   "LYRICS:xxx": [
+    "plain text lyrics"
+   ],
+   "TITLE": [
+    "Lyric Test"
+   ]
+  },
+  "props": {
+   "duration_seconds": 30.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "dates_precedence_full",
+  "file_path": "albums/d/01.mp3",
+  "tags": {
+   "DATE": [
+    "2020-05-05"
+   ],
+   "ORIGINALDATE": [
+    "1980"
+   ],
+   "RELEASEDATE": [
+    "2021-01"
+   ],
+   "TITLE": [
+    "Dates"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "dates_legacy_mapping",
+  "file_path": "albums/d/02.mp3",
+  "tags": {
+   "DATE": [
+    "2015"
+   ],
+   "ORIGINALDATE": [
+    "1979-03"
+   ],
+   "TITLE": [
+    "Legacy Date Mapping"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "dates_only_original",
+  "file_path": "albums/d/03.mp3",
+  "tags": {
+   "ORIGINALDATE": [
+    "1972"
+   ],
+   "TITLE": [
+    "Only Original"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "dates_invalid",
+  "file_path": "albums/d/04.mp3",
+  "tags": {
+   "DATE": [
+    "0000-00-00"
+   ],
+   "ORIGINALDATE": [
+    "not-a-date"
+   ],
+   "RELEASEDATE": [
+    "19999"
+   ],
+   "TITLE": [
+    "Bad Dates"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "uuid_normalization",
+  "file_path": "albums/u/01.mp3",
+  "tags": {
+   "MUSICBRAINZ_TRACKID": [
+    "{F81D4FAE-7DEC-11D0-A765-00A0C91E6BF6}"
+   ],
+   "MUSICBRAINZ_ALBUMID": [
+    "urn:uuid:f81d4fae-7dec-11d0-a765-00a0c91e6bf6"
+   ],
+   "MUSICBRAINZ_RECORDINGID": [
+    "f81d4fae7dec11d0a76500a0c91e6bf6"
+   ],
+   "MUSICBRAINZ_ARTISTID": [
+    "the beatles"
+   ],
+   "TITLE": [
+    "UUIDs"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "replaygain_and_r128",
+  "file_path": "albums/g/01.mp3",
+  "tags": {
+   "REPLAYGAIN_ALBUM_GAIN": [
+    "-7.5 dB"
+   ],
+   "REPLAYGAIN_ALBUM_PEAK": [
+    "0.9"
+   ],
+   "REPLAYGAIN_TRACK_GAIN": [
+    "-3 dB"
+   ],
+   "REPLAYGAIN_TRACK_PEAK": [
+    "1.0"
+   ],
+   "R128_TRACK_GAIN": [
+    "-1024"
+   ],
+   "TITLE": [
+    "Gain"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "replaygain_invalid_and_r128_fallback",
+  "file_path": "albums/g/02.mp3",
+  "tags": {
+   "REPLAYGAIN_TRACK_GAIN": [
+    "NaN"
+   ],
+   "REPLAYGAIN_TRACK_PEAK": [
+    "inf"
+   ],
+   "R128_TRACK_GAIN": [
+    "-1280"
+   ],
+   "BPM": [
+    "123.7"
+   ],
+   "TITLE": [
+    "Bad Gain"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "genre_split_and_dupes",
+  "file_path": "albums/s/01.mp3",
+  "tags": {
+   "GENRE": [
+    "Rock; Pop/Rock, Rock"
+   ],
+   "TITLE": [
+    "Genres"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "movements_split",
+  "file_path": "albums/m/01.flac",
+  "tags": {
+   "MOVEMENTNAME": [
+    "I. Allegro",
+    "II. Adagio"
+   ],
+   "MOVEMENT": [
+    "1/4",
+    "2/4"
+   ],
+   "TITLE": [
+    "Symphony"
+   ],
+   "ALBUM": [
+    "Symphony Album"
+   ]
+  },
+  "props": {
+   "duration_seconds": 600.0,
+   "bit_rate": 900,
+   "sample_rate": 48000,
+   "channels": 2,
+   "bit_depth": 24,
+   "codec": "FLAC"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "movements_partial_totals",
+  "file_path": "albums/m/02.flac",
+  "tags": {
+   "MOVEMENTNAME": [
+    "I. Allegro",
+    "II. Adagio"
+   ],
+   "MOVEMENT": [
+    "1/4",
+    "2"
+   ],
+   "TITLE": [
+    "Partial Movements"
+   ]
+  },
+  "props": {
+   "duration_seconds": 600.0,
+   "bit_rate": 900,
+   "sample_rate": 48000,
+   "channels": 2,
+   "bit_depth": 24,
+   "codec": "FLAC"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "explicit_status",
+  "file_path": "albums/e/01.m4a",
+  "tags": {
+   "ITUNESADVISORY": [
+    "1"
+   ],
+   "TITLE": [
+    "Explicit"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 256,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "AAC"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "mbids_and_release_type",
+  "file_path": "albums/mb/01.mp3",
+  "tags": {
+   "MUSICBRAINZ_TRACKID": [
+    "9e85f8e2-0596-4bad-9bdd-2b097b3eaa29"
+   ],
+   "MUSICBRAINZ RecordingID": [
+    "7b0fbc4e-ea5b-4c4a-9a05-6a2589cfdb6c"
+   ],
+   "MUSICBRAINZ_ALBUMID": [
+    "e9a2cd6e-dbaf-4a8d-93bf-a062f6e0f8fa"
+   ],
+   "MUSICBRAINZ_RELEASEGROUPID": [
+    "ff5b5b47-08d7-4350-8478-ebee33e90502"
+   ],
+   "RELEASETYPE": [
+    "album"
+   ],
+   "TITLE": [
+    "MBIDs"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "pid_track_legacy",
+  "file_path": "albums/legacy/01.mp3",
+  "tags": {
+   "TITLE": [
+    "Legacy Track"
+   ],
+   "ALBUM": [
+    "Legacy Album"
+   ],
+   "ARTIST": [
+    "Legacy Artist"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "album_legacy",
+  "pid_track": "track_legacy",
+  "library_id": 1
+ },
+ {
+  "name": "pid_track_legacy_lib2",
+  "file_path": "albums/legacy/01.mp3",
+  "tags": {
+   "TITLE": [
+    "Legacy Track"
+   ],
+   "ALBUM": [
+    "Legacy Album"
+   ],
+   "ARTIST": [
+    "Legacy Artist"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "album_legacy",
+  "pid_track": "track_legacy",
+  "library_id": 2
+ },
+ {
+  "name": "pid_album_legacy_ungrouped",
+  "file_path": "albums/legacy/01.mp3",
+  "tags": {
+   "TITLE": [
+    "T"
+   ],
+   "ALBUM": [
+    "[unknown Album]"
+   ],
+   "ARTIST": [
+    "Legacy Artist"
+   ],
+   "RELEASEDATE": [
+    "2001"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "album_legacy",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "pid_custom_folder",
+  "file_path": "music/beatles/abbey-road/01.mp3",
+  "tags": {
+   "TITLE": [
+    "Come Together"
+   ],
+   "ALBUM": [
+    "Abbey Road"
+   ],
+   "ARTIST": [
+    "The Beatles"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "folder",
+  "pid_track": "folder|title",
+  "library_id": 1
+ },
+ {
+  "name": "pid_custom_albumid_in_track",
+  "file_path": "music/x/01.mp3",
+  "tags": {
+   "TITLE": [
+    "Track With AlbumID"
+   ],
+   "ALBUM": [
+    "The Album"
+   ],
+   "ARTIST": [
+    "The Artist"
+   ],
+   "TRACK": [
+    "3"
+   ],
+   "DISC": [
+    "1"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "albumartistid,album",
+  "pid_track": "albumid,discnumber,tracknumber,title",
+  "library_id": 1
+ },
+ {
+  "name": "pid_album_albumid_ignored",
+  "file_path": "music/x/01.mp3",
+  "tags": {
+   "TITLE": [
+    "T"
+   ],
+   "ALBUM": [
+    "A"
+   ],
+   "ARTIST": [
+    "Art"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "albumid,album",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "pid_fallback_empty_spec",
+  "file_path": "music/x/01.mp3",
+  "tags": {
+   "TITLE": [
+    "No MBIDs"
+   ],
+   "TRACK": [
+    "5"
+   ],
+   "DISC": [
+    "2"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "albumartistid,album",
+  "pid_track": "musicbrainz_trackid|albumid,discnumber,tracknumber,title",
+  "library_id": 1
+ },
+ {
+  "name": "invalid_int_float_tags",
+  "file_path": "albums/i/01.mp3",
+  "tags": {
+   "TRACK": [
+    "abc"
+   ],
+   "BPM": [
+    "not-a-number"
+   ],
+   "REPLAYGAIN_TRACK_PEAK": [
+    "xyz"
+   ],
+   "TITLE": [
+    "Invalid Types"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "unknown_tags_dropped",
+  "file_path": "albums/k/01.mp3",
+  "tags": {
+   "TITLE": [
+    "Keep Me"
+   ],
+   "SOMETHING_RANDOM": [
+    "drop me"
+   ],
+   "VERSION": [
+    "album version"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "case_insensitive_aliases",
+  "file_path": "albums/ci/01.mp3",
+  "tags": {
+   "Title": [
+    "Mixed Case Tags"
+   ],
+   "ALBUMARTISTSort": [
+    "Sort Name"
+   ],
+   "Genre": [
+    "Jazz"
+   ],
+   "Comment": [
+    "c"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "empty_tags_dropped",
+  "file_path": "albums/empty/01.mp3",
+  "tags": {
+   "TITLE": [
+    "Only Title"
+   ],
+   "ALBUM": [
+    ""
+   ],
+   "ARTIST": [],
+   "GENRE": [
+    "",
+    "Real"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "title_fallback_from_path",
+  "file_path": "albums/f/Last Song (Remix).ogg",
+  "tags": {},
+  "props": {
+   "duration_seconds": 12.345,
+   "bit_rate": 19,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "VORBIS"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "ignored_article_order_names",
+  "file_path": "albums/ia/01.mp3",
+  "tags": {
+   "TITLE": [
+    "The Wall"
+   ],
+   "ALBUM": [
+    "The Dark Side of the Moon"
+   ],
+   "ARTIST": [
+    "The Alan Parsons Project"
+   ],
+   "ALBUMARTIST": [
+    "The Alan Parsons Project"
+   ]
+  },
+  "props": {
+   "duration_seconds": 10.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "title_max_length_default",
+  "file_path": "albums/test/track.mp3",
+  "tags": {
+   "TITLE": [
+    "tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+   ],
+   "ALBUM": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+   ]
+  },
+  "props": {
+   "duration_seconds": 1.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ },
+ {
+  "name": "movements_max_length",
+  "file_path": "albums/test/track.mp3",
+  "tags": {
+   "MOVEMENTNAME": [
+    "mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm"
+   ],
+   "MOVEMENT": [
+    "1/4"
+   ],
+   "TITLE": [
+    "Symphony"
+   ]
+  },
+  "props": {
+   "duration_seconds": 1.0,
+   "bit_rate": 128,
+   "sample_rate": 44100,
+   "channels": 2,
+   "bit_depth": 0,
+   "codec": "MP3"
+  },
+  "pid_album": "",
+  "pid_track": "",
+  "library_id": 1
+ }
+]

@@ -17,3 +17,17 @@ getrandom = "0.2"
 thiserror = { workspace = true }
 serde = { workspace = true }          # Claims wire renames (derive), jsonwebtoken is serde-generic
 sha2 = "0.10"                          # nds_ API-key lookup hash (credentials.md §2, player_repository.go:194-199)
+# Executing user repository and in-flight password-change outcome.
+nd-db = { path = "../nd-db" }
+# Already present in Cargo.lock via nd-events (axum 0.7.9).
+axum = { workspace = true }
+# Reuse the workspace's Gravatar implementation (server/auth.go:81-83).
+nd-utils = { path = "../nd-utils" }
+# Match nd-db's public transaction API and bundled SQLite features.
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup", "chrono"] }
+
+[dev-dependencies]
+# Existing workspace crates; tower and tokio mirror nd-events' test setup.
+nd-dbschema = { path = "../nd-dbschema" }
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync", "test-util"] }
+tower = { workspace = true, features = ["util"] }

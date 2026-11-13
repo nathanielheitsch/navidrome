@@ -7,16 +7,22 @@
 //! (Go's raw strings) are [`CONFLICT_ENQUEUE`], [`CONFLICT_PRESERVE_BACKOFF`]
 //! and [`SKIP_IF_QUEUED`] data.
 //!
-//! Time: Go stamps `retry_at`/`enqueued_at` with `time.Now()`; the port takes
-//! epoch-second integers from the caller (same contract as the sibling
-//! repositories' `now` parameters).
+//! Time: Go stamps `retry_at`/`enqueued_at` with `time.Now()` and reads them
+//! back with `LtOrEq{"retry_at": time.Now()}` (`:167`), so the port takes
+//! [`chrono::DateTime<Utc>]` from the caller and binds it through
+//! [`crate::time`]. Epoch integers would break exactly that read: INTEGER rows
+//! never satisfy a TEXT-bound `retry_at <= ?` and sort first under
+//! `ORDER BY enqueued_at ASC` (see `time.rs`).
 //!
 //! The source-filter semantics of `artworkSourceFilter` (`:107-121`) are
 //! reproduced verbatim: dropping `ArtworkSourceFailed` from the requested
 //! sources decides between `source IN (…)`, the absent-state arm
 //! (`hash = '' AND last_failure != ''`), or an OR of both.
 
+use chrono::{DateTime, Utc};
+
 use crate::sqlrepo::{Repository, Value};
+use crate::time;
 
 /// A materialized statement: `(sql, args)`, the `toSQL()` output shape.
 pub type Sql = (String, Vec<Value>);
@@ -81,10 +87,10 @@ pub struct ArtworkQueueItem {
     pub priority: i64,
     /// Always 0 on enqueue (`:155`); the row's attempt counter.
     pub attempts: i64,
-    /// Epoch seconds; eligibility bound (`retry_at <= now`).
-    pub retry_at: i64,
-    /// Epoch seconds; lifecycle start stamp, Go's `time.Now()`.
-    pub enqueued_at: i64,
+    /// Eligibility bound (`retry_at <= now`), stored as datetime TEXT.
+    pub retry_at: Option<DateTime<Utc>>,
+    /// Lifecycle start stamp, Go's `time.Now()`, stored as datetime TEXT.
+    pub enqueued_at: Option<DateTime<Utc>>,
     /// JSON walk trace (`Enqueue` resets it to `'[]'`, `:50`).
     pub trace: String,
 }
@@ -105,7 +111,11 @@ pub fn get_sql(kind: &str, id: &str, image_type: &str) -> Sql {
 /// per [`CHUNK_SIZE`] items, values `(kind, id, image_type, priority, 0,
 /// now, now)` (`:155`).
 #[must_use]
-pub fn enqueue_sql(items: &[ArtworkQueueItem], conflict: &'static str, now: i64) -> Vec<Sql> {
+pub fn enqueue_sql(
+    items: &[ArtworkQueueItem],
+    conflict: &'static str,
+    now: &DateTime<Utc>,
+) -> Vec<Sql> {
     items
         .chunks(CHUNK_SIZE)
         .map(|chunk| {
@@ -128,8 +138,8 @@ pub fn enqueue_sql(items: &[ArtworkQueueItem], conflict: &'static str, now: i64)
                         Value::Text(image_type.clone()),
                         Value::Integer(it.priority),
                         Value::Integer(0),
-                        Value::Integer(now),
-                        Value::Integer(now),
+                        time::value(now),
+                        time::value(now),
                     ]
                 })
                 .collect::<Vec<_>>();
@@ -148,13 +158,13 @@ pub fn enqueue_sql(items: &[ArtworkQueueItem], conflict: &'static str, now: i64)
 
 /// `Enqueue` (`:47-52`).
 #[must_use]
-pub fn enqueue_sql_reset(items: &[ArtworkQueueItem], now: i64) -> Vec<Sql> {
+pub fn enqueue_sql_reset(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -> Vec<Sql> {
     enqueue_sql(items, CONFLICT_ENQUEUE, now)
 }
 
 /// `EnqueuePreservingBackoff` (`:53-57`).
 #[must_use]
-pub fn enqueue_sql_preserving_backoff(items: &[ArtworkQueueItem], now: i64) -> Vec<Sql> {
+pub fn enqueue_sql_preserving_backoff(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -> Vec<Sql> {
     enqueue_sql(items, CONFLICT_PRESERVE_BACKOFF, now)
 }
 
@@ -165,7 +175,12 @@ pub fn enqueue_sql_preserving_backoff(items: &[ArtworkQueueItem], now: i64) -> V
 /// IN (SELECT item_id FROM item_artwork WHERE item_kind = ?)` — args in
 /// dbx order (`:66-68`).
 #[must_use]
-pub fn enqueue_all_missing_sql(kind: &str, entity_table: &str, priority: i64, now: i64) -> Sql {
+pub fn enqueue_all_missing_sql(
+    kind: &str,
+    entity_table: &str,
+    priority: i64,
+    now: &DateTime<Utc>,
+) -> Sql {
     let cols = ENQUEUE_COLUMNS
         .iter()
         .map(|c| (*c).to_string())
@@ -180,8 +195,8 @@ pub fn enqueue_all_missing_sql(kind: &str, entity_table: &str, priority: i64, no
             Value::Text(kind.to_string()),
             Value::Text(IMAGE_TYPE_PRIMARY.to_string()),
             Value::Integer(priority),
-            Value::Integer(now),
-            Value::Integer(now),
+            time::value(now),
+            time::value(now),
             Value::Text(kind.to_string()),
         ],
     )
@@ -192,7 +207,7 @@ pub fn enqueue_all_missing_sql(kind: &str, entity_table: &str, priority: i64, no
 /// FROM new_items n WHERE NOT EXISTS (SELECT 1 FROM item_artwork ia
 /// WHERE ia.item_kind = n.item_kind AND …) skipIfQueued` (`:81-87`).
 #[must_use]
-pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: i64) -> Vec<Sql> {
+pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -> Vec<Sql> {
     items.chunks(CHUNK_SIZE)
         .map(|chunk| {
             let rows = chunk.iter().map(|_| "(?,?,?,?)")
@@ -214,8 +229,8 @@ pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: i64) -> Vec<Sql> 
                 })
                 .collect::<Vec<_>>();
             let mut args_all = args;
-            args_all.push(Value::Integer(now));
-            args_all.push(Value::Integer(now));
+            args_all.push(time::value(now));
+            args_all.push(time::value(now));
             let select = concat!(
                 ") SELECT n.item_kind, n.item_id, n.image_type, n.priority, 0, ?, ? ",
                 "FROM new_items n WHERE NOT EXISTS (SELECT 1 FROM item_artwork ia ",
@@ -290,7 +305,12 @@ pub fn sources_in_use_sql(kind: &str) -> Sql {
 /// items with literal `(?, priority, 0, ?, ?)` columns (`:145-146`);
 /// deliberately leaves `item_artwork` alone (Go's comment `:140-141`).
 #[must_use]
-pub fn enqueue_by_source_sql(kind: &str, sources: &[String], priority: i64, now: i64) -> Sql {
+pub fn enqueue_by_source_sql(
+    kind: &str,
+    sources: &[String],
+    priority: i64,
+    now: &DateTime<Utc>,
+) -> Sql {
     let cols = ENQUEUE_COLUMNS
         .iter()
         .map(|c| (*c).to_string())
@@ -303,35 +323,27 @@ pub fn enqueue_by_source_sql(kind: &str, sources: &[String], priority: i64, now:
     // squirrel renders Insert().Columns().Select() with the select's own bound
     // args; the INSERT-side args (priority/now/now) precede WHERE's.
     args.insert(0, Value::Integer(priority));
-    args.insert(1, Value::Integer(now));
-    args.insert(2, Value::Integer(now));
+    args.insert(1, time::value(now));
+    args.insert(2, time::value(now));
     (
         format!("INSERT INTO {TABLE} ({cols}) {select}{SKIP_IF_QUEUED}"),
         args,
     )
 }
 
-/// Join two arg vectors in squirrel's binding order.
-fn concat_args(first: &[Value], second: Vec<Value>) -> Vec<Value> {
-    first
-        .iter()
-        .cloned()
-        .chain(second.iter().cloned())
-        .collect::<Vec<_>>()
-}
-
 /// `DequeueBatch` (`:166-176`): `Select(enqueueColumns).Where(LtOrEq{retry_at})`
 /// (+ optional `Eq{item_kind: kinds}`) `.OrderBy("priority DESC",
-/// "enqueued_at ASC").Limit(n)`. `now` (epoch seconds) is the eligibility
-/// bound; `kinds` are caller-supplied typed prefixes (`:170-172`).
+/// "enqueued_at ASC").Limit(n)`. `now` is the eligibility bound Go binds as
+/// `time.Now()` (`:167`), so it must be the same TEXT shape the enqueue wrote;
+/// `kinds` are caller-supplied typed prefixes (`:170-172`).
 #[must_use]
-pub fn dequeue_batch_sql(n: i64, now: i64, kinds: &[String]) -> Sql {
+pub fn dequeue_batch_sql(n: i64, now: &DateTime<Utc>, kinds: &[String]) -> Sql {
     let cols = ENQUEUE_COLUMNS
         .iter()
         .map(|c| (*c).to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    let mut args = vec![Value::Integer(now)];
+    let mut args = vec![time::value(now)];
     args.extend(kinds.iter().map(|k| Value::Text(k.clone())));
     let where_sql = if kinds.is_empty() {
         "retry_at <= ?".to_string()
@@ -341,9 +353,9 @@ pub fn dequeue_batch_sql(n: i64, now: i64, kinds: &[String]) -> Sql {
     };
     (
         format!(
-            "SELECT {cols} FROM {TABLE} WHERE {where_sql} ORDER BY priority DESC, enqueued_at ASC LIMIT ?"
+            "SELECT {cols} FROM {TABLE} WHERE {where_sql} ORDER BY priority DESC, enqueued_at ASC LIMIT {n}"
         ),
-        concat_args(&args, vec![Value::Integer(n)]),
+        args,
     )
 }
 
@@ -355,8 +367,8 @@ pub fn mark_failed_if_unchanged_sql(
     kind: &str,
     id: &str,
     image_type: &str,
-    seen_retry_at: i64,
-    retry_at: i64,
+    seen_retry_at: &DateTime<Utc>,
+    retry_at: &DateTime<Utc>,
     trace: &str,
 ) -> Sql {
     (
@@ -364,24 +376,31 @@ pub fn mark_failed_if_unchanged_sql(
             "UPDATE {TABLE} SET attempts = attempts + 1, retry_at = ?, trace = ? WHERE item_kind = ? AND item_id = ? AND image_type = ? AND retry_at = ?"
         ),
         vec![
-            Value::Integer(retry_at), Value::Text(trace.to_string()),
+            time::value(retry_at),
+            Value::Text(trace.to_string()),
             Value::Text(kind.to_string()), Value::Text(id.to_string()),
             Value::Text(image_type.to_string()),
-            Value::Integer(seen_retry_at),
+            time::value(seen_retry_at),
         ],
     )
 }
 
 /// `DeleteIfUnchanged` (`:188-190`): the four-key delete, `retry_at` included.
 #[must_use]
-pub fn delete_if_unchanged_sql(kind: &str, id: &str, image_type: &str, retry_at: i64) -> Sql {
+pub fn delete_if_unchanged_sql(
+    kind: &str,
+    id: &str,
+    image_type: &str,
+    retry_at: &DateTime<Utc>,
+) -> Sql {
     (
         format!(
             "DELETE FROM {TABLE} WHERE item_kind = ? AND item_id = ? AND image_type = ? AND retry_at = ?"
         ),
         vec![
             Value::Text(kind.to_string()), Value::Text(id.to_string()),
-            Value::Text(image_type.to_string()), Value::Integer(retry_at),
+            Value::Text(image_type.to_string()),
+            time::value(retry_at),
         ],
     )
 }
@@ -456,6 +475,18 @@ pub fn purge_dangling_sql(kind: &str, entity_table: &str) -> Sql {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{NaiveDate, TimeZone};
+
+    /// Deterministic caller clock (Go's `time.Now()`,
+    /// `artwork_queue_repository.go:63,71,143,151,167`).
+    fn at(year: u32, month: u32, day: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
+        Utc.from_utc_datetime(
+            &NaiveDate::from_ymd_opt(i32::try_from(year).unwrap(), month, day)
+                .unwrap()
+                .and_hms_opt(h, mi, s)
+                .unwrap(),
+        )
+    }
 
     #[test]
     fn enqueue_resets_the_lifecycle_on_conflict() {
@@ -466,12 +497,12 @@ mod tests {
             image_type: "".to_string(),
             priority: 0,
             attempts: 0,
-            retry_at: 0,
-            enqueued_at: 0,
+            retry_at: None,
+            enqueued_at: None,
             trace: "".to_string(),
         };
         // Act:
-        let stmts = enqueue_sql_reset(&[item], 42);
+        let stmts = enqueue_sql_reset(&[item], &at(2024, 1, 2, 3, 4, 5));
         // Assert: 7-column insert, image_type defaulted, lifecycle reset in the
         // conflict clause (:49).
         assert_eq!(stmts.len(), 1);
@@ -487,7 +518,10 @@ mod tests {
     #[test]
     fn preserve_backoff_upsert_touches_only_priority() {
         // Act: EnqueuePreservingBackoff (:54-56).
-        let stmts = enqueue_sql_preserving_backoff(&[ArtworkQueueItem::default()], 7);
+        let stmts = enqueue_sql_preserving_backoff(
+            &[ArtworkQueueItem::default()],
+            &at(2024, 1, 2, 3, 4, 5),
+        );
         // Assert: retry_at is NOT reset (Go's comment :52-53).
         assert_eq!(stmts.len(), 1);
         assert!(stmts[0]
@@ -499,7 +533,7 @@ mod tests {
     #[test]
     fn enqueue_all_missing_skips_resolved_entities() {
         // Act: EnqueueAllMissing for albums (:58-68).
-        let (sql, args) = enqueue_all_missing_sql("album", "album", 3, 99);
+        let (sql, args) = enqueue_all_missing_sql("album", "album", 3, &at(2024, 1, 2, 3, 4, 5));
         // Assert: the NOT IN resolved-state guard, six bound values
         // (kind, primary, priority, now, now, kind, :66-68).
         assert_eq!(args.len(), 6);
@@ -511,13 +545,18 @@ mod tests {
     #[test]
     fn dequeue_batch_orders_priority_desc_then_enqueued_asc() {
         // Act: DequeueBatch(n=5, kinds album) (:166-176).
-        let (sql, args) = dequeue_batch_sql(5, 1000, &["album".to_string()]);
+        let (sql, args) = dequeue_batch_sql(5, &at(2024, 1, 2, 3, 4, 5), &["album".to_string()]);
         // Assert: eligibility + kind IN filter, the ORDER BY pair, limit last.
+        // The `LIMIT 5` bound is a squirrel literal (`select.go:139-142`), so
+        // only the eligibility bound and the kind filter are args.
         assert!(sql.contains("WHERE retry_at <= ? AND item_kind IN (?)"));
-        assert!(sql.contains("ORDER BY priority DESC, enqueued_at ASC LIMIT ?"));
-        assert_eq!(args.len(), 3);
-        assert_eq!(args[0], Value::Integer(1000));
-        assert_eq!(args.last(), Some(Value::Integer(5)).as_ref());
+        assert!(sql.contains("ORDER BY priority DESC, enqueued_at ASC LIMIT 5"));
+        assert_eq!(args.len(), 2);
+        assert_eq!(
+            args[0],
+            Value::Text("2024-01-02 03:04:05+00:00".to_string())
+        );
+        assert_eq!(args.last(), Some(&Value::Text("album".to_string())));
     }
 
     #[test]

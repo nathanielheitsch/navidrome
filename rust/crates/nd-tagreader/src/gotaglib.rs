@@ -1,13 +1,8 @@
-//! Shim backend for `adapters/gotaglib/gotaglib.go`.
+//! Navidrome's Go TagLib post-transform (`adapters/gotaglib/gotaglib.go`).
 //!
-//! Decision (issue #08): pure-Rust TagLib is unavailable offline and a C
-//! binding would fork the pinned `go.senan.xyz/taglib ->
-//! github.com/deluan/go-taglib` raw-tag surface (go.mod:6). The raw TagLib
-//! surface (PropertyMap tags, raw frames/atoms/attrs, stream properties) is
-//! kept as *data* — produced today by the pinned fork, tomorrow by whatever
-//! binary the operator wires — and every Navidrome-side transform below is
-//! ported byte-exactly: key lowercasing, raw-tag merging per format,
-//! track/disc tuple split, lyrics/TIPL handling, `has_picture`.
+//! The real-file backend is [`crate::backend`]. `RawTags` also remains the
+//! serialized input format for Go-produced golden oracles; its sidecar loader
+//! is a test utility, never a runtime fallback.
 
 use serde::{Deserialize, Serialize};
 use serde_json::from_str;
@@ -15,14 +10,14 @@ use std::collections::BTreeMap;
 
 use crate::info::{AudioProperties, Info};
 
-/// Pinned go-taglib fork version (`go.mod:6`), replacing Go's
-/// `debug.ReadBuildInfo()` lookup (`gotaglib.go:26-36`).
+/// Go-fork version used to produce the golden snapshots (`go.mod:6`).
+/// The real extractor reports its own Lofty version, not this oracle version.
 pub const PINNED_TAGLIB_VERSION: &str = "v0.0.0-20260913142955-d55e0c9353cb";
 
-/// `gotaglib.go:194` — iTunes atom prefix.
+/// `adapters/gotaglib/gotaglib.go:219` — iTunes atom prefix.
 const ITUNES_KEY_PREFIX: &str = "----:com.apple.iTunes:";
 
-/// `tiplMapping` (`gotaglib.go:223-229`) — Picard's supported roles only.
+/// `tiplMapping` (`adapters/gotaglib/gotaglib.go:251-257`).
 const TIPL_MAPPING: &[(&str, &str)] = &[
     ("arranger", "arranger"),
     ("engineer", "engineer"),
@@ -31,10 +26,8 @@ const TIPL_MAPPING: &[(&str, &str)] = &[
     ("DJ-mix", "djmixer"),
 ];
 
-/// `taglib.Format*` (`gotaglib.go:158-165`).
+/// `adapters/gotaglib/gotaglib.go:181-189` — raw overlay formats.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-/// `taglib.Format*` (`gotaglib.go:158-165`) — the shim dump spells it as the
-/// container name; anything unrecognized gets no raw-tag processing.
 pub enum Format {
     /// `taglib.FormatMPEG`.
     MPEG,
@@ -48,28 +41,19 @@ pub enum Format {
     ASF,
 }
 
-fn format_of(name: String) -> Format {
-    let lower = name.to_lowercase();
-    if lower == "mpeg" || lower == "mp3" {
-        return Format::MPEG;
+fn format_of(name: &str) -> Option<Format> {
+    match name.to_lowercase().as_str() {
+        "mpeg" | "mp3" => Some(Format::MPEG),
+        "wav" => Some(Format::WAV),
+        "aiff" | "aif" => Some(Format::AIFF),
+        "mp4" | "m4a" => Some(Format::MP4),
+        "asf" | "wma" => Some(Format::ASF),
+        _ => None,
     }
-    if lower == "wav" {
-        return Format::WAV;
-    }
-    if lower == "aiff" || lower == "aif" {
-        return Format::AIFF;
-    }
-    if lower == "mp4" || lower == "m4a" {
-        return Format::MP4;
-    }
-    if lower == "asf" || lower == "wma" {
-        return Format::ASF;
-    }
-    Format::MPEG
 }
 
 /// The raw TagLib surface — `allTags.Tags`, `allTags.Raw` and the `props`
-/// fields `extractMetadata` reads (`gotaglib.go:107-133`). BTreeMap keeps
+/// fields `extractMetadata` reads (`gotaglib.go:82-121`). BTreeMap keeps
 /// iteration deterministic (Go map order is unspecified; sorted keys match
 /// every fixture case).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -81,12 +65,10 @@ pub struct RawTags {
     /// `allTags.Raw` — ID3v2 frames / MP4 atoms / ASF attributes.
     /// Raw frames/atoms/attributes keyed per format.
     pub raw: BTreeMap<String, Vec<String>>,
-    /// `props.Images` count; `has_picture` is `> 0` (`gotaglib.go:130`).
+    /// `props.Images` count; `has_picture` is `> 0` (`gotaglib.go:116`).
     pub image_count: usize,
     /// `props.Length` in seconds.
-    /// `props.Length` in seconds.
     pub duration: f64,
-    /// `props.Bitrate`.
     /// `props.Bitrate` in kbps.
     pub bitrate: i64,
     /// `props.Channels`.
@@ -99,7 +81,7 @@ pub struct RawTags {
     pub codec: String,
 }
 
-/// `gotaglib.go:37-133` minus the file-open: pure transform over RawTags.
+/// `gotaglib.go:82-122` minus the file-open: pure transform over RawTags.
 pub fn extract_metadata(raw: &RawTags) -> Info {
     let tags = normalize_tags(raw);
     let mut tags = process_raw_tags(raw, tags);
@@ -124,7 +106,7 @@ pub fn extract_metadata(raw: &RawTags) -> Info {
     }
 }
 
-/// `gotaglib.go:102-107` — lowercase every PropertyMap key.
+/// `gotaglib.go:96-101` — lowercase every PropertyMap key.
 fn normalize_tags(raw: &RawTags) -> BTreeMap<String, Vec<String>> {
     let mut out = BTreeMap::new();
     for (key, values) in raw.tags.iter() {
@@ -133,25 +115,25 @@ fn normalize_tags(raw: &RawTags) -> BTreeMap<String, Vec<String>> {
     out
 }
 
-/// `props.Length.Round(time.Millisecond * 10)` (`gotaglib.go:107`).
+/// `props.Length.Round(time.Millisecond * 10)` (`gotaglib.go:88`).
 fn round_10ms(d: f64) -> f64 {
     (d * 100.0).round() / 100.0
 }
 
-/// `processRawTags` (`gotaglib.go:152-165`).
-/// `processRawTags` (`gotaglib.go:152-165`) — returns the merged tag map.
+/// `processRawTags` (`gotaglib.go:181-190`) — merge format-specific overlays.
 fn process_raw_tags(
     raw: &RawTags,
     tags: BTreeMap<String, Vec<String>>,
 ) -> BTreeMap<String, Vec<String>> {
-    match format_of(raw.format.clone()) {
-        Format::MPEG | Format::WAV | Format::AIFF => parse_id3v2_frames(raw, tags),
-        Format::MP4 => parse_mp4_atoms(raw, tags),
-        Format::ASF => parse_asf_attributes(raw, tags),
+    match format_of(&raw.format) {
+        Some(Format::MPEG | Format::WAV | Format::AIFF) => parse_id3v2_frames(raw, tags),
+        Some(Format::MP4) => parse_mp4_atoms(raw, tags),
+        Some(Format::ASF) => parse_asf_attributes(raw, tags),
+        None => tags,
     }
 }
 
-/// `parseID3v2Frames` (`gotaglib.go:167-192`): language-coded USLT/SYLT
+/// `parseID3v2Frames` (`gotaglib.go:194-217`): language-coded USLT/SYLT
 /// frames become `lyrics:<lang>`; coded lyrics supersede the generic key.
 fn parse_id3v2_frames(
     raw: &RawTags,
@@ -190,7 +172,7 @@ fn parse_id3v2_frames(
     tags
 }
 
-/// `parseMP4Atoms` (`gotaglib.go:196-207`).
+/// `parseMP4Atoms` (`gotaglib.go:222-234`).
 fn parse_mp4_atoms(
     raw: &RawTags,
     mut tags: BTreeMap<String, Vec<String>>,
@@ -209,7 +191,7 @@ fn strip_itunes_prefix(key: String) -> String {
     }
 }
 
-/// `parseASFAttributes` (`gotaglib.go:211-221`).
+/// `parseASFAttributes` (`gotaglib.go:237-247`).
 fn parse_asf_attributes(
     raw: &RawTags,
     mut tags: BTreeMap<String, Vec<String>>,
@@ -221,48 +203,37 @@ fn parse_asf_attributes(
     tags
 }
 
-/// `parseTuple` (`gotaglib.go:111-127`): "2/10" -> track=2, tracktotal=10.
+/// `parseTuple` (`gotaglib.go:157-167`): first number wins; a two-part tuple overrides total.
 fn parse_tuple(
     mut tags: BTreeMap<String, Vec<String>>,
     prop: String,
 ) -> BTreeMap<String, Vec<String>> {
     let tag_name = prop.to_string() + "number";
     let tag_total = prop.to_string() + "total";
-    match tags.get(&tag_name) {
-        None => (),
-        Some(vs) => {
-            match vs.len() {
-                0 => (),
-                _ => {
-                    match vs[0].split_once("/") {
-                        None => (),
-                        Some(pair) => {
-                            let n = [pair.0.to_string()].to_vec();
-                            let t = [pair.1.to_string()].to_vec();
-                            tags.insert(tag_name, n);
-                            tags.insert(tag_total, t);
-                        }
-                    };
-                }
-            };
+    if let Some(value) = tags
+        .get(&tag_name)
+        .and_then(|values| values.first())
+        .cloned()
+    {
+        let parts: Vec<_> = value.split('/').collect();
+        tags.insert(tag_name, vec![parts[0].to_owned()]);
+        if parts.len() == 2 {
+            tags.insert(tag_total, vec![parts[1].to_owned()]);
         }
     }
     tags
 }
 
-/// `parseLyrics` (`gotaglib.go:139-146`).
+/// `parseLyrics` (`gotaglib.go:171-177`).
 fn parse_lyrics(mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
-    match tags.get("lyrics") {
-        None => (),
-        Some(lyrics) => {
-            tags.insert("lyrics:xxx".to_string(), lyrics.clone());
-            tags.remove("lyrics");
-        }
+    if let Some(lyrics) = tags.get("lyrics").filter(|values| !values.is_empty()) {
+        tags.insert("lyrics:xxx".to_string(), lyrics.clone());
+        tags.remove("lyrics");
     }
     tags
 }
 
-/// `parseTIPL` (`gotaglib.go:230-260`) with `tiplMapping` (`:223-229`).
+/// `parseTIPL` (`gotaglib.go:266-290`) with `tiplMapping` (`:251-257`).
 fn parse_tipl(mut tags: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
     match tags.get("tipl") {
         None => return tags,
@@ -314,12 +285,11 @@ fn tipl_flush(
     tags
 }
 
-/// `extractMetadata`'s return type (`gotaglib.go:38` returns `metadata.Info`).
+/// `extractMetadata`'s return type (`gotaglib.go:118-122`).
 pub type ExtractMetadataResult = Info;
 
-/// Shim loader: reads the `<file>.tags.json` sidecar emitted by the pinned
-/// go-taglib binary (shim backend, #08). Missing sidecar = Go's open failure
-/// (`gotaglib.go:47` warn+skip).
+/// Load a Go-produced golden snapshot (`adapters/gotaglib/golden_dump_test.go:46-58`).
+/// Retained for oracle tests only; the runtime extractor never calls this.
 pub fn load_shim_raw_tags(fs_root: &str, base_dir: &str, path: &str) -> Result<RawTags, String> {
     let root = format!("{}/{}", fs_root, base_dir);
     let dump = match std::fs::read_to_string(format!("{}/{}.tags.json", root, path)) {

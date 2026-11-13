@@ -41,8 +41,14 @@
 //! Safety rule (`sqlrepo.rs`): identifiers (table/column/order-by names) are
 //! the registered, caller-supplied constants; every value binds to a `?`.
 
+use std::collections::BTreeMap;
+
+use crate::sql_participations::Participants;
 use crate::sql_search::SearchConfig;
 use crate::sql_search::Sql;
+use crate::sql_tags::DbTags;
+use crate::sqlrepo::Value;
+use chrono::{DateTime, Utc};
 
 /// `r.tableName` (`NewMediaFileRepository`, `mediafile_repository.go:80`).
 pub const TABLE: &str = "media_file";
@@ -340,17 +346,25 @@ pub fn get_all_sql(
     max: i64,
     offset: i64,
 ) -> Sql {
-    let (mut sql, mut args) = select_media_file(user_id, library_filter);
+    let (mut sql, args) = select_media_file(user_id, library_filter);
     if !order_by.is_empty() {
         sql.push_str(&format!(" ORDER BY {}", order_by.join(", ")));
     }
     if max > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(crate::sqlrepo::Value::Integer(max));
+        // squirrel renders the bound as a decimal literal and binds nothing
+        // (`select.go:139-147`), so `max` joins neither clause nor args list.
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     if offset > 0 {
-        sql.push_str(" OFFSET ?");
-        args.push(crate::sqlrepo::Value::Integer(offset));
+        // Deviation (deliberate, cited): squirrel emits a bare `OFFSET n`
+        // (`applyOptions` sets the bounds independently,
+        // `sql_base_repository.go:151-156`), which SQLite rejects — a parse
+        // error. SQLite is Navidrome's primary engine, so the port emits
+        // `LIMIT -1` (its unlimited bound) ahead of the offset.
+        if max <= 0 {
+            sql.push_str(" LIMIT -1");
+        }
+        sql.push_str(&format!(" OFFSET {offset}"));
     }
     (sql, args)
 }
@@ -380,8 +394,9 @@ pub fn get_random_rowid_sql(
     }
     sql.push_str(" ORDER BY random()");
     if max > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(crate::sqlrepo::Value::Integer(max));
+        // `.Limit(uint64(opt.Max))` (`mediafile_repository.go:261`) renders as a
+        // decimal literal with no bound arg (`select.go:139-142`).
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     (sql, args)
 }
@@ -461,99 +476,559 @@ pub struct FtsColumns {
 /// (`sql_base_repository.go:618-642`); the participants pair is
 /// `updateParticipants` (`sql_participations.go:93-119`: delete-all then the
 /// json_each INSERT); the tags pair is `updateTags` (`sql_tags.go:57-79`).
-/// `columns`/`values` pair one column per value (the model's row columns the
-/// caller marshalled, including the [`FtsColumns`] three and the JSON pair).
+/// `model.MediaFile`'s persisted row (`model/mediafile.go:27-107`) — the 63
+/// non-id persisted media_file columns (the contract's 64 minus `id`, which
+/// the seam forbids in the map; the id is appended last by [`put_sql`]).
+///
+/// Deliberately absent (entity write contract): `LibraryPath`/`LibraryName`
+/// (`structs:"-"`, join-only), `Genres` (`structs:"-"`),
+/// `Bookmarkable.BookmarkPosition` (`structs:"-"`), `AlbumImage` (no
+/// columns), the `Annotations`/`ItemImage` embeds, and `average_rating"
+/// (annotation-managed, never written by entity Put). The Go
+/// `RgAlbumGain`/`RgAlbumPeak`/`RgTrackGain`/`RgTrackPeak` dbx shims
+/// (`mediafile_repository.go:35-38`) exist only because dbx's default
+/// field-map cannot render `RG*` to `rg_*`; Rust binds the real column
+/// names directly, no shim. `tags`/`participants` hold the *typed* values
+/// the Go shims shadow — PostMapArgs overwrites their column keys with
+/// JSON, which [`mediafile_row`] routes through
+/// [`crate::marshal::mediafile_post_map_args`].
+///
+/// Timestamps are `DateTime<Utc>` bound through `crate::time`.
+/// `created_at`/`updated_at`/`birth_time` are Go non-pointer `time.Time`:
+/// `birth_time` is NOT NULL in the DDL (required here); `created_at` is
+/// nullable (Go zero → NULL): [`put_sql`] stamps it to `now` only when the
+/// record's is `None` (Go `mediafile_repository.go:184-186`) and it is
+/// dropped from UPDATE sets by `selectUpdateColumns`; `updated_at` passes
+/// through the record unchanged (Go `Put` never touches it).
+///
+/// `bit_depth`/`bpm` are Go `*int` (nullable in the DDL) → `Option<i32>`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaFileRecord {
+    /// `album` (Go `Album`).
+    pub album: String,
+    /// `album_artist` (Go `AlbumArtist`).
+    pub album_artist: String,
+    /// `album_artist_id` (Go `AlbumArtistID`, deprecated).
+    pub album_artist_id: String,
+    /// `album_id` (Go `AlbumID`).
+    pub album_id: String,
+    /// `artist` (Go `Artist`).
+    pub artist: String,
+    /// `artist_id` (Go `ArtistID`, deprecated).
+    pub artist_id: String,
+    /// `birth_time` (Go `BirthTime`) — the file's ctime; NOT NULL in the
+    /// DDL, and dropped from UPDATE sets (`selectUpdateColumns` — never
+    /// updated).
+    pub birth_time: DateTime<Utc>,
+    /// `bit_depth` (Go `BitDepth *int`). `None` binds NULL.
+    pub bit_depth: Option<i32>,
+    /// `bit_rate` (Go `BitRate`).
+    pub bit_rate: i32,
+    /// `bpm` (Go `BPM *int`). `None` binds NULL.
+    pub bpm: Option<i32>,
+    /// `catalog_num` (Go `CatalogNum`).
+    pub catalog_num: String,
+    /// `channels` (Go `Channels`).
+    pub channels: i32,
+    /// `codec` (Go `Codec`).
+    pub codec: String,
+    /// `comment` (Go `Comment`).
+    pub comment: String,
+    /// `compilation` (Go `Compilation`).
+    pub compilation: bool,
+    /// `created_at` (Go `CreatedAt`); `None` (Go zero `time.Time`) binds
+    /// NULL. Dropped from UPDATE sets; never re-stamped here.
+    pub created_at: Option<DateTime<Utc>>,
+    /// `date` (Go `Date`).
+    pub date: String,
+    /// `disc_number` (Go `DiscNumber`).
+    pub disc_number: i32,
+    /// `disc_subtitle` (Go `DiscSubtitle`).
+    pub disc_subtitle: String,
+    /// `duration` (Go `Duration`, `float32` at `model/mediafile.go:66`).
+    /// The DDL column is `real`; `f64` matches the column affinity (same
+    /// precedent as `AlbumRecord::duration`).
+    pub duration: f64,
+    /// `explicit_status` (Go `ExplicitStatus`).
+    pub explicit_status: String,
+    /// `folder_id` (Go `FolderID`).
+    pub folder_id: String,
+    /// `genre` (Go `Genre` — the most common genre; a plain column distinct
+    /// from the `Genres` tag set).
+    pub genre: String,
+    /// `has_cover_art` (Go `HasCoverArt`).
+    pub has_cover_art: bool,
+    /// `library_id` (Go `LibraryID`) — FK to `library`.
+    pub library_id: i64,
+    /// `lyrics` (Go `Lyrics`).
+    pub lyrics: String,
+    /// `mbz_recording_id` (Go `MbzRecordingID`).
+    pub mbz_recording_id: String,
+    /// `mbz_release_track_id` (Go `MbzReleaseTrackID`).
+    pub mbz_release_track_id: String,
+    /// `mbz_album_id` (Go `MbzAlbumID`).
+    pub mbz_album_id: String,
+    /// `mbz_release_group_id` (Go `MbzReleaseGroupID`).
+    pub mbz_release_group_id: String,
+    /// `mbz_artist_id` (Go `MbzArtistID`, deprecated).
+    pub mbz_artist_id: String,
+    /// `mbz_album_artist_id` (Go `MbzAlbumArtistID`, deprecated).
+    pub mbz_album_artist_id: String,
+    /// `mbz_album_type` (Go `MbzAlbumType`).
+    pub mbz_album_type: String,
+    /// `mbz_album_comment` (Go `MbzAlbumComment`).
+    pub mbz_album_comment: String,
+    /// `missing` (Go `Missing`).
+    pub missing: bool,
+    /// `order_album_artist_name` (Go `OrderAlbumArtistName`).
+    pub order_album_artist_name: String,
+    /// `order_album_name` (Go `OrderAlbumName`).
+    pub order_album_name: String,
+    /// `order_artist_name` (Go `OrderArtistName`).
+    pub order_artist_name: String,
+    /// `order_title` (Go `OrderTitle`).
+    pub order_title: String,
+    /// `original_date` (Go `OriginalDate`).
+    pub original_date: String,
+    /// `original_year` (Go `OriginalYear`).
+    pub original_year: i32,
+    /// `path` (Go `Path`).
+    pub path: String,
+    /// `pid` (Go `PID`) — the provider id.
+    pub pid: String,
+    /// `probe_data` (Go `ProbeData`).
+    pub probe_data: String,
+    /// `release_date` (Go `ReleaseDate`).
+    pub release_date: String,
+    /// `release_year` (Go `ReleaseYear`).
+    pub release_year: i32,
+    /// `rg_album_gain` (Go `RGAlbumGain *float64`, read through the
+    /// `RgAlbumGain` shim). `None` binds NULL.
+    pub rg_album_gain: Option<f64>,
+    /// `rg_album_peak` (Go `RGAlbumPeak *float64`). `None` binds NULL.
+    pub rg_album_peak: Option<f64>,
+    /// `rg_track_gain` (Go `RGTrackGain *float64`). `None` binds NULL.
+    pub rg_track_gain: Option<f64>,
+    /// `rg_track_peak` (Go `RGTrackPeak *float64`). `None` binds NULL.
+    pub rg_track_peak: Option<f64>,
+    /// `sample_rate` (Go `SampleRate`).
+    pub sample_rate: i32,
+    /// `size` (Go `Size`).
+    pub size: i64,
+    /// `sort_album_artist_name` (Go `SortAlbumArtistName`).
+    pub sort_album_artist_name: String,
+    /// `sort_album_name` (Go `SortAlbumName`).
+    pub sort_album_name: String,
+    /// `sort_artist_name` (Go `SortArtistName`).
+    pub sort_artist_name: String,
+    /// `sort_title` (Go `SortTitle`).
+    pub sort_title: String,
+    /// `suffix` (Go `Suffix`).
+    pub suffix: String,
+    /// `tags` (Go `Tags`) — all imported tags; PostMapArgs marshals them to
+    /// the `tags` JSON column and indexes them into `media_file_tags`.
+    pub tags: DbTags,
+    /// `title` (Go `Title`).
+    pub title: String,
+    /// `track_number` (Go `TrackNumber`).
+    pub track_number: i32,
+    /// `year` (Go `Year`).
+    pub year: i32,
+    /// `participants` (Go `Participants`) — marshalled to the
+    /// `participants` column and the `media_file_artists` junction rows.
+    pub participants: Participants,
+    /// FTS participant-name input (Go `Participants.AllNames()`), carried
+    /// beside the JSON source so the FTS columns are derived from the same
+    /// `model.Participants` the JSON is. S-D3 hydration fills both from one
+    /// read; there is no write path that accepts a free-standing name list.
+    pub participant_names: Vec<crate::album_repo::NamedParticipant>,
+    /// `updated_at` (Go `UpdatedAt`); `None` binds NULL. Passed through
+    /// unchanged by [`put_sql`] (Go `Put` never touches it,
+    /// `mediafile_repository.go:184-190`).
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+/// The subtitle tag name (`model.TagSubtitle`, `model/tag.go:192`).
+const TAG_SUBTITLE: &str = "subtitle";
+
+/// The record's `full_title` (`m.FullTitle()`, `model/mediafile.go:110-115`)
+/// with `append_subtitle` resolved by the caller: Go's
+/// `conf.Server.Subsonic.AppendSubtitle` is config state this SQL layer
+/// must not read, so the seam takes it explicitly — the config wiring
+/// supplies it (default `false` matches the config default).
+#[must_use]
+pub fn full_title(rec: &MediaFileRecord, append_subtitle: bool) -> String {
+    let subtitle = rec
+        .tags
+        .get(TAG_SUBTITLE)
+        .and_then(|s| s.first().cloned())
+        .unwrap_or_default();
+    crate::sql_feeders::full_title(&rec.title, &subtitle, append_subtitle)
+}
+/// `structs.Map(dbMediaFile)` + `dbMediaFile.PostMapArgs`
+/// (`mediafile_repository.go:69-79`) as one sorted
+/// [`crate::marshal::ColumnMap`]: exactly the 63 non-id persisted
+/// media_file columns (`id` is appended last by [`put_sql`]), with the
+/// PostMapArgs overwrites routed through the S-D2a hook so the
+/// transformation lives in one place.
+///
+/// **S-D2b consistency invariant:** the FTS inputs are derived *atomically*
+/// from the record's own `participants`/`tags` (see
+/// [`mediafile_derived`]) — the derived values and the JSON/junction values
+/// share one source, so they can never contradict each other.
+///
+/// `append_subtitle` is the config-resolved `FullTitle()` input (see
+/// [`full_title`]); the config wiring supplies it.
+#[must_use]
+pub fn mediafile_row(m: &MediaFileRecord, append_subtitle: bool) -> crate::marshal::ColumnMap {
+    let mut map = BTreeMap::new();
+    map.insert("album".to_string(), Value::Text(m.album.clone()));
+    map.insert(
+        "album_artist".to_string(),
+        Value::Text(m.album_artist.clone()),
+    );
+    map.insert(
+        "album_artist_id".to_string(),
+        Value::Text(m.album_artist_id.clone()),
+    );
+    map.insert("album_id".to_string(), Value::Text(m.album_id.clone()));
+    map.insert("artist".to_string(), Value::Text(m.artist.clone()));
+    map.insert("artist_id".to_string(), Value::Text(m.artist_id.clone()));
+    map.insert("birth_time".to_string(), crate::time::value(&m.birth_time));
+    map.insert(
+        "bit_depth".to_string(),
+        m.bit_depth
+            .map(|v| Value::Integer(i64::from(v)))
+            .unwrap_or(Value::Null),
+    );
+    map.insert(
+        "bit_rate".to_string(),
+        Value::Integer(i64::from(m.bit_rate)),
+    );
+    map.insert(
+        "bpm".to_string(),
+        m.bpm
+            .map(|v| Value::Integer(i64::from(v)))
+            .unwrap_or(Value::Null),
+    );
+    map.insert(
+        "catalog_num".to_string(),
+        Value::Text(m.catalog_num.clone()),
+    );
+    map.insert(
+        "channels".to_string(),
+        Value::Integer(i64::from(m.channels)),
+    );
+    map.insert("codec".to_string(), Value::Text(m.codec.clone()));
+    map.insert("comment".to_string(), Value::Text(m.comment.clone()));
+    map.insert("compilation".to_string(), Value::Bool(m.compilation));
+    map.insert(
+        "created_at".to_string(),
+        crate::time::optional_value(m.created_at.as_ref()),
+    );
+    map.insert("date".to_string(), Value::Text(m.date.clone()));
+    map.insert(
+        "disc_number".to_string(),
+        Value::Integer(i64::from(m.disc_number)),
+    );
+    map.insert(
+        "disc_subtitle".to_string(),
+        Value::Text(m.disc_subtitle.clone()),
+    );
+    map.insert("duration".to_string(), Value::Real(m.duration));
+    map.insert(
+        "explicit_status".to_string(),
+        Value::Text(m.explicit_status.clone()),
+    );
+    map.insert("folder_id".to_string(), Value::Text(m.folder_id.clone()));
+    map.insert("genre".to_string(), Value::Text(m.genre.clone()));
+    map.insert("has_cover_art".to_string(), Value::Bool(m.has_cover_art));
+    map.insert("library_id".to_string(), Value::Integer(m.library_id));
+    map.insert("lyrics".to_string(), Value::Text(m.lyrics.clone()));
+    map.insert(
+        "mbz_recording_id".to_string(),
+        Value::Text(m.mbz_recording_id.clone()),
+    );
+    map.insert(
+        "mbz_release_track_id".to_string(),
+        Value::Text(m.mbz_release_track_id.clone()),
+    );
+    map.insert(
+        "mbz_album_id".to_string(),
+        Value::Text(m.mbz_album_id.clone()),
+    );
+    map.insert(
+        "mbz_release_group_id".to_string(),
+        Value::Text(m.mbz_release_group_id.clone()),
+    );
+    map.insert(
+        "mbz_artist_id".to_string(),
+        Value::Text(m.mbz_artist_id.clone()),
+    );
+    map.insert(
+        "mbz_album_artist_id".to_string(),
+        Value::Text(m.mbz_album_artist_id.clone()),
+    );
+    map.insert(
+        "mbz_album_type".to_string(),
+        Value::Text(m.mbz_album_type.clone()),
+    );
+    map.insert(
+        "mbz_album_comment".to_string(),
+        Value::Text(m.mbz_album_comment.clone()),
+    );
+    map.insert("missing".to_string(), Value::Bool(m.missing));
+    map.insert(
+        "order_album_artist_name".to_string(),
+        Value::Text(m.order_album_artist_name.clone()),
+    );
+    map.insert(
+        "order_album_name".to_string(),
+        Value::Text(m.order_album_name.clone()),
+    );
+    map.insert(
+        "order_artist_name".to_string(),
+        Value::Text(m.order_artist_name.clone()),
+    );
+    map.insert(
+        "order_title".to_string(),
+        Value::Text(m.order_title.clone()),
+    );
+    map.insert(
+        "original_date".to_string(),
+        Value::Text(m.original_date.clone()),
+    );
+    map.insert(
+        "original_year".to_string(),
+        Value::Integer(i64::from(m.original_year)),
+    );
+    map.insert("path".to_string(), Value::Text(m.path.clone()));
+    map.insert("pid".to_string(), Value::Text(m.pid.clone()));
+    map.insert("probe_data".to_string(), Value::Text(m.probe_data.clone()));
+    map.insert(
+        "release_date".to_string(),
+        Value::Text(m.release_date.clone()),
+    );
+    map.insert(
+        "release_year".to_string(),
+        Value::Integer(i64::from(m.release_year)),
+    );
+    map.insert(
+        "rg_album_gain".to_string(),
+        m.rg_album_gain.map(Value::Real).unwrap_or(Value::Null),
+    );
+    map.insert(
+        "rg_album_peak".to_string(),
+        m.rg_album_peak.map(Value::Real).unwrap_or(Value::Null),
+    );
+    map.insert(
+        "rg_track_gain".to_string(),
+        m.rg_track_gain.map(Value::Real).unwrap_or(Value::Null),
+    );
+    map.insert(
+        "rg_track_peak".to_string(),
+        m.rg_track_peak.map(Value::Real).unwrap_or(Value::Null),
+    );
+    map.insert(
+        "sample_rate".to_string(),
+        Value::Integer(i64::from(m.sample_rate)),
+    );
+    map.insert("size".to_string(), Value::Integer(m.size));
+    map.insert(
+        "sort_album_artist_name".to_string(),
+        Value::Text(m.sort_album_artist_name.clone()),
+    );
+    map.insert(
+        "sort_album_name".to_string(),
+        Value::Text(m.sort_album_name.clone()),
+    );
+    map.insert(
+        "sort_artist_name".to_string(),
+        Value::Text(m.sort_artist_name.clone()),
+    );
+    map.insert("sort_title".to_string(), Value::Text(m.sort_title.clone()));
+    map.insert("suffix".to_string(), Value::Text(m.suffix.clone()));
+    // `tags`/`participants` land as typed values and are overwritten with
+    // their JSON by PostMapArgs below.
+    map.insert("tags".to_string(), Value::Null);
+    map.insert("title".to_string(), Value::Text(m.title.clone()));
+    map.insert(
+        "track_number".to_string(),
+        Value::Integer(i64::from(m.track_number)),
+    );
+    map.insert("year".to_string(), Value::Integer(i64::from(m.year)));
+    map.insert("participants".to_string(), Value::Null);
+    map.insert(
+        "updated_at".to_string(),
+        crate::time::optional_value(m.updated_at.as_ref()),
+    );
+    crate::marshal::mediafile_post_map_args(
+        crate::marshal::ColumnMap::new(map),
+        mediafile_derived(m, append_subtitle),
+    )
+    .0
+}
+
+/// `MediaFileDerived` computed atomically from the record — the S-D2b
+/// consistency invariant made type-level: there is no constructor that takes
+/// a free-standing `participant_names`/`full_title`, so the FTS inputs
+/// cannot diverge from the stored JSON/junction data. `full_title` and the
+/// subtitle both come from the record's own tags/title.
+#[must_use]
+fn mediafile_derived(
+    m: &MediaFileRecord,
+    append_subtitle: bool,
+) -> crate::marshal::MediaFileDerived {
+    crate::marshal::MediaFileDerived {
+        full_title: full_title(m, append_subtitle),
+        album: m.album.clone(),
+        artist: m.artist.clone(),
+        album_artist: m.album_artist.clone(),
+        sort_title: m.sort_title.clone(),
+        sort_album_name: m.sort_album_name.clone(),
+        sort_artist_name: m.sort_artist_name.clone(),
+        sort_album_artist_name: m.sort_album_artist_name.clone(),
+        disc_subtitle: m.disc_subtitle.clone(),
+        participant_names: crate::album_repo::participant_names(&m.participant_names),
+        tags: m.tags.clone(),
+        participants: m.participants.clone(),
+    }
+}
+
+/// `Put` (`mediafile_repository.go:181-189`), record-driven (S-D2b): the
+/// record is the only write input — no caller-supplied column arrays.
+///
+/// **putByMatch semantics** (`putByMatch`,
+/// `sql_base_repository.go:575-590`): when the caller's id is empty, Go
+/// resolves it first via the `Eq{path, library_id}` match probe
+/// ([`put_match_sql`]) and PUTs against the found id. That update-vs-insert
+/// selection is **the caller's responsibility** — this seam renders the id-keyed
+/// `r.put` legs and the maintenance, exactly as Go's `put` does once the id
+/// is known. The caller runs [`put_match_sql`] when the record has no id and
+/// passes the matched id here; the update leg runs when a row exists, the
+/// insert leg when not.
+///
+/// `append_subtitle` is the config-resolved `FullTitle()` switch (see
+/// [`full_title`]); the config wiring supplies it.
+///
+/// `now` stamps the row exactly like Go's `Put`
+/// (`mediafile_repository.go:184-190`): `created_at` to `now` **only when
+/// the record's is `None`** (Go zero `time.Time`); `updated_at` passes
+/// through the record unchanged — Go stamps neither in `Put`.
+/// `created_at`/`birth_time` are still dropped from the UPDATE set by the
+/// seam (INSERT-only).
+///
+/// **Consistency invariant:** the PostMapArgs hook is fed the FTS inputs
+/// derived from the record's own `participants`/`tags` (see
+/// [`mediafile_derived`]) — the same values the JSON columns and the
+/// `media_file_artists`/`media_file_tags` junction maintenance are built from
+/// — so the FTS columns can never contradict the stored JSON.
+///
+/// Both legs render through the shared [`crate::marshal::MarshalledRow`]:
+/// UPDATE = the `selectUpdateColumns`-filtered set (no `created_at` and no
+/// `birth_time`; `id` binds last via `WHERE id = ?`), INSERT = the full sorted
+/// columns with `id` last in both lists
+/// (`sql_base_repository.go:637-641`). Go's `put` runs the UPDATE first and
+/// only INSERTs on a 0-row match; the caller picks the leg.
+///
+/// `cols_to_update`: optional `colsToUpdate`
+/// (`sql_base_repository.go:595-601`); empty applies no restriction. The
+/// entries are `toSnakeCase`-normalized by the seam
+/// ([`crate::marshal::to_snake_case`]). An update set empty after the
+/// `created_at`/`birth_time` drop is
+/// [`crate::marshal::MarshalError::EmptyUpdateSet`].
+///
+/// # Errors
+///
+/// Returns [`crate::marshal::MarshalError`] when the map carries `id"
+/// (impossible from [`mediafile_row`]) or the UPDATE set is empty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PutMediaFileSql {
-    /// The `r.put` update leg (`WHERE id = ?`; set pairs bind first).
+    /// The `r.put` update leg (filtered columns, `id` last in args).
     pub update: Sql,
-    /// The `r.put` insert leg (`id` binds first).
+    /// The `r.put` insert leg (sorted columns, `id` last in both).
     pub insert: Sql,
     /// `Delete(media_file_artists) WHERE media_file_id = ?`.
     pub participants_delete: Sql,
-    /// The `updateParticipants` json_each INSERT: media_file id and the
-    /// flat-participants JSON bind as the two `?`s.
-    pub participants_insert: Sql,
+    /// The `updateParticipants` json_each INSERT
+    /// (`sql_participations.go:102-124`), built by
+    /// [`crate::sql_participations::update_participants_sql`] from the
+    /// record's participants. `None` when the media file has no
+    /// participants (Go returns before building the insert, `:87-89`) — the
+    /// delete still runs, so a put with empty participants clears the table.
+    pub participants_insert: Option<Sql>,
     /// `Delete(media_file_tags) WHERE media_file_id = ?`.
     pub tags_delete: Sql,
-    /// The `updateTags` INSERT, or `None` when no indexed tags survived.
+    /// The `updateTags` scoped INSERT, absent when no indexed tag ids.
     pub tags_insert: Option<Sql>,
 }
 
-/// See [`PutMediaFileSql`]; `columns`/`values` must not include `id` or
-/// `created_at` (the update drops them, `sql_base_repository.go:591-604`);
-/// `indexed_tag_ids` are the marshalled tags'
-/// [`crate::sql_tags::indexed_tag_ids`] products.
-#[must_use]
+/// See [`PutMediaFileSql`].
 pub fn put_sql(
     id: &str,
-    columns: &[String],
-    values: Vec<crate::sqlrepo::Value>,
-    participants_json: &str,
-    indexed_tag_ids: Vec<String>,
-) -> PutMediaFileSql {
-    let (update, insert) = put_legs(id, columns, values);
-    PutMediaFileSql {
-        update,
-        insert,
-        participants_delete: (
-            format!("DELETE FROM {ARTISTS_TABLE} WHERE media_file_id = ?"),
-            vec![crate::sqlrepo::Value::from(id)],
-        ),
-        participants_insert: (
-            format!(
-                "INSERT INTO {ARTISTS_TABLE} (media_file_id, artist_id, role, sub_role)\n\
-                 SELECT ?,\n\
-                 json_extract(value, '$.artist_id') as artist_id,\n\
-                 json_extract(value, '$.role') as role,\n\
-                 COALESCE(json_extract(value, '$.sub_role'), '') as sub_role\n\
-                 FROM json_each(?)\n\
-                 JOIN artist ON artist.id = json_extract(value, '$.artist_id')\n\
-                 ON CONFLICT (artist_id, media_file_id, role, sub_role) DO NOTHING"
-            ),
-            vec![
-                crate::sqlrepo::Value::from(id),
-                crate::sqlrepo::Value::from(participants_json),
-            ],
-        ),
+    m: &MediaFileRecord,
+    now: DateTime<Utc>,
+    append_subtitle: bool,
+    cols_to_update: &[&str],
+) -> Result<PutMediaFileSql, crate::marshal::MarshalError> {
+    // Go's Put (mediafile_repository.go:184-190): CreatedAt is stamped to
+    // now only when zero; UpdatedAt is never touched.
+    let stamped = MediaFileRecord {
+        created_at: Some(m.created_at.unwrap_or(now)),
+        ..m.clone()
+    };
+    let (map, maintenance) = crate::marshal::mediafile_post_map_args(
+        mediafile_row(&stamped, append_subtitle),
+        mediafile_derived(&stamped, append_subtitle),
+    );
+    put_from_map(id, &map, &maintenance, cols_to_update)
+}
+
+/// `put` over a PostMapArgs-applied map plus the maintenance bundle — the
+/// S-D2a base-map adapter. [`put_sql`] delegates here (record → row → map →
+/// this); `tests/runtime_marshal.rs` drives this directly with
+/// caller-supplied base maps, which keeps the S-D2a transformation boundary
+/// exercised.
+pub fn put_from_map(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    maintenance: &crate::marshal::MediaFileMaintenance,
+    cols_to_update: &[&str],
+) -> Result<PutMediaFileSql, crate::marshal::MarshalError> {
+    let row = crate::marshal::MarshalledRow::new(TABLE, id, map, cols_to_update)?;
+    let up = crate::sql_participations::update_participants_sql(
+        TABLE.to_string(),
+        id.to_string(),
+        &maintenance.participants,
+    );
+    Ok(PutMediaFileSql {
+        update: (row.update_sql, row.update_args),
+        insert: (row.insert_sql, row.insert_args),
+        participants_delete: up.delete,
+        participants_insert: up.insert,
         tags_delete: crate::sql_tags::delete_tags_sql(TABLE.to_string(), id.to_string()),
         tags_insert: crate::sql_tags::insert_tags_sql(
             TABLE.to_string(),
             id.to_string(),
-            indexed_tag_ids,
+            maintenance.indexed_tag_ids.clone(),
         ),
-    }
+    })
 }
 
-/// `r.put`'s two legs (`sql_base_repository.go:618-642`): the UPDATE matched
-/// by `id` (set pairs bind before `id`) and the INSERT (`id` binds first).
-fn put_legs(id: &str, columns: &[String], values: Vec<crate::sqlrepo::Value>) -> (Sql, Sql) {
-    let set_pairs = columns
-        .iter()
-        .map(|c| format!("{c} = ?"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut update_args = values.clone();
-    update_args.push(crate::sqlrepo::Value::from(id));
-    let insert_cols = columns
-        .iter()
-        .map(String::as_str)
-        .chain(["id"])
-        .collect::<Vec<_>>()
-        .join(", ");
-    let mut insert_args = vec![crate::sqlrepo::Value::from(id)];
-    insert_args.extend(values);
-    let placeholders = vec!["?"; insert_args.len()].join(", ");
-    (
-        (
-            format!("UPDATE {TABLE} SET {set_pairs} WHERE id = ?"),
-            update_args,
-        ),
-        (
-            format!("INSERT INTO {TABLE} ({insert_cols}) VALUES ({placeholders})"),
-            insert_args,
-        ),
-    )
+/// Thin alias for [`put_from_map`] retained so the S-D2a `put_marshalled_sql`
+/// call sites in `tests/runtime_marshal.rs` keep compiling; there is exactly
+/// one put-result type per repo (no `PutMediaFileMarshalled`).
+///
+/// # Errors
+///
+/// As [`put_from_map`].
+pub fn put_marshalled_sql(
+    id: &str,
+    map: &crate::marshal::ColumnMap,
+    maintenance: &crate::marshal::MediaFileMaintenance,
+    cols_to_update: &[&str],
+) -> Result<PutMediaFileSql, crate::marshal::MarshalError> {
+    put_from_map(id, map, maintenance, cols_to_update)
 }
 
 /// `UpdateProbeData` (`mediafile_repository.go:204-207`).
@@ -1029,8 +1504,10 @@ mod tests {
             )
         );
         let (sql, args) = get_all_sql(None, None, &["title asc"], 10, 20);
-        assert!(sql.ends_with(" ORDER BY title asc LIMIT ? OFFSET ?"));
-        assert_eq!(args, vec![Value::Integer(10), Value::Integer(20)]);
+        // Assert: the bounds render as squirrel literals (`select.go:139-147`),
+        // so the page contributes no args.
+        assert!(sql.ends_with(" ORDER BY title asc LIMIT 10 OFFSET 20"));
+        assert!(args.is_empty());
     }
 
     #[test]
@@ -1052,12 +1529,9 @@ mod tests {
             "SELECT media_file.rowid FROM media_file \
              WHERE title like ? AND media_file.library_id IN \
              (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?) \
-             ORDER BY random() LIMIT ?"
+             ORDER BY random() LIMIT 5"
         );
-        assert_eq!(
-            rowid_args,
-            vec![Value::from("%x%"), Value::from("user1"), Value::Integer(5)]
-        );
+        assert_eq!(rowid_args, vec![Value::from("%x%"), Value::from("user1")]);
         assert!(hydrate_sql.ends_with("WHERE media_file.rowid IN (?, ?, ?) ORDER BY random()"));
         assert_eq!(
             hydrate_args,
@@ -1092,59 +1566,184 @@ mod tests {
         );
     }
 
+    fn test_record() -> MediaFileRecord {
+        let mut participants = Participants::new();
+        participants.insert(
+            crate::sql_participations::Role::from("artist"),
+            vec![crate::sql_participations::Participant {
+                id: "ar-1".to_string(),
+                name: "Song Artist".to_string(),
+                sub_role: String::new(),
+            }],
+        );
+        let mut tags = DbTags::new();
+        tags.insert("genre".to_string(), vec!["Rock".to_string()]);
+        MediaFileRecord {
+            album: "Album".to_string(),
+            album_artist: "AA".to_string(),
+            album_artist_id: String::new(),
+            album_id: "al-1".to_string(),
+            artist: "Song Artist".to_string(),
+            artist_id: String::new(),
+            birth_time: chrono::Utc::now(),
+            bit_depth: None,
+            bit_rate: 0,
+            bpm: None,
+            catalog_num: String::new(),
+            channels: 0,
+            codec: "mp3".to_string(),
+            comment: String::new(),
+            compilation: false,
+            created_at: None,
+            date: String::new(),
+            disc_number: 0,
+            disc_subtitle: String::new(),
+            duration: 0.0,
+            explicit_status: String::new(),
+            folder_id: String::new(),
+            genre: String::new(),
+            has_cover_art: false,
+            library_id: 1,
+            lyrics: String::new(),
+            mbz_recording_id: String::new(),
+            mbz_release_track_id: String::new(),
+            mbz_album_id: String::new(),
+            mbz_release_group_id: String::new(),
+            mbz_artist_id: String::new(),
+            mbz_album_artist_id: String::new(),
+            mbz_album_type: String::new(),
+            mbz_album_comment: String::new(),
+            missing: false,
+            order_album_artist_name: String::new(),
+            order_album_name: String::new(),
+            order_artist_name: String::new(),
+            order_title: String::new(),
+            original_date: String::new(),
+            original_year: 0,
+            path: "/music/a.mp3".to_string(),
+            pid: "pid-1".to_string(),
+            probe_data: "{}".to_string(),
+            release_date: String::new(),
+            release_year: 0,
+            rg_album_gain: None,
+            rg_album_peak: None,
+            rg_track_gain: None,
+            rg_track_peak: None,
+            sample_rate: 0,
+            size: 0,
+            sort_album_artist_name: String::new(),
+            sort_album_name: String::new(),
+            sort_artist_name: String::new(),
+            sort_title: String::new(),
+            suffix: ".mp3".to_string(),
+            tags,
+            title: "Song".to_string(),
+            track_number: 0,
+            year: 0,
+            participants,
+            participant_names: vec![crate::album_repo::NamedParticipant {
+                id: "ar-1".to_string(),
+                name: "Song Artist".to_string(),
+                sort_name: String::new(),
+                sub_role: "Vocals".to_string(),
+            }],
+            updated_at: None,
+        }
+    }
     #[test]
     fn put_renders_update_insert_and_the_maintenance_pairs() {
-        // Arrange: Put (:181-189) — put legs + updateParticipants +
-        // updateTags; the FTS feeder columns ride as ordinary set pairs.
+        // Arrange: Put (:181-189), record-driven — the legs, updateParticipants
+        // (sql_participations.go:93-119), updateTags (sql_tags.go:57-79).
+        let rec = test_record();
+        let now = chrono::Utc::now();
         // Act:
-        let put = put_sql(
-            "mf-1",
-            &[
-                "title".to_string(),
-                "full_text".to_string(),
-                "search_participants".to_string(),
-                "search_normalized".to_string(),
-            ],
-            vec![
-                Value::from("Song"),
-                Value::from(" song"),
-                Value::from("Artist"),
-                Value::from("song artist"),
-            ],
-            "[{\"artist_id\":\"ar-1\",\"role\":\"artist\",\"sub_role\":\"\"}]",
-            vec!["tag-1".to_string()],
-        );
-        // Assert:
-        assert_eq!(
-            put.update.0,
-            "UPDATE media_file SET title = ?, full_text = ?, search_participants = ?, \
-             search_normalized = ? WHERE id = ?"
-        );
-        assert_eq!(put.update.1.len(), 5);
-        assert_eq!(
-            put.insert.0,
-            "INSERT INTO media_file (title, full_text, search_participants, search_normalized, id) \
-             VALUES (?, ?, ?, ?, ?)"
-        );
-        assert_eq!(put.insert.1.first(), Some(&Value::Text("mf-1".to_string())));
+        let put = put_sql("mf-1", &rec, now, false, &[]).expect("put renders");
+        // Assert: 63 non-id columns + 3 FTS from PostMapArgs = 66 map columns;
+        // insert + id = 67 args; update drops created_at and birth_time
+        assert!(put.update.0.starts_with("UPDATE media_file SET "));
+        assert!(put.update.0.ends_with("WHERE id = ?"));
+        assert_eq!(put.update.1.len(), 65);
+        assert_eq!(put.update.1.last(), Some(&Value::Text("mf-1".to_string())));
+        assert!(!put.update.0.contains("created_at"));
+        // birth_time is INSERT-only: present in the INSERT column list, never
+        // in the UPDATE SET.
+        assert!(put.insert.0.contains("birth_time"));
+        assert!(!put.update.0.contains("birth_time"));
+        assert!(put.insert.0.starts_with("INSERT INTO media_file ("));
+        let tuple = put
+            .insert
+            .0
+            .rsplit("VALUES (")
+            .next()
+            .unwrap()
+            .strip_suffix(")")
+            .unwrap();
+        assert_eq!(tuple.matches('?').count(), 67);
+        assert_eq!(put.insert.1.len(), 67);
+        assert_eq!(put.insert.1.last(), Some(&Value::Text("mf-1".to_string())));
+        // PostMapArgs FTS columns ride the write set.
+        assert!(put.insert.0.contains("full_text"));
+        assert!(put.insert.0.contains("search_participants"));
+        assert!(put.insert.0.contains("search_normalized"));
+        // updateParticipants: delete-all then the json_each INSERT.
         assert_eq!(
             put.participants_delete.0,
             "DELETE FROM media_file_artists WHERE media_file_id = ?"
         );
+        let p_ins = put
+            .participants_insert
+            .as_ref()
+            .expect("participants insert");
+        assert!(p_ins.0.contains("INSERT INTO media_file_artists"));
         assert_eq!(
-            put.participants_insert.1,
-            vec![
-                Value::Text("mf-1".to_string()),
-                Value::Text(
-                    "[{\"artist_id\":\"ar-1\",\"role\":\"artist\",\"sub_role\":\"\"}]".to_string()
-                ),
-            ]
+            put.participants_delete.1,
+            vec![Value::Text("mf-1".to_string())]
         );
+        // updateTags: delete-then-insert; the record's genre tag is indexed,
+        // so the insert is present.
         assert_eq!(
             put.tags_delete.0,
             "DELETE FROM media_file_tags WHERE media_file_id = ?"
         );
         assert!(put.tags_insert.is_some());
+    }
+
+    #[test]
+    fn put_empty_participants_delete_without_insert() {
+        // Arrange: a put with no participants — the delete still renders,
+        // the insert does not (Go returns before building it).
+        let mut rec = test_record();
+        rec.participants.clear();
+        // Act:
+        let put = put_sql("mf-1", &rec, chrono::Utc::now(), false, &[]).expect("put");
+        // Assert:
+        assert!(put.participants_insert.is_none());
+        assert!(put
+            .participants_delete
+            .0
+            .contains("DELETE FROM media_file_artists"));
+    }
+
+    #[test]
+    fn put_restricted_camelcase_touches_only_probe_data() {
+        // Arrange: a restricted update naming a camelCase column — the seam
+        // toSnakeCase-normalizes it (helpers.go:48-52).
+        let rec = test_record();
+        // Act:
+        let put =
+            put_sql("mf-1", &rec, chrono::Utc::now(), false, &["ProbeData"]).expect("restricted");
+        // Assert: the UPDATE SET is exactly probe_data (created_at/birth_time
+        // never appear; nothing else is touched).
+        let set = put
+            .update
+            .0
+            .strip_prefix("UPDATE media_file SET ")
+            .and_then(|s| s.strip_suffix(" WHERE id = ?"))
+            .expect("set clause");
+        assert_eq!(set, "probe_data = ?");
+        assert_eq!(put.update.1.len(), 2); // probe_data + the WHERE id
+                                           // The INSERT leg stays full-column.
+        assert_eq!(put.insert.1.len(), 67);
     }
 
     #[test]

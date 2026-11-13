@@ -1,0 +1,339 @@
+[
+  {
+    "name": "empty_participants",
+    "note": "Go's `json.Marshal(model.Participants{})` — non-nil empty map — yields `{}`",
+    "raw": {},
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "roundtrip": {},
+    "flat": []
+  },
+  {
+    "name": "single_role",
+    "note": "one role, one entry, no subRole",
+    "raw": {
+      "artist": [
+        {
+          "id": "a-1",
+          "name": "Solo Artist"
+        }
+      ]
+    },
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "roundtrip": {
+      "artist": [
+        {
+          "id": "a-1",
+          "name": "Solo Artist"
+        }
+      ]
+    },
+    "flat": [
+      {
+        "artist_id": "a-1",
+        "role": "artist"
+      }
+    ]
+  },
+  {
+    "name": "multi_role",
+    "note": "four roles inserted out of string order; role keys must sort as strings",
+    "raw": {
+      "albumartist": [
+        {
+          "id": "aa-1",
+          "name": "The Band"
+        }
+      ],
+      "artist": [
+        {
+          "id": "a-1",
+          "name": "Lead"
+        }
+      ],
+      "conductor": [
+        {
+          "id": "c-1",
+          "name": "Conductor"
+        },
+        {
+          "id": "c-2",
+          "name": "Second Conductor",
+          "subRole": "assisting"
+        }
+      ],
+      "performer": [
+        {
+          "id": "p-1",
+          "name": "The Performer",
+          "subRole": "vocals"
+        }
+      ]
+    },
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "roundtrip": {
+      "albumartist": [
+        {
+          "id": "aa-1",
+          "name": "The Band"
+        }
+      ],
+      "artist": [
+        {
+          "id": "a-1",
+          "name": "Lead"
+        }
+      ],
+      "conductor": [
+        {
+          "id": "c-1",
+          "name": "Conductor"
+        },
+        {
+          "id": "c-2",
+          "name": "Second Conductor",
+          "subRole": "assisting"
+        }
+      ],
+      "performer": [
+        {
+          "id": "p-1",
+          "name": "The Performer",
+          "subRole": "vocals"
+        }
+      ]
+    },
+    "flat": [
+      {
+        "artist_id": "c-1",
+        "role": "conductor"
+      },
+      {
+        "artist_id": "c-2",
+        "role": "conductor",
+        "sub_role": "assisting"
+      },
+      {
+        "artist_id": "aa-1",
+        "role": "albumartist"
+      },
+      {
+        "artist_id": "p-1",
+        "role": "performer",
+        "sub_role": "vocals"
+      },
+      {
+        "artist_id": "a-1",
+        "role": "artist"
+      }
+    ]
+  },
+  {
+    "name": "sub_role_present_and_absent",
+    "note": "subRole omitted when empty, present when set — `omitempty`",
+    "raw": {
+      "composer": [
+        {
+          "id": "c-1",
+          "name": "With Sub",
+          "subRole": "melody"
+        },
+        {
+          "id": "c-2",
+          "name": "Without Sub"
+        },
+        {
+          "id": "c-3",
+          "name": "Empty Sub"
+        }
+      ]
+    },
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "roundtrip": {
+      "composer": [
+        {
+          "id": "c-1",
+          "name": "With Sub",
+          "subRole": "melody"
+        },
+        {
+          "id": "c-2",
+          "name": "Without Sub"
+        },
+        {
+          "id": "c-3",
+          "name": "Empty Sub"
+        }
+      ]
+    },
+    "flat": [
+      {
+        "artist_id": "c-1",
+        "role": "composer",
+        "sub_role": "melody"
+      },
+      {
+        "artist_id": "c-2",
+        "role": "composer"
+      },
+      {
+        "artist_id": "c-3",
+        "role": "composer"
+      }
+    ]
+  },
+  {
+    "name": "escaping_and_unicode",
+    "note": "names with \u003c \u003e \u0026 and U+2028/U+2029 — Go escapes, serde_json does not (settled divergence: shape and round-trip fidelity, not bytes)",
+    "raw": {
+      "composer": [
+        {
+          "id": "c-1",
+          "name": "Line1\u2028Line2\u2029End",
+          "subRole": "\u2028only"
+        }
+      ],
+      "lyricist": [
+        {
+          "id": "l-1",
+          "name": "a\u003cb\u003ec\u0026d",
+          "subRole": "verse 1"
+        }
+      ],
+      "producer": [
+        {
+          "id": "pr-1",
+          "name": "Zoë über époque 中文"
+        }
+      ]
+    },
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "roundtrip": {
+      "composer": [
+        {
+          "id": "c-1",
+          "name": "Line1\u2028Line2\u2029End",
+          "subRole": "\u2028only"
+        }
+      ],
+      "lyricist": [
+        {
+          "id": "l-1",
+          "name": "a\u003cb\u003ec\u0026d",
+          "subRole": "verse 1"
+        }
+      ],
+      "producer": [
+        {
+          "id": "pr-1",
+          "name": "Zoë über époque 中文"
+        }
+      ]
+    },
+    "flat": [
+      {
+        "artist_id": "l-1",
+        "role": "lyricist",
+        "sub_role": "verse 1"
+      },
+      {
+        "artist_id": "c-1",
+        "role": "composer",
+        "sub_role": "\u2028only"
+      },
+      {
+        "artist_id": "pr-1",
+        "role": "producer"
+      }
+    ]
+  },
+  {
+    "name": "repeated_artists_in_role",
+    "note": "the same artist twice in one role: the column stores both entries (duplicates live in the join table, ON CONFLICT dedupes there)",
+    "raw": {
+      "artist": [
+        {
+          "id": "a-1",
+          "name": "First",
+          "subRole": "part 1"
+        },
+        {
+          "id": "a-1",
+          "name": "First",
+          "subRole": "part 2"
+        },
+        {
+          "id": "a-1",
+          "name": "First"
+        }
+      ],
+      "performer": [
+        {
+          "id": "a-1",
+          "name": "First"
+        }
+      ]
+    },
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "roundtrip": {
+      "artist": [
+        {
+          "id": "a-1",
+          "name": "First",
+          "subRole": "part 1"
+        },
+        {
+          "id": "a-1",
+          "name": "First",
+          "subRole": "part 2"
+        },
+        {
+          "id": "a-1",
+          "name": "First"
+        }
+      ],
+      "performer": [
+        {
+          "id": "a-1",
+          "name": "First"
+        }
+      ]
+    },
+    "flat": [
+      {
+        "artist_id": "a-1",
+        "role": "artist",
+        "sub_role": "part 1"
+      },
+      {
+        "artist_id": "a-1",
+        "role": "artist",
+        "sub_role": "part 2"
+      },
+      {
+        "artist_id": "a-1",
+        "role": "artist"
+      },
+      {
+        "artist_id": "a-1",
+        "role": "performer"
+      }
+    ]
+  },
+  {
+    "name": "nil_participants",
+    "note": "The production marshalParticipants shape starts with make(map[Role]...), so a nil model input stores `{}`; raw_direct separately records json.Marshal((model.Participants)(nil)) as `null`. Both unmarshal to an empty, non-nil map, so nil-vs-empty collapses through the column.",
+    "raw": {},
+    "raw_direct": null,
+    "unmarshal_ok": true,
+    "unmarshal_error": "",
+    "direct_ok": true,
+    "roundtrip": {},
+    "flat": []
+  }
+]

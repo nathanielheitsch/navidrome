@@ -26,10 +26,13 @@
 //! lanes; the REST shims `Count`/`Read`/`ReadAll` (`:210-224`) are
 //! `sql_restful.rs`'s options parsing.
 //!
-//! Timestamps: Go binds `time.Time` (go-sqlite3 writes datetime text); the
-//! port binds epoch-second integers per the crate convention pinned in
-//! `share_repo.rs` (module header), with `ZERO_TIME` as the zero `time.Time`
-//! constant `ScanEnd`/`ScanInProgress` bind (`:164-170`, `:177-179`).
+//! Timestamps: Go binds `time.Time` (go-sqlite3 writes datetime text). This
+//! repository still binds epoch-second integers — a documented divergence from
+//! [`crate::time`]'s TEXT convention, listed as remaining work there — with
+//! `ZERO_TIME` as the zero `time.Time` constant `ScanEnd`/`ScanInProgress`
+//! bind (`:164-170`, `:177-179`). Converting it is a separate lane: `library`
+//! timestamps feed `artist`'s `RefreshStats` comparison
+//! (`artist_repository.go:479`), so both sides must move together.
 //!
 //! Safety rule (`sqlrepo.rs`): identifiers (table/column names) are this
 //! repository's registered constants; every value binds to a `?`.
@@ -72,17 +75,27 @@ pub fn get_sql(id: i64) -> Sql {
 #[must_use]
 pub fn get_all_sql(order_by: &[&str], max: i64, offset: i64) -> Sql {
     let mut sql = format!("SELECT * FROM {TABLE}");
-    let mut args = Vec::new();
+    // squirrel binds nothing for LIMIT/OFFSET (`select.go:139-147`), and this
+    // select has no other clauses, so the arg list stays empty.
+    let args: Vec<Value> = Vec::new();
     if !order_by.is_empty() {
         sql.push_str(&format!(" ORDER BY {}", order_by.join(", ")));
     }
     if max > 0 {
-        sql.push_str(" LIMIT ?");
-        args.push(Value::Integer(max));
+        // squirrel renders the bound as a decimal literal and binds nothing
+        // (`select.go:139-147`), so `max` joins neither clause nor args list.
+        sql.push_str(&format!(" LIMIT {max}"));
     }
     if offset > 0 {
-        sql.push_str(" OFFSET ?");
-        args.push(Value::Integer(offset));
+        // Deviation (deliberate, cited): squirrel emits a bare `OFFSET n`
+        // (`applyOptions` sets the bounds independently,
+        // `sql_base_repository.go:151-156`), which SQLite rejects — a parse
+        // error. SQLite is Navidrome's primary engine, so the port emits
+        // `LIMIT -1` (its unlimited bound) ahead of the offset.
+        if max <= 0 {
+            sql.push_str(" LIMIT -1");
+        }
+        sql.push_str(&format!(" OFFSET {offset}"));
     }
     (sql, args)
 }
@@ -473,12 +486,13 @@ mod tests {
         // Arrange: GetAll (:186-191) under parsed options.
         // Act:
         let (sql, args) = get_all_sql(&["name asc"], 10, 20);
-        // Assert:
+        // Assert: the bounds render as squirrel literals (`select.go:139-147`),
+        // so this select binds nothing at all.
         assert_eq!(
             sql,
-            "SELECT * FROM library ORDER BY name asc LIMIT ? OFFSET ?"
+            "SELECT * FROM library ORDER BY name asc LIMIT 10 OFFSET 20"
         );
-        assert_eq!(args, vec![Value::Integer(10), Value::Integer(20)]);
+        assert!(args.is_empty());
         assert_eq!(
             get_all_sql(&[], 0, 0).0,
             "SELECT * FROM library",

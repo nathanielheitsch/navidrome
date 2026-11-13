@@ -15,10 +15,11 @@
 //!
 //! // shortcut: killpg — `process_group(0)` gives the child a *fresh* group
 //! // keyed to its own pid (same tokio rule [`crate::ffcmd`] cites at
-//! // process/mod.rs:772-773) and `kill_on_drop(true)` SIGKILLs that group
-//! // root when the timed-out await's future — and with it the owned `Child`
-//! // — is discarded; neither std nor tokio exposes `killpg`, and Go's
-//! // `exec.CommandContext` signals only the direct child.
+//! // process/mod.rs:772-773). `kill_on_drop(true)` SIGKILLs the direct child
+//! // when the timed-out await's future — and with it the owned `Child` — is
+//! // discarded; the probe's descendants are cleared by the explicit
+//! // `rustix::process::kill_process_group` in [`run_probe`]'s timeout arm, so
+//! // the whole group dies rather than only the direct child Go signals.
 //! // shortcut: deadline — Go's probe has none; the port bounds the await at
 //! // [`PROBE_TIMEOUT_MS`] so a hung ffprobe cannot pin the request.
 //! // shortcut: `ProbeError.err` (Go's wrapped cause, read by
@@ -118,6 +119,12 @@ pub fn stat_token(path: String) -> String {
 /// A timeout or a spawn failure (Go's `exec` ENOEXEC path, whose `ProbeError`
 /// at `ffmpeg.go:163` renders the generic reason) yields empty captures, so
 /// [`crate::probe.probe_client_reason`] answers "could not read file".
+///
+/// The timeout path reaps the ffprobe **process group**, not just the direct
+/// child: `kill_on_drop` SIGKILLs only the child when the timed-out future is
+/// discarded, so a wrapper's descendants would survive. The group id is captured
+/// before the await (the child is consumed by `wait_with_output`) and signalled
+/// after the drop.
 pub async fn run_probe(binary: String, args: Vec<String>) -> (bool, Vec<u8>, Vec<u8>) {
     let mut cmd = Command::new(&binary);
     cmd.args(&args);
@@ -127,18 +134,38 @@ pub async fn run_probe(binary: String, args: Vec<String>) -> (bool, Vec<u8>, Vec
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
 
-    let bounded = timeout(Duration::from_millis(PROBE_TIMEOUT_MS), cmd.output()).await;
-    if bounded.is_err() {
-        return (false, Vec::new(), Vec::new());
-    }
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(_) => return (false, Vec::new(), Vec::new()),
+    };
+    let pgid = child.id().map(|id| id as i32);
 
-    let launched = bounded.unwrap();
-    if launched.is_err() {
-        return (false, Vec::new(), Vec::new());
-    }
-
-    let done = launched.unwrap();
+    let bounded = timeout(
+        Duration::from_millis(PROBE_TIMEOUT_MS),
+        child.wait_with_output(),
+    )
+    .await;
+    let done = match bounded {
+        Err(_) => {
+            // Direct child already killed by kill_on_drop; clear out the rest.
+            signal_group_gone(pgid);
+            return (false, Vec::new(), Vec::new());
+        }
+        Ok(launched) if launched.is_err() => return (false, Vec::new(), Vec::new()),
+        Ok(launched) => launched.unwrap(),
+    };
     (done.status.success(), done.stdout, done.stderr)
+}
+
+/// Best-effort group SIGKILL on a teardown path where the child handle is gone.
+/// Errors are ignored: the group may already be dead, and nothing downstream
+/// depends on the signal's success.
+fn signal_group_gone(pgid: Option<i32>) {
+    if let Some(raw) = pgid {
+        if let Some(pid) = rustix::process::Pid::from_raw(raw) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
 }
 
 /// `ProbeAudioStream` (`ffmpeg.go:150-168`) for an explicitly-supplied ffprobe
@@ -209,6 +236,7 @@ mod tests {
     use crate::ffmpeg_cmd::is_probe_available;
     use crate::probe_exec::probe_audio_stream;
     use crate::probe_exec::probe_audio_stream_with;
+    use crate::test_fixtures::fixture;
 
     #[tokio::test]
     async fn probe_missing_file_is_not_found() {
@@ -230,9 +258,7 @@ mod tests {
     async fn probe_mock_binary_launch_failure() {
         // Arrange: /bin/sh as the ffprobe stand-in exits 127 with its own
         // usage stderr (direct exec, not `bash -c`).
-        let res = probe_audio_stream_with(
-            "/bin/sh".to_string(), "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.flac".to_string()
-        ).await;
+        let res = probe_audio_stream_with("/bin/sh".to_string(), fixture("test.flac")).await;
         let err = res.unwrap_err();
         // Assert: launch failure maps through probe_client_reason, and the
         // media file exists so NotFound stays false (Go: SafeReason is the
@@ -244,9 +270,7 @@ mod tests {
     #[tokio::test]
     async fn probe_garbage_stdout_is_parse_error() {
         // Arrange: /bin/echo prints its argv — never valid ffprobe JSON.
-        let res = probe_audio_stream_with(
-            "/bin/echo".to_string(), "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.flac".to_string()
-        ).await;
+        let res = probe_audio_stream_with("/bin/echo".to_string(), fixture("test.flac")).await;
         let err = res.unwrap_err();
         // Assert: parse failure reason carries Go's "parsing ffprobe output:"
         assert!(err.reason.contains("parsing ffprobe output"));
@@ -258,12 +282,11 @@ mod tests {
     /// 249 kbps from the format-level 249168.
     #[tokio::test]
     async fn probe_live_flac_matches_pins() {
+        let media = fixture("test.flac");
         if !is_probe_available() {
-            return; // skip-if-missing: no ffprobe resolved
+            return; // optional external tool, never optional fixtures
         }
-
-        let media = "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn/tests/fixtures/test.flac";
-        let res = probe_audio_stream(media.to_string()).await;
+        let res = probe_audio_stream(media).await;
         let r = res.unwrap();
         assert_eq!(r.codec, "flac".to_string());
         assert_eq!(r.sample_rate, 44100);
@@ -272,29 +295,26 @@ mod tests {
         assert_eq!(r.bit_rate, 249);
     }
 
-    /// Live pins for every repo container fixture: probe must parse, codec
-    /// non-empty, bit_rate positive. Skipped when ffprobe is unresolved
-    /// (house skip-if-missing). Unparsable containers must fail as launch
-    /// errors, never parse errors (Go scanner logs and skips).
+    /// All seven valid container fixtures must exist and successfully probe.
     #[tokio::test]
     async fn probe_live_container_fixtures() {
+        let media: Vec<_> = ["mp3", "ogg", "opus", "wav", "m4a", "wma", "aiff"]
+            .iter()
+            .map(|ext| fixture(&format!("test.{ext}")))
+            .collect();
+        assert_eq!(media.len(), 7);
         if !is_probe_available() {
-            return;
+            return; // optional external tool, never optional fixtures
         }
-
-        let root =
-            "/Users/nathanielheitsch/emdash/worktrees/navidrome-ea7ae954/issue-planning-rust-sdhnn";
-        for ext in ["mp3", "ogg", "opus", "wav", "m4a", "wma", "aiff"] {
-            let media = format!("{}/tests/fixtures/test.{}", root, ext);
-            let res = probe_audio_stream(media.to_string()).await;
-            if res.is_err() {
-                let err = res.unwrap_err();
-                assert!(!err.reason.contains("parsing ffprobe output"));
-                continue;
-            }
-            let r = res.unwrap();
+        let mut checked = 0;
+        for path in media {
+            let r = probe_audio_stream(path.clone())
+                .await
+                .unwrap_or_else(|err| panic!("{path}: {err:?}"));
             assert!(!r.codec.is_empty());
             assert!(r.bit_rate > 0);
+            checked += 1;
         }
+        assert_eq!(checked, 7);
     }
 }

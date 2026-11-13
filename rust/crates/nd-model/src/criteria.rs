@@ -318,40 +318,93 @@ fn json_quote(s: &str) -> String {
     out
 }
 
-/// Parse one top-level slot through [`crate::json::unmarshal_optional_conjunction`].
-fn parse_slot(map: &FieldMap, object: &Value, key: String) -> crate::json::OptionalConjunction {
-    // A malformed slot value surfaces through the all/any conflict check below
-    // (criteria.go:129-133), so the default here matches the call-site Go reaches.
-    unmarshal_optional_conjunction(map, object, key).unwrap_or_default()
+/// Read one top-level `all`/`any` slot through
+/// [`crate::json::unmarshal_optional_conjunction`], PROPAGATING a malformed slot
+/// value the way Go does.
+///
+/// Go decodes the aux struct with a single `json.Unmarshal(data, &aux)`
+/// (`criteria.go:126-128`): the `All`/`Any` fields are typed `optionalConjunction`
+/// (`criteria.go:116-117`), whose decoder unmarshals a
+/// `[]map[string]json.RawMessage` (`json.go:13`) and whose nested-conjunction arm
+/// surfaces `invalid expression key '%s'` (`json.go:26-28`). Both failures abort
+/// `UnmarshalJSON`. Defaulting a bad slot instead would silently accept
+/// `{"all":[…],"any":42}` — and a bad key nested one level down — and return the
+/// OTHER slot's rules, which Go never does.
+///
+/// # Errors
+/// [`CriteriaError::Slot`] carrying Go's decode message when the key is present
+/// but its value is not a list of expressions, or a nested key is unknown.
+fn parse_slot(
+    map: &FieldMap,
+    object: &Value,
+    key: String,
+) -> Result<crate::json::OptionalConjunction, CriteriaError> {
+    unmarshal_optional_conjunction(map, object, key).map_err(CriteriaError::Slot)
 }
 
-/// Read a scalar field off a parsed JSON object, defaulting when absent or of
-/// the wrong type — Go's `json.Unmarshal` into the aux struct
-/// (`criteria.go:126-128`).
-fn scalar(object: &Value, key: &str, default: i32) -> i32 {
+/// Read an `int` aux field — Go's aux fields typed `int` (`criteria.go:122-123`,
+/// `:121`). A JSON `null` is Go's "leave the zero value" case (`json.Unmarshal`
+/// of null into an int is a no-op) and an absent key is the same; any OTHER JSON
+/// type is the `json.UnmarshalTypeError` Go returns as-is out of
+/// `criteria.go:126-128`.
+///
+/// # Errors
+/// [`CriteriaError::Type`] carrying Go's `json: cannot unmarshal … into Go
+/// struct field .<key> of type int`.
+fn int_field(object: &Value, key: &str) -> Result<i64, CriteriaError> {
     match object.get(key) {
+        None => Ok(0),
+        // Go: null into an int field leaves it at its zero value, no error.
+        Some(Value::Null) => Ok(0),
         Some(value) => match value.as_i64() {
-            Some(number) => number as i32,
-            None => default,
+            Some(number) => Ok(number),
+            // Go distinguishes the two int-mismatch wordings: a number that is
+            // not an integer prints its own value (`cannot unmarshal number 3.5
+            // into …`); any other JSON kind prints the kind
+            // (`cannot unmarshal string into …`).
+            None => {
+                // Go's two int-mismatch wordings: a non-integer number prints
+                // `number <value>`; any other JSON kind prints just the kind.
+                let got = if value.is_number() {
+                    format!("number {}", crate::json::value_json(value.clone()))
+                } else {
+                    crate::json::json_kind(value).to_string()
+                };
+                Err(CriteriaError::Type(format!(
+                    "json: cannot unmarshal {got} into Go struct field .{key} of type int"
+                )))
+            }
         },
-        None => default,
     }
 }
 
-/// Read a string field off a parsed JSON object, defaulting when absent or of
-/// the wrong type (`criteria.go:119-120`).
-fn string_field(object: &Value, key: &str) -> String {
+/// Read a `string` aux field — Go's aux fields typed `string`
+/// (`criteria.go:119-120`, `:124`). Same rule as [`int_field`]: absent or `null`
+/// is the zero value, any other JSON type is Go's type error.
+///
+/// # Errors
+/// [`CriteriaError::Type`] carrying Go's
+/// `json: cannot unmarshal … into Go struct field .<key> of type string`.
+fn string_field(object: &Value, key: &str) -> Result<String, CriteriaError> {
     match object.get(key) {
+        None => Ok(String::new()),
+        Some(Value::Null) => Ok(String::new()),
         Some(value) => match value.as_str() {
-            Some(text) => text.to_string(),
-            None => String::new(),
+            Some(text) => Ok(text.to_string()),
+            None => Err(CriteriaError::Type(format!(
+                "json: cannot unmarshal {} into Go struct field .{key} of type string",
+                crate::json::json_kind(value),
+            ))),
         },
-        None => String::new(),
     }
 }
 
 /// Read the `refreshDelay` string field (`criteria.go:124`).
-fn delay_field(object: &Value) -> String {
+///
+/// # Errors
+/// [`CriteriaError::Type`] — a non-string `refreshDelay` fails Go's
+/// `json.Unmarshal` (`criteria.go:126-128`) before the duration parse (`:146`).
+fn delay_field(object: &Value) -> Result<String, CriteriaError> {
     string_field(object, "refreshDelay")
 }
 
@@ -378,8 +431,14 @@ pub enum CriteriaError {
     /// No rules at all (`criteria.go:139`).
     MissingRules,
     /// A malformed slot value (`criteria.go:126-128` via
-    /// [`crate::json::unmarshal_optional_conjunction`]).
+    /// [`crate::json::unmarshal_optional_conjunction`]): a non-list `all`/`any`
+    /// value, or an unknown key inside a nested conjunction. Go propagates it out
+    /// of the single `json.Unmarshal(data, &aux)` call, so the whole parse fails.
     Slot(String),
+    /// A wrong JSON type for a scalar aux field (`criteria.go:126-128`): Go's
+    /// `json.UnmarshalTypeError` for `sort`/`order`/`limit`/`limitPercent`/
+    /// `offset`/`refreshDelay`, which aborts the parse instead of defaulting.
+    Type(String),
     /// A malformed `refreshDelay` (`criteria.go:148-151`).
     RefreshDelay(String),
 }
@@ -398,6 +457,9 @@ impl std::fmt::Display for CriteriaError {
                 "invalid criteria json. missing rules (key 'all' or 'any')",
             ),
             Self::Slot(source) => write!(f, "{source}"),
+            // Go returns the `json.UnmarshalTypeError` itself, un-wrapped.
+            Self::Type(source) => write!(f, "{source}"),
+            // Go `criteria.go:150` — `fmt.Errorf("invalid refreshDelay: %w", err)`.
             Self::RefreshDelay(source) => write!(f, "invalid refreshDelay: {source}"),
         }
     }
@@ -408,10 +470,24 @@ impl std::error::Error for CriteriaError {}
 /// Parse a criteria from an already-parsed JSON value — Go's
 /// `Criteria.UnmarshalJSON` (`criteria.go:115-164`).
 ///
+/// Every aux field is decoded with Go's JSON type: the `all`/`any` slots as
+/// [`crate::json::OptionalConjunction`], `sort`/`order`/`refreshDelay` as
+/// `string`, `limit`/`limitPercent`/`offset` as `int`. A slot value or scalar of
+/// the wrong JSON shape is therefore a DECODE failure that aborts the parse
+/// (`criteria.go:126-128`) — never a silent default — and the failure propagates
+/// out of nested conjunction decoding as well (`json.go:26-28`, reached through
+/// `unmarshalConjunction`, `json.go:144-147`).
+///
 /// # Errors
-/// [`CriteriaError`], in Go's order: a malformed slot (`criteria.go:126-128`),
-/// the `all`/`any` conflict (`criteria.go:129-133`), missing rules
-/// (`criteria.go:139`), and a malformed `refreshDelay` (`criteria.go:146-152`).
+/// [`CriteriaError`]: a malformed slot (`criteria.go:126-128`), a scalar of the
+/// wrong JSON type (`:126-128`), the `all`/`any` conflict (`criteria.go:129-133`),
+/// missing rules (`criteria.go:139`), or a malformed `refreshDelay`
+/// (`criteria.go:146-152`). Go reports whichever aux field `json.Unmarshal`
+/// reaches first in the INPUT, so a payload with several bad fields can name any
+/// one of them; what is pinned is that it aborts rather than accepting one.
+///
+/// Integer fields saturate at the port's `i32` width, where Go's `int` is wider
+/// (`criteria.go:121-123`).
 pub fn unmarshal_criteria(map: &FieldMap, data: Value) -> Result<Criteria, CriteriaError> {
     let object: serde_json::Map<String, Value> = match data.as_object() {
         Some(object) => object.clone(),
@@ -421,10 +497,22 @@ pub fn unmarshal_criteria(map: &FieldMap, data: Value) -> Result<Criteria, Crite
             ));
         }
     };
-    let all_slot: crate::json::OptionalConjunction =
-        parse_slot(map, &Value::Object(object.clone()), "all".to_string());
-    let any_slot: crate::json::OptionalConjunction =
-        parse_slot(map, &Value::Object(object.clone()), "any".to_string());
+    let object = Value::Object(object);
+
+    // Go `criteria.go:126-128`: the slots are decoded by the same
+    // `json.Unmarshal(data, &aux)` call, so a bad slot value aborts before the
+    // conflict/rules checks below can run.
+    let all_slot: crate::json::OptionalConjunction = parse_slot(map, &object, "all".to_string())?;
+    let any_slot: crate::json::OptionalConjunction = parse_slot(map, &object, "any".to_string())?;
+
+    // Go `criteria.go:119-124`: the scalars come out of the same call, typed.
+    // `limit: "oops"` is Go's type error, never a silently-defaulted 0.
+    let sort: String = string_field(&object, "sort")?;
+    let order: String = string_field(&object, "order")?;
+    let limit: i64 = int_field(&object, "limit")?;
+    let limit_percent: i64 = int_field(&object, "limitPercent")?;
+    let offset: i64 = int_field(&object, "offset")?;
+    let delay_text: String = delay_field(&object)?;
 
     // Go `criteria.go:129-133`: a Criteria has a single top-level group. Reject
     // payloads that provide both keys (even when one is [] or null) rather than
@@ -441,32 +529,41 @@ pub fn unmarshal_criteria(map: &FieldMap, data: Value) -> Result<Criteria, Crite
         return Err(CriteriaError::MissingRules);
     };
 
-    let delay_text: String = delay_field(&Value::Object(object.clone()));
-    let refresh_delay: i64 = if !delay_text.is_empty() {
-        // Go `criteria.go:146-152`: `utils.ParseDuration`, wrapped as
-        // `invalid refreshDelay: %w`.
+    // Go `criteria.go:146-152`: `utils.ParseDuration`, wrapped as
+    // `invalid refreshDelay: %w`.
+    let refresh_delay: i64 = if delay_text.is_empty() {
+        0
+    } else {
         match parse_duration(&delay_text) {
             Ok(d) => d.as_nanos() as i64,
             Err(source) => return Err(CriteriaError::RefreshDelay(source)),
         }
-    } else {
-        0
     };
 
     Ok(Criteria {
         expression,
-        sort: string_field(&Value::Object(object.clone()), "sort"),
-        order: string_field(&Value::Object(object.clone()), "order"),
-        limit: scalar(&Value::Object(object.clone()), "limit", 0),
-        offset: scalar(&Value::Object(object.clone()), "offset", 0),
+        sort,
+        order,
+        limit: clamp_i32(limit),
+        offset: clamp_i32(offset),
         // Go `criteria.go:154-162`: clamped before the field is set.
-        limit_percent: clamp_limit_percent(scalar(
-            &Value::Object(object.clone()),
-            "limitPercent",
-            0,
-        )),
+        limit_percent: clamp_limit_percent(clamp_i32(limit_percent)),
         refresh_delay,
     })
+}
+
+/// Fit a decoded JSON integer into the port's `i32` fields — Go's `int` is
+/// 64-bit (`criteria.go:121-123`). Out-of-range values saturate rather than
+/// wrap, so a huge `limit` cannot flip sign into a "no limit".
+#[must_use]
+fn clamp_i32(value: i64) -> i32 {
+    if value > i64::from(i32::MAX) {
+        i32::MAX
+    } else if value < i64::from(i32::MIN) {
+        i32::MIN
+    } else {
+        value as i32
+    }
 }
 
 /// Parse a criteria from raw JSON text — the byte form of Go's
@@ -639,6 +736,162 @@ mod criteria_test {
                 Err(CriteriaError::Conflict) => {}
                 other => panic!("{json} — expected Conflict, got {other:?}"),
             }
+        }
+    }
+
+    /// Go decodes the whole aux struct in ONE `json.Unmarshal` call
+    /// (`criteria.go:126-128`), so a malformed top-level slot value aborts the
+    /// parse. Silently defaulting it would accept `{"all":[…],"any":42}` and hand
+    /// back the other slot's rules — Go hands back an error.
+    #[test]
+    fn criteria_rejects_a_malformed_slot_value_instead_of_defaulting_it() {
+        // Arrange: one valid `all` plus a bad value in the other slot, and a bad
+        // value in the only slot.
+        let map = default_field_map();
+        for (json, want) in [
+            // `criteria.go:126-128` → `json.go:13`'s `[]map[string]json.RawMessage`.
+            (
+                r#"{"all":[{"is":{"artist":"x"}}],"any":42}"#,
+                "cannot unmarshal number",
+            ),
+            (
+                r#"{"all":[{"is":{"artist":"x"}}],"any":"nope"}"#,
+                "cannot unmarshal string",
+            ),
+            (
+                r#"{"all":[{"is":{"artist":"x"}}],"any":{"a":1}}"#,
+                "cannot unmarshal object",
+            ),
+            (r#"{"all":42}"#, "cannot unmarshal number"),
+            // An item of the list must itself be an object (`json.go:13-14`).
+            (r#"{"all":["x"]}"#, "cannot unmarshal string into .0"),
+        ] {
+            // Act:
+            let err = unmarshal_criteria_str(&map, json.to_string())
+                .expect_err("Go rejects this, the port must too");
+            // Assert: the failure is the slot decode, not a swallowed default.
+            assert!(
+                err.to_string().contains(want),
+                "{json} — expected a Go-shaped type error mentioning {want}, got {err}",
+            );
+        }
+    }
+
+    /// Same single-unmarshal rule for the scalar/string aux fields: Go's
+    /// `limit`/`offset`/`limitPercent` are `int` and `sort`/`order`/`refreshDelay`
+    /// are `string` (`criteria.go:119-124`), so a wrong JSON type is Go's
+    /// `json.UnmarshalTypeError` and the criteria is NOT produced with a zero.
+    #[test]
+    fn criteria_rejects_wrong_json_types_for_the_scalar_and_string_aux_fields() {
+        let map = default_field_map();
+        let base = r#"{"all":[{"is":{"artist":"x"}}]"#;
+        for (field, value, want) in [
+            (
+                "limit",
+                r#""oops""#,
+                "cannot unmarshal string into Go struct field .limit of type int",
+            ),
+            ("offset", r#""x""#, "cannot unmarshal string"),
+            ("limitPercent", r#""x""#, "cannot unmarshal string"),
+            ("limit", "true", "cannot unmarshal bool"),
+            // A non-integer number is Go's other int wording: the value itself.
+            ("limit", "3.5", "cannot unmarshal number 3.5"),
+            (
+                "sort",
+                "5",
+                "cannot unmarshal number into Go struct field .sort of type string",
+            ),
+            ("order", r#"["a"]"#, "cannot unmarshal array"),
+            ("refreshDelay", "7", "cannot unmarshal number"),
+        ] {
+            // Act:
+            let err = unmarshal_criteria_str(&map, format!("{base},\"{field}\":{value}}}"))
+                .expect_err("Go rejects this scalar type");
+            // Assert:
+            assert!(
+                err.to_string().contains(want),
+                "{field}:{value} — expected {want}, got {err}",
+            );
+        }
+    }
+
+    /// The two JSON shapes Go DOES tolerate for a scalar: an absent key and a
+    /// `null` (unmarshalling null into an int/string field is a no-op), which keep
+    /// the zero value rather than erroring.
+    #[test]
+    fn null_and_absent_scalar_fields_keep_go_zero_values() {
+        let map = default_field_map();
+        // Act:
+        let nulled = unmarshal_criteria_str(
+            &map,
+            r#"{"all":[{"is":{"artist":"x"}}],"sort":null,"order":null,"limit":null,"offset":null,"limitPercent":null,"refreshDelay":null}"#.to_string(),
+        );
+        // Assert: parsed, every scalar at Go's zero value.
+        match nulled {
+            Ok(c) => {
+                assert_eq!(c.sort, "", "null into a string field is a no-op");
+                assert_eq!(c.order, "");
+                assert_eq!(c.limit, 0);
+                assert_eq!(c.offset, 0);
+                assert_eq!(c.limit_percent, 0);
+                assert_eq!(c.refresh_delay, 0);
+                assert!(
+                    matches!(&c.expression, Expression::All(items) if items.len() == 1),
+                    "the rules survive the null scalars: {c:?}",
+                );
+            }
+            Err(e) => panic!("null scalars must not error, got {e}"),
+        }
+    }
+
+    /// Nested-conjunction propagation, exactly as Go: `unmarshalConjunction`
+    /// (`json.go:142-155`) swallows the inner decode failure and returns nil, so
+    /// the caller reports `invalid expression key '<outer key>'` (`json.go:26-28`)
+    /// and the whole parse aborts. A malformed nested value must never be quietly
+    /// accepted as an empty group.
+    #[test]
+    fn malformed_nested_conjunctions_abort_the_parse_with_gos_key_message() {
+        let map = default_field_map();
+        for (json, want) in [
+            // Inner key `bogus` fails; the outer `all` is what Go names.
+            (
+                r#"{"all":[{"all":[{"bogus":1}]}]}"#,
+                "invalid expression key 'all'",
+            ),
+            (
+                r#"{"all":[{"any":[{"bogus":1}]}]}"#,
+                "invalid expression key 'any'",
+            ),
+            // A nested conjunction whose value is not a list is the same nil arm.
+            (r#"{"all":[{"all":42}]}"#, "invalid expression key 'all'"),
+            // A leaf payload that is not an object falls through to the same error.
+            (r#"{"all":[{"is":"str"}]}"#, "invalid expression key 'is'"),
+        ] {
+            // Act:
+            let err = unmarshal_criteria_str(&map, json.to_string())
+                .expect_err("Go rejects this nested key");
+            // Assert:
+            assert!(err.to_string().contains(want), "{json} — got {err}");
+        }
+    }
+
+    /// Unknown keys at the top level are ignored (`encoding/json` only binds the
+    /// aux struct's fields) — a strict parser that rejected them would diverge.
+    #[test]
+    fn unknown_top_level_keys_are_ignored_like_go() {
+        let map = default_field_map();
+        // Act:
+        let parsed = unmarshal_criteria_str(
+            &map,
+            r#"{"all":[{"is":{"artist":"x"}}],"zzz":{"a":1},"unused":true}"#.to_string(),
+        );
+        // Assert:
+        match parsed {
+            Ok(c) => assert!(
+                matches!(&c.expression, Expression::All(items) if items.len() == 1),
+                "extra keys are dropped, the rules survive: {c:?}",
+            ),
+            Err(e) => panic!("unknown keys must not error, got {e}"),
         }
     }
 

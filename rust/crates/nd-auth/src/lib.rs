@@ -9,7 +9,14 @@ pub const OWNED_BY_ISSUE: u8 = 13;
 
 pub mod claims;
 pub mod credentials;
+pub mod guarded_limiter;
+pub mod http_context;
 pub mod initial_setup;
 pub mod limiter;
+pub mod login;
+pub mod middleware;
 pub mod publicurl;
+pub mod refresh;
+pub mod setup_store;
 pub mod trusted_sources;
+pub mod verifier;

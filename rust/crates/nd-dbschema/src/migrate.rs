@@ -20,7 +20,8 @@ use crate::schema_ddl::FRESH_STATEMENTS;
 /// migration filenames under `db/migrations/**`, so 1 can never collide with one.
 pub const FRESH_MIGRATION_VERSION: i64 = 1;
 
-/// Statement count of the fresh DDL (31 tables + 3 FTS5 virtual + 9 triggers).
+/// Statement count of the fresh DDL (31 tables + 3 FTS5 virtual + 9 triggers +
+/// 80 secondary indexes).
 pub const FRESH_STATEMENT_COUNT: usize = FRESH_STATEMENTS.len();
 
 /// Opens the DB, applies the FRESH schema only when the marker is absent, and returns the

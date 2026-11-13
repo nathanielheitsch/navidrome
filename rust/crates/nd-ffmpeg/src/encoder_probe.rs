@@ -195,23 +195,27 @@ mod tests {
         assert!(!from_nil && !from_empty);
     }
 
-    /// Live ffmpeg (this box: /opt/homebrew/bin/ffmpeg, no `libwebp_anim`), so the
-    /// `ErrAnimatedWebPUnsupported` branch of `ffmpeg.go:100-102` is live-testable.
-    /// SKIP-IF-MISSING: when ffmpeg cannot be resolved the probe legitimately
-    /// reports unavailable without running, so the case asserts nothing — that is
-    /// the documented CI-safe semantics.
+    /// Compare the live capability gate with the resolved binary's encoder table.
     #[test]
-    fn encoders_available_absent_encoder() {
-        // Arrange: ffmpeg present on this machine?
-        let ffmpeg_present = is_available();
-        // Act
+    fn encoders_available_matches_resolved_binary() {
         let available = encoders_available();
         let err = animated_webp_unsupported();
-        // Assert
-        if ffmpeg_present {
+        assert!(matches!(err, FFmpegError::ErrAnimatedWebPUnsupported));
+        assert!(err.to_string().contains("libwebp_anim"));
+        if is_available() {
+            let (binary, _) = crate::ffmpeg_cmd::ffmpeg_cmd();
+            let output = std::process::Command::new(binary)
+                .args(["-hide_banner", "-encoders"])
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let expected = parse_encoders_output(
+                String::from_utf8(output.stdout).unwrap(),
+                "libwebp_anim".to_string(),
+            );
+            assert_eq!(available, expected);
+        } else {
             assert!(!available);
-            assert!(matches!(err, FFmpegError::ErrAnimatedWebPUnsupported));
-            assert!(err.to_string().contains("libwebp_anim"));
         }
     }
 }

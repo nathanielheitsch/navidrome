@@ -42,6 +42,10 @@ pub enum StoreError {
     #[error("nd-db pool state poisoned by a panic in a previous lease holder")]
     Poisoned,
 
+    /// A blocking task panicked or was cancelled before starting.
+    #[error("database blocking task failed: {0}")]
+    Task(#[from] tokio::task::JoinError),
+
     /// Everything else, classified not-busy: fails immediately
     /// (`persistence.go:218` `!db.IsBusy(err)` branch).
     #[error(transparent)]
@@ -156,4 +160,106 @@ pub type Delay = dyn Fn(u32) -> Duration;
 #[must_use]
 pub fn production_delay(attempt: u32) -> Duration {
     TX_RETRY_DELAY * (attempt + 1)
+}
+
+/// Cloneable pool facade. Repository values and transactions never outlive a lease.
+///
+/// `_sync` methods block (including checkout and retry sleeps): call them only
+/// on dedicated blocking threads. Async methods move checkout AND all SQLite work
+/// into `spawn_blocking`. Once started, SQLite work runs to completion even if its
+/// awaiting future is dropped; dropping a future is not transaction cancellation.
+#[derive(Clone, Debug)]
+pub struct SQLStore {
+    pool: std::sync::Arc<crate::pool::Pool>,
+}
+
+impl SQLStore {
+    /// Wrap an initialized pool. Schema initialization is the caller's responsibility.
+    pub fn new(pool: crate::pool::Pool) -> Self {
+        Self {
+            pool: std::sync::Arc::new(pool),
+        }
+    }
+
+    /// Open a pool off the async executor. Does not apply migrations.
+    ///
+    /// # Errors
+    /// Returns pool-open or blocking-task failures.
+    pub async fn open(config: crate::pool::PoolConfig) -> Result<Self, StoreError> {
+        tokio::task::spawn_blocking(move || crate::pool::Pool::new(&config).map(Self::new)).await?
+    }
+
+    /// Run synchronous repository work with one exclusive connection lease.
+    ///
+    /// # Errors
+    /// Returns checkout or callback failures.
+    pub fn with_connection_sync<T>(
+        &self,
+        block: impl FnOnce(&rusqlite::Connection) -> Result<T, RsError>,
+    ) -> Result<T, StoreError> {
+        let lease = self.pool.checkout()?;
+        block(lease.conn()).map_err(classify)
+    }
+
+    /// Run a transaction whose callback retains one connection for all repositories.
+    /// Do not recursively check out this store from the callback (pool deadlock).
+    ///
+    /// # Errors
+    /// Returns checkout, callback, or commit failures; errors roll back all writes.
+    pub fn with_tx_sync<T>(
+        &self,
+        block: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, RsError>,
+    ) -> Result<T, StoreError> {
+        let mut lease = self.pool.checkout()?;
+        with_tx(lease.conn_mut(), block)
+    }
+
+    /// Run a retryable transaction on one lease. Callback may run multiple times;
+    /// do not perform external side effects in it.
+    ///
+    /// # Errors
+    /// Returns checkout, callback, commit, or exhausted busy-retry failures.
+    pub fn with_tx_retry_sync<T>(
+        &self,
+        block: impl Fn(&rusqlite::Transaction<'_>) -> Result<T, RsError>,
+    ) -> Result<T, StoreError> {
+        let mut lease = self.pool.checkout()?;
+        with_tx_retry(lease.conn_mut(), &production_delay, block)
+    }
+
+    /// Run checkout and synchronous repository work on a blocking thread.
+    ///
+    /// # Errors
+    /// Returns checkout, callback, or blocking-task failures.
+    pub async fn with_connection<T: Send + 'static>(
+        &self,
+        block: impl FnOnce(&rusqlite::Connection) -> Result<T, RsError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.with_connection_sync(block)).await?
+    }
+
+    /// Run a transaction off the executor, retaining a single lease until commit.
+    ///
+    /// # Errors
+    /// Returns checkout, callback, commit, or blocking-task failures.
+    pub async fn with_tx<T: Send + 'static>(
+        &self,
+        block: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, RsError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.with_tx_sync(block)).await?
+    }
+
+    /// Run checkout, busy retries and backoff off the executor.
+    ///
+    /// # Errors
+    /// Returns checkout, callback, commit, busy-retry, or blocking-task failures.
+    pub async fn with_tx_retry<T: Send + 'static>(
+        &self,
+        block: impl Fn(&rusqlite::Transaction<'_>) -> Result<T, RsError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.with_tx_retry_sync(block)).await?
+    }
 }

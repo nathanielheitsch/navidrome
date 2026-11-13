@@ -1,0 +1,100 @@
+[
+  {
+    "id": "album:discs_version_catalog",
+    "kind": "album",
+    "full_text": " 042 2024 bonus deep deluxe edition frahm live nifcd nils quintao reissue",
+    "search_participants": "Nils Frahm Frahm, Nils Quintão",
+    "search_normalized": "Live"
+  },
+  {
+    "id": "album:unicode_punctuation_no_participants",
+    "kind": "album",
+    "full_text": " \u0026 - aeroe bjork der feat. live nacht oystein requiem soehne sohne",
+    "search_participants": "",
+    "search_normalized": "Sohne Requiem Live Bjork Oystein feat AEroe AEroe)"
+  },
+  {
+    "id": "album:unstable_name_order",
+    "kind": "album",
+    "full_text": " aurora deep live purple trio zeta",
+    "search_participants": "Aurora Deep Purple Purple, Deep Zeta Trio",
+    "search_normalized": "Live"
+  },
+  {
+    "id": "album:empty_everything",
+    "kind": "album",
+    "full_text": " ",
+    "search_participants": "",
+    "search_normalized": ""
+  },
+  {
+    "id": "album:single_char_and_empty_disc",
+    "kind": "album",
+    "full_text": " aeroe bjork deluxe r.e.m. rems st-etienne",
+    "search_participants": "R.E.M. REMs Bjørk bjork",
+    "search_normalized": "AEroe StEtienne St-Etienne"
+  },
+  {
+    "id": "mediafile:subtitle_bracketed",
+    "kind": "mediafile",
+    "full_text": " bonus deep deluxe edition frahm live nils quintao",
+    "search_participants": "Nils Frahm Frahm, Nils Quintão",
+    "search_normalized": "Deluxe Edition Live",
+    "full_title": "Deep [Deluxe Edition]"
+  },
+  {
+    "id": "mediafile:subtitle_flag_off",
+    "kind": "mediafile",
+    "full_text": " deep frahm live nils",
+    "search_participants": "Nils Frahm Frahm, Nils",
+    "search_normalized": "Live",
+    "full_title": "Deep"
+  },
+  {
+    "id": "mediafile:no_subtitle",
+    "kind": "mediafile",
+    "full_text": " deep live",
+    "search_participants": "",
+    "search_normalized": "Live",
+    "full_title": "Deep"
+  },
+  {
+    "id": "mediafile:whitespace_only_subtitle",
+    "kind": "mediafile",
+    "full_text": " deep",
+    "search_participants": "",
+    "search_normalized": "",
+    "full_title": "Deep ()"
+  },
+  {
+    "id": "mediafile:unicode_punctuation",
+    "kind": "mediafile",
+    "full_text": " \u0026 - 2024 ac aeroe bjork dc der live nacht oystein r.e.m. rems requiem soehne sohne",
+    "search_participants": "Bjørk \u0026 Øystein Bjork \u0026 Oystein AC/DC R.E.M. REMs",
+    "search_normalized": "Sohne Requiem Live 2024 Bjork Oystein AEroe",
+    "full_title": "Söhne der Nacht — 'Requiem' (Live 2024)"
+  },
+  {
+    "id": "mediafile:unstable_name_order",
+    "kind": "mediafile",
+    "full_text": " aurora deep frahm live nils purple quintao trio zeta",
+    "search_participants": "Aurora Deep Purple Purple, Deep Zeta Trio Quintão",
+    "search_normalized": "Live",
+    "full_title": "Deep"
+  },
+  {
+    "id": "mediafile:empty_everything",
+    "kind": "mediafile",
+    "full_text": " ",
+    "search_participants": "",
+    "search_normalized": ""
+  },
+  {
+    "id": "mediafile:unbalanced_bracket_subtitle",
+    "kind": "mediafile",
+    "full_text": " s track unbalanced",
+    "search_participants": "",
+    "search_normalized": "unbalanced",
+    "full_title": "Track s ([unbalanced)"
+  }
+]

@@ -6,22 +6,31 @@
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
-use crate::gotaglib::{
-    extract_metadata, load_shim_raw_tags, ExtractMetadataResult, PINNED_TAGLIB_VERSION,
-};
+use crate::backend::{read_metadata, BACKEND_VERSION};
+use crate::gotaglib::ExtractMetadataResult;
 
 /// `extractors.go:13-16` — map id -> extractorConstructor, RWMutex-guarded.
 static EXTRACTORS: OnceLock<RwLock<HashMap<String, ExtractorConstructor>>> = OnceLock::new();
 
+fn registry() -> &'static RwLock<HashMap<String, ExtractorConstructor>> {
+    EXTRACTORS.get_or_init(|| {
+        // Go registers the default in adapters/gotaglib/gotaglib.go:294-297.
+        let constructor: ExtractorConstructor = |fs_root, base_dir| Extractor { fs_root, base_dir };
+        RwLock::new(HashMap::from([
+            ("taglib".to_owned(), constructor),
+            ("lofty".to_owned(), constructor),
+        ]))
+    })
+}
+
 /// Constructor: Go's `func(fs fs.FS, baseDir string) Extractor`
-/// (`extractors.go:17`). The shim backend takes the filesystem root and base
+/// (`extractors.go:17`). The real backend takes the filesystem root and base
 /// directory as plain paths.
 pub type ExtractorConstructor = fn(fs_root: String, base_dir: String) -> Extractor;
 
 /// `RegisterExtractor` (`extractors.go:23-29`).
 pub fn register_extractor(id: &str, f: ExtractorConstructor) {
-    EXTRACTORS
-        .get_or_init(|| RwLock::new(HashMap::new()))
+    registry()
         .write()
         .expect("extractor registry lock poisoned")
         .insert(id.to_string(), f);
@@ -30,10 +39,7 @@ pub fn register_extractor(id: &str, f: ExtractorConstructor) {
 /// Looks up a registered extractor by id — used by the local storage to pick
 /// the one configured by `Scanner.Extractor` (`local.go` `MusicFS::ReadTags`).
 pub fn get_extractor(id: &str) -> Result<ExtractorConstructor, String> {
-    let reg = EXTRACTORS
-        .get_or_init(|| RwLock::new(HashMap::new()))
-        .read()
-        .expect("extractor registry lock poisoned");
+    let reg = registry().read().expect("extractor registry lock poisoned");
     match reg.get(&id.to_string()) {
         Some(c) => Ok(*c),
         None => Err(format!("extractor '{}' not registered", id)),
@@ -51,26 +57,32 @@ pub struct Extractor {
 }
 
 impl Extractor {
-    /// `Parse` (`extractors.go:10-20`): maps each path to its Info; files that
-    /// fail are skipped (the Go loop `continue`s on error, Parse itself never
-    /// errors).
+    /// `adapters/gotaglib/gotaglib.go:34-43`: successful paths map to Info;
+    /// missing, malformed or unsupported media are skipped, not batch errors.
     pub fn parse(self: &Extractor, files: Vec<String>) -> HashMap<String, ExtractMetadataResult> {
         let mut results = HashMap::new();
         for path in files {
-            match load_shim_raw_tags(&self.fs_root, &self.base_dir, &path) {
+            // Go opens through fs.FS (gotaglib.go:127-143): names must be
+            // relative and cannot escape through '..'. Keep that boundary;
+            // read_metadata itself intentionally accepts arbitrary OS paths.
+            if path.is_empty() || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
+                continue;
+            }
+            let full_path = std::path::Path::new(&self.fs_root)
+                .join(&self.base_dir)
+                .join(&path);
+            match read_metadata(full_path) {
                 Err(_) => continue,
-                Ok(raw) => {
-                    let info = extract_metadata(&raw);
-                    results.insert(path.to_string(), info);
+                Ok(info) => {
+                    results.insert(path, info);
                 }
             }
         }
         results
     }
 
-    /// `Version` (`extractors.go:26-36`): Go reads build info for
-    /// go.senan.xyz/taglib; the pinned fork version (go.mod:6).
+    /// Actual backend version (the registry's legacy `taglib` name is retained).
     pub fn version(self: Extractor) -> String {
-        PINNED_TAGLIB_VERSION.to_string()
+        BACKEND_VERSION.to_string()
     }
 }
