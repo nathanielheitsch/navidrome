@@ -27,18 +27,27 @@
 //!     assigned before the clamp (`criteria.go:141-144` before `:154-162`), so
 //!     a parse error in `refreshDelay` still leaves them set — the port returns
 //!     the error and the caller discards the whole value, matching Go's
-//!     `json.Unmarshal` error semantics.
+//!     `json.Unmarshal` error semantics;
+//!   * `limit`/`offset`/`limitPercent` are Go's `int` (`criteria.go:121-123`),
+//!     64 bits on this target, so they stay `i64` end to end (see
+//!     [`Criteria::limit`]);
+//!   * the aux struct is decoded from the raw JSON text rather than from a
+//!     `serde_json::Value`, because `Value`'s map cannot hold two entries with
+//!     the same key and would erase Go's duplicate-key behaviour at the door
+//!     (see [`parse_aux`]).
 
 use std::time::Duration;
 
 use nd_utils::time::format_duration;
 use nd_utils::time::parse_duration;
+use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
+use serde_json::value::RawValue;
 
 use serde_json::Value;
 
 use crate::fields::FieldMap;
 use crate::json::marshal_expression;
-use crate::json::unmarshal_optional_conjunction;
+use crate::json::unmarshal_conjunction_type_value;
 use crate::operators::extract_playlist_field;
 use crate::operators::Expression;
 use crate::sort::order_by_fields as sort_order_by_fields;
@@ -56,13 +65,16 @@ pub struct Criteria {
     /// `asc`/`desc` — Go `Criteria.Order` (`criteria.go:22`).
     pub order: String,
     /// Absolute limit; takes precedence over [`Criteria::limit_percent`]
-    /// (`criteria.go:33-48`).
-    pub limit: i32,
+    /// (`criteria.go:33-48`). Go's `Limit` is `int` (`criteria.go:23`), 64 bits
+    /// on this target, so the port keeps `i64` rather than narrowing to `i32`:
+    /// Go accepts `"limit": 9000000000` and round-trips it unchanged.
+    pub limit: i64,
     /// Percentage limit in `[0, 100]` after clamping (`criteria.go:24`,
-    /// `criteria.go:154-162`); `0` means unset.
-    pub limit_percent: i32,
-    /// Query offset — Go `Criteria.Offset` (`criteria.go:25`).
-    pub offset: i32,
+    /// `criteria.go:154-162`); `0` means unset. Also Go's `int`, but the clamp
+    /// keeps it inside `[0, 100]`, so the width is only about wire fidelity.
+    pub limit_percent: i64,
+    /// Query offset — Go `Criteria.Offset` (`criteria.go:25`), likewise `int`.
+    pub offset: i64,
     /// Refresh delay in nanoseconds — Go `Criteria.RefreshDelay`
     /// (`criteria.go:26`); `0` means "use
     /// `conf.Server.SmartPlaylistRefreshDelay`".
@@ -88,9 +100,10 @@ impl Default for Criteria {
 /// Effective limit for a query — Go's `Criteria.EffectiveLimit`
 /// (`criteria.go:29-48`): a fixed [`Criteria::limit`] wins; otherwise a
 /// percentage in `[1, 100]` of `total_count` (minimum 1 once `total_count > 0`);
-/// `0` means "no limit applies".
+/// `0` means "no limit applies". Go returns `int` (`criteria.go:33`), so the
+/// port's return type is `i64` on this target.
 #[must_use]
-pub fn effective_limit(c: &Criteria, total_count: i64) -> i32 {
+pub fn effective_limit(c: &Criteria, total_count: i64) -> i64 {
     if c.limit > 0 {
         return c.limit;
     }
@@ -98,16 +111,16 @@ pub fn effective_limit(c: &Criteria, total_count: i64) -> i32 {
         if total_count <= 0 {
             return 0;
         }
-        // Go `criteria.go:41`: integer arithmetic on the percentage.
-        let result: i64 = total_count * c.limit_percent as i64 / 100;
+        // Go `criteria.go:41`: `int(totalCount) * c.LimitPercent / 100`, integer
+        // arithmetic on the same 64-bit width as the fields themselves.
+        let result: i64 = total_count * c.limit_percent / 100;
         if result < 1 {
             return 1;
         }
-        return result as i32;
+        return result;
     }
     0
 }
-
 /// Whether the criteria uses a valid percentage-based limit — Go's
 /// `Criteria.IsPercentageLimit` (`criteria.go:62-64`).
 #[must_use]
@@ -173,12 +186,12 @@ struct MarshalAux {
     sort: String,
     /// `json:"order,omitempty"` (`criteria.go:89`).
     order: String,
-    /// `json:"limit,omitempty"` (`criteria.go:90`).
-    limit: i32,
+    /// `json:"limit,omitempty"` (`criteria.go:90`). Go's aux field is `int`.
+    limit: i64,
     /// `json:"limitPercent,omitempty"` (`criteria.go:91`).
-    limit_percent: i32,
+    limit_percent: i64,
     /// `json:"offset,omitempty"` (`criteria.go:92`).
-    offset: i32,
+    offset: i64,
     /// `json:"refreshDelay,omitempty"` — the formatted duration string
     /// (`criteria.go:93`, filled at `criteria.go:101-103`).
     refresh_delay: String,
@@ -217,9 +230,10 @@ fn string_omitted(value: &str) -> bool {
     value.is_empty()
 }
 
-/// Go's `omitempty` on an int field (`criteria.go:90-92`).
+/// Go's `omitempty` on an int field (`criteria.go:90-92`). Go's aux fields are
+/// `int`, 64 bits on this target, so the width follows [`MarshalAux`].
 #[must_use]
-fn int_omitted(value: i32) -> bool {
+fn int_omitted(value: i64) -> bool {
     value == 0
 }
 
@@ -318,101 +332,300 @@ fn json_quote(s: &str) -> String {
     out
 }
 
-/// Read one top-level `all`/`any` slot through
-/// [`crate::json::unmarshal_optional_conjunction`], PROPAGATING a malformed slot
-/// value the way Go does.
+/// One aux-struct entry as it appears in the INPUT: the key with its ORIGINAL
+/// spelling and the raw JSON text of its value.
 ///
-/// Go decodes the aux struct with a single `json.Unmarshal(data, &aux)`
-/// (`criteria.go:126-128`): the `All`/`Any` fields are typed `optionalConjunction`
-/// (`criteria.go:116-117`), whose decoder unmarshals a
-/// `[]map[string]json.RawMessage` (`json.go:13`) and whose nested-conjunction arm
-/// surfaces `invalid expression key '%s'` (`json.go:26-28`). Both failures abort
-/// `UnmarshalJSON`. Defaulting a bad slot instead would silently accept
+/// `serde_json::Value` cannot represent two entries with the same key, and Go's
+/// `encoding/json` (this checkout's Go 1.27.4 runs the JSONv2 default; v1 with
+/// `GOEXPERIMENT=none` behaves the same here) does two things a `Value`-based
+/// port cannot reproduce: it matches a field name case-INSENSITIVELY (the folded
+/// `fieldMatch`/`foldName` comparison, see [`fold_name`]) and it decodes EVERY
+/// occurrence of a key in input order, so the LAST VALID write wins (`get`
+/// assigns each occurrence it can). A failed occurrence is not assigned, and it
+/// does not stop the walk either: Go's decoder keeps decoding the REST of the
+/// object best-effort and returns the FIRST type error at the end — verified
+/// against Go 1.27.4, where `{"limit":"oops","limit":1}` leaves `Limit == 1`
+/// (and `{"sort":"x","sort":5,"limit":1}` leaves `Sort == "x"`, `Limit == 1`)
+/// while still returning `json: cannot unmarshal …`. Raw text is therefore the
+/// only faithful input, and duplicates are kept in order; the port's callers
+/// discard the partially-decoded value, which is what makes the retained error
+/// the externally visible result.
+type AuxEntry = (String, Box<RawValue>);
+
+/// The aux struct as a `Vec` of entries — Go's anonymous
+/// `struct { All; Any; Sort; Order; Limit; LimitPercent; Offset; RefreshDelay }`
+/// (`criteria.go:116-124`), decoded in INPUT order rather than as a map.
+struct AuxEntries(Vec<AuxEntry>);
+
+impl<'de> Deserialize<'de> for AuxEntries {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        de.deserialize_map(AuxVisitor)
+    }
+}
+
+struct AuxVisitor;
+
+impl<'de> Visitor<'de> for AuxVisitor {
+    type Value = AuxEntries;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON object")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut entries: Vec<AuxEntry> = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            entries.push((key, map.next_value::<Box<RawValue>>()?));
+        }
+        Ok(AuxEntries(entries))
+    }
+}
+
+/// Decode the aux entries from raw JSON text.
+///
+/// Mirrors Go's single `json.Unmarshal(data, &aux)` (`criteria.go:126-128`): the
+/// text must be a complete JSON OBJECT — `42`, `"x"`, `[1]` and trailing garbage
+/// are decode errors — and the entries keep their input order and key spelling.
+/// "Trailing whitespace" means EXACTLY the four characters Go's scanner skips
+/// (`' '`, `'\t'`, `'\n'`, `'\r'`), not `char::is_whitespace`: `{}` followed by
+/// U+00A0 or VT is `invalid character … after top-level value` in Go (verified
+/// against Go 1.27.4), so a `.trim()`-based check would wrongly accept it.
+///
+/// # Errors
+/// [`CriteriaError::Slot`] with a Go-shaped `json: cannot unmarshal …` message
+/// for a non-object payload, or serde_json's own message for malformed text. Go's
+/// syntax wording (`unexpected end of JSON input`, `invalid character …`) is
+/// allowed to differ: the port's only consumer (`nd-db`'s `rules` decode)
+/// re-wraps it un-prefixed and depends only on the decode failing.
+fn parse_aux(text: &str) -> Result<Vec<AuxEntry>, CriteriaError> {
+    // The streaming deserializer is what reports where the top-level value ends,
+    // which is how trailing garbage is detected the way Go's decoder does it.
+    let mut stream = serde_json::Deserializer::from_str(text).into_iter::<AuxEntries>();
+    let first: Option<Result<AuxEntries, serde_json::Error>> = stream.next();
+    let entries: Vec<AuxEntry> = match first {
+        Some(Ok(AuxEntries(entries))) => entries,
+        Some(Err(err)) => {
+            // Go distinguishes "not an object" (a type error naming the aux
+            // struct) from "malformed JSON"; serde collapses both into one error,
+            // so classify by the payload's leading token.
+            return Err(CriteriaError::Slot(match json_kind_of(text) {
+                Some(kind) => {
+                    format!("json: cannot unmarshal {kind} into Go value of type struct {{ … }}")
+                }
+                None => err.to_string(),
+            }));
+        }
+        None => {
+            return Err(CriteriaError::Slot(
+                "unexpected end of JSON input".to_string(),
+            ));
+        }
+    };
+    // Go's decoder rejects anything after the top-level value
+    // (`invalid character … after top-level value`); only the four JSON
+    // whitespace characters are tolerated there — `str::trim`/`char::is_whitespace`
+    // also strips U+00A0, U+000B, U+2028 and U+2029, which Go rejects.
+    if !is_json_whitespace(&text[stream.byte_offset()..]) {
+        return Err(CriteriaError::Slot(
+            "invalid character after top-level value".to_string(),
+        ));
+    }
+
+    Ok(entries)
+}
+
+/// `true` when the text is empty or made only of the whitespace JSON allows
+/// between tokens: `scanValue`/`decoder.skipWhitespace` (`scanner.go`,
+/// `jsontext`) advance over `'\t'`, `'\n'`, `'\r'`, `' '` and nothing else.
+#[must_use]
+fn is_json_whitespace(text: &str) -> bool {
+    text.bytes()
+        .all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+}
+
+/// The JSON text with its leading and trailing JSON whitespace removed
+/// ([`is_json_whitespace`]'s characters only), so a `Box<RawValue>` payload's
+/// padding never changes how its token is classified.
+#[must_use]
+fn json_trim(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut start = 0;
+    while start < bytes.len() && matches!(bytes[start], b' ' | b'\t' | b'\n' | b'\r') {
+        start += 1;
+    }
+    let mut end = bytes.len();
+    while end > start && matches!(bytes[end - 1], b' ' | b'\t' | b'\n' | b'\r') {
+        end -= 1;
+    }
+    &text[start..end]
+}
+
+/// The JSON type Go's decoder reports for a whole payload: `null`, `bool`,
+/// `number`, `string`, `array`, `object` — the first token's kind. `None` means
+/// the text is not JSON at all.
+#[must_use]
+fn json_kind_of(text: &str) -> Option<&'static str> {
+    match json_trim(text).chars().next()? {
+        '{' => Some("object"),
+        '[' => Some("array"),
+        '"' => Some("string"),
+        't' | 'f' => Some("bool"),
+        'n' => Some("null"),
+        '-' | '0'..='9' => Some("number"),
+        _ => None,
+    }
+}
+
+/// The aux field name as `encoding/json` folds it, for matching a struct tag.
+///
+/// Go looks a struct field up by `foldName(name)` (`encoding/json/fold.go` for
+/// the v1 path this toolchain takes by default, `v2/fold.go` under the jsonv2
+/// experiment) and `foldRune` returns the SMALLEST rune of the fold set, so
+/// `foldName(x) == foldName(y)` is exactly `bytes.EqualFold(x, y)` — Unicode
+/// included, not just ASCII. Rust's `to_lowercase` is not that: it leaves the
+/// long s (`U+017F`) unchanged, so `{"\u{017F}ort":"x"}` was silently dropped as an unknown
+/// key while Go binds it to `Sort` (verified against Go 1.27.4).
+///
+/// Delimiters keep their old behaviour: the v1 fold does NOT strip `_` or `-`
+/// (and the JSONv2 default on this toolchain is the same delimiter-sensitive
+/// match), so `{"limit_percent":5}` does not match `limitPercent` — also
+/// verified. Only the case/Unicode folding changes here.
+///
+/// The aux struct's tags are all ASCII, so a key can only match one when every
+/// rune folds to an ASCII letter or digit: outside ASCII, Go's fold set contains
+/// an ASCII rune for exactly two code points (`unicode.SimpleFold` over the whole
+/// plane), U+017F (long s) and U+212A (KELVIN SIGN). Everything else is kept
+/// verbatim, which simply never equals a folded ASCII tag.
+#[must_use]
+fn fold_name(name: &str) -> String {
+    name.chars()
+        .map(|ch| match ch {
+            'a'..='z' => ch.to_ascii_uppercase(),
+            '\u{017F}' => 'S', // long s: Go's foldRune -> 'S' (`\u{017F}ort` matches `sort`)
+            '\u{212A}' => 'K', // KELVIN SIGN: Go's foldRune -> 'K' (`\u{212A}imit` matches `limit`)
+            _ => ch,
+        })
+        .collect()
+}
+
+/// Every occurrence of an aux field name, in input order, matched the way
+/// `encoding/json` matches struct fields: by [`fold_name`] against the JSON tag
+/// (`criteria.go:116-124`), which is Unicode case-folding (`EqualFold`) with
+/// delimiters significant. The callers replay them in order, which is what makes
+/// the LAST VALID write win while a failed occurrence leaves its field alone.
+#[must_use]
+fn raw_got(raw: &RawValue) -> String {
+    let text = raw.get();
+    match json_kind_of(text) {
+        // Go's `json.UnmarshalTypeError.Value` prints the kind for everything but
+        // a number that the target type cannot hold, where it prints
+        // `number <the token as written>` — raw text keeps `1e3` and `3.0`
+        // spelled exactly as the input has them.
+        Some("number") => format!("number {}", json_trim(text)),
+        Some(kind) => kind.to_string(),
+        None => "null".to_string(),
+    }
+}
+
+/// The JSON kind name alone — the `Value` of Go's `json.UnmarshalTypeError` for
+/// a string field, which never prints a number's text.
+#[must_use]
+fn raw_kind(raw: &RawValue) -> &'static str {
+    json_kind_of(raw.get()).unwrap_or("null")
+}
+
+/// Read one `all`/`any` occurrence through Go's `optionalConjunction` decoder
+/// (`json.go:45-48`) → `unmarshalConjunctionType.UnmarshalJSON` (`json.go:12-34`).
+///
+/// The slot's OWN bytes are parsed here, so no top-level map is involved — that
+/// is precisely where a `Value`-based port would lose duplicate keys. A malformed
+/// slot value propagates the way Go does: `json.Unmarshal` into
+/// `[]map[string]json.RawMessage` (`json.go:13`) fails on a non-list, and a
+/// nested-conjunction arm surfaces `invalid expression key '%s'` (`json.go:26-28`).
+/// Both abort `UnmarshalJSON`. Defaulting a bad slot instead would silently accept
 /// `{"all":[…],"any":42}` — and a bad key nested one level down — and return the
 /// OTHER slot's rules, which Go never does.
 ///
 /// # Errors
-/// [`CriteriaError::Slot`] carrying Go's decode message when the key is present
-/// but its value is not a list of expressions, or a nested key is unknown.
-fn parse_slot(
-    map: &FieldMap,
-    object: &Value,
-    key: String,
-) -> Result<crate::json::OptionalConjunction, CriteriaError> {
-    unmarshal_optional_conjunction(map, object, key).map_err(CriteriaError::Slot)
+/// [`CriteriaError::Slot`] carrying Go's decode message when the value is not a
+/// list of expressions, or a nested key is unknown.
+fn slot_rules(map: &FieldMap, raw: &RawValue) -> Result<Vec<Expression>, CriteriaError> {
+    let value: Value = match serde_json::from_str(raw.get()) {
+        Ok(value) => value,
+        Err(err) => return Err(CriteriaError::Slot(err.to_string())),
+    };
+    // `json.Unmarshal(data, &slice)` with a JSON null leaves the slice nil
+    // (`json.go:38`): present, but no rules.
+    if value.is_null() {
+        return Ok(Vec::new());
+    }
+    unmarshal_conjunction_type_value(map, value).map_err(CriteriaError::Slot)
 }
 
-/// Read an `int` aux field — Go's aux fields typed `int` (`criteria.go:122-123`,
-/// `:121`). A JSON `null` is Go's "leave the zero value" case (`json.Unmarshal`
-/// of null into an int is a no-op) and an absent key is the same; any OTHER JSON
-/// type is the `json.UnmarshalTypeError` Go returns as-is out of
-/// `criteria.go:126-128`.
+/// Decode one raw value into Go's `int` (`criteria.go:121-123`): `null` is the
+/// no-op that leaves the field at its CURRENT value (verified against Go 1.27.4:
+/// `{"limit":1,"limit":null}` keeps 1 — a `Value`-based port that resets to 0 here
+/// diverges), a base-10 integer literal is the value, and anything else is Go's
+/// `json.UnmarshalTypeError` naming the key AS IT APPEARED IN THE INPUT
+/// (`json: cannot unmarshal string into Go struct field .LIMIT of type int`).
 ///
-/// # Errors
-/// [`CriteriaError::Type`] carrying Go's `json: cannot unmarshal … into Go
-/// struct field .<key> of type int`.
-fn int_field(object: &Value, key: &str) -> Result<i64, CriteriaError> {
-    match object.get(key) {
-        None => Ok(0),
-        // Go: null into an int field leaves it at its zero value, no error.
-        Some(Value::Null) => Ok(0),
-        Some(value) => match value.as_i64() {
-            Some(number) => Ok(number),
-            // Go distinguishes the two int-mismatch wordings: a number that is
-            // not an integer prints its own value (`cannot unmarshal number 3.5
-            // into …`); any other JSON kind prints the kind
-            // (`cannot unmarshal string into …`).
-            None => {
-                // Go's two int-mismatch wordings: a non-integer number prints
-                // `number <value>`; any other JSON kind prints just the kind.
-                let got = if value.is_number() {
-                    format!("number {}", crate::json::value_json(value.clone()))
-                } else {
-                    crate::json::json_kind(value).to_string()
-                };
-                Err(CriteriaError::Type(format!(
-                    "json: cannot unmarshal {got} into Go struct field .{key} of type int"
-                )))
-            }
-        },
+/// `Ok(None)` is the no-op, so the caller must keep what it already holds.
+fn decode_int(raw: &RawValue, key: &str) -> Result<Option<i64>, CriteriaError> {
+    if json_trim(raw.get()) == "null" {
+        return Ok(None);
+    }
+    // Go decodes an int field with `strconv.ParseInt(s, 10, 64)`, so a fraction,
+    // an exponent or a value beyond int64 are type errors, not silent
+    // truncations — Go's `int` is 64 bits on this target.
+    match go_int_text(raw.get()) {
+        Some(number) => Ok(Some(number)),
+        None => Err(CriteriaError::Type(format!(
+            "json: cannot unmarshal {} into Go struct field .{key} of type int",
+            raw_got(raw),
+        ))),
     }
 }
 
-/// Read a `string` aux field — Go's aux fields typed `string`
-/// (`criteria.go:119-120`, `:124`). Same rule as [`int_field`]: absent or `null`
-/// is the zero value, any other JSON type is Go's type error.
-///
-/// # Errors
-/// [`CriteriaError::Type`] carrying Go's
-/// `json: cannot unmarshal … into Go struct field .<key> of type string`.
-fn string_field(object: &Value, key: &str) -> Result<String, CriteriaError> {
-    match object.get(key) {
-        None => Ok(String::new()),
-        Some(Value::Null) => Ok(String::new()),
-        Some(value) => match value.as_str() {
-            Some(text) => Ok(text.to_string()),
-            None => Err(CriteriaError::Type(format!(
-                "json: cannot unmarshal {} into Go struct field .{key} of type string",
-                crate::json::json_kind(value),
-            ))),
-        },
+/// `strconv.ParseInt(text, 10, 64)` over a JSON number token: an optional sign
+/// and decimal digits only, fitting `i64`.
+#[must_use]
+fn go_int_text(text: &str) -> Option<i64> {
+    let text = json_trim(text);
+    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
     }
+    text.parse::<i64>().ok()
 }
 
-/// Read the `refreshDelay` string field (`criteria.go:124`).
+/// Decode one raw value into Go's `string` (`criteria.go:119-120`, `:124`):
+/// `null` is the no-op that leaves the field at its CURRENT value
+/// (`{"sort":"a","sort":null}` keeps `"a"`), a JSON string is the value, and any
+/// other JSON type is Go's type error with the input's key spelling.
 ///
-/// # Errors
-/// [`CriteriaError::Type`] — a non-string `refreshDelay` fails Go's
-/// `json.Unmarshal` (`criteria.go:126-128`) before the duration parse (`:146`).
-fn delay_field(object: &Value) -> Result<String, CriteriaError> {
-    string_field(object, "refreshDelay")
+/// `Ok(None)` is the no-op, so the caller must keep what it already holds.
+fn decode_string(raw: &RawValue, key: &str) -> Result<Option<String>, CriteriaError> {
+    if json_trim(raw.get()) == "null" {
+        return Ok(None);
+    }
+    let value: Value = match serde_json::from_str(raw.get()) {
+        Ok(value) => value,
+        Err(err) => return Err(CriteriaError::Slot(err.to_string())),
+    };
+    match value.as_str() {
+        Some(text) => Ok(Some(text.to_string())),
+        None => Err(CriteriaError::Type(format!(
+            "json: cannot unmarshal {} into Go struct field .{key} of type string",
+            raw_kind(raw),
+        ))),
+    }
 }
 
 /// Clamp `limitPercent` to `[0, 100]` — Go's `criteria.go:154-162`, where the
 /// `log.Warn` of `criteria.go:156`/`:159` becomes a silent clamp (the port is a
 /// pure transform; the warn text carries no data the caller uses).
 #[must_use]
-fn clamp_limit_percent(value: i32) -> i32 {
+fn clamp_limit_percent(value: i64) -> i64 {
     if value < 0 {
         return 0;
     }
@@ -431,7 +644,7 @@ pub enum CriteriaError {
     /// No rules at all (`criteria.go:139`).
     MissingRules,
     /// A malformed slot value (`criteria.go:126-128` via
-    /// [`crate::json::unmarshal_optional_conjunction`]): a non-list `all`/`any`
+    /// [`crate::json::unmarshal_conjunction_type_value`]): a non-list `all`/`any`
     /// value, or an unknown key inside a nested conjunction. Go propagates it out
     /// of the single `json.Unmarshal(data, &aux)` call, so the whole parse fails.
     Slot(String),
@@ -467,69 +680,120 @@ impl std::fmt::Display for CriteriaError {
 
 impl std::error::Error for CriteriaError {}
 
-/// Parse a criteria from an already-parsed JSON value — Go's
-/// `Criteria.UnmarshalJSON` (`criteria.go:115-164`).
+/// Parse a criteria from raw JSON text — Go's `Criteria.UnmarshalJSON`
+/// (`criteria.go:115-164`), walking the INPUT bytes the way Go's decoder does.
 ///
 /// Every aux field is decoded with Go's JSON type: the `all`/`any` slots as
-/// [`crate::json::OptionalConjunction`], `sort`/`order`/`refreshDelay` as
+/// `optionalConjunction` (`json.go:40-48`), `sort`/`order`/`refreshDelay` as
 /// `string`, `limit`/`limitPercent`/`offset` as `int`. A slot value or scalar of
 /// the wrong JSON shape is therefore a DECODE failure that aborts the parse
 /// (`criteria.go:126-128`) — never a silent default — and the failure propagates
 /// out of nested conjunction decoding as well (`json.go:26-28`, reached through
 /// `unmarshalConjunction`, `json.go:144-147`).
 ///
+/// Field names are matched the way `encoding/json` matches struct fields — the
+/// Unicode case fold of [`fold_name`], with `_`/`-` significant — and duplicate
+/// keys are replayed in INPUT order, so the LAST VALID write wins
+/// (`{"limit":1,"LIMIT":2}` → 2, `{"limit":1,"limit":2}` → 2) while a failed
+/// occurrence leaves its field alone and the FIRST failure is the error Go
+/// returns. Go keeps decoding the rest of the object best-effort after a failure
+/// (its object arm records the first error and continues, so
+/// `{"limit":"a","limit":"b","sort":"z"}` leaves `Sort == "z"` while still
+/// reporting the `limit` type error — verified against Go 1.27.4). Because the
+/// whole decoded value is discarded when `UnmarshalJSON` returns an error, the
+/// port's early `?` is externally equivalent: the first failure in input order
+/// is what surfaces either way.
+///
 /// # Errors
 /// [`CriteriaError`]: a malformed slot (`criteria.go:126-128`), a scalar of the
 /// wrong JSON type (`:126-128`), the `all`/`any` conflict (`criteria.go:129-133`),
 /// missing rules (`criteria.go:139`), or a malformed `refreshDelay`
 /// (`criteria.go:146-152`). Go reports whichever aux field `json.Unmarshal`
-/// reaches first in the INPUT, so a payload with several bad fields can name any
-/// one of them; what is pinned is that it aborts rather than accepting one.
-///
-/// Integer fields saturate at the port's `i32` width, where Go's `int` is wider
-/// (`criteria.go:121-123`).
-pub fn unmarshal_criteria(map: &FieldMap, data: Value) -> Result<Criteria, CriteriaError> {
-    let object: serde_json::Map<String, Value> = match data.as_object() {
-        Some(object) => object.clone(),
-        None => {
-            return Err(CriteriaError::Slot(
-                "invalid criteria json: value is not an object".to_string(),
-            ));
+/// reaches FIRST in the INPUT — the walk is over the object's keys, not over the
+/// struct's fields — so `{"limit":"oops","any":42}` names `limit` and
+/// `{"any":42,"limit":"oops"}` names the slot.
+pub fn unmarshal_criteria(map: &FieldMap, text: &str) -> Result<Criteria, CriteriaError> {
+    let entries: Vec<AuxEntry> = parse_aux(text)?;
+
+    // Go `criteria.go:126-128`: ONE `json.Unmarshal` call decodes the whole aux
+    // struct, walking the input's key order. Go's decoder records the FIRST type
+    // or syntax error and keeps decoding the rest of the object best-effort; the
+    // partially-filled struct is discarded when it returns non-nil, so stopping
+    // at the first failure here is externally equivalent. The conflict/rules
+    // checks below therefore only run on a payload Go accepted.
+
+    let mut all_slot: Option<Vec<Expression>> = None;
+    let mut any_slot: Option<Vec<Expression>> = None;
+    let mut sort: String = String::new();
+    let mut order: String = String::new();
+    let mut limit: i64 = 0;
+    let mut limit_percent: i64 = 0;
+    let mut offset: i64 = 0;
+    let mut delay_text: String = String::new();
+
+    for (key, raw) in &entries {
+        // Go matches the JSON tag through `foldName` (Unicode case fold,
+        // delimiters significant); the switch below is on the FOLDED name while
+        // the error paths keep the input's spelling, since Go's
+        // `UnmarshalTypeError.Field` is the key as the input spelled it.
+        let folded: String = fold_name(key);
+        match folded.as_str() {
+            "ALL" => all_slot = Some(slot_rules(map, raw)?),
+            "ANY" => any_slot = Some(slot_rules(map, raw)?),
+            // `null` is Go's no-op (`Ok(None)`), so a later duplicate `null` does
+            // NOT erase an earlier value — verified against Go 1.27.4.
+            "SORT" => {
+                if let Some(text) = decode_string(raw, key)? {
+                    sort = text;
+                }
+            }
+            "ORDER" => {
+                if let Some(text) = decode_string(raw, key)? {
+                    order = text;
+                }
+            }
+            "LIMIT" => {
+                if let Some(number) = decode_int(raw, key)? {
+                    limit = number;
+                }
+            }
+            "LIMITPERCENT" => {
+                if let Some(number) = decode_int(raw, key)? {
+                    limit_percent = number;
+                }
+            }
+            "OFFSET" => {
+                if let Some(number) = decode_int(raw, key)? {
+                    offset = number;
+                }
+            }
+            "REFRESHDELAY" => {
+                if let Some(text) = decode_string(raw, key)? {
+                    delay_text = text;
+                }
+            }
+            // A key with no aux field is skipped by `encoding/json` without
+            // decoding it or erroring.
+            _ => {}
         }
-    };
-    let object = Value::Object(object);
-
-    // Go `criteria.go:126-128`: the slots are decoded by the same
-    // `json.Unmarshal(data, &aux)` call, so a bad slot value aborts before the
-    // conflict/rules checks below can run.
-    let all_slot: crate::json::OptionalConjunction = parse_slot(map, &object, "all".to_string())?;
-    let any_slot: crate::json::OptionalConjunction = parse_slot(map, &object, "any".to_string())?;
-
-    // Go `criteria.go:119-124`: the scalars come out of the same call, typed.
-    // `limit: "oops"` is Go's type error, never a silently-defaulted 0.
-    let sort: String = string_field(&object, "sort")?;
-    let order: String = string_field(&object, "order")?;
-    let limit: i64 = int_field(&object, "limit")?;
-    let limit_percent: i64 = int_field(&object, "limitPercent")?;
-    let offset: i64 = int_field(&object, "offset")?;
-    let delay_text: String = delay_field(&object)?;
+    }
 
     // Go `criteria.go:129-133`: a Criteria has a single top-level group. Reject
-    // payloads that provide both keys (even when one is [] or null) rather than
-    // silently dropping one.
-    if all_slot.present && any_slot.present {
+    // payloads that provide both keys (even when one is [] or null, and even when
+    // only one of them is spelled in the tag's own case) rather than silently
+    // dropping one.
+    if all_slot.is_some() && any_slot.is_some() {
         return Err(CriteriaError::Conflict);
     }
     // Go `criteria.go:134-140`: `any` wins over `all` when both carry rules.
-    let expression: Expression = if !any_slot.rules.is_empty() {
-        Expression::Any(any_slot.rules.clone())
-    } else if !all_slot.rules.is_empty() {
-        Expression::All(all_slot.rules.clone())
-    } else {
-        return Err(CriteriaError::MissingRules);
+    let expression: Expression = match (&any_slot, &all_slot) {
+        (Some(rules), _) if !rules.is_empty() => Expression::Any(rules.clone()),
+        (_, Some(rules)) if !rules.is_empty() => Expression::All(rules.clone()),
+        _ => return Err(CriteriaError::MissingRules),
     };
 
-    // Go `criteria.go:146-152`: `utils.ParseDuration`, wrapped as
+    // Go `criteria.go:141-144`: sort/order/limit/offset are assigned here, BEFORE
+    // the clamp below. Go `criteria.go:146-152`: `utils.ParseDuration`, wrapped as
     // `invalid refreshDelay: %w`.
     let refresh_delay: i64 = if delay_text.is_empty() {
         0
@@ -544,40 +808,26 @@ pub fn unmarshal_criteria(map: &FieldMap, data: Value) -> Result<Criteria, Crite
         expression,
         sort,
         order,
-        limit: clamp_i32(limit),
-        offset: clamp_i32(offset),
+        // Go's `int` is 64 bits on this target (`criteria.go:23-25`), so the
+        // decoded value is carried through unchanged: no narrowing and no
+        // saturation, which is what lets `limit: 9000000000` round-trip.
+        limit,
+        offset,
         // Go `criteria.go:154-162`: clamped before the field is set.
-        limit_percent: clamp_limit_percent(clamp_i32(limit_percent)),
+        limit_percent: clamp_limit_percent(limit_percent),
         refresh_delay,
     })
 }
 
-/// Fit a decoded JSON integer into the port's `i32` fields — Go's `int` is
-/// 64-bit (`criteria.go:121-123`). Out-of-range values saturate rather than
-/// wrap, so a huge `limit` cannot flip sign into a "no limit".
-#[must_use]
-fn clamp_i32(value: i64) -> i32 {
-    if value > i64::from(i32::MAX) {
-        i32::MAX
-    } else if value < i64::from(i32::MIN) {
-        i32::MIN
-    } else {
-        value as i32
-    }
-}
-
-/// Parse a criteria from raw JSON text — the byte form of Go's
-/// `json.Unmarshal(data, &c)` (`criteria.go:115`).
+/// The caller-side entry point Go's `unmarshalCriteriaStr` (`criteria.go:113-121`)
+/// is: it hands the bytes straight to `json.Unmarshal(data, &c)`, which is
+/// [`unmarshal_criteria`] — no intermediate parsed value, so the duplicate-key and
+/// case-folded behaviour of Go's decoder survives intact.
 ///
 /// # Errors
-/// [`CriteriaError::Slot`] when the text is not valid JSON at all, otherwise the
-/// errors of [`unmarshal_criteria`].
+/// Whatever [`unmarshal_criteria`] reports, including the malformed-JSON case.
 pub fn unmarshal_criteria_str(map: &FieldMap, text: String) -> Result<Criteria, CriteriaError> {
-    let data: Value = match serde_json::from_str(&text) {
-        Ok(value) => value,
-        Err(e) => return Err(CriteriaError::Slot(e.to_string())),
-    };
-    unmarshal_criteria(map, data)
+    unmarshal_criteria(map, &text)
 }
 
 #[cfg(test)]
@@ -893,6 +1143,267 @@ mod criteria_test {
             ),
             Err(e) => panic!("unknown keys must not error, got {e}"),
         }
+    }
+
+    /// `encoding/json` matches a struct field case-INSENSITIVELY and — with the
+    /// duplicate-name support this toolchain has on by default — decodes EVERY
+    /// occurrence of a key in input order. Verified against Go 1.27.4 with the
+    /// real aux struct shape (`json.Unmarshal(data, &aux)`, `criteria.go:126`),
+    /// both with the default (JSONv2) build and with `GOEXPERIMENT=none`:
+    ///
+    /// * `{"limit":1,"LIMIT":2}` and `{"limit":1,"limit":2}` → `limit == 2`, i.e.
+    ///   the LAST valid write wins;
+    /// * `{"limit":"oops","limit":1}` still ERRORS — the earlier type failure is
+    ///   what `get` returns, so the later valid duplicate never gets written even
+    ///   though the field holds a value;
+    /// * `{"LiMiT":3}` parses: the fold is against the JSON tag, and the error
+    ///   path keeps the INPUT's spelling (`.LiMiT`).
+    #[test]
+    fn duplicate_and_case_folded_field_names_follow_gos_input_order() {
+        let map = default_field_map();
+        let base = r#"{"all":[{"is":{"artist":"x"}}]"#;
+        // Act + Assert: last valid write wins, whatever the spelling.
+        for (json, want) in [
+            (format!("{base},\"limit\":1,\"limit\":2}}"), 2),
+            (format!("{base},\"limit\":1,\"LIMIT\":2}}"), 2),
+            (format!("{base},\"LiMiT\":3}}"), 3),
+            (format!("{base},\"offset\":1,\"OFFSET\":2}}"), 0),
+            (format!("{base},\"LIMITPERCENT\":50}}"), 0),
+        ] {
+            let parsed = unmarshal_criteria_str(&map, json.clone())
+                .unwrap_or_else(|e| panic!("{json} must parse, got {e}"));
+            assert_eq!(parsed.limit, want, "{json}");
+            if json.contains("offset") {
+                assert_eq!(parsed.offset, 2, "{json} — offset duplicate");
+            }
+            if json.contains("LIMITPERCENT") {
+                assert_eq!(parsed.limit_percent, 50, "{json} — folded tag");
+            }
+        }
+        // Act + Assert: a PRIOR type error survives a later valid duplicate.
+        for json in [
+            format!("{base},\"limit\":\"oops\",\"limit\":1}}"),
+            format!("{base},\"limit\":1,\"limit\":\"oops\"}}"),
+            format!("{base},\"LIMIT\":\"oops\"}}"),
+            format!("{base},\"limit\":1,\"limit\":null}}"),
+        ] {
+            if json.contains("limit\":1,\"limit\":null") {
+                // `null` is Go's no-op, so this one PARSES and keeps 1.
+                let parsed = unmarshal_criteria_str(&map, json.clone())
+                    .unwrap_or_else(|e| panic!("{json} must parse, got {e}"));
+                assert_eq!(parsed.limit, 1, "{json} — null leaves the field alone");
+                continue;
+            }
+            let err = unmarshal_criteria_str(&map, json.clone())
+                .expect_err("a prior type error is not rescued by a later duplicate");
+            assert!(
+                err.to_string().contains("cannot unmarshal string"),
+                "{json} — expected a type error, got {err}",
+            );
+        }
+        // Act + Assert: the error names the key AS THE INPUT SPELLED IT.
+        let upper = unmarshal_criteria_str(&map, format!("{base},\"LiMiT\":\"oops\"}}"))
+            .expect_err("type error regardless of case");
+        assert!(
+            upper.to_string().contains(".LiMiT of type int"),
+            "Go's UnmarshalTypeError.Field is the input's spelling, got {upper}",
+        );
+        // Act + Assert: the two required rejects from the brief.
+        assert!(unmarshal_criteria_str(&map, format!("{base},\"LIMIT\":\"oops\"}}")).is_err());
+        assert!(
+            unmarshal_criteria_str(&map, format!("{base},\"limit\":\"oops\",\"limit\":1}}"))
+                .is_err()
+        );
+    }
+
+    /// Finding 4: Go matches a struct field with `foldName`, i.e. Unicode
+    /// `EqualFold` — not an ASCII-only lower-case. Verified against Go 1.27.4:
+    /// `{"ſort":"x"}` binds `Sort == "x"` (long s U+017F folds to `S`),
+    /// `{"ſort":5}` is a type error naming the INPUT key
+    /// (`cannot unmarshal number into Go struct field aux.ſort of type string`),
+    /// and the delimiter rules stay intact — `{"limit_percent":5}` and
+    /// `{"limit-percent":5}` match nothing, while `{"limitpercent":5}` does.
+    #[test]
+    fn field_names_match_go_equal_fold_not_ascii_lowercase() {
+        let map = default_field_map();
+        let base = r#"{"all":[{"is":{"artist":"x"}}]"#;
+        // Act + Assert: the long s binds `sort` exactly like `SORT` does.
+        for key in ["sort", "SORT", "Sort", "\u{017F}ort", "\u{017F}ORT"] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":\"title\"}}"))
+                .unwrap_or_else(|e| panic!("{key} must match the `sort` tag, got {e}"));
+            assert_eq!(parsed.sort, "title", "{key} folds to `sort`");
+        }
+        // Act + Assert: a wrong JSON type under the folded name is Go's type
+        // error, and it names the key as the INPUT spelled it.
+        let err = unmarshal_criteria_str(&map, format!("{base},\"\u{017F}ort\":5}}"))
+            .expect_err("a number is not a string, whatever the key spelling");
+        assert!(
+            err.to_string().contains(
+                "cannot unmarshal number into Go struct field .\u{017F}ort of type string"
+            ),
+            "Go's UnmarshalTypeError.Field keeps the input spelling, got {err}",
+        );
+        // ASCII case folding keeps working for every other field, folded tag or
+        // not (`limitpercent` matches `limitPercent` because the fold ignores
+        // case only, and the tag itself has no delimiter).
+        for key in ["ORDER", "orDER", "order"] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":\"asc\"}}"))
+                .unwrap_or_else(|e| panic!("{key} must match the `order` tag, got {e}"));
+            assert_eq!(parsed.order, "asc", "{key} folds to `order`");
+        }
+        for key in ["OFFSET", "offset"] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":7}}"))
+                .unwrap_or_else(|e| panic!("{key} must match the `offset` tag, got {e}"));
+            assert_eq!(parsed.offset, 7, "{key} folds to `offset`");
+        }
+        for key in ["LIMIT", "limit"] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":7}}"))
+                .unwrap_or_else(|e| panic!("{key} must match the `limit` tag, got {e}"));
+            assert_eq!(parsed.limit, 7, "{key} folds to `limit`");
+        }
+        for key in ["limitpercent", "LIMITPERCENT", "limitPercent"] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":7}}"))
+                .unwrap_or_else(|e| panic!("{key} must match the `limitPercent` tag, got {e}"));
+            assert_eq!(parsed.limit_percent, 7, "{key} folds to `limitPercent`");
+        }
+        for key in ["REFRESHDELAY", "refreshDelay"] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":\"30s\"}}"))
+                .unwrap_or_else(|e| panic!("{key} must match the `refreshDelay` tag, got {e}"));
+            assert_eq!(
+                parsed.refresh_delay, 30_000_000_000,
+                "{key} folds to `refreshDelay`"
+            );
+        }
+        // Act + Assert: delimiters are NOT folded away (v1 `foldName` keeps `_`
+        // and `-`, and Go agrees), so these bind nothing.
+        for key in [
+            "limit_percent",
+            "limit-percent",
+            "LIMIT_PERCENT",
+            "limit_percent",
+        ] {
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{key}\":50}}"))
+                .unwrap_or_else(|e| panic!("{key} must be ignored, got {e}"));
+            assert_eq!(parsed.limit_percent, 0, "{key} is not `limitPercent`");
+        }
+        // `Kimit` (KELVIN SIGN, U+212A) folds to `K`, not `L`, so it matches
+        // nothing — the fold table is Go's, not a loose similarity.
+        let parsed = unmarshal_criteria_str(&map, format!("{base},\"\u{212A}imit\":5}}"))
+            .expect("a non-matching folded name is ignored, not an error");
+        assert_eq!(
+            parsed.limit, 0,
+            "U+212A folds to K, so `Kimit` binds nothing"
+        );
+    }
+
+    /// Finding 3: after the top-level value Go's scanner accepts ONLY the four
+    /// JSON whitespace characters. Verified against Go 1.27.4, where `{}` +
+    /// U+00A0, VT, U+2028 or U+2029 is `invalid character … after top-level
+    /// value` — `str::trim` would have silently accepted all of them.
+    #[test]
+    fn only_json_whitespace_is_allowed_after_the_top_level_value() {
+        let map = default_field_map();
+        let payload = r#"{"all":[{"is":{"artist":"x"}}],"limit":3}"#;
+        // Act + Assert: the four JSON whitespace characters are fine.
+        for tail in ["", " ", "\t", "\n", "\r", " \t\n\r "] {
+            let parsed = unmarshal_criteria_str(&map, format!("{payload}{tail}"))
+                .unwrap_or_else(|e| panic!("{tail:?} after the value must parse, got {e}"));
+            assert_eq!(parsed.limit, 3, "{tail:?}");
+        }
+        // Act + Assert: Unicode whitespace that Rust's `is_whitespace` accepts is
+        // a decode error in Go.
+        for tail in [
+            "\u{00a0}", "\u{000b}", "\u{000c}", "\u{2028}", "\u{2029}", "\u{2002}", "é", "}", "{}",
+        ] {
+            let err = unmarshal_criteria_str(&map, format!("{payload}{tail}"))
+                .expect_err("{tail:?} is not JSON whitespace, Go rejects it");
+            assert!(
+                err.to_string().contains("after top-level value"),
+                "{tail:?} — expected the trailing-garbage error, got {err}"
+            );
+        }
+        // Leading Unicode whitespace is likewise rejected before the value starts.
+        assert!(
+            unmarshal_criteria_str(&map, format!("\u{00a0}{payload}")).is_err(),
+            "U+00A0 before the value is not JSON whitespace"
+        );
+    }
+
+    /// Go's `Limit`/`Offset` are `int` (`criteria.go:23-25`), 64 bits on this
+    /// target, so a value beyond `i32` parses, is held, and marshals back
+    /// unchanged — no narrowing, no saturation. `LimitPercent` keeps its own
+    /// `[0, 100]` clamp (`criteria.go:154-162`) independently of the width.
+    #[test]
+    fn limit_and_offset_keep_gos_64_bit_int_through_parse_and_marshal() {
+        let map = default_field_map();
+        let base = r#"{"all":[{"contains":{"title":"love"}}]"#;
+        for (field, value) in [
+            ("limit", i64::MAX),
+            ("limit", 9_000_000_000_i64),
+            ("limit", i64::from(i32::MAX) + 1),
+            ("offset", i64::MAX),
+            ("offset", 9_000_000_000_i64),
+            ("offset", -9_000_000_000_i64),
+        ] {
+            // Act: parse.
+            let parsed = unmarshal_criteria_str(&map, format!("{base},\"{field}\":{value}}}"))
+                .unwrap_or_else(|e| panic!("{field}:{value} must parse, got {e}"));
+            // Assert: the value survives the parse intact.
+            let held = if field == "limit" {
+                parsed.limit
+            } else {
+                parsed.offset
+            };
+            assert_eq!(held, value, "{field}:{value} must not be narrowed");
+            // Act: marshal back (Go's `json.Marshal(aux)` with an `int` field).
+            let text = marshal_criteria(&parsed);
+            // Assert: the wire carries the same number, and round-trips.
+            assert!(
+                text.contains(&format!("\"{field}\":{value}")),
+                "{field}:{value} must round-trip, got {text}",
+            );
+            let again = unmarshal_criteria_str(&map, text.clone())
+                .unwrap_or_else(|e| panic!("re-parse of {text} failed: {e}"));
+            let again_held = if field == "limit" {
+                again.limit
+            } else {
+                again.offset
+            };
+            assert_eq!(again_held, value, "re-parse of {text}");
+        }
+        // Act + Assert: beyond int64 is Go's type error, not a wrap (`strconv
+        // .ParseInt(s, 10, 64)`).
+        let overflow =
+            unmarshal_criteria_str(&map, format!("{base},\"limit\":9223372036854775808}}"))
+                .expect_err("int64 overflow is Go's UnmarshalTypeError");
+        assert!(
+            overflow
+                .to_string()
+                .contains("cannot unmarshal number 9223372036854775808"),
+            "got {overflow}",
+        );
+        // Act + Assert: the percentage clamp is unaffected by the width.
+        let clamped = unmarshal_criteria_str(&map, format!("{base},\"limitPercent\":150}}"))
+            .expect("limitPercent 150 parses then clamps");
+        assert_eq!(clamped.limit_percent, 100, "clamp intact at the top");
+        let negative = unmarshal_criteria_str(&map, format!("{base},\"limitPercent\":-5}}"))
+            .expect("negative limitPercent parses then clamps");
+        assert_eq!(negative.limit_percent, 0, "clamp intact at the bottom");
+        // Act + Assert: a percentage resolved from a large total stays 64-bit
+        // (`effective_limit`, `criteria.go:41`).
+        let wide = Criteria {
+            expression: Expression::All(vec![Expression::Contains(title_leaf("love".to_string()))]),
+            limit: 0,
+            limit_percent: 100,
+            offset: 0,
+            sort: String::new(),
+            order: String::new(),
+            refresh_delay: 0,
+        };
+        assert_eq!(effective_limit(&wide, 90_000_000), 90_000_000);
+        let mut resolved = wide.clone();
+        resolve_limit(&mut resolved, 9_000_000_000);
+        assert_eq!(resolved.limit, 9_000_000_000, "resolved limit is 64-bit");
     }
 
     #[test]

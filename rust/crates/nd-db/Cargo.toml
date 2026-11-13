@@ -16,7 +16,7 @@ nd-utils = { version = "0.1.0", path = "../nd-utils" }
 # version+features verbatim (nd-dbschema/Cargo.toml:14 is the template). The
 # `chrono` feature is the crate-wide timestamp convention (src/time.rs):
 # `ToSql for DateTime<Utc>` stores '%F %T%.f%:z' TEXT (types/chrono.rs:88-93).
-rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup", "chrono"] }
+rusqlite = { version = "0.32", features = ["bundled", "collation", "functions", "backup", "chrono", "column_decltype"] }
 # The record fields' timestamp type; already in Cargo.lock via nd-events/
 # nd-mapping/nd-sched, so --locked builds gain no new crate.
 chrono = "0.4"

@@ -104,7 +104,7 @@
 //! No new prefixes are invented; hooks whose Go code has no wrapper use
 //! the codec's own message.
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
 use rusqlite::types::Type;
 use rusqlite::{Error as SqliteError, Result as SqliteResult, Row};
 
@@ -256,6 +256,13 @@ pub trait RowGet {
     /// allocates a fresh `time.Time` for it (`convert.go:495-496`). That is why
     /// Go's JSON for such a field still renders `0001-01-01T00:00:00Z` instead
     /// of being dropped by `omitempty`.
+    ///
+    /// Both arms are keyed on the column's DECLARED type
+    /// (`sqlite3.go:2782`/`:2822`): an INTEGER cell in a declared
+    /// `datetime`/`timestamp`/`date` column is NOT a conversion failure either
+    /// (see [`driver_integer_dt`]), and TEXT in any OTHER declared type — or in
+    /// an expression column, which has no decltype — is a scan error rather than
+    /// a parse (see [`RowGet::get_gotime`]).
     fn get_opt_dt(&self, column: &str) -> SqliteResult<Option<DateTime<Utc>>>;
 
     /// A non-pointer `time.Time` column: **SQL NULL errors** (Go parity —
@@ -263,8 +270,19 @@ pub trait RowGet {
     /// non-NULL value the driver cannot parse scans as [`go_zero_time`] with no
     /// error, exactly as Go's DATETIME arm does (`sqlite3.go:2832-2842`). The
     /// DDL's [`crate::time::ZERO_DATE_SENTINEL`] default therefore scans, it does
-    /// not fail the read.
+    /// not fail the read — and only in a DECLARED timestamp column, since the
+    /// arm is keyed on the declared type (`sqlite3.go:2822`).
     fn get_dt(&self, column: &str) -> SqliteResult<DateTime<Utc>>;
+
+    /// The same cell as Go's `time.Time` INCLUDING the zone the driver parsed it
+    /// with — the shape an annotation timestamp's wire text needs, which a
+    /// `DateTime<Utc>` cannot carry (see [`GoTime`]). NULL → `None`; a value the
+    /// driver cannot decode → `Some(`[`go_zero_gotime`]`)`; a cell whose driver
+    /// type cannot be stored into `time.Time` at all → an error, which is every
+    /// REAL/BLOB cell, every INTEGER outside a declared timestamp column, and
+    /// every TEXT outside a declared timestamp column — including an expression
+    /// column, which has no declared type at all.
+    fn get_gotime(&self, column: &str) -> SqliteResult<Option<GoTime>>;
 
     /// `true` when the row's SELECT emits `column`. The
     /// absent-optional-column rule: joined columns (`annotation`,
@@ -328,19 +346,60 @@ impl RowGet for Row<'_> {
         // SQL NULL → None (nil pointer); unparseable text → Some(Go's zero),
         // NOT an error and NOT None — the driver never fails a DATETIME parse
         // and `database/sql` allocates a pointer for the value it gets back.
-        let raw: Option<String> = self.get(column)?;
-        Ok(raw.map(|text| driver_parse_dt(&text)))
+        Ok(self.get_gotime(column)?.map(|t| t.to_utc()))
     }
 
     fn get_dt(&self, column: &str) -> SqliteResult<DateTime<Utc>> {
         // Non-pointer Go `time.Time`: SQL NULL errors like every bare getter
         // (`convert.go` cannot store nil into `*time.Time`), and any non-NULL
-        // text — the DDL sentinel included — scans, unparseable ones as Go's
+        // value — the DDL sentinel included — scans, undecodable TEXT as Go's
         // zero time.
-        let raw: Option<String> = self.get(column)?;
-        match raw {
+        match self.get_gotime(column)? {
             None => Err(null_required(column, Type::Text)),
-            Some(text) => Ok(driver_parse_dt(&text)),
+            Some(t) => Ok(t.to_utc()),
+        }
+    }
+
+    fn get_gotime(&self, column: &str) -> SqliteResult<Option<GoTime>> {
+        // The driver switches on the STORAGE type first (`sqlite3.go:2779`,
+        // `:2813`) and only then on the column's DECLARED type, so both have to be
+        // inspected: an INTEGER in a `datetime` column is a timestamp, an INTEGER
+        // in a plain `INTEGER` column is not.
+        match self.get_ref(column)? {
+            // `SQLITE_NULL` → `dest[i] = nil` (`:2832`): a nil pointer for the
+            // `opt` form, which the bare getter turns into its error.
+            rusqlite::types::ValueRef::Null => Ok(None),
+            rusqlite::types::ValueRef::Integer(number) => {
+                if is_timestamp_decltype(column_decl_type(self, column).as_deref()) {
+                    Ok(Some(driver_integer_dt(number)))
+                } else {
+                    // `database/sql` cannot store the driver's `int64` into a
+                    // `time.Time`, so the scan fails rather than guessing.
+                    Err(unsupported_scan(column, "int64"))
+                }
+            }
+            rusqlite::types::ValueRef::Real(_) => Err(unsupported_scan(column, "float64")),
+            rusqlite::types::ValueRef::Text(bytes) => {
+                // The TEXT arm is likewise gated on the DECLARED type
+                // (`sqlite3.go:2822`): only `timestamp`/`datetime`/`date` run the
+                // nine-format parse and hand back a `time.Time` (zero on parse
+                // failure, no error, `:2832-2842`). Every OTHER declared type —
+                // `TEXT`, `varchar(255)`, `datetime(3)`, and an expression column
+                // such as `SELECT '…' AS dt` or `CAST(dt AS TEXT)`, which has no
+                // decltype at all — falls to `default` (`:2841`) and the driver
+                // hands back a `string`, which `database/sql` cannot store into
+                // `time.Time`: a scan error, not a silent parse
+                // (`database/sql/convert.go`, verified against the pinned driver
+                // on Go 1.27.4).
+                if !is_timestamp_decltype(column_decl_type(self, column).as_deref()) {
+                    return Err(unsupported_scan(column, "string"));
+                }
+                let text = std::str::from_utf8(bytes).map_err(|e| {
+                    SqliteError::FromSqlConversionFailure(0, Type::Text, Box::new(e))
+                })?;
+                Ok(Some(driver_parse_text_dt(text)))
+            }
+            rusqlite::types::ValueRef::Blob(_) => Err(unsupported_scan(column, "[]byte")),
         }
     }
 
@@ -373,75 +432,674 @@ fn null_required(column: &str, ty: Type) -> SqliteError {
     SqliteError::FromSqlConversionFailure(0, ty, Box::new(NullRequired(column.to_string())))
 }
 
-/// The pinned driver's DATETIME decode (`go-sqlite3@v1.14.52/sqlite3.go:2821-2842`)
-/// as one fn, shared by [`RowGet::get_dt`] and [`RowGet::get_opt_dt`]:
-///
-/// * trailing `Z` is trimmed (`sqlite3.go:2823`), then `SQLiteTimestampFormats`
-///   (`:331-343`) are tried in order in UTC;
-/// * **any** failure assigns `time.Time{}` and reports NO error
-///   (`:2832-2842`) — the DDL's `'0000-00-00 00:00:00'` default, a naive
-///   `CURRENT_TIMESTAMP` value that carries no offset, and outright garbage all
-///   land here;
-/// * the value is then converted to the connection location (`:2836-2838`),
-///   which this port keeps at UTC (no `_loc` DSN parameter is set).
-///
-/// So an unparseable cell is [`go_zero_time`], never an error and never "absent".
-#[must_use]
-fn driver_parse_dt(text: &str) -> DateTime<Utc> {
-    // The pinned driver's own loop (`sqlite3.go:2821-2842`): trim a trailing `Z`,
-    // then try `SQLiteTimestampFormats` (`:331-343`) in order, all in UTC.
-    // Go reports an error for an impossible calendar date (`0000-00-00` — the
-    // DDL sentinel — included) and the driver's failure arm assigns
-    // `time.Time{}` with NO error, so unparseable text is [`go_zero_time`].
-    let trimmed = text.strip_suffix('Z').unwrap_or(text);
-    // Go's layouts all begin with the literal `2006-01-02`; chrono's `%F` also
-    // accepts other separators and underflows `0000-00-00` into a plausible
-    // date, so the head is validated first.
-    let Some(date) = go_calendar_date(trimmed) else {
-        return go_zero_time();
-    };
-    let rest = trimmed.get(10..).unwrap_or("");
-    // Formats 1-2: date, time, optional fraction, and an offset — an instant,
-    // converted to UTC (Go parses in UTC and then converts to the connection
-    // location, which this port keeps at UTC).
-    for format in ["%F %T%.f%:z", "%FT%T%.f%:z", "%F %T%.f%#z", "%FT%T%.f%#z"] {
-        if !rest.is_empty() {
-            if let Ok(dt) = DateTime::parse_from_str(trimmed, format) {
-                return dt.with_timezone(&Utc);
-            }
-        }
-    }
-    // Formats 3-8: date + time with no offset, read in UTC exactly as
-    // `ParseInLocation(…, time.UTC)`; minute precision fills seconds with zero.
-    for format in ["%F %T%.f", "%FT%T%.f", "%F %H:%M", "%FT%H:%M"] {
-        if !rest.is_empty() {
-            if let Ok(naive) = NaiveDateTime::parse_from_str(trimmed, format) {
-                return Utc.from_utc_datetime(&naive);
-            }
-        }
-    }
-    // Format 9: date only, midnight.
-    if rest.is_empty() {
-        return Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap_or_default());
-    }
-    // Go's `err != nil` arm: `t = time.Time{}`, and no error is reported.
-    go_zero_time()
+/// The Go-parity failure for a cell whose driver value cannot be stored into a
+/// Go `time.Time` (`database/sql/convert.go`: "unsupported Scan, storing
+/// driver.Value type … into type *time.Time"). Reached when a REAL/BLOB cell, or
+/// an INTEGER in a column whose DECLARED type is not one of the driver's three
+/// timestamp names, is scanned into a time field.
+fn unsupported_scan(column: &str, driver_type: &str) -> SqliteError {
+    SqliteError::FromSqlConversionFailure(
+        0,
+        Type::Text,
+        Box::new(UnsupportedScan {
+            column: column.to_string(),
+            driver_type: driver_type.to_string(),
+        }),
+    )
 }
 
-/// The calendar date Go's `time.Parse` requires at the head of every accepted
-/// layout: `YYYY-MM-DD` with real dashes and a valid month/day. `None` means Go
-/// reports a parse error, which the driver turns into [`go_zero_time`].
-fn go_calendar_date(text: &str) -> Option<NaiveDate> {
-    let head = text.get(..10)?;
-    let bytes = head.as_bytes();
-    if bytes[4] != b'-' || bytes[7] != b'-' {
+#[derive(Debug)]
+struct UnsupportedScan {
+    column: String,
+    driver_type: String,
+}
+
+impl std::fmt::Display for UnsupportedScan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "unsupported Scan, storing driver.Value type {} into type *time.Time (column `{}`)",
+            self.driver_type, self.column
+        )
+    }
+}
+
+impl std::error::Error for UnsupportedScan {}
+
+/// An instant together with the zone Go's driver gave it — the port's stand-in
+/// for a `time.Time` whose `loc` is a `time.FixedZone`.
+///
+/// The pinned driver decodes TEXT timestamps with
+/// `time.ParseInLocation(format, s, time.UTC)` (`sqlite3.go:2827`), and a layout
+/// ending in `-07:00` makes Go's parser attach the VALUE's own offset
+/// (`time/format.go`'s `parse`: the `zoneOffset != -1` arm calls
+/// `t.setLoc(FixedZone(zoneName, zoneOffset))` when no local zone matches).
+/// The instant is the offset-subtracted one, but the zone survives, and
+/// `encoding/json` renders a `time.Time`/`*time.Time` with it — `RFC3339Nano`
+/// prints the offset and reserves `Z` for a zero offset. `DateTime<Utc>` alone
+/// cannot carry that, so the annotation DTO's wire text needs this pair, not a
+/// UTC-normalised instant.
+///
+/// Offsets are plain seconds rather than chrono's `FixedOffset` because Go's
+/// accepted range is wider: its offset arm allows hour ≤ 24 and minute ≤ 60
+/// (`>` rather than `>=`, "as some people do write offsets of 24 hours"), so
+/// `|offset| ≤ 90060`, while `FixedOffset::east_opt` stops at 86399.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoTime {
+    /// The instant as UTC calendar fields (what `t.UTC()` shows).
+    pub utc: NaiveDateTime,
+    /// The zone offset in seconds; `0` is Go's UTC location, rendered `Z`.
+    pub offset_secs: i32,
+}
+
+impl GoTime {
+    /// The instant as `DateTime<Utc>` — what a record's timestamp field holds.
+    #[must_use]
+    pub fn to_utc(&self) -> DateTime<Utc> {
+        DateTime::from_naive_utc_and_offset(self.utc, Utc)
+    }
+
+    /// Go's `time.Time.IsZero()` (`t.wall == 0 && t.ext == 0`): the *instant* is
+    /// year 1 January midnight, whatever the zone. So `0001-01-01 03:00:00+03:00`
+    /// IS Go's zero — its instant is year-1 midnight UTC — while still rendering
+    /// `+03:00`; `0001-01-01 00:00:00-03:00` is not zero.
+    #[must_use]
+    pub fn is_go_zero(&self) -> bool {
+        self.utc == go_zero_time().naive_utc()
+    }
+
+    /// Go's `time.Format(time.RFC3339Nano)` — the text `encoding/json` gives a
+    /// `time.Time`: `T`-separated, fractional seconds with trailing zeros trimmed
+    /// and no fraction at all when zero, and the zone spelled `Z` for a zero
+    /// offset or `±HH:MM` otherwise.
+    ///
+    /// Go's strict RFC3339 formatter REJECTS a zone hour outside `[0, 23]`
+    /// (`timezone hour outside of range [0,23]`), which makes Go's
+    /// `json.Marshal` of that value fail outright (verified against the pinned
+    /// toolchain for `2024-02-02 03:00:00+24:60`, whose offset parses as 25
+    /// hours). The failure belongs to marshal time — a read the driver already
+    /// succeeded — and the annotation DTO has no error channel, so the port
+    /// renders the UTC-normalised text instead. That is the one documented
+    /// divergence in this fn.
+    #[must_use]
+    pub fn to_rfc3339_nano(&self) -> String {
+        // Go's check looks at the printed zone HOUR DIGITS and rejects `>= 24`,
+        // so ±18:30 renders normally and only the magnitude of the hour matters.
+        if self.offset_secs.abs() / 3600 > 23 {
+            return utc_rfc3339_nano(self.to_utc());
+        }
+        let zone = if self.offset_secs == 0 {
+            "Z".to_string()
+        } else {
+            let sign = if self.offset_secs < 0 { '-' } else { '+' };
+            let abs = self.offset_secs.abs();
+            format!("{sign}{:02}:{:02}", abs / 3600, (abs % 3600) / 60)
+        };
+        // Go formats `t.locabs()` — the WALL reading in the value's own zone, i.e.
+        // the instant plus its offset — while the nanoseconds are zone-
+        // independent. So `2024-02-02 03:00:00+03:00` renders `…T03:00:00+03:00`,
+        // NOT the UTC fields.
+        let Some(wall) = self.wall() else {
+            return utc_rfc3339_nano(self.to_utc());
+        };
+        format!(
+            "{}{}{}",
+            wall.format("%Y-%m-%dT%H:%M:%S"),
+            go_fraction(&wall),
+            zone
+        )
+    }
+
+    /// The wall-clock reading in this value's zone — Go's `t.locabs()`: the UTC
+    /// instant shifted by the offset. `None` when the shift leaves chrono's
+    /// calendar range.
+    #[must_use]
+    fn wall(&self) -> Option<NaiveDateTime> {
+        let delta = chrono::Duration::try_seconds(i64::from(self.offset_secs))?;
+        self.utc.checked_add_signed(delta)
+    }
+}
+
+/// The zero-time fallback the driver's failure arms assign, as a [`GoTime`]:
+/// year 1 midnight with a UTC zone, so the wire text is `0001-01-01T00:00:00Z`.
+#[must_use]
+fn go_zero_gotime() -> GoTime {
+    GoTime {
+        utc: go_zero_time().naive_utc(),
+        offset_secs: 0,
+    }
+}
+
+/// Go's `RFC3339Nano` text for a `DateTime<Utc>`: the shape `encoding/json`
+/// renders a UTC `time.Time` with, and the shape a value with an unrenderable
+/// zone is normalised to (see [`GoTime::to_rfc3339_nano`]).
+#[must_use]
+fn utc_rfc3339_nano(dt: DateTime<Utc>) -> String {
+    // Go prints the fraction with trailing zeros trimmed and none at all when
+    // it is zero; chrono's `%.f` keeps the zeros, so render nine digits and
+    // trim here.
+    let text = dt.format(GO_RFC3339_NANO).to_string();
+    let Some(dot) = text.find('.') else {
+        return text;
+    };
+    let (head, fraction_and_z) = text.split_at(dot);
+    let fraction = fraction_and_z.trim_end_matches('Z').trim_end_matches('0');
+    if fraction == "." || fraction.is_empty() {
+        format!("{head}Z")
+    } else {
+        format!("{head}{fraction}Z")
+    }
+}
+
+/// Go's `RFC3339Nano` fractional second for a naive instant: `.N…` with trailing
+/// zeros trimmed, absent when the nanoseconds are zero.
+#[must_use]
+fn go_fraction(dt: &NaiveDateTime) -> String {
+    let nanos = dt.nanosecond() % 1_000_000_000;
+    if nanos == 0 {
+        return String::new();
+    }
+    format!(".{}", format!("{nanos:09}").trim_end_matches('0'))
+}
+
+/// `true` when a column's declared type makes the pinned driver treat its cells
+/// as timestamps: `sqlite3.go:2782` and `:2822` both switch on `decltype[i]`
+/// matching EXACTLY one of `columnTimestamp`/`columnDatetime`/`columnDate`
+/// (`:345-348`), with the decltype lower-cased at `:2645`. Matching is exact, not
+/// a substring: a declared `datetime(3)` is none of them, so its cells keep their
+/// storage type — verified against the pinned driver, where an INTEGER in a
+/// `datetime(3)` column scans into `time.Time` as an `unsupported Scan` error.
+#[must_use]
+fn is_timestamp_decltype(decl_type: Option<&str>) -> bool {
+    matches!(
+        decl_type,
+        Some("timestamp") | Some("datetime") | Some("date")
+    )
+}
+
+/// The declared type of a row's column, lower-cased exactly as the driver's
+/// `declTypes` does (`sqlite3.go:2638-2649`).
+///
+/// rusqlite exposes the same `sqlite3_column_decltype` through the statement
+/// behind the row (`Row::as_ref` → `Statement::columns()`, feature
+/// `column_decltype`). An expression (`SELECT CAST(1 AS INTEGER)`) has no
+/// declared type — `None` — and the driver's switch then takes `default`, so the
+/// value keeps its storage type.
+fn column_decl_type(row: &Row<'_>, column: &str) -> Option<String> {
+    // rusqlite's `Row: AsRef<Statement>` (`row.rs:349-353`) is the same
+    // `sqlite3_column_decltype` the driver reads, and `columns()` is gated on the
+    // `column_decltype` feature (`column.rs:145-159`).
+    let stmt = row.as_ref();
+    let index = stmt.column_index(column).ok()?;
+    let columns = stmt.columns();
+    let decl = columns.get(index)?.decl_type()?;
+    Some(decl.to_lowercase())
+}
+
+/// The pinned driver's TEXT DATETIME decode (`sqlite3.go:2821-2842`) as Go's own
+/// grammar, shared by [`RowGet::get_dt`], [`RowGet::get_opt_dt`] and the
+/// annotation wire-text reader:
+///
+/// * `strings.TrimSuffix(s, "Z")` (`:2823`) removes **exactly one** trailing `Z`,
+///   so `…+03:00Z` only loses the last character and still matches format 1, while
+///   `…ZZ` matches nothing;
+/// * `SQLiteTimestampFormats` (`:331-343`) are tried in order, each with
+///   `time.ParseInLocation(format, s, time.UTC)` — the first success wins;
+/// * **any** failure assigns `time.Time{}` and reports NO error (`:2832-2842`):
+///   the DDL's `'0000-00-00 00:00:00'` default and outright garbage land there
+///   (a NAIVE `CURRENT_TIMESTAMP` value such as `2024-02-02 03:00:00` does NOT —
+///   it matches layout 3 and is a real stamp parsed as UTC);
+/// * the connection location (`:2836-2838`) is UTC here — no `_loc` DSN parameter
+///   is set anywhere in Navidrome — which does NOT normalise away a zone a value
+///   was parsed with, hence [`GoTime`] rather than a bare `DateTime<Utc>`.
+///
+/// [`go_parse_timestamp`] spells the grammar because chrono's patterns are a
+/// different language: chrono's `%#z` accepts a bare `+03`, `%:z` accepts `+0300`,
+/// neither accepts Go's comma fractional seconds, and `%F` accepts other
+/// separators and underflows `0000-00-00` into a plausible date.
+///
+/// So an unparseable cell is Go's zero time — never an error, never "absent".
+#[must_use]
+pub fn driver_parse_text_dt(text: &str) -> GoTime {
+    for format in SQLITE_TIMESTAMP_FORMATS {
+        if let Some(parsed) = go_parse_timestamp(text, *format) {
+            return parsed;
+        }
+    }
+    // Go's `err != nil` arm: `t = time.Time{}`, and no error is reported.
+    go_zero_gotime()
+}
+
+/// The driver's nine layouts in its own order (`SQLiteTimestampFormats`,
+/// `sqlite3.go:331-343`), described rather than spelled as Go's reference
+/// layout: the only variables are the date/time separator, whether seconds are
+/// present, whether an offset is required, and whether the layout ends at the
+/// date.
+const SQLITE_TIMESTAMP_FORMATS: &[GoFormat] = &[
+    GoFormat {
+        separator: ' ',
+        seconds: true,
+        offset: Some(ZoneStyle::Colon),
+        date_only: false,
+    },
+    GoFormat {
+        separator: 'T',
+        seconds: true,
+        offset: Some(ZoneStyle::Colon),
+        date_only: false,
+    },
+    GoFormat {
+        separator: ' ',
+        seconds: true,
+        offset: None,
+        date_only: false,
+    },
+    GoFormat {
+        separator: 'T',
+        seconds: true,
+        offset: None,
+        date_only: false,
+    },
+    GoFormat {
+        separator: ' ',
+        seconds: true,
+        offset: None,
+        date_only: false,
+    },
+    GoFormat {
+        separator: 'T',
+        seconds: true,
+        offset: None,
+        date_only: false,
+    },
+    GoFormat {
+        separator: ' ',
+        seconds: false,
+        offset: None,
+        date_only: false,
+    },
+    GoFormat {
+        separator: 'T',
+        seconds: false,
+        offset: None,
+        date_only: false,
+    },
+    GoFormat {
+        separator: ' ',
+        seconds: false,
+        offset: None,
+        date_only: true,
+    },
+];
+
+/// One `SQLiteTimestampFormats` entry.
+#[derive(Debug, Clone, Copy)]
+struct GoFormat {
+    /// The literal between `2006-01-02` and `15:04:05` (`' '` or `'T'`).
+    separator: char,
+    /// Whether the layout carries `:05` after the minutes.
+    seconds: bool,
+    /// Which zone the layout requires (`None` = none of it).
+    offset: Option<ZoneStyle>,
+    /// Whether the layout ends at the date.
+    date_only: bool,
+}
+
+/// The zone half of a layout. Only `-07:00` appears in `SQLiteTimestampFormats`;
+/// the variants Go's parser folds together (`stdNumColonTZ` and friends) are
+/// kept as an enum so the grammar table stays honest about what it accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZoneStyle {
+    /// `-07:00` — sign, two digits, colon, two digits.
+    Colon,
+}
+
+/// Go's `time.Parse` for one of the nine layouts, as far as those layouts can be
+/// described (`time/format.go`'s `parse`, `getnum`, `parseNanoseconds`). The
+/// rules that a chrono pattern would get wrong are all here, each verified
+/// against the pinned Go toolchain:
+///
+/// * `2006-01-02` — `stdLongYear` wants four digits, and `stdZeroMonth`/
+///   `stdZeroDay` are `fixed`, so exactly two digits each (a single-digit month
+///   or day is an error); month `1..12`, day validated leap-year-aware;
+/// * `15:04:05` — the HOUR is `stdHour`, whose `getnum(value, false)` accepts a
+///   ONE-digit hour (`2024-02-02 3:00:00` parses); minute and second are
+///   `stdZeroMinute`/`stdZeroSecond` — `fixed`, two digits each. Hour `< 24`,
+///   minute and second `< 60`;
+/// * `.999999999` — `stdFracSecond9`: optional, accepts a comma exactly like a
+///   period (`commaOrPeriod`), takes any number of digits ("even more than asked
+///   for"), and `parseNanoseconds` truncates to ten CHARACTERS (the separator
+///   counted) before scaling, so `.999999999999` is `.999999999` and `,5` is `.5`;
+/// * `-07:00` — exactly six characters with `':'` at index 3; a bare `+03`, a
+///   `+0300` or a one-digit `+1:30` is `errBad`. Ranges are `hour ≤ 24`,
+///   `minute ≤ 60`, so `+24:60` parses as a 25-hour offset;
+/// * Go's `skip` folds a layout space into a run of spaces, so
+///   `2024-02-02  03:00:00` parses while `2024-02-02\t03:00:00` does not;
+/// * leftover text after the layout is Go's `extra text` error;
+/// * a layout with seconds still consumes a fraction the value carries —
+///   `stdZeroSecond`'s "do we have a fractional second but no fractional second
+///   in the layout?" arm — which is why the seconds layouts all accept `.5`.
+#[must_use]
+fn go_parse_timestamp(text: &str, format: GoFormat) -> Option<GoTime> {
+    // `strings.TrimSuffix(s, "Z")`, one final `Z`, applied per attempt exactly as
+    // the driver does it once before the loop (identical result either way, kept
+    // here so each layout sees the same input the driver hands Go).
+    let value = text.strip_suffix('Z').unwrap_or(text);
+    let mut rest = value;
+    let date = go_fixed_date(rest)?;
+    rest = &rest[10..];
+
+    if format.date_only {
+        // Layout 9 ends at the date; anything left over is Go's `extra text`.
+        if !rest.is_empty() {
+            return None;
+        }
+        return Some(GoTime {
+            utc: date.and_hms_opt(0, 0, 0)?,
+            offset_secs: 0,
+        });
+    }
+
+    // The separator literal. Go's `skip` only folds spaces, and the `T` layouts
+    // contain no space, so `2024-02-02 03:00` cannot match layout 7 but does
+    // match layout 6 — the order of the table is what decides which one wins.
+    if format.separator == 'T' {
+        if rest.is_empty() || rest.as_bytes()[0] != b'T' {
+            return None;
+        }
+        rest = &rest[1..];
+    } else {
+        if rest.is_empty() || rest.as_bytes()[0] != b' ' {
+            return None;
+        }
+        rest = go_cutspace(rest);
+    }
+
+    let (hour, mut rest) = go_num(rest, false)?;
+    if hour >= 24 {
         return None;
     }
-    let mut parts = head.split('-');
-    let year: i32 = parts.next()?.parse().ok()?;
-    let month: u32 = parts.next()?.parse().ok()?;
-    let day: u32 = parts.next()?.parse().ok()?;
+    if rest.is_empty() || rest.as_bytes()[0] != b':' {
+        return None;
+    }
+    rest = &rest[1..];
+    let minute = go_fixed_num(rest, 2)?;
+    if minute >= 60 {
+        return None;
+    }
+    rest = &rest[2..];
+
+    let mut second: u32 = 0;
+    let mut nanos: u32 = 0;
+    if format.seconds {
+        if rest.is_empty() || rest.as_bytes()[0] != b':' {
+            return None;
+        }
+        rest = &rest[1..];
+        second = go_fixed_num(rest, 2)?;
+        if second >= 60 {
+            return None;
+        }
+        rest = &rest[2..];
+        let (remainder, fraction) = go_fraction_digits(rest);
+        nanos = fraction;
+        rest = remainder;
+    }
+
+    let mut offset_secs: i32 = 0;
+    if format.offset == Some(ZoneStyle::Colon) {
+        let (offset, remainder) = go_num_colon_tz(rest)?;
+        offset_secs = offset;
+        rest = remainder;
+    }
+    // Go's `parse` ends with `if len(value) != 0 { … extra text … }`.
+    if !rest.is_empty() {
+        return None;
+    }
+
+    let naive = date.and_hms_nano_opt(hour, minute, second, nanos)?;
+    // Parsed with the UTC location, so the offset is subtracted from the wall
+    // reading to get the instant, while the offset itself stays the zone.
+    let utc = go_instant(naive, offset_secs)?;
+    Some(GoTime { utc, offset_secs })
+}
+
+/// Go's `cutspace` (`time/format.go`): strip a run of leading spaces. Go's
+/// `skip` applies it to BOTH the layout's and the value's whitespace run, which
+/// is why a layout space matches several value spaces — and why a tab matches
+/// nothing, since `cutspace` only knows `' '`.
+#[must_use]
+fn go_cutspace(text: &str) -> &str {
+    text.trim_start_matches(' ')
+}
+
+/// `2006-01-02`: four digits, `-`, two-digit month `1..12`, `-`, two-digit day
+/// valid for that month. The caller advances exactly ten bytes.
+///
+/// Every field goes through [`go_fixed_num`], i.e. Go's `getnum(…, fixed = true)`
+/// — NOT a numeric parse. `str::parse::<u32>` accepts a leading `+`, so
+/// `2024-+2-02 03:00:00` would otherwise decode month `+2` and be accepted;
+/// Go's `stdZeroMonth`/`stdZeroDay` are `fixed` and `isDigit`-bound, so a sign
+/// in either slot is `errBad` and the cell lands on Go's zero time.
+#[must_use]
+fn go_fixed_date(text: &str) -> Option<NaiveDate> {
+    let head = text.get(..10)?;
+    let bytes = head.as_bytes();
+    if !bytes[..4].iter().all(|b| b.is_ascii_digit()) || bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+    let year: i32 = head[..4].parse().ok()?;
+    let month = go_fixed_num(&head[5..7], 2)?;
+    let day = go_fixed_num(&head[8..10], 2)?;
+    // Go validates `day < 1 || day > daysIn(month, year)` after the whole parse;
+    // chrono's `from_ymd_opt` does the same check, leap-year-aware.
+    #[allow(clippy::manual_range_contains)] // Go's `m < 1 || m > 12`, format.go parseDate
+    if month < 1 || month > 12 {
+        return None;
+    }
     NaiveDate::from_ymd_opt(year, month, day)
+}
+
+/// Go's `getnum(s, fixed = false)`: one digit, or two when both are digits.
+/// `isDigit` bounds-checks, so empty input is `errBad`.
+#[must_use]
+fn go_num(text: &str, fixed: bool) -> Option<(u32, &str)> {
+    let bytes = text.as_bytes();
+    if !bytes.first().is_some_and(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if bytes.get(1).is_some_and(|b| b.is_ascii_digit()) {
+        // Both digits present: `int(s[0]-'0')*10 + int(s[1]-'0')`, two consumed,
+        // whichever `fixed` was asked for.
+        let pair = std::str::from_utf8(&bytes[..2]).ok()?.parse::<u32>().ok()?;
+        return Some((pair, &text[2..]));
+    }
+    if fixed {
+        return None;
+    }
+    Some((u32::from(bytes[0] - b'0'), &text[1..]))
+}
+
+/// Go's `getnum(s, fixed = true)`: exactly `width` ASCII digits or `errBad`.
+/// Leading zeros are allowed (`03` → 3).
+///
+/// Deliberately not a numeric parse: `str::parse` accepts a leading `+`/`-` and
+/// Go's `getnum` rejects anything that is not a digit at every position.
+#[must_use]
+fn go_fixed_num(text: &str, width: usize) -> Option<u32> {
+    let head = text.get(..width)?;
+    if !head.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    head.parse().ok()
+}
+
+/// [`go_fixed_num`] over a byte slice, for the offset arm whose slices can land
+/// inside a multi-byte character (see [`go_num_colon_tz`]).
+#[must_use]
+fn go_fixed_num_bytes(bytes: &[u8], width: usize) -> Option<u32> {
+    let head = bytes.get(..width)?;
+    if !head.iter().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    std::str::from_utf8(head).ok()?.parse().ok()
+}
+/// Go's `stdFracSecond9` arm plus `parseNanoseconds`: a `.` or `,` followed by at
+/// least one digit, any number of digits, truncated to ten characters and scaled
+/// to nanoseconds. A separator with no digit after it means "fractional second
+/// omitted" — a SUCCESS, not an error — which is why `2024-02-02 03:00:00.` fails
+/// only because the leftover `.` then trips the `extra text` check.
+#[must_use]
+fn go_fraction_digits(text: &str) -> (&str, u32) {
+    let bytes = text.as_bytes();
+    if bytes.len() < 2 || (bytes[0] != b'.' && bytes[0] != b',') || !bytes[1].is_ascii_digit() {
+        return (text, 0);
+    }
+    let mut end = 1;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    // `if nbytes > 10 { value = value[:10]; nbytes = 10 }` — `nbytes` COUNTS THE
+    // SEPARATOR — then `atoi(value[1:nbytes])` and `scaleDigits = 10 - nbytes`
+    // multiplications. So `.5` (nbytes 2) is 5 * 10^8 = `.5`, and a 12-digit
+    // fraction is truncated to ten characters with no scaling at all.
+    let nbytes = end.min(10);
+    let digits = &text[1..nbytes];
+    let parsed: u32 = digits.parse().unwrap_or(0);
+    let scale: u32 = 10u32.pow(u32::try_from(9 - digits.len()).unwrap_or(0));
+    (&text[end..], parsed.saturating_mul(scale))
+}
+
+/// Go's `stdNumColonTZ` arm (`-07:00`): sign, two digits, `':'`, two digits. The
+/// ranges are `hr > 24` and `mm > 60` — strict `>` — so `+24:00` and `+24:60`
+/// parse (the latter as a 25-hour offset) while `+25:00` does not; a trailing
+/// `Z` (`+03:00Z`) is the trimmed one and never reaches here.
+///
+/// The arm works on BYTES rather than `&str` slices: Go indexes `value[0]`/
+/// `value[3]` and slices `value[1:3]`/`value[4:6]` over raw bytes, so a
+/// non-ASCII rune sitting at the colon (the shapes `…03:€` and `é1:30`) is
+/// simply not two digits — `errBad`, and the cell falls through to Go's zero
+/// time. Slicing a `&str` mid-character would panic instead.
+///
+/// The remainder is only returned once both digit pairs are validated ASCII, so
+/// byte 6 is guaranteed to be a char boundary.
+#[must_use]
+fn go_num_colon_tz(text: &str) -> Option<(i32, &str)> {
+    let bytes = text.as_bytes();
+    if bytes.len() < 6 || bytes[3] != b':' {
+        return None;
+    }
+    let sign = bytes[0];
+    let hour = go_fixed_num_bytes(&bytes[1..3], 2)?;
+    let minute = go_fixed_num_bytes(&bytes[4..6], 2)?;
+    if hour > 24 || minute > 60 {
+        return None;
+    }
+    let offset = i32::try_from(hour * 3600 + minute * 60).ok()?;
+    let offset = match sign {
+        b'+' => offset,
+        b'-' => -offset,
+        _ => return None,
+    };
+    Some((offset, &text[6..]))
+}
+/// The UTC instant of a wall reading taken in a fixed zone: Go's
+/// `Date(…, UTC)` then `t.addSec(-zoneOffset)`.
+///
+/// Go's seconds arithmetic is unbounded `int64`; chrono's calendar stops at year
+/// ±262143, so a reading whose instant lands outside chrono saturates at chrono's
+/// bound rather than failing the read (module docs' parity-gap note).
+#[must_use]
+fn go_instant(naive: NaiveDateTime, offset_secs: i32) -> Option<NaiveDateTime> {
+    let delta = chrono::Duration::try_seconds(i64::from(offset_secs))?;
+    let bound = if offset_secs > 0 {
+        NaiveDateTime::MIN
+    } else {
+        NaiveDateTime::MAX
+    };
+    Some(naive.checked_sub_signed(delta).unwrap_or(bound))
+}
+
+/// The pinned driver's INTEGER-cell timestamp decode (`sqlite3.go:2781-2797`): a
+/// cell stored as `SQLITE_INTEGER` in a declared `timestamp`/`datetime`/`date`
+/// column becomes a `time.Time`, not a conversion error.
+///
+/// * magnitude strictly `> 1e12` or `< -1e12` means milliseconds — Go's own
+///   comment says "too large to be a reasonable timestamp in seconds" — and the
+///   value is multiplied by `time.Millisecond` (1e6) into nanoseconds;
+/// * everything else (including exactly ±1e12) is read as SECONDS;
+/// * the multiplication is plain Go `int64`, so it WRAPS:
+///   `9223372036854775807 * 1e6 == -1000000`, i.e. `1969-12-31T23:59:59.999Z`,
+///   verified against the pinned driver, and `time.Unix(0, nsec)` then normalises
+///   a negative remainder by borrowing a whole second;
+/// * the result is `.UTC()`, so the zone is UTC and the wire text ends in `Z` —
+///   the integer path carries no offset, unlike the TEXT path.
+#[must_use]
+#[allow(clippy::manual_range_contains)] // Go's `val > 1e12 || val < -1e12`, sqlite3.go:2787
+pub fn driver_integer_dt(value: i64) -> GoTime {
+    if value > 1_000_000_000_000 || value < -1_000_000_000_000 {
+        // Go: `val *= int64(time.Millisecond)` — 1e6, plain wrapping int64 — then
+        // `time.Unix(0, val)`, which normalises a negative remainder.
+        let nanos = value.wrapping_mul(1_000_000);
+        let (sec, nanos) = go_unix_parts(nanos);
+        GoTime {
+            utc: unix_instant(sec, nanos),
+            offset_secs: 0,
+        }
+    } else {
+        // Go: `time.Unix(val, 0)` — the value is SECONDS.
+        GoTime {
+            utc: unix_instant(value, 0),
+            offset_secs: 0,
+        }
+    }
+}
+
+/// Go's `time.Unix(0, nsec)` normalisation (`time.Unix`'s leading arm): truncate
+/// toward zero, then borrow a second when the remainder went negative.
+#[must_use]
+#[allow(clippy::manual_range_contains)] // Go's `nsec < 0 || nsec >= 1e9`, time.Unix
+fn go_unix_parts(mut nsec: i64) -> (i64, u32) {
+    let mut sec: i64 = 0;
+    if nsec < 0 || nsec >= 1_000_000_000 {
+        let n = nsec / 1_000_000_000;
+        sec = sec.wrapping_add(n);
+        nsec -= n * 1_000_000_000;
+        if nsec < 0 {
+            nsec += 1_000_000_000;
+            sec -= 1;
+        }
+    }
+    (sec, nsec as u32)
+}
+
+/// The epoch-second + nanosecond instant as chrono calendar fields, saturating at
+/// chrono's bounds where Go's `time.Time` has none.
+#[must_use]
+fn unix_instant(sec: i64, nanos: u32) -> NaiveDateTime {
+    let epoch = NaiveDate::from_ymd_opt(1970, 1, 1)
+        .unwrap_or(NaiveDate::MIN)
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or_default();
+    let Some(delta) = chrono::Duration::try_seconds(sec) else {
+        return if sec > 0 {
+            NaiveDateTime::MAX
+        } else {
+            NaiveDateTime::MIN
+        };
+    };
+    match epoch.checked_add_signed(delta) {
+        Some(base) => base
+            .checked_add_signed(chrono::Duration::nanoseconds(i64::from(nanos)))
+            .unwrap_or(base),
+        None => {
+            if sec > 0 {
+                NaiveDateTime::MAX
+            } else {
+                NaiveDateTime::MIN
+            }
+        }
+    }
 }
 
 /// `dbUser` row mapping (phase 1 of the two-phase seam): the user columns
@@ -746,14 +1404,17 @@ pub fn row_to_annotation(row: &Row<'_>) -> SqliteResult<Annotation> {
 }
 
 /// A joined `*time.Time` column as the model's wire string: absent → `None`,
-/// SQL NULL → `None` (Go's nil pointer), an unparseable cell →
+/// SQL NULL → `None` (Go's nil pointer), an undecodable cell →
 /// `Some(0001-01-01T00:00:00Z)` (a pointer to Go's zero time), a real stamp →
-/// Go's RFC3339Nano text.
+/// Go's RFC3339Nano text WITH THE ZONE THE DRIVER PARSED, which is why this reads
+/// [`RowGet::get_gotime`] rather than the UTC-normalised [`RowGet::get_opt_dt`]:
+/// `2024-02-02 03:00:00+03:00` in a `datetime` column marshals as
+/// `2024-02-02T03:00:00+03:00`, not as `2024-02-01T21:00:00Z`.
 fn optional_dt_text(row: &Row<'_>, column: &str) -> SqliteResult<Option<String>> {
     if !row.has_column(column) {
         return Ok(None);
     }
-    Ok(row.get_opt_dt(column)?.map(|dt| to_go_time_text(&dt)))
+    Ok(row.get_gotime(column)?.map(|t| t.to_rfc3339_nano()))
 }
 
 /// Go's `encoding/json` text for a `time.Time` — `time.RFC3339Nano` in UTC:
@@ -848,9 +1509,10 @@ pub fn parse_playlist_rules(
         None => return Ok(None),
         Some(text) => text,
     };
-    // Go's guard is on the raw string (`:30`); `json.Unmarshal` also trims
-    // whitespace, so a whitespace-only `null` is Go's nil arm too.
-    if payload.is_empty() || payload.trim() == "null" {
+    // Go's scanner accepts only the four JSON whitespace bytes (SP, TAB, CR, LF);
+    // Unicode `trim` would incorrectly accept NBSP/VT/etc. around literal null.
+    let json_trimmed = payload.trim_matches(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n'));
+    if payload.is_empty() || json_trimmed == "null" {
         return Ok(None);
     }
     unmarshal_criteria_str(&default_field_map(), payload.to_string()).map(Some)
@@ -964,84 +1626,98 @@ mod tests {
 
     /// The driver's DATETIME semantics, executed (`sqlite3.go:2821-2842` +
     /// `database/sql/convert.go:491-496`): SQL NULL is the nil pointer (`None`),
-    /// ANY unparseable non-NULL text is a pointer to Go's zero time
-    /// (`Some(go_zero_time())`) and NOT an error — the sentinel included — and
-    /// a parseable cell parses.
+    /// ANY unparseable non-NULL text in a DECLARED timestamp column is a pointer
+    /// to Go's zero time (`Some(go_zero_time())`) and NOT an error — the sentinel
+    /// included — and a parseable cell parses.
+    ///
+    /// The columns are declared `datetime` because the driver's parse arm switches
+    /// on the DECLARED type (`:2822`); undeclared text and expression columns are
+    /// scan errors instead (see
+    /// [`undeclared_text_and_expressions_are_not_converted_to_a_time`]).
     #[test]
     fn opt_dt_is_nil_pointer_on_null_and_pointer_to_go_zero_on_unparseable_text() {
         let conn = Connection::open_in_memory().expect("memory db opens");
         let expected = time::parse("2024-01-02 03:04:05+00:00").unwrap();
-        conn.query_row(
-            "SELECT NULL AS a, '0000-00-00 00:00:00' AS b, \
-             '2024-01-02 03:04:05+00:00' AS c, 'not a date' AS d, \
-             '2024-01-02 03:04' AS e, '2024-01-02' AS f, \
-             '2024-01-02T03:04:05Z' AS g",
-            [],
-            |row| {
-                assert_eq!(row.get_opt_dt("a")?, None, "SQL NULL is a nil pointer");
-                assert_eq!(
-                    row.get_opt_dt("b")?,
-                    Some(go_zero_time()),
-                    "the DDL sentinel scans as a pointer to Go's zero time"
-                );
-                assert_eq!(row.get_opt_dt("c")?, Some(expected));
-                assert_eq!(
-                    row.get_opt_dt("d")?,
-                    Some(go_zero_time()),
-                    "garbage is NOT an error: the driver assigns time.Time{{}}"
-                );
-                // The driver formats chrono's parser does not try.
-                assert_eq!(
-                    row.get_opt_dt("e")?,
-                    Some(time::parse("2024-01-02 03:04:00+00:00").unwrap()),
-                    "minute precision parses (driver format 5)"
-                );
-                assert_eq!(
-                    row.get_opt_dt("f")?,
-                    Some(time::parse("2024-01-02 00:00:00+00:00").unwrap()),
-                    "date-only parses (driver format 7)"
-                );
-                assert_eq!(
-                    row.get_opt_dt("g")?,
-                    Some(expected),
-                    "the Z suffix is trimmed, then parsed as UTC"
-                );
-                Ok(())
-            },
+        conn.execute_batch(
+            "CREATE TABLE probe (a datetime, b datetime, c datetime, d datetime, \
+             e datetime, f datetime, g datetime);",
         )
+        .expect("probe table");
+        conn.execute(
+            "INSERT INTO probe VALUES(NULL, '0000-00-00 00:00:00', \
+             '2024-01-02 03:04:05+00:00', 'not a date', \
+             '2024-01-02 03:04', '2024-01-02', '2024-01-02T03:04:05Z')",
+            [],
+        )
+        .expect("probe row");
+        conn.query_row("SELECT * FROM probe", [], |row| {
+            assert_eq!(row.get_opt_dt("a")?, None, "SQL NULL is a nil pointer");
+            assert_eq!(
+                row.get_opt_dt("b")?,
+                Some(go_zero_time()),
+                "the DDL sentinel scans as a pointer to Go's zero time"
+            );
+            assert_eq!(row.get_opt_dt("c")?, Some(expected));
+            assert_eq!(
+                row.get_opt_dt("d")?,
+                Some(go_zero_time()),
+                "garbage is NOT an error: the driver assigns time.Time{{}}"
+            );
+            // The driver formats chrono's parser does not try.
+            assert_eq!(
+                row.get_opt_dt("e")?,
+                Some(time::parse("2024-01-02 03:04:00+00:00").unwrap()),
+                "minute precision parses (driver format 5)"
+            );
+            assert_eq!(
+                row.get_opt_dt("f")?,
+                Some(time::parse("2024-01-02 00:00:00+00:00").unwrap()),
+                "date-only parses (driver format 7)"
+            );
+            assert_eq!(
+                row.get_opt_dt("g")?,
+                Some(expected),
+                "the Z suffix is trimmed, then parsed as UTC"
+            );
+            Ok(())
+        })
         .expect("get_opt_dt read");
     }
 
     /// The non-pointer getter: SQL NULL errors (Go cannot store nil into
-    /// `*time.Time`), and any non-NULL text scans — unparseable ones as Go's
-    /// zero. `is_go_zero` is the port's `IsZero()`, and [`to_go_time_text`] is
-    /// the `encoding/json` rendering of the same value.
+    /// `*time.Time`), and any non-NULL text in a DECLARED timestamp column scans
+    /// — unparseable ones as Go's zero. `is_go_zero` is the port's `IsZero()`, and
+    /// [`to_go_time_text`] is the `encoding/json` rendering of the same value.
     #[test]
     fn get_dt_errors_on_null_and_scans_unparseable_text_as_go_zero() {
         let conn = Connection::open_in_memory().expect("memory db opens");
-        conn.query_row("SELECT NULL AS t", [], |row| {
+        conn.execute_batch("CREATE TABLE probe (t datetime, s datetime, g datetime, c datetime);")
+            .expect("probe table");
+        conn.execute(
+            "INSERT INTO probe VALUES(NULL, '0000-00-00 00:00:00', 'not a date', \
+             '2024-01-02 03:04:05+00:00')",
+            [],
+        )
+        .expect("probe row");
+        conn.query_row("SELECT * FROM probe", [], |row| {
             assert!(row.get_dt("t").is_err(), "NULL into non-pointer errors");
             Ok(())
         })
         .expect("NULL read");
-        conn.query_row(
-            "SELECT '0000-00-00 00:00:00' AS s, 'not a date' AS g, \
-             '2024-01-02 03:04:05+00:00' AS c",
-            [],
-            |row| {
-                assert!(
-                    is_go_zero(&row.get_dt("s")?),
-                    "the sentinel scans as Go's zero, not an error"
-                );
-                assert!(
-                    is_go_zero(&row.get_dt("g")?),
-                    "garbage scans as Go's zero, not an error"
-                );
-                assert!(!is_go_zero(&row.get_dt("c")?), "a real stamp is not zero");
-                Ok(())
-            },
-        )
+        conn.query_row("SELECT * FROM probe", [], |row| {
+            assert!(
+                is_go_zero(&row.get_dt("s")?),
+                "the sentinel scans as Go's zero, not an error"
+            );
+            assert!(
+                is_go_zero(&row.get_dt("g")?),
+                "garbage scans as Go's zero, not an error"
+            );
+            assert!(!is_go_zero(&row.get_dt("c")?), "a real stamp is not zero");
+            Ok(())
+        })
         .expect("get_dt read");
+
         // The wire form Go's encoding/json emits for a time.Time, zero included.
         assert_eq!(to_go_time_text(&go_zero_time()), "0001-01-01T00:00:00Z");
         assert_eq!(
@@ -1077,5 +1753,167 @@ mod tests {
             Ok(())
         })
         .expect("probe read");
+    }
+
+    /// Findings 1 and 5, pure grammar: multi-byte runes inside the hour/offset
+    /// slots and a `+` in the month/day slots must be Go's zero time with NO
+    /// panic. Go indexes and slices raw bytes (`time/format.go`), so a rune at
+    /// the colon is simply not two digits, and `getnum(…, fixed = true)` rejects
+    /// a sign — verified against Go 1.27.4 (`time.ParseInLocation` over the nine
+    /// `SQLiteTimestampFormats`, all `errBad`).
+    #[test]
+    fn non_ascii_runes_and_sign_prefixed_date_fields_are_go_zero_without_panic() {
+        for text in [
+            "2024-02-02 03:00:00\u{00e9}1:30",
+            "2024-02-02 03:00:00+03:\u{20ac}",
+            "2024-02-02 03:00:00\u{00a0}+03:00",
+            "2024-02-02 03:00:00+\u{20ac}3:00",
+            "2024-02-02 3:\u{20ac}00:00",
+            "2024-+2-02 03:00:00",
+            "2024-02-+2 03:00:00",
+            "2024-+2-+2 03:00:00",
+            "20+4-02-02 03:00:00",
+        ] {
+            let got = std::panic::catch_unwind(|| driver_parse_text_dt(text));
+            let parsed = got.unwrap_or_else(|_| panic!("{text} must not panic"));
+            assert!(
+                parsed.is_go_zero(),
+                "{text} must be Go's zero time, got {}",
+                parsed.to_rfc3339_nano()
+            );
+        }
+    }
+
+    /// Finding 5, executed: the same spellings stored in a declared `datetime`
+    /// column scan as Go's zero time with no error, exactly as the driver's
+    /// failure arm (`sqlite3.go:2832-2842`).
+    #[test]
+    fn malformed_month_day_signs_scan_as_go_zero_in_a_timestamp_column() {
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch("CREATE TABLE probe (key TEXT, dt datetime)")
+            .expect("probe table");
+        for (key, value) in [
+            ("plus_month", "2024-+2-02 03:00:00"),
+            ("plus_day", "2024-02-+2 03:00:00"),
+            ("accent_hour", "2024-02-02 03:00:00\u{00e9}1:30"),
+            ("euro_offset", "2024-02-02 03:00:00+03:\u{20ac}"),
+        ] {
+            conn.execute(
+                "INSERT INTO probe(key, dt) VALUES(?, ?)",
+                rusqlite::params![key, value],
+            )
+            .unwrap_or_else(|e| panic!("{key} insert: {e}"));
+        }
+        for key in ["plus_month", "plus_day", "accent_hour", "euro_offset"] {
+            let got = conn
+                .query_row(
+                    "SELECT dt FROM probe WHERE key = ?",
+                    rusqlite::params![key],
+                    |row| row.get_opt_dt("dt"),
+                )
+                .unwrap_or_else(|e| panic!("{key}: the driver must not fail a TEXT scan: {e}"));
+            assert_eq!(
+                got,
+                Some(go_zero_time()),
+                "{key} is a pointer to Go's zero time"
+            );
+        }
+    }
+
+    /// Finding 2, executed: the driver's TEXT parse arm is keyed on the DECLARED
+    /// type (`sqlite3.go:2822`), so only `timestamp`/`datetime`/`date` columns
+    /// get the conversion. A bare string literal (no decltype), a `CAST(… AS
+    /// TEXT)`, and a column declared `TEXT` all hand the driver a `string`, which
+    /// `database/sql` cannot store into `time.Time` — a scan error, verified
+    /// against the pinned driver on Go 1.27.4.
+    #[test]
+    fn undeclared_text_and_expressions_are_not_converted_to_a_time() {
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch("CREATE TABLE probe (dt datetime, txt TEXT, weird datetime(3))")
+            .expect("probe table");
+        conn.execute(
+            "INSERT INTO probe VALUES('2024-02-02 03:00:00+03:00', \
+             '2024-02-02 03:00:00+03:00', '2024-02-02 03:00:00+03:00')",
+            [],
+        )
+        .expect("probe row");
+
+        // Declared datetime: converted, offset preserved.
+        let declared = conn
+            .query_row("SELECT dt FROM probe", [], |row| row.get_gotime("dt"))
+            .expect("declared datetime converts")
+            .expect("non-NULL");
+        assert_eq!(declared.to_rfc3339_nano(), "2024-02-02T03:00:00+03:00");
+
+        // Declared TEXT: the driver's `default` arm hands back a string.
+        for column in ["txt", "weird"] {
+            let err = conn
+                .query_row(&format!("SELECT {column} FROM probe"), [], |row| {
+                    row.get_gotime(column)
+                })
+                .expect_err("{column} is not a timestamp column, so it must not convert");
+            assert!(
+                err.to_string().contains("unsupported Scan") && err.to_string().contains("string"),
+                "Go's message names the driver type, got {err}"
+            );
+        }
+
+        // A bare string literal has no declared type at all.
+        let literal = conn
+            .query_row("SELECT '2024-02-02 03:00:00' AS dt", [], |row| {
+                row.get_gotime("dt")
+            })
+            .expect_err("an expression column has no decltype, so no conversion");
+        assert!(
+            literal.to_string().contains("unsupported Scan"),
+            "got {literal}"
+        );
+
+        // `CAST(dt AS TEXT)` likewise loses the declared type (the driver's own
+        // `default` arm), and `CAST(… AS INTEGER)` keeps its storage type.
+        let cast_text = conn
+            .query_row("SELECT CAST(dt AS TEXT) AS dt FROM probe", [], |row| {
+                row.get_gotime("dt")
+            })
+            .expect_err("CAST(… AS TEXT) has no declared type");
+        assert!(
+            cast_text.to_string().contains("unsupported Scan")
+                && cast_text.to_string().contains("string"),
+            "got {cast_text}"
+        );
+        let cast_int = conn
+            .query_row("SELECT CAST(dt AS TEXT) AS dt FROM probe", [], |row| {
+                row.get_opt_dt("dt")
+            })
+            .expect_err("the optional getter fails the same way");
+        assert!(
+            cast_int.to_string().contains("unsupported Scan"),
+            "got {cast_int}"
+        );
+    }
+
+    #[test]
+    fn playlist_rules_null_fast_path_uses_only_json_whitespace() {
+        // Go encoding/json accepts its four JSON whitespace bytes around null,
+        // but rejects Unicode whitespace and other control whitespace.
+        for text in ["null", " null ", "\tnull\r\n"] {
+            assert_eq!(
+                parse_playlist_rules(Some(text)).expect("valid JSON null"),
+                None,
+                "{text:?} is a nil *Criteria",
+            );
+        }
+        for text in [
+            "null\u{00a0}",
+            "\u{00a0}null",
+            "null\u{000b}",
+            "null\u{000c}",
+            "null\u{2028}",
+        ] {
+            assert!(
+                parse_playlist_rules(Some(text)).is_err(),
+                "{text:?} is not valid JSON whitespace",
+            );
+        }
     }
 }

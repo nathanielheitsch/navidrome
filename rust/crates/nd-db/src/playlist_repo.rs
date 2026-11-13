@@ -645,9 +645,7 @@ pub fn playlist_row(p: &PlaylistRecord) -> crate::marshal::ColumnMap {
 ///
 /// The joined annotation columns are read straight onto the record's derived
 /// field (Go's promoted `Playlist.Annotations`, `structs:"-"`), so they are not
-/// duplicated on this raw struct. `owner_name` is **ignored**: Go's dbx
-/// discards the alias because the scan target is `structs:"-"`
-/// (`hydrate-scan-contract.md` §2e), so the port must not expect it.
+/// duplicated on this raw struct; `owner_name` is hydrated from the joined alias.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistRow {
     /// The playlist columns scanned from the row, `rules` still empty.

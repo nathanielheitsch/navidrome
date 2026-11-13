@@ -202,10 +202,13 @@ fn hydrate_error_carries_gos_prefix_verbatim() {
 
 /// RowGet NULL parity, executed: a NULL into a required getter errors;
 /// NULL into `opt_dt` yields `None` (Go's nil pointer). A non-NULL value the
-/// driver cannot parse — the `0000-00-00 00:00:00` sentinel and outright
-/// garbage — yields `Some(Go's zero time)`: the driver assigns `time.Time{}`
-/// with NO error (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`) and
-/// `database/sql` allocates a pointer for it (`convert.go:495-496`).
+/// driver cannot parse in a DECLARED timestamp column — the `0000-00-00
+/// 00:00:00` sentinel and outright garbage — yields `Some(Go's zero time)`:
+/// the driver assigns `time.Time{}` with NO error
+/// (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`) and `database/sql` allocates a
+/// pointer for it (`convert.go:495-496`). The same text in a column declared
+/// `TEXT` is a scan error instead: the driver's parse arm is keyed on the
+/// DECLARED type (`:2822`) and a `string` cannot be stored into `time.Time`.
 #[test]
 fn row_get_null_parity_and_sentinel() {
     let (store, path) = store();
@@ -214,10 +217,10 @@ fn row_get_null_parity_and_sentinel() {
             conn.execute_batch(
                 "CREATE TABLE probe (
                     id TEXT, flag INTEGER, num INTEGER, real_col REAL,
-                    t TEXT, opt_t TEXT);
-                 INSERT INTO probe VALUES ('p', NULL, NULL, NULL, NULL, NULL);
-                 INSERT INTO probe VALUES ('s', 0, 1, 1.5, '0000-00-00 00:00:00', '2024-01-02 03:04:05+00:00');
-                 INSERT INTO probe VALUES ('g', 1, 2, 2.5, 'not a date', 'nope');",
+                    t TEXT, opt_t TEXT, dt datetime, opt_dt datetime);
+                 INSERT INTO probe VALUES ('p', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+                 INSERT INTO probe VALUES ('s', 0, 1, 1.5, '0000-00-00 00:00:00', '2024-01-02 03:04:05+00:00', '0000-00-00 00:00:00', '2024-01-02 03:04:05+00:00');
+                 INSERT INTO probe VALUES ('g', 1, 2, 2.5, 'not a date', 'nope', 'not a date', 'nope');",
             )?;
             // Act / Assert: NULLs into the required getters all error.
             conn.query_row("SELECT * FROM probe WHERE id = 'p'", [], |row| {
@@ -230,7 +233,7 @@ fn row_get_null_parity_and_sentinel() {
                 // Act / Assert: the opt getters yield None on NULL.
                 assert_eq!(row.get_opt_text("t")?, None);
                 assert_eq!(row.get_opt_f64("real_col")?, None);
-                assert_eq!(row.get_opt_dt("t")?, None, "NULL is absent");
+                assert_eq!(row.get_opt_dt("dt")?, None, "NULL is absent");
                 Ok(())
             })
             .expect("NULL row reads");
@@ -238,40 +241,56 @@ fn row_get_null_parity_and_sentinel() {
             // a real date as itself.
             conn.query_row("SELECT * FROM probe WHERE id = 's'", [], |row| {
                 assert_eq!(
-                    row.get_opt_dt("t")?,
+                    row.get_opt_dt("dt")?,
                     Some(hydrate::go_zero_time()),
                     "the sentinel is a pointer to time.Time{{}}, not an absent value"
                 );
                 assert!(
-                    hydrate::is_go_zero(&row.get_dt("t")?),
+                    hydrate::is_go_zero(&row.get_dt("dt")?),
                     "the same text scans into a non-pointer field as Go's zero"
                 );
-                let got = row.get_opt_dt("opt_t")?.expect("real date");
+                let got = row.get_opt_dt("opt_dt")?.expect("real date");
                 assert_eq!(nd_db::time::to_text(&got), "2024-01-02 03:04:05+00:00");
                 assert!(!hydrate::is_go_zero(&got), "a real stamp is not zero");
                 Ok(())
             })
             .expect("sentinel row reads");
-            // Act / Assert: garbage is NOT a scan error — Go's driver reports no
-            // error and hands back the zero time.
+            // Act / Assert: garbage is NOT a scan error in a declared timestamp
+            // column — Go's driver reports no error and hands back the zero time.
             conn.query_row("SELECT * FROM probe WHERE id = 'g'", [], |row| {
                 assert_eq!(
-                    row.get_opt_dt("t")?,
+                    row.get_opt_dt("dt")?,
                     Some(hydrate::go_zero_time()),
                     "unparseable text is Go's zero time, with no error"
                 );
                 assert_eq!(
-                    row.get_opt_dt("opt_t")?,
+                    row.get_opt_dt("opt_dt")?,
                     Some(hydrate::go_zero_time()),
                     "unparseable text is Go's zero time, with no error"
                 );
                 assert!(
-                    row.get_dt("t").is_ok(),
+                    row.get_dt("dt").is_ok(),
                     "a non-pointer field scans it too (Go's zero)"
                 );
                 Ok(())
             })
             .expect("garbage row reads");
+            // Act / Assert: the SAME text in a column declared `TEXT` is a scan
+            // error — the driver's TEXT arm only parses when the declared type is
+            // one of `timestamp`/`datetime`/`date` (`sqlite3.go:2822`), otherwise
+            // it hands back a `string` and `database/sql` cannot store that into
+            // `time.Time`.
+            conn.query_row("SELECT * FROM probe WHERE id = 'g'", [], |row| {
+                let err = row.get_opt_dt("t").expect_err("TEXT column is not a time");
+                assert!(
+                    err.to_string().contains("unsupported Scan")
+                        && err.to_string().contains("string"),
+                    "Go's message names the driver type, got {err}"
+                );
+                assert!(row.get_dt("opt_t").is_err(), "declared TEXT errors too");
+                Ok(())
+            })
+            .expect("declared-TEXT row reads");
             Ok(())
         })
         .unwrap_or_else(|e| panic!("probe failed: {e}"));

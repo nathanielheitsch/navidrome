@@ -218,14 +218,11 @@ pub fn unmarshal_conjunction_type_value(
     map: &FieldMap,
     raw_value: Value,
 ) -> Result<Vec<Expression>, String> {
+    // encoding/json leaves a nil slice unchanged when the JSON value is null.
     let items: Vec<Value> = match raw_value.as_array() {
         Some(items) => items.clone(),
+        None if raw_value.is_null() => Vec::new(),
         None => {
-            // Go `json.go:14`: the aux slot decodes into
-            // `[]map[string]json.RawMessage` (rendered by the Go toolchain as
-            // `[]map[string]jsontext.Value` at HEAD), so a non-list slot value
-            // is a decode FAILURE that aborts the whole parse — not an empty
-            // slot. The wording is Go's `json.UnmarshalTypeError`.
             return Err(format!(
                 "json: cannot unmarshal {} into Go value of type []map[string]json.RawMessage",
                 json_kind(&raw_value),
@@ -234,16 +231,15 @@ pub fn unmarshal_conjunction_type_value(
     };
     let mut expressions: Vec<Expression> = Vec::new();
     for (index, item) in items.iter().enumerate() {
-        let object: serde_json::Map<String, Value> = match item.as_object() {
-            Some(object) => object.clone(),
-            None => {
-                // Go `json.go:14` again, with the item position
-                // (`json: cannot unmarshal string into .0 of type …`).
-                return Err(format!(
-                    "json: cannot unmarshal {} into .{index} of type map[string]json.RawMessage",
-                    json_kind(item),
-                ));
+        // Go decodes null into a map as a nil map; ranging over it yields no expressions.
+        let Some(object) = item.as_object() else {
+            if item.is_null() {
+                continue;
             }
+            return Err(format!(
+                "json: cannot unmarshal {} into .{index} of type map[string]json.RawMessage",
+                json_kind(item),
+            ));
         };
         for (key, value) in object.iter() {
             let lower: String = key.to_lowercase();
@@ -532,6 +528,21 @@ mod json_test {
             err.contains("invalid expression key 'bogus'"),
             "json.go:27 — got {err}"
         );
+    }
+
+    #[test]
+    fn nested_null_conjunctions_and_null_elements_match_go_json() {
+        let map = default_field_map();
+        for text in [
+            r#"{"all":[{"any":null}]}"#,
+            r#"{"all":[null,{"is":{"artist":"x"}}]}"#,
+        ] {
+            let parsed = crate::criteria::unmarshal_criteria_str(&map, text.to_string());
+            assert!(
+                parsed.is_ok(),
+                "Go encoding/json null slice/map behavior: {text}: {parsed:?}"
+            );
+        }
     }
 
     #[test]
