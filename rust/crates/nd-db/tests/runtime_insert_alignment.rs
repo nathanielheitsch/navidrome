@@ -588,6 +588,8 @@ fn folder_insert_stores_each_value_in_its_own_column() {
     seed_library(&store);
     // folder.library_id is NOT NULL without a default in the fresh DDL.
     let record = FolderRecord {
+        // Read-path identity (never in folder_row): the row's own id.
+        id: "f-1".to_string(),
         library_id: 1,
         path: "music/rock".to_string(),
         name: "Rock".to_string(),
@@ -600,6 +602,8 @@ fn folder_insert_stores_each_value_in_its_own_column() {
         missing: false,
         updated_at: stamp(),
         created_at: Some(stamp()),
+        // Hydration-owned join-only field: absent from folder_row.
+        library_path: String::new(),
     };
     let put = folder_repo::put_sql("f-1", &record, stamp(), &[]).expect("renders");
 
@@ -1150,6 +1154,8 @@ fn playlist_insert_is_sqlite_syntax_and_stores_each_value() {
     // from the INSERT — exactly the value that previously rotated into the
     // `created_at` position when a caller supplied a rules column.
     let record = PlaylistRecord {
+        // Read-path identity (never in playlist_row): the row's own id.
+        id: "pl-1".to_string(),
         name: "Mix".to_string(),
         comment: String::new(),
         duration: 0.0,
@@ -1166,6 +1172,10 @@ fn playlist_insert_is_sqlite_syntax_and_stores_each_value() {
         imported_hash: String::new(),
         rules: None,
         evaluated_at: None,
+        // Hydration-owned derived fields: absent from playlist_row.
+        annotation: nd_model::annotation::Annotation::default(),
+        // Read-path-only (`structs:"-"`): absent from playlist_row.
+        owner_name: "jdoe".to_string(),
     };
     let insert_stmt = playlist_repo::put_sql("pl-1", &record, stamp(), &[])
         .expect("renders")

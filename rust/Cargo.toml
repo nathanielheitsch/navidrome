@@ -74,3 +74,13 @@ missing_docs = { level = "warn", priority = -1 }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Reduce future dev/test cache size; this does not alter release artifacts.
+# `cargo clean` from this workspace reclaims generated artifacts when needed.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

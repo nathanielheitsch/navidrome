@@ -472,10 +472,18 @@ pub fn enqueue_cover_rebuild_sql(playlist_id: &str, now: &str) -> Sql {
 ///
 /// `rules` is the typed criteria; Go's `json.Marshal(Rules)` output
 /// (`nd_model::criteria::marshal_criteria`) is what the PostMapArgs arm
-/// stores. `evaluated_at` is `Option` (Go `*time.Time`): `None` binds
-/// NULL.
+/// stores. `evaluated_at` is `Option` (Go `*time.Time`): `None` binds NULL.
+///
+/// There is deliberately no `Default`: a write record must name every persisted
+/// column, so the hydration-owned fields can only arrive through the read path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlaylistRecord {
+    /// The row's `id` (Go `Playlist.ID`, `structs:"id"`). Read-path identity:
+    /// [`crate::hydrate::row_to_playlist`] fills it from the row so a bulk read
+    /// keeps every row's own id. [`playlist_row`] does NOT emit it — the write
+    /// legs take the id as their own argument like Go's `put(ctx, id, …)`
+    /// (`sql_base_repository.go:618`).
+    pub id: String,
     /// `name` (Go `Name`).
     pub name: String,
     /// `comment` (Go `Comment`).
@@ -514,6 +522,24 @@ pub struct PlaylistRecord {
     pub rules: Option<nd_model::Criteria>,
     /// `evaluated_at` (Go `EvaluatedAt *time.Time`); `None` binds NULL.
     pub evaluated_at: Option<DateTime<Utc>>,
+    /// The per-user annotation the select's `annotation` LEFT JOIN contributes
+    /// (`sql_annotations.go:63-88`), **derived, not persisted**: Go's
+    /// `Playlist.Annotations` embed is `structs:"-"` (`model/playlist.go:21`),
+    /// so [`playlist_row`] does NOT emit any of it and the write SQL is
+    /// unchanged. [`crate::hydrate::row_to_playlist`] fills it from the six
+    /// joined columns plus the base `average_rating`, with zero values where a
+    /// light query omits the joined columns. Its timestamp strings carry Go's
+    /// RFC3339Nano wire form ([`crate::hydrate::to_go_time_text`]), NOT the
+    /// SQLite storage spelling from [`crate::time::to_text`].
+    pub annotation: nd_model::annotation::Annotation,
+    /// Go's `OwnerName` (`structs:"-"` at `model/playlist.go:26`), hydrated from
+    /// the `user.user_name as owner_name` alias (`:259`). Read-path-only: dbx's
+    /// `ScanStruct` maps by FIELD NAME (`dbx@v1.12.0/rows.go:60-85`), so the
+    /// alias IS scanned into Go's `OwnerName`; the `structs:"-"` tag only keeps
+    /// it out of the write map, which is why [`playlist_row`] still does not
+    /// emit it. A projection without the `user` JOIN leaves Go's zero value
+    /// (empty string).
+    pub owner_name: String,
 }
 
 /// Go's `Playlist.IsSmartPlaylist()` (`playlist.go:46-48`): `Rules != nil
@@ -607,6 +633,42 @@ pub fn playlist_row(p: &PlaylistRecord) -> crate::marshal::ColumnMap {
         crate::marshal::ColumnMap::new(m)
     };
     map
+}
+
+/// `dbPlaylist` raw row (phase 1 of the two-phase hydration seam,
+/// `persistence/playlist_repository.go:24-27`): the columns `selectPlaylist`'
+/// `playlist.*` + owner name + the annotation columns scan into, with the
+/// `rules` shim **still unparsed** — Go's `dbPlaylist.Rules` is a
+/// `sql.NullString` (`:26`), hence [`Option<String>`] here: SQL NULL and a
+/// dropped alias both mean "no rules column". Phase 2 is
+/// [`crate::hydrate::playlist_post_scan`], which decodes it onto the record.
+///
+/// The joined annotation columns are read straight onto the record's derived
+/// field (Go's promoted `Playlist.Annotations`, `structs:"-"`), so they are not
+/// duplicated on this raw struct. `owner_name` is **ignored**: Go's dbx
+/// discards the alias because the scan target is `structs:"-"`
+/// (`hydrate-scan-contract.md` §2e), so the port must not expect it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlaylistRow {
+    /// The playlist columns scanned from the row, `rules` still empty.
+    pub record: PlaylistRecord,
+    /// The raw `rules` column: `None` for SQL NULL (Go's `sql.NullString`
+    /// with `Valid == false`), `Some("")` for the empty-string cell that
+    /// Go's `PostScan` guard (`:30`) skips.
+    pub rules: Option<String>,
+}
+
+impl PlaylistRow {
+    /// `dbPlaylist.PostScan` (`playlist_repository.go:29-34`): thin delegation
+    /// onto [`crate::hydrate::playlist_post_scan`], surfaced the way Go's
+    /// `ScanStruct` error leaves the read.
+    ///
+    /// # Errors
+    /// [`crate::hydrate::HydrateError::Decoded`] carrying the criteria codec's
+    /// own message (Go wraps it with **no** prefix).
+    pub fn into_record(self) -> Result<PlaylistRecord, crate::hydrate::HydrateError> {
+        crate::hydrate::playlist_post_scan(self)
+    }
 }
 
 /// `Put`/`Update` (`playlist_repository.go:110-146`, `:431-437` via `put`,
@@ -983,6 +1045,8 @@ mod tests {
     /// (no rules).
     fn test_record() -> PlaylistRecord {
         PlaylistRecord {
+            // Read-path identity: never in playlist_row (the repo appends the id).
+            id: "pl-1".to_string(),
             name: "Mix".to_string(),
             comment: "c-mix".to_string(),
             duration: 47.5,
@@ -999,6 +1063,11 @@ mod tests {
             imported_hash: "ih-mix".to_string(),
             rules: None,
             evaluated_at: None,
+            // Derived, hydration-owned: never in playlist_row.
+            annotation: nd_model::annotation::Annotation::default(),
+            // Read-path-only (`structs:"-"`): hydrated from the `owner_name`
+            // alias, never in playlist_row.
+            owner_name: "jdoe".to_string(),
         }
     }
 

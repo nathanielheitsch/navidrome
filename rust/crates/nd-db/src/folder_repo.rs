@@ -334,8 +334,17 @@ pub fn has_audio_outside_folders_sql(
 /// `'%F %T%.f%:z'` TEXT; the DDL's localtime defaults are never relied on).
 /// `created_at` is `None` for a never-stamped row (Go zero `time.Time`);
 /// [`put_sql`] stamps it like Go's `NewFolder` (`folder.go:65-67`).
+///
+/// There is deliberately no `Default`: a write record must name every persisted
+/// column, so the hydration-owned fields can only arrive through the read path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FolderRecord {
+    /// The row's `id` (Go `Folder.ID`, `structs:"id"`). Read-path identity:
+    /// [`crate::hydrate::row_to_folder`] fills it from the row, so a bulk read
+    /// keeps every row's own id. [`folder_row`] does NOT emit it — the id is
+    /// appended by the repo's write legs ([`put_sql`] takes it as its own
+    /// argument, matching Go's `put(ctx, id, …)`, `sql_base_repository.go:618`).
+    pub id: String,
     /// `library_id` (Go `LibraryID`) — FK to `library`.
     pub library_id: i64,
     /// `path` (Go `Path`) — library-relative directory.
@@ -358,10 +367,24 @@ pub struct FolderRecord {
     /// `missing` (Go `Missing`).
     pub missing: bool,
     /// `updated_at` (Go **`UpdateAt`**, `structs:"updated_at"`).
+    ///
+    /// Asymmetry inherited from Go: the WRITE side emits `updated_at` (the
+    /// `structs` tag governs `structs.Map`), but the READ side cannot hydrate
+    /// it — `ScanStruct` maps by field name, `UpdateAt` → `update_at`, and no
+    /// SELECT emits `update_at`, so Go's `Folder.UpdateAt` is always the zero
+    /// `time.Time` ([`crate::hydrate::go_zero_time`]). Do not "fix" the read by
+    /// reading the column: that would diverge from Go.
     pub updated_at: DateTime<Utc>,
     /// `created_at` (Go `CreatedAt`); `None` = never stamped (Go zero
     /// `time.Time`), stamped to `now` by [`put_sql`].
     pub created_at: Option<DateTime<Utc>>,
+    /// The select's `library.path as library_path` (`folder_repository.go:60`),
+    /// **join-only**: Go's `Folder.LibraryPath` is `structs:"-"`
+    /// (`model/folder.go:21`), so [`folder_row`] deliberately does NOT emit it
+    /// and the write SQL is unchanged. Read onto the record by
+    /// [`crate::hydrate::row_to_folder`]; only the library's `path` is selected
+    /// (`library.name` is not).
+    pub library_path: String,
 }
 
 /// `structs.Map(dbFolder)` + `dbFolder.PostMapArgs` (`folder_repository.go`
@@ -411,6 +434,40 @@ pub fn folder_row(f: &FolderRecord) -> crate::marshal::ColumnMap {
             image_files: f.image_files.clone(),
         },
     )
+}
+
+/// `dbFolder` raw row (phase 1 of the two-phase hydration seam,
+/// `persistence/folder_repository.go:25-31`): the columns `selectFolder`'
+/// `folder.*` + `library.path as library_path` scan into, with the
+/// `image_files` JSON shim **still unparsed** (it is a non-pointer `string`
+/// on the raw struct, exactly like Go's `dbFolder.ImageFiles`). Phase 2 is
+/// [`crate::hydrate::folder_post_scan`], which decodes it onto the record.
+///
+/// The `library_path` join column is read straight onto the record (Go
+/// scans it into `Folder.LibraryPath`, `structs:"-"`); it is not duplicated
+/// here.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderRow {
+    /// The folder columns scanned from the row, `image_files` still empty.
+    pub record: FolderRecord,
+    /// The raw `image_files` TEXT column, unparsed (Go's `dbFolder.ImageFiles`,
+    /// `folder_repository.go:26`). Empty means the shim was not scanned: Go's
+    /// `PostScan` guard (`:40`) skips the decode and leaves `ImageFiles` nil.
+    pub image_files: String,
+}
+
+impl FolderRow {
+    /// `dbFolder.PostScan` (`folder_repository.go:38-46`): thin delegation onto
+    /// [`crate::hydrate::folder_post_scan`], surfaced the way Go's `ScanStruct`
+    /// error leaves the read (a sqlite conversion failure carrying Go's prefix).
+    ///
+    /// # Errors
+    /// [`crate::hydrate::HydrateError::Decoded`] carrying
+    /// [`crate::hydrate::FOLDER_IMAGE_FILES_PREFIX`] + the decode failure — the
+    /// same shape Go's `ScanStruct` error takes out of the read.
+    pub fn into_record(self) -> Result<FolderRecord, crate::hydrate::HydrateError> {
+        crate::hydrate::folder_post_scan(self)
+    }
 }
 
 /// `Put` (`folder_repository.go:255-259`): `r.put(ctx, f.ID, dbFolder)` —
@@ -830,6 +887,8 @@ mod tests {
     /// column — a value rotation fails one of the assertions below.
     fn test_record() -> FolderRecord {
         FolderRecord {
+            // Read-path identity: never in folder_row (the repo appends the id).
+            id: "f-42".to_string(),
             library_id: 42,
             path: "music/rock".to_string(),
             name: "Rock".to_string(),
@@ -842,6 +901,8 @@ mod tests {
             missing: true,
             updated_at: test_dt("08:09:10"),
             created_at: Some(test_dt("01:02:03")),
+            // Join-only, hydration-owned: never in folder_row.
+            library_path: String::new(),
         }
     }
 

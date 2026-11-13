@@ -143,6 +143,8 @@ fn dt(hms: &str) -> DateTime<Utc> {
 /// each distinct and typed per column — a rotation detector.
 fn folder_record() -> FolderRecord {
     FolderRecord {
+        // Read-path identity (never in folder_row): the row's own id.
+        id: "f-1".to_string(),
         library_id: 1,
         path: "music/rock".to_string(),
         name: "Rock".to_string(),
@@ -155,6 +157,8 @@ fn folder_record() -> FolderRecord {
         missing: true,
         updated_at: dt("08:09:10"),
         created_at: Some(dt("01:02:03")),
+        // Hydration-owned join-only field: absent from folder_row.
+        library_path: String::new(),
     }
 }
 
@@ -294,6 +298,8 @@ fn folder_record_rotated_insert_is_detected() {
 
 fn non_smart_record() -> PlaylistRecord {
     PlaylistRecord {
+        // Read-path identity (never in playlist_row): the row's own id.
+        id: "pl-1".to_string(),
         name: "Mix".to_string(),
         comment: "c-mix".to_string(),
         duration: 47.5,
@@ -310,6 +316,10 @@ fn non_smart_record() -> PlaylistRecord {
         imported_hash: "ih-mix".to_string(),
         rules: None,
         evaluated_at: None,
+        // Hydration-owned derived fields: absent from playlist_row.
+        annotation: nd_model::annotation::Annotation::default(),
+        // Read-path-only (`structs:"-"`): absent from playlist_row.
+        owner_name: "jdoe".to_string(),
     }
 }
 
@@ -323,6 +333,8 @@ fn smart_record() -> PlaylistRecord {
         serde_json::Value::String("Frahm".to_string()),
     );
     PlaylistRecord {
+        // Read-path identity (never in playlist_row): the row's own id.
+        id: "pl-2".to_string(),
         name: "SmartMix".to_string(),
         comment: "c-smart".to_string(),
         duration: 55.5,
@@ -342,6 +354,10 @@ fn smart_record() -> PlaylistRecord {
             ..nd_model::Criteria::default()
         }),
         evaluated_at: Some(dt("06:07:08")),
+        // Derived, hydration-owned: absent from playlist_row.
+        annotation: nd_model::annotation::Annotation::default(),
+        // Read-path-only (`structs:"-"`): absent from playlist_row.
+        owner_name: "jdoe".to_string(),
     }
 }
 

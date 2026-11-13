@@ -185,6 +185,21 @@ pub fn unmarshal_expression(
     }
 }
 
+/// The JSON type name Go's decoder prints for a value — the `%s` of
+/// `json.UnmarshalTypeError.Value`: `null`, `bool`, `number`, `string`,
+/// `array`, `object`.
+#[must_use]
+pub(crate) fn json_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
 /// Go's `unmarshalConjunctionType.UnmarshalJSON` (`json.go:12-34`) over an
 /// already-parsed [`Value`]: a list of single-key objects, each key lower-cased
 /// (`json.go:21`) and tried as an operator first (`json.go:22`), then as a
@@ -194,7 +209,11 @@ pub fn unmarshal_expression(
 ///
 /// # Errors
 /// [`String`] carrying `invalid expression key '%s'` (`json.go:27`) or the
-/// shape complaint Go's `json.Unmarshal` would have raised.
+/// Go-shaped `json: cannot unmarshal …` message Go's `json.Unmarshal` raises
+/// for a non-list value / a non-object item (`json.go:14`). Errors here are
+/// what makes `{"any":42}` fail the whole criteria parse instead of silently
+/// defaulting the slot.
+///
 pub fn unmarshal_conjunction_type_value(
     map: &FieldMap,
     raw_value: Value,
@@ -202,15 +221,28 @@ pub fn unmarshal_conjunction_type_value(
     let items: Vec<Value> = match raw_value.as_array() {
         Some(items) => items.clone(),
         None => {
-            return Err("invalid criteria json: conjunction value is not a list".to_string());
+            // Go `json.go:14`: the aux slot decodes into
+            // `[]map[string]json.RawMessage` (rendered by the Go toolchain as
+            // `[]map[string]jsontext.Value` at HEAD), so a non-list slot value
+            // is a decode FAILURE that aborts the whole parse — not an empty
+            // slot. The wording is Go's `json.UnmarshalTypeError`.
+            return Err(format!(
+                "json: cannot unmarshal {} into Go value of type []map[string]json.RawMessage",
+                json_kind(&raw_value),
+            ));
         }
     };
     let mut expressions: Vec<Expression> = Vec::new();
-    for item in items {
+    for (index, item) in items.iter().enumerate() {
         let object: serde_json::Map<String, Value> = match item.as_object() {
             Some(object) => object.clone(),
             None => {
-                return Err("invalid criteria json: conjunction item is not an object".to_string());
+                // Go `json.go:14` again, with the item position
+                // (`json: cannot unmarshal string into .0 of type …`).
+                return Err(format!(
+                    "json: cannot unmarshal {} into .{index} of type map[string]json.RawMessage",
+                    json_kind(item),
+                ));
             }
         };
         for (key, value) in object.iter() {

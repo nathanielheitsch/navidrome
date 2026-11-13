@@ -201,8 +201,11 @@ fn hydrate_error_carries_gos_prefix_verbatim() {
 }
 
 /// RowGet NULL parity, executed: a NULL into a required getter errors;
-/// NULL into `opt_dt` yields `None`; the `0000-00-00 00:00:00` sentinel
-/// yields `None`; a genuinely malformed timestamp errors.
+/// NULL into `opt_dt` yields `None` (Go's nil pointer). A non-NULL value the
+/// driver cannot parse — the `0000-00-00 00:00:00` sentinel and outright
+/// garbage — yields `Some(Go's zero time)`: the driver assigns `time.Time{}`
+/// with NO error (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`) and
+/// `database/sql` allocates a pointer for it (`convert.go:495-496`).
 #[test]
 fn row_get_null_parity_and_sentinel() {
     let (store, path) = store();
@@ -231,18 +234,41 @@ fn row_get_null_parity_and_sentinel() {
                 Ok(())
             })
             .expect("NULL row reads");
-            // Act / Assert: the sentinel is absent, a real date is Some.
+            // Act / Assert: the sentinel scans as a POINTER TO Go's zero time,
+            // a real date as itself.
             conn.query_row("SELECT * FROM probe WHERE id = 's'", [], |row| {
-                assert_eq!(row.get_opt_dt("t")?, None, "the sentinel is absent");
+                assert_eq!(
+                    row.get_opt_dt("t")?,
+                    Some(hydrate::go_zero_time()),
+                    "the sentinel is a pointer to time.Time{{}}, not an absent value"
+                );
+                assert!(
+                    hydrate::is_go_zero(&row.get_dt("t")?),
+                    "the same text scans into a non-pointer field as Go's zero"
+                );
                 let got = row.get_opt_dt("opt_t")?.expect("real date");
                 assert_eq!(nd_db::time::to_text(&got), "2024-01-02 03:04:05+00:00");
+                assert!(!hydrate::is_go_zero(&got), "a real stamp is not zero");
                 Ok(())
             })
             .expect("sentinel row reads");
-            // Act / Assert: a genuinely malformed timestamp errors.
+            // Act / Assert: garbage is NOT a scan error — Go's driver reports no
+            // error and hands back the zero time.
             conn.query_row("SELECT * FROM probe WHERE id = 'g'", [], |row| {
-                assert!(row.get_opt_dt("t").is_err(), "garbage must error");
-                assert!(row.get_opt_dt("opt_t").is_err(), "garbage must error");
+                assert_eq!(
+                    row.get_opt_dt("t")?,
+                    Some(hydrate::go_zero_time()),
+                    "unparseable text is Go's zero time, with no error"
+                );
+                assert_eq!(
+                    row.get_opt_dt("opt_t")?,
+                    Some(hydrate::go_zero_time()),
+                    "unparseable text is Go's zero time, with no error"
+                );
+                assert!(
+                    row.get_dt("t").is_ok(),
+                    "a non-pointer field scans it too (Go's zero)"
+                );
                 Ok(())
             })
             .expect("garbage row reads");
