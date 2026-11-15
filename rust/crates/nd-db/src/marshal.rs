@@ -190,6 +190,11 @@ pub enum MarshalError {
     /// The typed error is the port's contract, not a Go error (Go has none).
     #[error("no columns left to update after dropping created_at/birth_time")]
     EmptyUpdateSet,
+
+    /// Go's `PostMapArgs` aborts a playlist save when criteria `MarshalJSON`
+    /// fails; retain its public error prefix instead of persisting partial rules.
+    #[error("invalid criteria expression: {0}")]
+    Criteria(String),
 }
 
 /// The two rendered legs of a `put`, one unit: the INSERT pair (sorted,

@@ -294,9 +294,8 @@ pub trait RowGet {
 
 impl RowGet for Row<'_> {
     fn get_text(&self, column: &str) -> SqliteResult<String> {
-        let v: Option<String> = self.get(column)?;
-        match v {
-            Some(v) => Ok(v),
+        match self.get_opt_text(column)? {
+            Some(value) => Ok(value),
             // Go: NULL into a non-pointer string errors.
             None => Err(null_required(column, Type::Text)),
         }
@@ -335,7 +334,13 @@ impl RowGet for Row<'_> {
     }
 
     fn get_opt_text(&self, column: &str) -> SqliteResult<Option<String>> {
-        self.get(column)
+        match self.get_ref(column)? {
+            // Go decodes malformed UTF-8 one byte at a time before JSON
+            // marshaling (encoding/json/encode.go:1037-1044).
+            rusqlite::types::ValueRef::Text(bytes) => Ok(Some(go_string_from_bytes(bytes))),
+            rusqlite::types::ValueRef::Null => Ok(None),
+            _ => self.get(column),
+        }
     }
 
     fn get_opt_f64(&self, column: &str) -> SqliteResult<Option<f64>> {
@@ -394,9 +399,13 @@ impl RowGet for Row<'_> {
                 if !is_timestamp_decltype(column_decl_type(self, column).as_deref()) {
                     return Err(unsupported_scan(column, "string"));
                 }
-                let text = std::str::from_utf8(bytes).map_err(|e| {
-                    SqliteError::FromSqlConversionFailure(0, Type::Text, Box::new(e))
-                })?;
+                // C.GoStringN in the pinned driver preserves arbitrary bytes in
+                // a Go string; time.ParseInLocation rejects invalid UTF-8 as a
+                // parse error, and this DATETIME arm turns every parse error into
+                // time.Time{} without returning a scan error.
+                let Ok(text) = std::str::from_utf8(bytes) else {
+                    return Ok(Some(go_zero_gotime()));
+                };
                 Ok(Some(driver_parse_text_dt(text)))
             }
             rusqlite::types::ValueRef::Blob(_) => Err(unsupported_scan(column, "[]byte")),
@@ -411,6 +420,30 @@ impl RowGet for Row<'_> {
     }
 }
 
+/// Convert a Go string's raw bytes to Rust text using encoding/json's per-invalid-byte
+/// replacement behavior. `String::from_utf8_lossy` groups some truncated sequences.
+fn go_string_from_bytes(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        match std::str::from_utf8(&bytes[offset..]) {
+            Ok(valid) => {
+                out.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid_end = offset + error.valid_up_to();
+                out.push_str(
+                    std::str::from_utf8(&bytes[offset..valid_end])
+                        .expect("valid_up_to identifies valid UTF-8"),
+                );
+                out.push('\u{FFFD}');
+                offset = valid_end + 1;
+            }
+        }
+    }
+    out
+}
 /// The boxed error payload for NULL into a required column.
 #[derive(Debug)]
 struct NullRequired(String);
@@ -513,14 +546,14 @@ impl GoTime {
     /// and no fraction at all when zero, and the zone spelled `Z` for a zero
     /// offset or `±HH:MM` otherwise.
     ///
-    /// Go's strict RFC3339 formatter REJECTS a zone hour outside `[0, 23]`
-    /// (`timezone hour outside of range [0,23]`), which makes Go's
-    /// `json.Marshal` of that value fail outright (verified against the pinned
-    /// toolchain for `2024-02-02 03:00:00+24:60`, whose offset parses as 25
-    /// hours). The failure belongs to marshal time — a read the driver already
-    /// succeeded — and the annotation DTO has no error channel, so the port
-    /// renders the UTC-normalised text instead. That is the one documented
-    /// divergence in this fn.
+    /// Go's strict RFC3339 formatter rejects offsets whose hour is outside
+    /// `[0, 23]` (`timezone hour outside of range [0,23]`) and years outside
+    /// `[0, 9999]` (`year outside of range [0,9999]`); `json.Marshal` then fails
+    /// for the entire enclosing object. The driver can parse `+24:60`, and its
+    /// INTEGER path can produce years beyond Chrono's calendar range. This DTO
+    /// stores timestamps as `String` and has no marshal-error channel, so the
+    /// port normalizes invalid offsets to UTC and Chrono-bounded integer times
+    /// saturate. These are documented API-boundary divergences, not scan errors.
     #[must_use]
     pub fn to_rfc3339_nano(&self) -> String {
         // Go's check looks at the printed zone HOUR DIGITS and rejects `>= 24`,
@@ -1820,6 +1853,51 @@ mod tests {
         }
     }
 
+    /// An invalid UTF-8 TEXT cell remains a TEXT value in SQLite. The pinned Go
+    /// driver copies it into a Go string, then its timestamp parser fails and
+    /// returns time.Time{} without a scan error (`sqlite3.go:2818-2842`).
+    #[test]
+    fn invalid_utf8_text_in_declared_datetime_scans_as_go_zero() {
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE probe (dt datetime); \
+             INSERT INTO probe VALUES(CAST(X'FF' AS TEXT));",
+        )
+        .expect("invalid UTF-8 is stored as SQLite TEXT");
+
+        conn.query_row("SELECT dt FROM probe", [], |row| {
+            assert_eq!(row.get_opt_dt("dt")?, Some(go_zero_time()));
+            assert!(is_go_zero(&row.get_dt("dt")?));
+            Ok(())
+        })
+        .expect("Go's DATETIME parse failure is not a scan failure");
+    }
+
+    /// go-sqlite3 returns invalid TEXT bytes as a Go string; encoding/json's
+    /// `DecodeRuneInString` replaces one malformed byte at a time.
+    #[test]
+    fn invalid_utf8_plain_text_scans_as_json_replacement_character() {
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE probe (txt TEXT); \
+             INSERT INTO probe VALUES(CAST(X'FF' AS TEXT)); \
+             INSERT INTO probe VALUES(CAST(X'F09F80' AS TEXT));",
+        )
+        .expect("invalid UTF-8 is stored as SQLite TEXT");
+
+        conn.query_row("SELECT txt FROM probe WHERE rowid = 1", [], |row| {
+            assert_eq!(row.get_text("txt")?, "\u{FFFD}");
+            assert_eq!(row.get_opt_text("txt")?, Some("\u{FFFD}".to_string()));
+            Ok(())
+        })
+        .expect("Go's TEXT scan accepts arbitrary string bytes");
+        conn.query_row("SELECT txt FROM probe WHERE rowid = 2", [], |row| {
+            assert_eq!(row.get_text("txt")?, "\u{FFFD}\u{FFFD}\u{FFFD}");
+            Ok(())
+        })
+        .expect("Go replaces each byte in an incomplete UTF-8 sequence");
+    }
+
     /// Finding 2, executed: the driver's TEXT parse arm is keyed on the DECLARED
     /// type (`sqlite3.go:2822`), so only `timestamp`/`datetime`/`date` columns
     /// get the conversion. A bare string literal (no decltype), a `CAST(… AS
@@ -1844,6 +1922,25 @@ mod tests {
             .expect("declared datetime converts")
             .expect("non-NULL");
         assert_eq!(declared.to_rfc3339_nano(), "2024-02-02T03:00:00+03:00");
+
+        // Go json.Marshal rejects these years; the String DTO cannot expose
+        // that error, so this formatter preserves Chrono's wire spelling.
+        for (year, expected) in [
+            (0, "0000-01-01T00:00:00Z"),
+            (9999, "9999-01-01T00:00:00Z"),
+            (10000, "+10000-01-01T00:00:00Z"),
+            (-1, "-0001-01-01T00:00:00Z"),
+        ] {
+            let utc = NaiveDate::from_ymd_opt(year, 1, 1)
+                .expect("Chrono supports test year")
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is valid");
+            let timestamp = GoTime {
+                utc,
+                offset_secs: 0,
+            };
+            assert_eq!(timestamp.to_rfc3339_nano(), expected, "year {year}");
+        }
 
         // Declared TEXT: the driver's `default` arm hands back a string.
         for column in ["txt", "weird"] {

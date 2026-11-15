@@ -435,7 +435,8 @@ fn playlist_smart_rules_stored_and_counters_unwritten() {
         "2024-07-01 06:07:08+00:00"
     );
     // rules stored as the marshal_criteria JSON.
-    let expected_rules = nd_model::criteria::marshal_criteria(p.rules.as_ref().expect("smart"));
+    let expected_rules = nd_model::criteria::marshal_criteria(p.rules.as_ref().expect("smart"))
+        .expect("valid smart criteria marshals");
     assert_eq!(
         row_text(&store, "SELECT rules FROM playlist"),
         expected_rules,

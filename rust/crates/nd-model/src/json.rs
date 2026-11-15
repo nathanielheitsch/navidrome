@@ -324,33 +324,224 @@ pub fn unmarshal_optional_conjunction(
 /// is sorted, matching Go's map marshalling.
 #[must_use]
 pub fn value_json(value: Value) -> String {
-    match serde_json::to_string(&value) {
-        Ok(text) => text,
-        // Cannot happen for a `Value` (no maps with non-string keys), kept
-        // total so callers stay match-based.
+    match go_json_value(&value) {
+        Ok(text) => go_html_escape_json(&text),
+        // Values cannot contain non-finite numbers or non-string object keys.
         Err(_) => "null".to_string(),
     }
 }
 
-/// The single-entry leaf — Go's `marshalExpression` (`json.go:157-174`).
+/// Parse a Go `map[string]any` payload without serde_json's lossy decimal-to-f64
+/// fast path. Go's `strconv.ParseFloat` and Rust's standard parser agree on the
+/// correctly rounded float64; this protects that result before constructing a
+/// serde `Value` for the rest of the criteria decoder.
+pub(crate) fn parse_go_json_value(text: &str) -> Result<Value, String> {
+    let validated: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let prefix = unused_number_marker(&validated);
+    let mut numbers = Vec::new();
+    let rewritten = replace_json_numbers_with_markers(text, &prefix, &mut numbers)?;
+    let mut value: Value = serde_json::from_str(&rewritten).map_err(|error| error.to_string())?;
+    restore_number_markers(&mut value, &prefix, &numbers)?;
+    Ok(value)
+}
+
+fn unused_number_marker(value: &Value) -> String {
+    for candidate in 0_u64.. {
+        let prefix = format!("\0navidrome-go-f64-{candidate}-");
+        if !value_contains_string(value, &prefix) {
+            return prefix;
+        }
+    }
+    unreachable!("a finite JSON value cannot contain every marker prefix")
+}
+
+fn value_contains_string(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(value) => value.contains(needle),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_string(value, needle)),
+        Value::Object(values) => values
+            .values()
+            .any(|value| value_contains_string(value, needle)),
+        _ => false,
+    }
+}
+
+fn replace_json_numbers_with_markers(
+    text: &str,
+    prefix: &str,
+    numbers: &mut Vec<f64>,
+) -> Result<String, String> {
+    let bytes = text.as_bytes();
+    let mut output = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    match bytes[i] {
+                        b'\\' => i += 2,
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        _ => i += 1,
+                    }
+                }
+                output.push_str(&text[start..i]);
+            }
+            b'-' | b'0'..=b'9' => {
+                let start = i;
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_digit()
+                        || matches!(bytes[i], b'.' | b'e' | b'E' | b'+' | b'-'))
+                {
+                    i += 1;
+                }
+                let number = text[start..i]
+                    .parse::<f64>()
+                    .map_err(|error| format!("invalid criteria number: {error}"))?;
+                let marker = format!("{prefix}{}", numbers.len());
+                output
+                    .push_str(&serde_json::to_string(&marker).map_err(|error| error.to_string())?);
+                numbers.push(number);
+            }
+            _ => {
+                let ch = text[i..]
+                    .chars()
+                    .next()
+                    .expect("index is inside the string");
+                output.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+    }
+    Ok(output)
+}
+
+fn restore_number_markers(value: &mut Value, prefix: &str, numbers: &[f64]) -> Result<(), String> {
+    match value {
+        Value::String(marker) if marker.starts_with(prefix) => {
+            let index = marker[prefix.len()..]
+                .parse::<usize>()
+                .map_err(|error| format!("invalid criteria number marker: {error}"))?;
+            let number = numbers
+                .get(index)
+                .copied()
+                .ok_or_else(|| "criteria number marker is out of range".to_string())?;
+            *value =
+                Value::Number(serde_json::Number::from_f64(number).ok_or_else(|| {
+                    "criteria number is not representable as float64".to_string()
+                })?);
+        }
+        Value::Array(values) => {
+            for value in values {
+                restore_number_markers(value, prefix, numbers)?;
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                restore_number_markers(value, prefix, numbers)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Go decodes `map[string]any` numbers as float64. `encoding/json` uses
+/// `strconv.AppendFloat` with shortest-roundtrip digits, switching to exponent
+/// notation below 1e-6 or at/above 1e21. Normalize recursively because serde
+/// otherwise preserves integer/float spellings and applies different thresholds.
+fn go_json_value(value: &Value) -> Result<String, String> {
+    match value {
+        Value::Null => Ok("null".to_string()),
+        Value::Bool(value) => Ok(value.to_string()),
+        Value::Number(value) => value
+            .as_f64()
+            .map(go_float64_text)
+            .ok_or_else(|| "criteria number is not representable as float64".to_string()),
+        Value::String(value) => serde_json::to_string(value).map_err(|error| error.to_string()),
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .map(go_json_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("[{}]", values.join(",")))
+        }
+        Value::Object(values) => {
+            let entries = values
+                .iter()
+                .map(|(key, value)| {
+                    let key = serde_json::to_string(key).map_err(|error| error.to_string())?;
+                    Ok(format!("{key}:{}", go_json_value(value)?))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(format!("{{{}}}", entries.join(",")))
+        }
+    }
+}
+
+/// Match Go's `encoding/json` float formatting, including exponent thresholds
+/// and its explicit `+` sign for non-negative exponents.
+fn go_float64_text(number: f64) -> String {
+    let magnitude = number.abs();
+    if number == 0.0 || (1e-6..1e21).contains(&magnitude) {
+        return format!("{number}");
+    }
+
+    let scientific = format!("{number:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("Rust scientific formatting includes an exponent");
+    let (sign, digits) = if let Some(digits) = exponent.strip_prefix('-') {
+        ("-", digits)
+    } else {
+        ("+", exponent.strip_prefix('+').unwrap_or(exponent))
+    };
+    let digits = digits.trim_start_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    format!("{mantissa}e{sign}{digits}")
+}
+
+/// Apply the escaping `encoding/json.Marshal` adds to every JSON string, after
+/// serde has emitted structurally valid JSON. Go always escapes HTML-sensitive
+/// characters and U+2028/U+2029 (`encoding/json/encode.go:998-1044`).
+#[must_use]
+fn go_html_escape_json(text: &str) -> String {
+    text.replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029")
+}
+
+/// The single-entry leaf — Go's `marshalExpression` (`json.go:157-174`). The Go
+/// code inserts the field key without JSON-quoting it, then `encoding/json`
+/// validates the returned MarshalJSON bytes (`encode.go:472-490`).
 ///
 /// # Errors
-/// [`String`] when the payload's length is not 1 (`json.go:158-160`), mirroring
-/// Go's `fmt.Errorf`, or when the inner value fails to marshal (`json.go:164`).
+/// [`String`] when the payload length is not 1, its raw key creates invalid JSON,
+/// or the inner value fails to marshal.
 pub fn marshal_expression_leaf(name: String, value: &Fields) -> Result<String, String> {
     if value.len() != 1 {
         return Err(format!(
             "invalid {} expression length {} for values {}",
             name,
             value.len(),
-            value_json(Value::Object(value.clone().into_iter().collect())),
+            go_json_value(&Value::Object(value.clone().into_iter().collect()))
+                .unwrap_or_else(|_| "null".to_string()),
         ));
     }
-    let inner: String = match serde_json::to_string(value) {
-        Ok(text) => text,
-        Err(e) => return Err(e.to_string()),
-    };
-    Ok(format!("{{\"{}\":{}}}", name, inner))
+    let (field, value) = value.iter().next().expect("one field exists");
+    let encoded_value = go_json_value(value)?;
+    let raw = format!("{{\"{name}\":{{\"{field}\":{encoded_value}}}}}");
+    serde_json::from_str::<Value>(&raw)
+        .map_err(|error| format!("invalid JSON from criteria leaf: {error}"))?;
+    Ok(go_html_escape_json(&raw))
 }
 
 /// Go's `marshalConjunction` (`json.go:176-186`): the aux struct with only the
@@ -601,6 +792,79 @@ mod json_test {
             two_err.contains("invalid contains expression length 2"),
             "json.go:159 — got {two_err}"
         );
+    }
+
+    #[test]
+    fn go_json_html_escapes_expression_values() {
+        let value = Value::String("<a>&\u{2028}\u{2029}".to_string());
+        assert_eq!(value_json(value), r#""\u003ca\u003e\u0026\u2028\u2029""#);
+        let leaf = marshal_expression_leaf(
+            "is".to_string(),
+            &title_leaf("<a>&\u{2028}\u{2029}".to_string()),
+        )
+        .expect("single-field leaf marshals");
+        assert_eq!(
+            leaf,
+            r#"{"is":{"title":"\u003ca\u003e\u0026\u2028\u2029"}}"#
+        );
+    }
+
+    #[test]
+    fn marshal_rejects_field_keys_that_go_would_insert_as_invalid_json() {
+        // Go's criteria/json.go:161 writes the key raw into MarshalJSON bytes;
+        // encoding/json/encode.go:472-490 validates those bytes before output.
+        let mut fields = Fields::new();
+        fields.insert("ti\"tle".to_string(), Value::String("value".to_string()));
+
+        let error = marshal_expression_leaf("is".to_string(), &fields)
+            .expect_err("Go's raw field key makes the custom JSON invalid");
+        assert!(error.contains("invalid JSON from criteria leaf"), "{error}");
+    }
+
+    #[test]
+    fn marshal_criteria_numbers_match_go_float64_normalization() {
+        // Go normalizes to float64 and encoding/json uses fixed/scientific thresholds.
+        for (input, expected) in [
+            ("2024.0", "2024"),
+            ("1e5", "100000"),
+            ("-0.0", "-0"),
+            ("1e-6", "0.000001"),
+            ("1e-7", "1e-7"),
+            ("1e20", "100000000000000000000"),
+            ("1e21", "1e+21"),
+            ("-1e21", "-1e+21"),
+            ("5e-324", "5e-324"),
+            ("1e308", "1e+308"),
+            ("18446744073709551616", "18446744073709552000"),
+            ("123456789012345678901234567890.5", "1.2345678901234568e+29"),
+            ("1.2345678901234567890e39", "1.2345678901234568e+39"),
+        ] {
+            let value = parse_go_json_value(input).expect("valid Go-compatible JSON number");
+            let mut fields = Fields::new();
+            fields.insert("year".to_string(), value);
+            let actual = marshal_expression_leaf("is".to_string(), &fields)
+                .expect("single numeric field marshals");
+            assert_eq!(
+                actual,
+                format!("{{\"is\":{{\"year\":{expected}}}}}"),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_expression_error_does_not_apply_json_html_escaping() {
+        let mut fields = Fields::new();
+        fields.insert("title".to_string(), Value::String("<x>".to_string()));
+        fields.insert("year".to_string(), Value::from(2000));
+
+        let error = marshal_expression_leaf("is".to_string(), &fields)
+            .expect_err("multiple fields are invalid");
+        assert!(
+            error.contains("<x>"),
+            "Go fmt error values do not HTML-escape: {error}"
+        );
+        assert!(!error.contains("\\u003c"), "{error}");
     }
 
     #[test]

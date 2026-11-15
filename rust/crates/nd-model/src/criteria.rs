@@ -47,6 +47,7 @@ use serde_json::Value;
 
 use crate::fields::FieldMap;
 use crate::json::marshal_expression;
+use crate::json::parse_go_json_value;
 use crate::json::unmarshal_conjunction_type_value;
 use crate::operators::extract_playlist_field;
 use crate::operators::Expression;
@@ -113,7 +114,9 @@ pub fn effective_limit(c: &Criteria, total_count: i64) -> i64 {
         }
         // Go `criteria.go:41`: `int(totalCount) * c.LimitPercent / 100`, integer
         // arithmetic on the same 64-bit width as the fields themselves.
-        let result: i64 = total_count * c.limit_percent / 100;
+        // Go signed integer overflow wraps deterministically; Rust's plain
+        // multiplication panics in dev/test builds, so spell out Go's semantics.
+        let result: i64 = total_count.wrapping_mul(c.limit_percent) / 100;
         if result < 1 {
             return 1;
         }
@@ -246,14 +249,13 @@ fn list_omitted(value: &[Expression]) -> bool {
 /// Render the aux struct in declaration order with Go's `omitempty` —
 /// Go's `json.Marshal(aux)` at `criteria.go:112`. Field keys are the JSON tags
 /// of `criteria.go:86-93`.
-#[must_use]
-fn marshal_aux_json(aux: &MarshalAux) -> String {
+fn marshal_aux_json(aux: &MarshalAux) -> Result<String, String> {
     let mut parts: Vec<String> = Vec::new();
     if !list_omitted(&aux.all) {
-        parts.push(format!("\"all\":[{}]", marshal_list(&aux.all)));
+        parts.push(format!("\"all\":[{}]", marshal_list(&aux.all)?));
     }
     if !list_omitted(&aux.any) {
-        parts.push(format!("\"any\":[{}]", marshal_list(&aux.any)));
+        parts.push(format!("\"any\":[{}]", marshal_list(&aux.any)?));
     }
     if !string_omitted(&aux.sort) {
         parts.push(format!("\"sort\":{}", json_quote(&aux.sort)));
@@ -276,37 +278,32 @@ fn marshal_aux_json(aux: &MarshalAux) -> String {
             json_quote(&aux.refresh_delay)
         ));
     }
-    format!("{{{}}}", parts.join(","))
+    Ok(format!("{{{}}}", parts.join(",")))
 }
 
 /// `json.Marshal` of a `[]Expression` — the slice half of Go's aux struct
 /// (`criteria.go:86-87`), each element through its own `MarshalJSON`.
 ///
 /// # Errors
-/// Propagated from [`crate::json::marshal_expression`].
-fn marshal_list(exprs: &[Expression]) -> String {
+/// Propagated from [`crate::json::marshal_expression`], as Go's `json.Marshal`
+/// propagates an invalid custom `MarshalJSON` result for the entire value.
+fn marshal_list(exprs: &[Expression]) -> Result<String, String> {
     let mut items: Vec<String> = Vec::new();
     for expr in exprs {
-        match marshal_expression(expr) {
-            Ok(text) => items.push(text),
-            // Go's json.Marshal error propagates; the port renders the failure
-            // as `null` at this nesting level so the container still marshals.
-            Err(_) => items.push("null".to_string()),
-        }
+        items.push(marshal_expression(expr)?);
     }
-    items.join(",")
+    Ok(items.join(","))
 }
 
 /// Compact JSON text of a criteria — Go's `Criteria.MarshalJSON`
 /// (`criteria.go:84-113`).
-#[must_use]
-pub fn marshal_criteria(c: &Criteria) -> String {
+pub fn marshal_criteria(c: &Criteria) -> Result<String, String> {
     marshal_aux_json(&marshal_aux(c))
 }
 
-/// JSON string literal for `s` — Go's `encoding/json` string encoding: `"` and
-/// `\` escaped, control characters as `\u00XX` (`criteria.go:112`, the same
-/// encoding Go's `json.Marshal` applies to every string field).
+/// JSON string literal for `s` — Go's `encoding/json` string encoding: quotes,
+/// backslashes, control characters, HTML-sensitive characters, and U+2028/U+2029
+/// are escaped exactly as `json.Marshal` (`criteria.go:112`) writes them.
 #[must_use]
 fn json_quote(s: &str) -> String {
     let mut out: String = "\"".to_string();
@@ -319,6 +316,11 @@ fn json_quote(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '<' => out.push_str("\\u003c"),
+            '>' => out.push_str("\\u003e"),
+            '&' => out.push_str("\\u0026"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
             _ => {
                 if (ch as u32) < 0x20 {
                     out.push_str(&format!("\\u{:04x}", ch as u32));
@@ -550,10 +552,7 @@ fn raw_kind(raw: &RawValue) -> &'static str {
 /// [`CriteriaError::Slot`] carrying Go's decode message when the value is not a
 /// list of expressions, or a nested key is unknown.
 fn slot_rules(map: &FieldMap, raw: &RawValue) -> Result<Vec<Expression>, CriteriaError> {
-    let value: Value = match serde_json::from_str(raw.get()) {
-        Ok(value) => value,
-        Err(err) => return Err(CriteriaError::Slot(err.to_string())),
-    };
+    let value = parse_go_json_value(raw.get()).map_err(CriteriaError::Slot)?;
     // `json.Unmarshal(data, &slice)` with a JSON null leaves the slice nil
     // (`json.go:38`): present, but no rules.
     if value.is_null() {
@@ -914,12 +913,43 @@ mod criteria_test {
         // Arrange: `criteria_test.go:19-38`.
         let c: Criteria = complex();
         // Act:
-        let json: String = marshal_criteria(&c);
+        let json = marshal_criteria(&c).expect("criteria marshals");
         // Assert
         assert_eq!(
             json, GOLDEN,
             "criteria_test.go:40-62 — the compact golden wire"
         );
+    }
+
+    #[test]
+    fn criteria_marshaling_uses_go_html_safe_escaping() {
+        let criteria = Criteria {
+            expression: Expression::All(vec![Expression::Is(single(
+                "title",
+                "<a>&\u{2028}\u{2029}",
+            ))]),
+            sort: "<sort>&".to_string(),
+            ..Criteria::default()
+        };
+
+        assert_eq!(
+            marshal_criteria(&criteria).expect("criteria marshals"),
+            r#"{"all":[{"is":{"title":"\u003ca\u003e\u0026\u2028\u2029"}}],"sort":"\u003csort\u003e\u0026"}"#,
+            "Go encoding/json escapes HTML-sensitive and line-separator characters"
+        );
+    }
+
+    #[test]
+    fn criteria_marshaling_propagates_invalid_leaf_errors() {
+        let mut fields = single("a", "1");
+        fields.insert("b".to_string(), serde_json::Value::from(2));
+        let criteria = Criteria {
+            expression: Expression::All(vec![Expression::Is(fields)]),
+            ..Criteria::default()
+        };
+
+        let error = marshal_criteria(&criteria).expect_err("Go rejects multi-field leaves");
+        assert!(error.contains("invalid is expression length 2"), "{error}");
     }
 
     #[test]
@@ -929,7 +959,7 @@ mod criteria_test {
         let map = default_field_map();
         // Act:
         let parsed: Criteria = unmarshal_criteria_str(&map, GOLDEN.to_string()).unwrap_or_default();
-        let json: String = marshal_criteria(&parsed);
+        let json = marshal_criteria(&parsed).expect("parsed criteria marshals");
         // Assert
         match unmarshal_criteria_str(&map, GOLDEN.to_string()) {
             Ok(_) => {}
@@ -1356,7 +1386,7 @@ mod criteria_test {
             };
             assert_eq!(held, value, "{field}:{value} must not be narrowed");
             // Act: marshal back (Go's `json.Marshal(aux)` with an `int` field).
-            let text = marshal_criteria(&parsed);
+            let text = marshal_criteria(&parsed).expect("parsed criteria marshals");
             // Assert: the wire carries the same number, and round-trips.
             assert!(
                 text.contains(&format!("\"{field}\":{value}")),
@@ -1430,8 +1460,8 @@ mod criteria_test {
             refresh_delay: 0,
         };
         // Act:
-        let percent_json = marshal_criteria(&percent);
-        let fixed_json = marshal_criteria(&fixed);
+        let percent_json = marshal_criteria(&percent).expect("percent criteria marshals");
+        let fixed_json = marshal_criteria(&fixed).expect("fixed criteria marshals");
         // Assert
         assert!(
             percent_json.contains("\"limitPercent\":10"),
@@ -1531,6 +1561,25 @@ mod criteria_test {
             ..Criteria::default()
         };
         assert_eq!(effective_limit(&small, 50), 1, "criteria_test.go:199");
+        // Go's int multiplication wraps on 64-bit targets rather than panicking.
+        for (total, percentage, expected) in [
+            (i64::MAX, 100, 1),
+            (i64::MAX, 2, 1),
+            (i64::MAX, 3, 92_233_720_368_547_758),
+            (i64::MAX, 1, 92_233_720_368_547_758),
+            (92_233_720_368_547_759, 100, 1),
+            (i64::MAX / 2 + 1, 2, 1),
+        ] {
+            let c = Criteria {
+                limit_percent: percentage,
+                ..Criteria::default()
+            };
+            assert_eq!(
+                effective_limit(&c, total),
+                expected,
+                "{total} * {percentage}%"
+            );
+        }
     }
 
     #[test]
@@ -1596,6 +1645,27 @@ mod criteria_test {
     }
 
     #[test]
+    fn refresh_delay_accepts_go_subsecond_and_zero_spellings() {
+        let map = default_field_map();
+        let base = r#"{"all":[{"is":{"loved":true}}]"#;
+        for (delay, expected) in [("0", 0), ("500ms", 500_000_000), ("100ns", 100)] {
+            let text = format!("{base},\"refreshDelay\":\"{delay}\"}}");
+            let parsed = unmarshal_criteria_str(&map, text)
+                .unwrap_or_else(|e| panic!("Go-valid refreshDelay {delay:?}: {e}"));
+            assert_eq!(parsed.refresh_delay, expected, "{delay}");
+        }
+        let formatted = Criteria {
+            expression: Expression::All(vec![Expression::Is(single("loved", "true"))]),
+            refresh_delay: 500_000_000,
+            ..Criteria::default()
+        };
+        assert_eq!(
+            marshal_criteria(&formatted).expect("criteria marshals"),
+            r#"{"all":[{"is":{"loved":"true"}}],"refreshDelay":"500ms"}"#
+        );
+    }
+
+    #[test]
     fn refresh_delay_round_trips_through_the_duration_string() {
         // Arrange: the seven refreshDelay cases of `criteria_test.go:259-321`.
         let map = default_field_map();
@@ -1654,7 +1724,7 @@ mod criteria_test {
             ..Criteria::default()
         };
         with_delay.refresh_delay = 24 * 3600 * 1_000_000_000;
-        let json = marshal_criteria(&with_delay);
+        let json = marshal_criteria(&with_delay).expect("criteria with delay marshals");
         assert!(
             json.contains("\"refreshDelay\":\"1d\""),
             "criteria_test.go:301 — got {json}"
@@ -1664,7 +1734,7 @@ mod criteria_test {
             expression: Expression::All(vec![Expression::Is(single("loved", "true"))]),
             ..Criteria::default()
         };
-        let plain = marshal_criteria(&without);
+        let plain = marshal_criteria(&without).expect("criteria marshals");
         assert!(
             !plain.contains("refreshDelay"),
             "criteria_test.go:308 — got {plain}"
@@ -1675,7 +1745,7 @@ mod criteria_test {
             ..Criteria::default()
         };
         round.refresh_delay = 36 * 3600 * 1_000_000_000;
-        let text = marshal_criteria(&round);
+        let text = marshal_criteria(&round).expect("criteria marshals");
         let parsed = unmarshal_criteria_str(&map, text);
         match parsed {
             Ok(c) => assert_eq!(

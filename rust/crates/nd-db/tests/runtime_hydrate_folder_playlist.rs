@@ -501,7 +501,7 @@ fn playlist_base_read_hydrates_rules_counters_and_annotation() {
 
     // Assert: no derived/joined column reaches the write map — the write SQL is
     // unchanged by hydration — and the smart PostMapArgs arm still applies.
-    let row_map = playlist_repo::playlist_row(&got);
+    let row_map = playlist_repo::playlist_row(&got).expect("hydrated playlist re-marshals");
     let keys: Vec<&String> = row_map.map().keys().collect();
     for derived in [
         "starred",

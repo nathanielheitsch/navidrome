@@ -1421,14 +1421,41 @@ fn json_expr(info: &FieldInfo, name: &str, cond: Option<Cond>, negate: bool) -> 
 
 /// Renders a criteria leaf value as the LIKE pattern input — Go's
 /// `fmt.Sprintf(pattern, value)` argument (`criteria_sql.go:259,265,275,281`):
-/// a string renders verbatim; numbers/bools render Go's `%v` form.
+/// values are rendered with Go's `%v` formatting.
 #[must_use]
 fn json_value_to_string(value: &serde_json::Value) -> String {
+    go_fmt_value(value)
+}
+
+/// Go `fmt.Sprintf("%v", any)` for values produced by decoding JSON into
+/// `map[string]any`: strings are unquoted, slices use space-separated values,
+/// and string-keyed maps use their ordered `map[key:value]` form.
+#[must_use]
+fn go_fmt_value(value: &serde_json::Value) -> String {
     match value {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Bool(b) => bool_to_string(*b),
-        serde_json::Value::Number(n) => n.to_string(),
-        _ => String::new(),
+        serde_json::Value::Null => "<nil>".to_string(),
+        serde_json::Value::Bool(value) => bool_to_string(*value),
+        serde_json::Value::Number(number) => number
+            .as_f64()
+            .map(go_fmt_float64)
+            .unwrap_or_else(|| number.to_string()),
+        serde_json::Value::String(value) => value.clone(),
+        serde_json::Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(go_fmt_value)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
+        serde_json::Value::Object(values) => format!(
+            "map[{}]",
+            values
+                .iter()
+                .map(|(key, value)| format!("{key}:{}", go_fmt_value(value)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ),
     }
 }
 
@@ -1440,6 +1467,29 @@ fn bool_to_string(b: bool) -> String {
         "true".to_string()
     } else {
         "false".to_string()
+    }
+}
+
+/// Go `fmt.Sprintf("%v", float64)` uses `%g` thresholds and two-digit exponents.
+/// Persisted criteria numbers are decoded as float64 by Go's `encoding/json`.
+#[must_use]
+fn go_fmt_float64(value: f64) -> String {
+    let magnitude = value.abs();
+    if value == 0.0 || (1e-4..1e6).contains(&magnitude) {
+        return format!("{value}");
+    }
+
+    let scientific = format!("{value:e}");
+    let (mantissa, exponent) = scientific
+        .split_once('e')
+        .expect("Rust scientific formatting includes an exponent");
+    let exponent = exponent
+        .parse::<i32>()
+        .expect("Rust scientific formatting includes a numeric exponent");
+    if exponent < 0 {
+        format!("{mantissa}e-{0:02}", exponent.unsigned_abs())
+    } else {
+        format!("{mantissa}e+{exponent:02}")
     }
 }
 
@@ -1489,9 +1539,11 @@ fn collect_expression_fields(expr: Expression) -> Vec<String> {
 #[must_use]
 fn period_days(value: &JsonValue) -> Option<i64> {
     match value {
-        JsonValue::Number(n) => n.as_i64(),
+        JsonValue::Number(n) => n
+            .as_f64()
+            .and_then(|number| go_fmt_float64(number).parse::<i64>().ok()),
         JsonValue::String(s) => s.parse::<i64>().ok(),
-        JsonValue::Bool(b) => Some(if *b { 1 } else { 0 }),
+        JsonValue::Bool(b) => bool_to_string(*b).parse::<i64>().ok(),
         _ => None,
     }
 }
@@ -1810,6 +1862,68 @@ mod criteria_sql_test {
         // Assert:
         assert_eq!(sql, "media_file.title LIKE ?");
         assert_eq!(args, vec![Value::Text("%love%".to_string())]);
+    }
+
+    #[test]
+    fn decoded_criteria_numbers_keep_go_float64_formatting_in_sql_consumers() {
+        // Go decodes map[string]any JSON numbers as float64; `fmt.Sprintf("%v", value)`
+        // renders `%g` (`persistence/criteria_sql.go:259-281,329-332`).
+        let criteria =
+            crate::hydrate::parse_playlist_rules(Some(r#"{"all":[{"contains":{"title":1980}}]}"#))
+                .expect("Go-compatible playlist criteria decode")
+                .expect("non-null criteria");
+        let (sql, args) = compiler_with(criteria, Owner::default())
+            .where_sql()
+            .expect("numeric contains criteria compiles");
+        assert_eq!(sql, "media_file.title LIKE ?");
+        assert_eq!(args, vec![Value::Text("%1980%".to_string())]);
+
+        let criteria = crate::hydrate::parse_playlist_rules(Some(
+            r#"{"all":[{"inTheLast":{"lastPlayed":30}}]}"#,
+        ))
+        .expect("Go-compatible playlist criteria decode")
+        .expect("non-null criteria");
+        assert!(compiler_with(criteria, Owner::default())
+            .where_sql()
+            .is_ok());
+
+        // Go fmt's %g threshold and exponent spelling are not encoding/json's.
+        assert_eq!(go_fmt_float64(1e-4), "0.0001");
+        assert_eq!(go_fmt_float64(1e-5), "1e-05");
+        assert_eq!(go_fmt_float64(1e6), "1e+06");
+        assert_eq!(go_fmt_float64(-0.0), "-0");
+    }
+
+    #[test]
+    fn go_fmt_value_and_period_rejection_match_non_numeric_json_scalars() {
+        assert_eq!(json_value_to_string(&json!(null)), "<nil>");
+        assert_eq!(
+            json_value_to_string(&json!([1, true, null])),
+            "[1 true <nil>]"
+        );
+        assert_eq!(
+            json_value_to_string(&json!({"a": 1, "b": "text"})),
+            "map[a:1 b:text]"
+        );
+        assert_eq!(period_days(&json!(true)), None);
+
+        let criteria =
+            crate::hydrate::parse_playlist_rules(Some(r#"{"all":[{"contains":{"title":null}}]}"#))
+                .expect("Go-compatible playlist criteria decode")
+                .expect("non-null criteria");
+        let (_, args) = compiler_with(criteria, Owner::default())
+            .where_sql()
+            .expect("null contains criteria compiles");
+        assert_eq!(args, vec![Value::Text("%<nil>%".to_string())]);
+
+        let criteria = crate::hydrate::parse_playlist_rules(Some(
+            r#"{"all":[{"inTheLast":{"lastPlayed":true}}]}"#,
+        ))
+        .expect("Go-compatible playlist criteria decode")
+        .expect("non-null criteria");
+        assert!(compiler_with(criteria, Owner::default())
+            .where_sql()
+            .is_err());
     }
 
     #[test]

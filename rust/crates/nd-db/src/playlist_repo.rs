@@ -575,9 +575,15 @@ pub const SMART_OWNED_COUNTER_COLS: [&str; 3] = ["song_count", "duration", "size
 /// `marshal_criteria` JSON and `song_count`/`duration`/`size` removed
 /// (`:38-45`); **non-smart**: `rules` removed (`:49`).
 ///
-/// `id` never appears in the map — the seam rejects it.
-#[must_use]
-pub fn playlist_row(p: &PlaylistRecord) -> crate::marshal::ColumnMap {
+/// `id` never appears in the map — the seam rejects it. A smart playlist whose
+/// criteria cannot be marshalled aborts construction, matching Go's failed-put
+/// control flow; Rust's diagnostic text omits Go's full MarshalerError chain.
+///
+/// # Errors
+/// [`crate::marshal::MarshalError::Criteria`] when a criteria leaf is invalid.
+pub fn playlist_row(
+    p: &PlaylistRecord,
+) -> Result<crate::marshal::ColumnMap, crate::marshal::MarshalError> {
     let mut map = BTreeMap::new();
     map.insert("comment".to_string(), Value::Text(p.comment.clone()));
     map.insert(
@@ -618,9 +624,10 @@ pub fn playlist_row(p: &PlaylistRecord) -> crate::marshal::ColumnMap {
         let mut m = map.map().clone();
         m.insert(
             "rules".to_string(),
-            Value::Text(nd_model::criteria::marshal_criteria(
-                p.rules.as_ref().unwrap(),
-            )),
+            Value::Text(
+                nd_model::criteria::marshal_criteria(p.rules.as_ref().unwrap())
+                    .map_err(crate::marshal::MarshalError::Criteria)?,
+            ),
         );
         for c in SMART_OWNED_COUNTER_COLS {
             m.remove(c);
@@ -632,7 +639,7 @@ pub fn playlist_row(p: &PlaylistRecord) -> crate::marshal::ColumnMap {
         m.remove("rules");
         crate::marshal::ColumnMap::new(m)
     };
-    map
+    Ok(map)
 }
 
 /// `dbPlaylist` raw row (phase 1 of the two-phase hydration seam,
@@ -726,7 +733,7 @@ pub fn put_sql(
         updated_at: now,
         ..p.clone()
     };
-    let map = playlist_row(&stamped);
+    let map = playlist_row(&stamped)?;
     let row = crate::marshal::MarshalledRow::new(TABLE, id, &map, cols_to_update)?;
     Ok(PutPlaylistSql {
         update: (row.update_sql, row.update_args),
@@ -1108,7 +1115,7 @@ mod tests {
     #[test]
     fn playlist_row_smart_stores_rules_json_and_drops_counters() {
         // Arrange/Act: the PostMapArgs smart arm (:38-45).
-        let row = playlist_row(&smart_record());
+        let row = playlist_row(&smart_record()).expect("smart criteria marshals");
         // Assert: rules is the marshal_criteria JSON; the
         // evaluation-owned counters are absent from the map.
         let rules = row
@@ -1118,7 +1125,10 @@ mod tests {
         assert!(matches!(rules, Some(Value::Text(_))), "rules must be JSON");
         if let Some(Value::Text(text)) = rules {
             let c = smart_record().rules.clone().unwrap();
-            assert_eq!(text, nd_model::criteria::marshal_criteria(&c));
+            assert_eq!(
+                text,
+                nd_model::criteria::marshal_criteria(&c).expect("criteria marshals")
+            );
         }
         for c in SMART_OWNED_COUNTER_COLS {
             assert!(!row.contains(c), "{c} must be deleted for a smart put");
@@ -1130,9 +1140,27 @@ mod tests {
     }
 
     #[test]
+    fn put_rejects_invalid_smart_criteria_instead_of_persisting_null() {
+        let mut record = smart_record();
+        let rules = record.rules.as_mut().expect("smart playlist has rules");
+        let mut fields = nd_model::Fields::new();
+        fields.insert("a".to_string(), serde_json::Value::from(1));
+        fields.insert("b".to_string(), serde_json::Value::from(2));
+        rules.expression = nd_model::Expression::Is(fields);
+
+        let error = put_sql("pl-1", &record, Utc::now(), &[])
+            .expect_err("Go's PostMapArgs rejects a two-field leaf");
+        assert!(
+            matches!(&error, crate::marshal::MarshalError::Criteria(message)
+                if message.contains("invalid is expression length 2")),
+            "got {error}"
+        );
+    }
+
+    #[test]
     fn playlist_row_non_smart_deletes_rules() {
         // Arrange/Act: the PostMapArgs non-smart arm (:49).
-        let row = playlist_row(&test_record());
+        let row = playlist_row(&test_record()).expect("non-smart row marshals");
         // Assert: no rules column; the counters ARE present;
         // evaluated_at None binds NULL.
         assert!(!row.contains("rules"));
