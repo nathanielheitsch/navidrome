@@ -17,6 +17,7 @@ pub const OWNED_BY_ISSUE: u8 = 5;
 
 pub mod album_repo;
 pub mod artist_repo;
+pub mod artwork_hydration;
 pub mod artwork_queue_repo;
 pub mod artwork_repo;
 pub mod criteria_sql;

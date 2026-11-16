@@ -7,7 +7,10 @@
 //! source in the mediafile slice), so the two upserts below list their
 //! columns alphabetically, exactly what Go's `Insert().SetMap(values)` emits.
 //! `kind.Prefix()` (`model/artwork_id.go:23`) is caller-supplied typed-domain
-//! text, values bound.
+//! text, values bound — and it is the ONLY spelling the `item_kind` column ever
+//! holds, so [`OWNER_TABLES`] and every test fixture below keys on the prefix
+//! (`"al"`, `"mf"`, …), not the kind name. See [`OWNER_TABLES`] for the
+//! statement-by-statement citations.
 //!
 //! The one deliberate simplification: Go's conflict suffixes are multi-line
 //! raw strings; the emitted SQL here is the same statement on one line —
@@ -33,14 +36,28 @@ pub const BATCH_SIZE: usize = 200;
 /// default (`:123`, `cmp.Or`).
 pub const IMAGE_TYPE_PRIMARY: &str = "primary";
 
-/// `artworkOwnerTables` (`:83-89`) as data: kind prefix → owning entity table.
+/// `artworkOwnerTables` (`:83-89`) as data: **kind PREFIX** → owning entity table.
 /// Both halves are fixed identifiers from the typed Kind domain.
+///
+/// The KEY is `Kind.Prefix()`, not `Kind.String()`, because that is what the
+/// `item_artwork.item_kind` and `artwork_queue.item_kind` columns actually hold:
+/// `purgeDangling` binds `kind.Prefix()` (`persistence/artwork_repository.go:96`),
+/// Go's own comment states the prefix is the column's token
+/// (`model/artwork_id.go:22` — "Prefix is the short token used in artwork ids and
+/// the `item_artwork.item_kind` column"), the kinds are
+/// `Kind{"al","album"}`/`Kind{"mf","media_file"}` … (`model/artwork_id.go:30-35`),
+/// and every writer binds the prefix too
+/// (`core/artwork/artwork.go:233`, `:346`; `core/artwork/housekeeping.go:168`;
+/// `persistence/artwork_queue_repository.go:38`, `:66-67`, `:108`, `:133`, `:201`).
+/// Reading the column by kind NAME would match nothing. The Rust precedent for the
+/// same spelling is already in the crate: `radio_repo.rs:54` uses `"ra"` and
+/// `playlist_repo.rs:62` uses `"pl"`.
 pub const OWNER_TABLES: [(&str, &str); 5] = [
-    ("album", "album"),
-    ("artist", "artist"),
-    ("playlist", "playlist"),
-    ("radio", "radio"),
-    ("media_file", "media_file"),
+    (nd_id::ARTWORK_KIND_ALBUM_PREFIX, "album"),
+    (nd_id::ARTWORK_KIND_ARTIST_PREFIX, "artist"),
+    (nd_id::ARTWORK_KIND_PLAYLIST_PREFIX, "playlist"),
+    (nd_id::ARTWORK_KIND_RADIO_PREFIX, "radio"),
+    (nd_id::ARTWORK_KIND_MEDIA_FILE_PREFIX, "media_file"),
 ];
 
 /// `GetImage` (`:33-40`): `Select("*").From(artwork).Where(Eq{"hash": hash})`.
@@ -306,21 +323,85 @@ mod tests {
 
     #[test]
     fn dangling_purge_scopes_per_kind_and_owner_table() {
-        // Act: PurgeDanglingItems over the media_file owner (:92-106).
-        let (sql, args) = purge_dangling_sql("media_file", "media_file");
+        // Act: PurgeDanglingItems over the media_file owner (:92-106). The kind
+        // bind is the PREFIX (`kind.Prefix()`, `:96`), the table is the value from
+        // OWNER_TABLES (`:83-89`) — a kind NAME would bind a token no row has.
+        let (sql, args) = purge_dangling_sql(nd_id::ARTWORK_KIND_MEDIA_FILE_PREFIX, "media_file");
         // Assert:
         assert_eq!(
             sql,
             "DELETE FROM item_artwork WHERE item_kind = ? AND item_id NOT IN (SELECT id FROM media_file)"
         );
-        assert_eq!(args, vec![Value::Text("media_file".to_string())]);
+        assert_eq!(args, vec![Value::Text("mf".to_string())]);
+    }
+
+    #[test]
+    fn owner_tables_keys_are_the_kind_prefixes_not_the_names() {
+        // Assert: every OWNER_TABLES key is a prefix from nd-id, and the pairing
+        // matches Go's artworkOwnerTables (`artwork_repository.go:83-89`).
+        assert_eq!(
+            OWNER_TABLES,
+            [
+                ("al", "album"),
+                ("ar", "artist"),
+                ("pl", "playlist"),
+                ("ra", "radio"),
+                ("mf", "media_file"),
+            ]
+        );
+        for (key, table) in OWNER_TABLES {
+            assert!(
+                key.len() == 2 && !key.contains('_'),
+                "item_kind stores the 2-char prefix, got {key:?} for {table}"
+            );
+            assert!(key != table, "the key must not be the kind name ({key})");
+        }
+    }
+
+    #[test]
+    fn the_item_kind_bind_is_the_prefix_for_album_and_media_file() {
+        // Assert the bind VALUES of the two statements artwork hydration uses,
+        // for both kinds. This is the regression guard for the name-vs-prefix
+        // defect: a kind name binds a token the column never contains.
+        let album = get_info_for_items_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, &["al-1".to_string()])
+            .expect("renders")
+            .remove(0);
+        assert_eq!(album.1[0], Value::Text("al".to_string()));
+        let track =
+            get_info_for_items_sql(nd_id::ARTWORK_KIND_MEDIA_FILE_PREFIX, &["mf-1".to_string()])
+                .expect("renders")
+                .remove(0);
+        assert_eq!(track.1[0], Value::Text("mf".to_string()));
+
+        // Same for the writers: PutItemArtwork binds item_kind from the row, and
+        // DeleteForItems binds the kind.
+        let put = put_item_artwork_sql(
+            &ItemArtworkRow {
+                item_kind: nd_id::ARTWORK_KIND_ALBUM_PREFIX.to_string(),
+                item_id: "al-1".to_string(),
+                ..Default::default()
+            },
+            55,
+        );
+        assert_eq!(
+            put.1[4],
+            Value::Text("al".to_string()),
+            "item_kind is the 5th column of the sorted SetMap insert"
+        );
+        let deleted =
+            delete_for_items_sql(nd_id::ARTWORK_KIND_MEDIA_FILE_PREFIX, &["mf-1".to_string()]);
+        assert_eq!(deleted[0].1[0], Value::Text("mf".to_string()));
+        // GetItemArtwork's three-key Eq, also prefix-first.
+        let got =
+            get_item_artwork_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, "al-1", IMAGE_TYPE_PRIMARY);
+        assert_eq!(got.1[0], Value::Text("al".to_string()));
     }
 
     #[test]
     fn put_item_artwork_stamps_attempted_at_when_unset() {
         // Arrange: an unattempted item (PutItemArtwork :125-128).
         let ia = ItemArtworkRow {
-            item_kind: "album".to_string(),
+            item_kind: nd_id::ARTWORK_KIND_ALBUM_PREFIX.to_string(),
             item_id: "al-1".to_string(),
             ..Default::default()
         };
@@ -338,13 +419,13 @@ mod tests {
         // Arrange: 201 ids (DeleteForItems :151 slices.Chunk).
         let ids = (1..=201).map(|i| format!("it-{i}")).collect::<Vec<_>>();
         // Act:
-        let stmts = delete_for_items_sql("album", &ids);
+        let stmts = delete_for_items_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, &ids);
         // Assert:
         assert_eq!(stmts.len(), 2);
         assert_eq!(
             stmts[1].1,
             vec![
-                Value::Text("album".to_string()),
+                Value::Text("al".to_string()),
                 Value::Text("it-201".to_string())
             ]
         );
@@ -353,7 +434,8 @@ mod tests {
     #[test]
     fn info_hydration_left_joins_the_image_cache() {
         // Act: GetInfoForItems single chunk (:159-182).
-        let stmts = get_info_for_items_sql("album", &["al-1".to_string()]).unwrap();
+        let stmts = get_info_for_items_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, &["al-1".to_string()])
+            .unwrap();
         // Assert: the LEFT JOIN splices after FROM, before WHERE.
         assert!(stmts[0]
             .0

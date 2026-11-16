@@ -768,18 +768,230 @@ names dropped (Go's base `GetAll` never calls `getParticipants`,
 participant role order is `BTreeMap`-sorted vs Go's random map order, harmless only
 because `sql_feeders.rs::search_participants` sorts and re-dedupes; annotation
 stamps keep the stored zone while record stamps render as `Z` (the folder/playlist
-precedent); and **no repo-level read API is wired to `row_to_album`/
-`row_to_mediafile` yet — tests only. That wiring (plus `hydrateArtwork`) is the next
-lane's job.**
+precedent); and ~~no repo-level read API is wired to `row_to_album`/
+`row_to_mediafile` yet — tests only~~, which **S-D3c below landed** (repo reads plus
+`hydrateArtwork`).
 
 **Write-map invariance holds:** `album_row` stays at 48 keys (45 base + 3 FTS) and
 `mediafile_row` at 66 (63 base + 3 FTS), with none of the hydration-only columns
 present, and a hydrated record re-renders byte-identical INSERT/UPDATE legs to one
 whose derived fields are empty. Executed in
-`rust/crates/nd-db/tests/runtime_hydrate_album_mediafile.rs` (23 tests).
+`rust/crates/nd-db/tests/runtime_hydrate_album_mediafile.rs` (29 tests).
 
 Final workspace gate after the S-D3b review follow-up: fmt clean, clippy
 `-D warnings` clean, **1665 passed / 0 failed / 1 ignored** across 63 binaries
 (`nd-db`: 586), `cargo doc -p nd-db --all-features --no-deps` at the same 23
 intra-doc-link warnings as pristine `HEAD` (message-set diff empty), and
 `git diff --check` clean.
+
+## S-D3c: artwork hydration landed, album + mediafile repo reads wired (2026-11-13)
+
+**Lane-id note (numbering drift between the two docs).** The parent issued this as
+"S-D3c". Its content is the scan contract's sub-slice **S-D3f**
+(`hydrate-scan-contract.md:213-214` — artwork `hydrateItems`, "its own sub-slice,
+**NOT** in `hydrate.rs`", which this slice's module placement follows) plus the
+repo-read wiring S-D3b left open. The two docs number the remaining work
+differently: `hydrate-scan-contract.md:198-199` calls album + mediafile hydration
+S-D3c (what the slice table above calls S-D3b), and what the slice table above calls
+"S-D3c — artist/playlist/track/scrobble" is that contract's **S-D3d** (`:203-206`)
+and **S-D3e** (`:208-211`). None of that is touched here and it stays open; neither
+table was renumbered.
+
+**Landed** (single writer lane, uncommitted at `6cd6c8d2`):
+
+- `nd-db/src/artwork_hydration.rs` (NEW, 465L) — the port of
+  `persistence/artwork_hydration.go` (176L): `ItemImage` (`model/artwork.go:29-40`),
+  `ItemArtworkInfo` (`:70-78`) with `absent()` (`:81`) and `image()` (`:84-93`),
+  `hydrate_item_images` (`:58-68`), `apply_item_image` (`:71-75`), `hydrate_items`
+  (`:79-90`), `hydrate_album_artwork` (`album_repository.go:257-260`) and
+  `hydrate_media_file_artwork` (`:94-135`) with the branch matrix reproduced
+  statement-for-statement including every `continue`. It is a separate module, NOT
+  part of `hydrate.rs`, exactly as `hydrate-scan-contract.md:54` and `:213-214`
+  require (the eight PostScan hooks are pure-column and none of them queries).
+- `ReadOutcome<T> { items, artwork_error }` — Go swallows a failed artwork lookup,
+  logs `log.Error` and returns an empty map so the page still renders
+  (`artwork_hydration.go:62-66`). nd-db has no logging dependency
+  (`sqlrepo.rs:13-17`), so the port swallows the same failure and EXPOSES the text
+  (the `ShareRepo::load` precedent, `share_repo.rs:436-472`).
+- `AlbumRepo<'a>` (`album_repo.rs:1440`) and `MediaFileRepo<'a>`
+  (`mediafile_repo.rs:527`) over `&rusqlite::Connection`, the `UserRepo`/`PlayerRepo`
+  DI shape: a two-variant `thiserror` enum (`Sqlite(#[from] rusqlite::Error)` +
+  `NotFound` = "record not found"), execution only through `crate::execution`, and
+  hydration through `row_to_album` → `AlbumRow::into_record` /
+  `row_to_mediafile` → `MediaFileRow::into_record` with
+  `HydrateError::into_sqlite` as the exit shape. Wired reads: album `Get`/`GetAll`
+  (`album_repository.go:234-243`, `:245-256`); media_file `Get`/`GetAll`/`GetRandom`
+  (`:212-221`, `:232-242`, `:250-283`, both passes, with phase 1 read as bare `i64`
+  rowids and never handed to a hydrator, Go's library filter threaded into BOTH
+  passes (`selectMediaFile` applies `applyLibraryFilter` unconditionally at
+  `mediafile_repository.go:209`, so phase 2's row set is {rowids} ∩ {visible
+  libraries}), and Go's phase-2 `ORDER BY random()` re-shuffle kept as the builder
+  emits it). No new SQL: every read reuses the existing builders.
+- Kind-value defect FIXED. `artwork_repo::OWNER_TABLES` (was `:38-44` at `HEAD`, now
+  `:55-61`) keyed `item_kind`
+  by the kind NAME (`"album"`, `"media_file"`, …) and its unit tests pinned that, so
+  the statement matched nothing. The column holds `Kind.Prefix()`: the comment at
+  `model/artwork_id.go:22` defines the prefix as that column's token, the kinds are
+  `Kind{"al","album"}` … (`:30-35`), `purgeDangling` binds `kind.Prefix()`
+  (`persistence/artwork_repository.go:96`), `GetInfoForItems` binds it (`:169`,
+  `Eq{"ia.item_kind": kind.Prefix()}` in the `Where(And{…})` at `:168-172`), and
+  every writer binds it too (`core/artwork/artwork.go:233`, `:346`;
+  `core/artwork/housekeeping.go:168`;
+  `persistence/artwork_queue_repository.go:38`, `:66-67`, `:108`, `:133`, `:201`). Keys
+  are now nd-id's `ARTWORK_KIND_*_PREFIX` constants over the same entity-table values
+  (Go's map is kind→table at `:83-89`), with the fixtures in `artwork_repo.rs` and
+  `artwork_queue_repo.rs` moved to prefixes and two new assertions that the emitted
+  `item_kind` BIND VALUE is the prefix. `runtime_timestamp_convention.rs` already
+  used `"ra"` and was not touched; `radio_repo.rs:54`/`playlist_repo.rs:62` were the
+  existing correct precedent. `artwork_hydration.rs` also carries three unit tests for
+  `absent()`/`image()`/the missing-entry zero state.
+- Hydration-only record fields: `AlbumRecord.image`, `MediaFileRecord.image` +
+  `.album_image` (Go embeds `ItemImage` at `model/album.go:17`, `model/mediafile.go:30`
+  and adds `AlbumImage` at `:34`). Both Go types are `structs:"-"`, so they are
+  read-path state only and `album_row`/`mediafile_row` still emit 48 and 66 keys —
+  re-asserted for a record that came back through the repo read, not just a
+  hand-built one.
+
+**Executed tests** (all against `nd_dbschema::schema::apply_fresh_schema`, not string
+rendering): `tests/runtime_artwork_hydration.rs` (NEW, 14) covers found /
+known-absent / unresolved album states, `album_image` populated on EVERY mediafile
+branch including the own-art-wins `continue`, the inherit / not-eligible /
+album-row-absent stays unresolved cases, a multi-disc track never inheriting a found
+album hash and staying requestable when the album is absent, eligible-but-unresolved
+staying optimistic and keeping a bare hash even when the album art is found, the
+`enable_media_file_cover_art = false` fallback, blur/thumb/dominant-color/width/height
+surviving the join through BOTH the own-art and inherited branches, `item_kind` as the
+prefix (seeding `"album"`/`"media_file"` finds NOTHING), the 200-id chunk boundary
+across two chunks, and a dropped `item_artwork` table leaving the read SUCCESSFUL with
+`artwork_error` set and every item zero-valued — plus a 12-row branch-matrix table
+whose expectations are read off Go's line numbers and whose album state rows are
+derived from that same table so data and expectations cannot drift. Six repo-read
+tests were added to `tests/runtime_hydrate_album_mediafile.rs` (23 → 29):
+`AlbumRepo::get`/`get_all` and `MediaFileRepo::get`/`get_all`/`get_random` executing
+through the seam, each row keeping its own id, a zero-row `Get` returning `NotFound`
+while `GetAll` returns an EMPTY `Vec`, logged-in annotation/bookmark columns hydrating,
+an ungranted user's library filter returning zero rows, hydrated records
+re-rendering byte-identical write maps, and `GetRandom` phase 2 excluding a rowid from
+an ungranted library. `artwork_repo.rs` gained two unit tests (6 → 8),
+`artwork_hydration.rs` three (`absent()`/`image()`/the missing-entry zero state) and
+`mediafile_repo.rs` one phase-2 rendering test, so 26 new tests in total:
+14 + 6 + 2 + 3 + 1.
+
+**Gate after S-D3c and its review follow-up** (from `rust/`, all actually run):
+`cargo fmt --all -- --check` 0;
+`cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test --all-targets
+--all-features` 0 — **1691 passed / 0 failed / 1 ignored across 64 binaries**
+(baseline 1665/0/1 over 63; `nd-db` 586 → **612** across its 21 `--all-targets`
+binaries, the +1 workspace binary being the new test file; the `nd-db` lib doctest target
+contributes 0 tests on both sides);
+`cargo doc -p nd-db --all-features --no-deps` still 23 intra-doc-link warnings with an
+empty message-set diff vs pristine `HEAD` (one new link I added was fixed to keep that
+at parity); `git diff --check` 0.
+
+**Residuals recorded** in `hydrate-contract.md`'s S-D3c list: the `optimizePagination`
+asymmetry (album `GetAll` passes NO options to `queryAll`, `album_repository.go:248`,
+so it never takes the offset rewrite, while media_file `GetAll` forwards them,
+`mediafile_repository.go:235`, so it does past `DevOffsetOptimize` = 50000,
+`conf/configuration.go:1129`) — neither Rust read applies it; repo-level `get_all` being
+the order-by/pagination subset with no caller `QueryOptions.Filters` (Go applies
+`options[0].Filters` via `newSelect`→`applyFilters`, `sql_base_repository.go:139-146`,
+`:247-252`, so `GetAllByTags` at `mediafile_repository.go:284-307` is one Go call the
+repo API cannot express; filtered reads take the `select_*_sql(where_clauses)` seam);
+Go's `Get` returning `nil` beside the error on both paths (`album_repository.go:236-238`,
+`:239-241`; `mediafile_repository.go:214-216`, `:217-219`), so `Result` is NOT a
+divergence — an earlier revision of this list claimed a non-nil pointer, corrected
+against the pinned sources; `Get` discarding `artwork_error` because Go's
+`Get` swallows it by delegating; a failed lookup discarding earlier chunks; the flag
+read once in Rust vs twice in Go (`:102` and `:111`); `i32` widths; the prefix spelling
+contract for future callers; `artworkChunkSize` = 600 not exposed (streaming lane);
+Search results NOT artwork-hydrated because the Rust search projection from
+`sql_search::new_select` (`sql_search.rs:129-131`) emits no
+`library_path`/`library_name`/annotation columns and is therefore not hydratable
+through this seam at all; cursor/streaming reads (`streamByIDs`, `chunkOptions`,
+`hydrateCursor`, `hydratePlaylistTrackArtwork`) unwired with `cursor_chunk_sql` left
+for that lane; `getParticipants`/`GetWithParticipants` unported; and the explicit list
+of Go reads that do NOT hydrate (`GetTouchedAlbums`, media_file `GetCursor` — asserted
+by `persistence/artwork_hydration_test.go:633` — `GetMissingAndMatching`,
+`FindByPaths`, `FindRecentFilesBy*`).
+
+**Construction sites outside the brief's file list:** `tests/runtime_insert_alignment.rs`
+and `tests/runtime_marshal_records.rs` each gained the new hydration-only fields in
+their hand-built `AlbumRecord`/`MediaFileRecord` literals (required to compile), with a
+comment saying the write legs take the id/hydration state from elsewhere. No other file
+outside the brief's ownership list was touched.
+
+**Not changed:** nd-model, nd-stream, nd-artwork, nd-conf, nd-dbschema, every
+Cargo.toml/lock, generated files, Go sources, and every previously documented
+limitation.
+
+## S-D3c review follow-up: GetRandom phase 2 library filter, doc corrections (2026-11-16)
+
+Reviewer-selected fix round on the uncommitted S-D3c change, single writer, no new files.
+
+- **Behavioral (the only code change): `get_random_hydrate_sql` takes `library_filter`**
+  and `MediaFileRepo::get_random` threads the caller's clause into BOTH passes. Go's
+  phase 2 (`mediafile_repository.go:274`) runs through `selectMediaFile`, whose last
+  statement is an unconditional `applyLibraryFilter` (`:209`), so a hardcoded
+  `library_filter: None` was a real gap: a rowid from a library the user cannot see
+  could be hydrated whenever phase 1's `opt.Filters` did not exclude it. Rendering
+  follows `get_sql`'s rule — the filter owns the first `WHERE` and the rowid IN-list
+  AND-joins it (`select.go:111-114`), args in clause order. Call sites updated: the
+  repo (`mediafile_repo.rs`), its in-file unit test, and the phase-2 assertions in
+  `tests/runtime_hydrate_album_mediafile.rs`.
+- **Doc corrections.** The `Get`-returns-a-non-nil-pointer claim was FALSE: both
+  repositories return `nil` on both error paths (`album_repository.go:236-238`,
+  `:239-241`; `mediafile_repository.go:214-216`, `:217-219`), so `Result` is not a
+  divergence — fixed in all four places (both repo `get` docs, this file's residual
+  list, `hydrate-contract.md`). The `item_artwork.item_kind` bind citation moved from
+  `artwork_repository.go:171` to `:169` (the actual `Eq{"ia.item_kind": kind.Prefix()}`
+  line; `:171` is the `item_id` chunk). The garbled cross-doc citation in
+  `artwork_hydration.rs` now names `docs/rust-port/next-work.md:775-779` as the
+  write-map-invariance pin (verified with `sed -n`). The mediafile branch-matrix
+  comment that denied the `eligible` guard now states that the guard IS present
+  (`artwork_hydration.rs`, matching Go's compound condition at
+  `artwork_hydration.go:112-116`).
+- **New scope notes** on both repo module docs and in `hydrate-contract.md`:
+  repo-level `get_all` is the order-by/pagination subset with no caller
+  `QueryOptions.Filters`; filtered reads take the `select_*_sql(where_clauses)` seam
+  until the REST/options lane wires them. Citations corrected to current line numbers
+  where this round touched them (`get_sql`'s clause-order note is `mediafile_repo.rs:371-388`,
+  `applyOptions` is `sql_base_repository.go:149-162`).
+- **Tests added (4):** `mediafile_repo::get_random_phase_two_reapplies_the_library_filter`
+  (rendering + args), `runtime_hydrate_album_mediafile::mediafile_repo_get_random_phase_two_reapplies_the_library_filter`
+  (executed two-library read plus the unfiltered control), and
+  `runtime_artwork_hydration::get_random_succeeds_with_the_artwork_table_gone` /
+  `::duplicate_ids_keep_their_bindings_and_hydrate_identically`. The mediafile
+  write-map forbidden-key list gained `blur_hash`, `thumb_hash`, `dominant_color`,
+  `image_width`, `image_height`.
+
+**Gate after this round** (all actually run): fmt 0, clippy `-D warnings` 0, test 0 with
+**1691 passed / 0 failed / 1 ignored across 64 binaries** (`nd-db` **612** across its 21
+`--all-targets` binaries), `cargo doc -p nd-db --all-features --no-deps` at the same 23
+intra-doc-link warnings with an empty message-set diff, `git diff --check` 0.
+
+**Round-2 review (a third model, fresh and read-only): APPROVE — no P1/P2.** It
+independently re-verified F1-F7 as landed and complete, confirmed every previously
+documented divergence is still accurately documented rather than silently changed, and
+re-measured the gates to the same numbers. It raised two P3s and the parent found a
+third, all applied directly (comment/test-only, no behavioral change):
+- `get_all_sql`'s doc cited `mediafile_repository.go:221-227` for Go's `GetAll`; the
+  real location is `:232-242` (`:221-227` is the `Get`/`GetWithParticipants` range). The
+  drift predates this slice — it is identical at `HEAD` — and belongs to the separate
+  repo-wide citation sweep already recorded in `hydrate-contract.md`; corrected here
+  because this round touched the same file.
+- The new unit test's comment cited `selectMediaFile(ctx)` at `:273`; the phase-2 call is
+  `:274`.
+- The two-library control now passes `user_id: Some("u-1")`, identical to the filtered
+  read above it, so the library clause is the only difference between the two
+  statements. The reviewer judged the original `None` form a valid control (the
+  annotation/bookmark joins are LEFT JOINs and cannot exclude a row), so this is
+  precision rather than a correctness fix.
+
+**Reviewer's gate note, verified by the parent:** the first full-suite run of that
+review reported one failure — `nd-stream`
+`transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes`, a
+timing-sensitive multi-thread test that counts live `sleep` stub PIDs via `ps`. `git
+status` shows `rust/crates/nd-stream` clean, the parent ran it in isolation 3× → 3
+passed, and both parent full-suite runs reported 0 failed. Environmental flakiness in an
+untouched crate, not a regression from this slice; worth decoupling from the workspace
+gate in a later lane.

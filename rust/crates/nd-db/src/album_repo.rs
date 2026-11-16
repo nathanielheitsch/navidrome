@@ -24,20 +24,47 @@
 //! tags) → the shared [`crate::marshal::MarshalledRow`] seam — no
 //! caller-supplied column arrays for the write path.
 //!
-//! Deliberately absent (other lanes/slices own them): `hydrateArtwork`
-//! (`:180-183`, the artwork-hydration slice), the streaming/cursor machinery
-//! `queryWithStableResults`/`wrapAlbumCursor`/`streamByIDs`/`chunkOptions`
-//! (`:296-324`, `persistence/artwork_hydration.go` — their WHERE shapes pin
+//! Deliberately absent (other lanes/slices own them): the streaming/cursor
+//! machinery `queryWithStableResults`/`wrapAlbumCursor`/`streamByIDs`/`chunkOptions`
+//! (`:296-324`, `persistence/artwork_hydration.go:19-54` — their WHERE shapes pin
 //! here, see [`get_touched_albums_sql`]/[`cursor_chunk_sql`]), the
 //! `getSortMappings`/`naturalSort`/`mapSortOrder` config-gated transforms
 //! (`sql_base_repository.go:125-137` — the mapping table pins here as data,
 //! [`sort_mappings`]) and the REST shims `Count`/`Read`/`ReadAll`
 //! (`:446-459`, `sql_restful.rs` owns the options parsing).
 //!
+//! Landed in S-D3c: the executed [`AlbumRepo`] reads (`Get` `:234-243`,
+//! `GetAll` `:245-256`), wired to the shared seam (`crate::hydrate::row_to_album` →
+//! `AlbumRow::into_record`) and then to `hydrateArtwork` (`:257-260`) through
+//! [`crate::artwork_hydration::hydrate_album_artwork`]. Only Get/GetAll are
+//! artwork-hydrated here: Go's `Read`/`ReadAll` (`:471-477`) hydrate only because
+//! they delegate to `Get`/`GetAll`, `GetCursor` always hydrates (`:306-315`) but
+//! belongs to the streaming lane, and `GetTouchedAlbums` (`:392-403`) does NOT
+//! hydrate at all — so its statement builder stays statement-only. Go's `Search`
+//! (`:452-465`) hydrates artwork too, but the Rust search lane renders its
+//! projection from `sql_search::new_select` (`sql_search.rs:129-131` —
+//! `SELECT * FROM album`), which carries no `library_path`/`library_name`/annotation
+//! columns and so cannot be hydrated through this seam: Rust `Search` results are
+//! NOT artwork-hydrated (recorded as a residual).
+//!
+//! `GetAll` takes no `optimizePagination` (`sql_base_repository.go:477-486`) on
+//! either side: Go passes no options to `queryAll` (`album_repository.go:248`), so
+//! Go's offset rewrite never fires for albums. That rewrite is unimplemented
+//! port-wide; see `mediafile_repo`'s module docs for the one Go read that would
+//! take it.
+//!
 //! Safety rule (`sqlrepo.rs`): identifiers (table/column/order-by names) are
 //! the registered, caller-supplied constants; every value binds to `?`.
 //! Order-by identifiers arrive caller-supplied and direction-carrying per
 //! `buildSortOrder` output — no user text reaches an ORDER BY fragment.
+//!
+//! Scope of the executed repo reads: [`AlbumRepo::get_all`] is the
+//! order-by/pagination SUBSET of Go's `GetAll(ctx, options...)`. Go additionally
+//! applies `options[0].Filters` through `newSelect` → `applyFilters`
+//! (`sql_base_repository.go:139-146`, `:247-252`), which this signature cannot
+//! express, so a filtered list read goes through the [`select_album_sql`]
+//! `where_clauses` seam with the caller's rendered clause until the REST/options
+//! lane wires `QueryOptions.Filters`.
 
 use std::collections::BTreeMap;
 
@@ -625,6 +652,17 @@ pub struct AlbumRecord {
     /// value of `genre` survives. See [`crate::sql_tags::Genre`] for why this DTO is
     /// nd-db-local; never emitted by [`album_row`].
     pub genres: Vec<crate::sql_tags::Genre>,
+    /// Go's embedded `ItemImage` (`model/album.go:17`; every field `structs:"-"` at
+    /// `model/artwork.go:29-40`): the album's own artwork state, **read-path only**.
+    /// Filled by [`crate::artwork_hydration::hydrate_album_artwork`] — the SECOND
+    /// hydration layer (a batched `item_artwork` lookup run after PostScan,
+    /// `persistence/album_repository.go:257-260`) — never by
+    /// [`crate::hydrate::row_to_album`], whose projection has no artwork column.
+    /// The zero value means UNRESOLVED (no state row found), which is NOT the same
+    /// state as known-absent (`image_absent == true`); see
+    /// [`crate::artwork_hydration::ItemImage`]. Never emitted by [`album_row`], so
+    /// the write map stays at 48 keys.
+    pub image: crate::artwork_hydration::ItemImage,
 }
 
 /// One artist name input for the FTS participant columns — Go's
@@ -710,11 +748,13 @@ const TAG_CATALOG_NUMBER: &str = "catalognumber";
 /// columns (`id` is appended last by [`put_sql`]), with the PostMapArgs overwrites
 /// routed through the S-D2a hook so the transformation lives in one place.
 ///
-/// **Write-map invariance (S-D3b):** the five hydration-only record fields
-/// (`id`, `library_path`, `library_name`, `annotation`, `genres`) are NOT keys here
-/// — Go's `structs:"-"` tags keep them out of `structs.Map`, and `id` is the write
-/// legs' own argument — so a hydrated record renders the identical INSERT/UPDATE
-/// column set an unwritten one does.
+/// **Write-map invariance (S-D3b, extended by S-D3c):** the five hydration-only
+/// record fields (`id`, `library_path`, `library_name`, `annotation`, `genres`)
+/// and the read-path-only artwork field (`image`) are NOT keys here — Go's
+/// `structs:"-"` tags keep them out of `structs.Map` (`model/album.go:16-17`,
+/// `model/artwork.go:29-40`), and `id` is the write legs' own argument — so a
+/// hydrated record renders the identical 48-key INSERT/UPDATE column set an
+/// unwritten one does.
 ///
 /// **S-D2b consistency invariant:** the FTS inputs are derived *atomically* from
 /// the record's own `participants`/`discs`/`tags` (see [`album_derived`]) — the
@@ -1354,6 +1394,168 @@ pub fn cursor_chunk_sql(
     )
 }
 
+/// Failures of the executed album reads ([`AlbumRepo`]).
+///
+/// The variant set follows the sibling `UserRepo::UserError` (`user_repo.rs:609-622`)
+/// and `PlayerRepo::PlayerError` (`player_repo.rs:243-260`): a statement/hydration
+/// failure and the not-found case, nothing else.
+#[derive(Debug, thiserror::Error)]
+pub enum AlbumError {
+    /// The SQLite statement failed, or a row's hydration failed. Go's read funnel
+    /// surfaces a `PostScan` failure as a column-conversion error
+    /// (`dbx@v1.12.0/rows.go:92-102`), which is why a decode failure arrives here
+    /// too — via [`crate::hydrate::HydrateError::into_sqlite`].
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10`). For
+    /// [`AlbumRepo::get`] that is `GetAll` returning zero rows
+    /// (`album_repository.go:239-241`), NOT `queryOne`'s `sql.ErrNoRows` mapping:
+    /// Go's `Get` is `GetAll` + an `Eq` filter and decides from `len(res) == 0`.
+    #[error("record not found")]
+    NotFound,
+}
+
+/// `albumRepository` (`album_repository.go:105-122`) bound to one pooled
+/// connection — the executed READ side of the album repository.
+///
+/// Go binds a `dbx.Builder` and reaches the DB through the ambient ctx; this crate
+/// has no ambient context (the `share_repo.rs` DI freeze), so the caller threads a
+/// lease from [`crate::store::SQLStore::with_connection_sync`] (a transaction
+/// derefs to a `&Connection`) and every statement runs through [`crate::execution`]
+/// — the port of `executeSQL`/`queryOne`/`queryAll`
+/// (`sql_base_repository.go:336-355,375-388,441-457`). Rows are hydrated through
+/// the shared seam exactly as `tests/runtime_hydrate_album_mediafile.rs:108-120`
+/// does — [`crate::hydrate::row_to_album`] → [`AlbumRow::into_record`], with
+/// [`crate::hydrate::HydrateError::into_sqlite`] as the exit shape — and artwork
+/// hydration is the second layer,
+/// [`crate::artwork_hydration::hydrate_album_artwork`] (`hydrateArtwork`,
+/// `album_repository.go:257-260`).
+///
+/// **Why `get` goes through `query_all` and not `query_optional`:** Go's `Get`
+/// (`:234-243`) is literally `GetAll` with `Eq{"album.id": id}` followed by
+/// `if len(res) == 0 { return nil, model.ErrNotFound }`. It never reaches
+/// `queryOne`, so `sql.ErrNoRows` and its mapping at
+/// `sql_base_repository.go:382-385` are not this code path — and on this driver
+/// `dbx`'s `All` cannot produce `sql.ErrNoRows` at all: it loops `Next` then
+/// `Close` and makes an empty NON-nil slice for a zero-row result
+/// (`dbx@v1.12.0/query.go:274-277`, `rows.go:109-125`), while only `Rows.one`/
+/// `Rows.row` return it (`rows.go:237-244`, `:281-294`). That makes `queryAll`'s
+/// ErrNoRows→ErrNotFound arm (`sql_base_repository.go:451-454`) dead code here.
+/// So do NOT "fix" [`AlbumRepo::get_all`] to report [`AlbumError::NotFound`] for
+/// zero rows: the empty `Vec` IS Go's behaviour.
+#[derive(Debug)]
+pub struct AlbumRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> AlbumRepo<'a> {
+    /// `NewAlbumRepository` (`album_repository.go:105-122`): bind to `conn`
+    /// (the pooled lease).
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get` (`album_repository.go:234-243`): [`get_sql`] (== `GetAll` +
+    /// `Eq{"album.id": id}`), hydrated through both layers, with a zero-row read
+    /// mapped to [`AlbumError::NotFound`] the way Go decides it from `len(res)`.
+    ///
+    /// # Errors
+    /// [`AlbumError::NotFound`] when the id matches nothing (also when the library
+    /// filter excludes it); [`AlbumError::Sqlite`] on a statement or hydration
+    /// failure. An artwork-lookup failure is NOT an error here — Go's `Get`
+    /// swallows it too, because it delegates to `GetAll`, whose `hydrateItems` logs
+    /// and returns an empty map (`artwork_hydration.go:62-66`): the album comes back
+    /// with a zero (unresolved) [`crate::artwork_hydration::ItemImage`]. Use
+    /// [`AlbumRepo::get_all`] when the caller needs that failure reported. Go's `Get`
+    /// returns `nil` beside its error on BOTH paths (`:236-238` `return nil, err`,
+    /// `:239-241` `return nil, model.ErrNotFound`), so the port's `Result` carries
+    /// the same information and is not a divergence.
+    pub fn get(
+        &self,
+        id: &str,
+        user_id: Option<&str>,
+        normalized_album_play_count: bool,
+        library_filter: Option<Sql>,
+    ) -> Result<AlbumRecord, AlbumError> {
+        let statement = get_sql(id, user_id, normalized_album_play_count, library_filter);
+        let records = self.read_hydrated(&statement)?;
+        // Go hydrates the whole (0-or-1 element) slice, then takes res[0].
+        let mut outcome = self.hydrate_artwork(records);
+        if outcome.items.is_empty() {
+            return Err(AlbumError::NotFound);
+        }
+        // Go's swallow-and-log path: the page still renders (artwork_hydration.go:62-66).
+        let _ = outcome.artwork_error;
+        Ok(outcome.items.remove(0))
+    }
+
+    /// `GetAll` (`album_repository.go:245-256`): [`get_all_sql`] under the
+    /// caller's order-by and pagination, then artwork hydration. An empty result
+    /// is an empty `Vec`, never [`AlbumError::NotFound`] — see [`AlbumRepo`]'s
+    /// dbx proof.
+    ///
+    /// `artwork_error` carries Go's swallowed `log.Error`
+    /// (`artwork_hydration.go:62-66`): the albums come back either way, each with
+    /// a zero (unresolved) [`crate::artwork_hydration::ItemImage`], exactly as
+    /// Go's empty map leaves them. That is why this returns `Ok` for an artwork
+    /// failure and `Err` only for a statement or row-hydration failure
+    /// (`album_repository.go:248-251` returns `queryAll`'s error unchanged).
+    ///
+    /// # Errors
+    /// [`AlbumError::Sqlite`] when the statement fails or a row will not hydrate.
+    pub fn get_all(
+        &self,
+        user_id: Option<&str>,
+        normalized_album_play_count: bool,
+        library_filter: Option<Sql>,
+        order_by: Vec<String>,
+        max: i64,
+        offset: i64,
+    ) -> Result<crate::artwork_hydration::ReadOutcome<AlbumRecord>, AlbumError> {
+        let statement = get_all_sql(
+            user_id,
+            normalized_album_play_count,
+            library_filter,
+            order_by,
+            max,
+            offset,
+        );
+        let records = self.read_hydrated(&statement)?;
+        Ok(self.hydrate_artwork(records))
+    }
+
+    /// Phase 1 + phase 2 (Go's `queryAll` + `toModels()`): the raw rows through
+    /// the shared seam, shim columns decoded. A `PostScan` failure aborts the
+    /// whole read, as it does in Go.
+    fn read_hydrated(&self, statement: &Sql) -> Result<Vec<AlbumRecord>, AlbumError> {
+        let rows = crate::execution::query_all(self.conn, statement, crate::hydrate::row_to_album)?;
+        // Go's read funnel leaves a PostScan failure as a column-conversion error,
+        // so `into_sqlite` is the exit shape and `AlbumError::Sqlite` wraps it.
+        Ok(rows
+            .into_iter()
+            .map(AlbumRow::into_record)
+            .collect::<Result<Vec<AlbumRecord>, crate::hydrate::HydrateError>>()
+            .map_err(crate::hydrate::HydrateError::into_sqlite)?)
+    }
+
+    /// Phase 3 (`hydrateArtwork`, `album_repository.go:257-260`): one batched
+    /// `al`-kind lookup over the hydrated records.
+    fn hydrate_artwork(
+        &self,
+        records: Vec<AlbumRecord>,
+    ) -> crate::artwork_hydration::ReadOutcome<AlbumRecord> {
+        let mut items = records;
+        let mut artwork_error = None;
+        crate::artwork_hydration::hydrate_album_artwork(self.conn, &mut items, &mut artwork_error);
+        crate::artwork_hydration::ReadOutcome {
+            items,
+            artwork_error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1753,6 +1955,9 @@ mod tests {
             library_name: String::new(),
             annotation: nd_model::annotation::Annotation::default(),
             genres: Vec::new(),
+            // S-D3c read-path-only artwork state (Go's embedded ItemImage,
+            // structs:"-"); never a write-map key.
+            image: crate::artwork_hydration::ItemImage::default(),
         }
     }
     #[test]

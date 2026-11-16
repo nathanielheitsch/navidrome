@@ -30,16 +30,52 @@
 //! computed strings so the caller's marshaller stays upstream.
 //!
 //! Deliberately absent (other lanes/slices, per the album lane's split):
-//! `hydrateArtwork` (`:222-225`), `GetCursor`/`GetCursorWithArtwork`/
-//! `GetAllByTags`/`MatchesCriteria` (`:270-318,517-563` — cursor streaming
-//! and smart-playlist criteria), `GetWithParticipants`'s artist hydration
-//! (`:214-219`, artist slice), and the REST shims (`:585-600`,
-//! `sql_restful.rs`). The `Path` collate-nocase matching in `FindByPaths`
-//! pins; the library-splitting of qualified paths is Go-side logic kept in
-//! [`find_by_paths_sql`]'s grouped inputs.
+//! `GetCursor`/`GetCursorWithArtwork`/`GetAllByTags`/`MatchesCriteria`
+//! (`:270-318,517-563` — cursor streaming and smart-playlist criteria),
+//! `GetWithParticipants`'s artist hydration (`:214-219`, artist slice), and the
+//! REST shims (`:585-600`, `sql_restful.rs`). The `Path` collate-nocase matching
+//! in `FindByPaths` pins; the library-splitting of qualified paths is Go-side
+//! logic kept in [`find_by_paths_sql`]'s grouped inputs.
+//!
+//! Landed in S-D3c: the executed [`MediaFileRepo`] reads (`Get` `:212-221`,
+//! `GetAll` `:232-242`, `GetRandom` `:250-283`) wired to the shared seam and to
+//! `hydrateArtwork` (`:244-246`), which is
+//! [`crate::artwork_hydration::hydrate_media_file_artwork`]. Only those three are
+//! artwork-hydrated here, matching Go exactly: `GetCursor` (`:309-316`) does NOT
+//! hydrate (pinned by `persistence/artwork_hydration_test.go:633`), and neither
+//! does `GetMissingAndMatching` (`:494-517`), `FindByPaths` (`:365-404`) or
+//! `FindRecentFilesBy*` (`:525-569`) — their builders stay statement-only. Go's
+//! `Search` (`:594-607`) DOES hydrate, but the Rust search lane renders its
+//! projection from `sql_search::new_select` (`sql_search.rs:129-131` —
+//! `SELECT * FROM media_file`), which carries no library/annotation/bookmark
+//! columns and so cannot be hydrated through this seam: Rust `Search` results are
+//! NOT artwork-hydrated (residual).
+//!
+//! **`optimizePagination` asymmetry (residual, deliberately NOT applied):**
+//! `queryAll` runs the offset rewrite only when options are passed to it
+//! (`sql_base_repository.go:441-444`), and media_file `GetAll` is the one Go read
+//! that does pass them (`mediafile_repository.go:235`) — so with
+//! `options.Offset > conf.Server.DevOffsetOptimize` (default 50000,
+//! `conf/configuration.go:145,1129`) Go replaces `OFFSET n` with
+//! `media_file.rowid NOT IN (SELECT rowid … LIMIT n)` (`:477-486`). Album `GetAll`
+//! passes no options (`album_repository.go:248`) and never takes the rewrite. That
+//! rewrite is unimplemented port-wide, so both Rust reads stay plain
+//! LIMIT/OFFSET; a large-offset media_file `GetAll` therefore differs from Go only
+//! in plan shape, not results.
 //!
 //! Safety rule (`sqlrepo.rs`): identifiers (table/column/order-by names) are
 //! the registered, caller-supplied constants; every value binds to a `?`.
+//!
+//! Scope of the executed repo reads: [`MediaFileRepo::get_all`] and
+//! [`MediaFileRepo::get_random`] are the order-by/pagination SUBSET of Go's
+//! `GetAll(ctx, options...)` / `GetRandom(ctx, options...)`. Go additionally applies
+//! `options[0].Filters` through `newSelect` → `applyFilters`
+//! (`sql_base_repository.go:139-146`, `:247-252`) — the shape `GetAllByTags`
+//! reaches in one call (`mediafile_repository.go:284-307`) — and these signatures
+//! take no caller filters (phase 1's `filters` aside, which IS the caller's
+//! rendered clause), so a filtered read goes through [`select_media_file`] or
+//! [`crate::album_repo::select_album_sql`] with the caller's WHERE until the
+//! REST/options lane wires `QueryOptions.Filters`.
 
 use std::collections::BTreeMap;
 
@@ -368,7 +404,7 @@ pub fn get_sql(id: &str, user_id: Option<&str>, library_filter: Option<Sql>) -> 
     (sql, args)
 }
 
-/// `GetAll` (`mediafile_repository.go:221-227`): the base select with the
+/// `GetAll` (`mediafile_repository.go:232-242`): the base select with the
 /// caller's order-by expressions (already direction-carrying, per
 /// `buildSortOrder` output) and `applyOptions`' Max/Offset.
 #[must_use]
@@ -402,9 +438,11 @@ pub fn get_all_sql(
     (sql, args)
 }
 
-/// `GetRandom` Phase 1 (`mediafile_repository.go:229-266`): the narrow
+/// `GetRandom` Phase 1 (`mediafile_repository.go:256-262`): the narrow
 /// rowid pick — filters, library filter, `random()` order, optional Max.
-/// `filters` is the caller's rendered WHERE body (Go's `applyFilters` output).
+/// `filters` is the caller's rendered WHERE body (Go's `applyFilters` output,
+/// applied to a bare `Select("media_file.rowid")` at `:257`, NOT to the hydrated
+/// select).
 #[must_use]
 pub fn get_random_rowid_sql(
     filters: Option<(&str, Vec<crate::sqlrepo::Value>)>,
@@ -434,18 +472,263 @@ pub fn get_random_rowid_sql(
     (sql, args)
 }
 
-/// `GetRandom` Phase 2 (`mediafile_repository.go:249-266`): re-shuffle the
+/// `GetRandom` Phase 2 (`mediafile_repository.go:272-281`): re-shuffle the
 /// hydrated rows — the base select plus `WHERE media_file.rowid IN (?, …)`
-/// and `ORDER BY random()`.
+/// and `ORDER BY random()`, UNDER THE SAME LIBRARY FILTER as phase 1.
+///
+/// Go's phase 2 is `r.selectMediaFile(ctx)` (`:274`), and `selectMediaFile` ends
+/// with an UNCONDITIONAL `return r.applyLibraryFilter(ctx, sql)`
+/// (`mediafile_repository.go:204-210`, `:209`), so Go's phase-2 row set is
+/// {phase-1 rowids} ∩ {visible libraries} — not merely the rowids. Passing
+/// `library_filter: None` here would let a rowid from an ungranted library back
+/// in whenever phase 1's own filter differed from the library filter (a caller
+/// `opt.Filters` that excludes nothing, a grant revoked between passes, or a
+/// hand-built rowid list).
+///
+/// Go resolves the filter from the ambient ctx in BOTH phases
+/// (`sql_base_repository.go:261-283`, incl. the admin/`invalidUserId` and
+/// sees-all-libraries fast paths at `:265-273`); the port threads ONE
+/// caller-supplied filter into both. That is observably identical within a
+/// call, because Go's ctx user is fixed for the duration of the call, so its
+/// two resolutions produce the same clause. Phase 2 also carries NO caller
+/// Filters on either side: Go builds it with `selectMediaFile(ctx)` — `newSelect`
+/// with no options (`:274`, and `newSelect` only applies filters when
+/// `len(options) > 0`, `sql_base_repository.go:139-146`), so `applyFilters`
+/// (`:247-252`) and `applyOptions` (`:149-162`) are both not involved — which is
+/// exactly what this signature expresses.
+///
+/// Rendering follows [`get_sql`]'s rule: the library filter owns the first
+/// `WHERE` and the rowid IN-list AND-joins it, because squirrel accumulates
+/// `WhereParts` and renders them joined by ` AND ` (`select.go:111-114`). Args
+/// follow clause order: join args, then the filter's, then the rowids.
 #[must_use]
-pub fn get_random_hydrate_sql(user_id: Option<&str>, rowids: &[i64]) -> Sql {
-    let (mut sql, mut args) = select_media_file(user_id, None);
+pub fn get_random_hydrate_sql(
+    user_id: Option<&str>,
+    library_filter: Option<Sql>,
+    rowids: &[i64],
+) -> Sql {
+    let has_where = library_filter.is_some();
+    let (mut sql, mut args) = select_media_file(user_id, library_filter);
     let placeholders = vec!["?"; rowids.len()].join(", ");
-    sql.push_str(&format!(
-        " WHERE {TABLE}.rowid IN ({placeholders}) ORDER BY random()"
-    ));
+    // The library filter already opened the clause, so the IN-list joins it with
+    // AND rather than starting a second WHERE (which SQLite rejects).
+    if has_where {
+        sql.push_str(&format!(" AND {TABLE}.rowid IN ({placeholders})"));
+    } else {
+        sql.push_str(&format!(" WHERE {TABLE}.rowid IN ({placeholders})"));
+    }
+    sql.push_str(" ORDER BY random()");
     args.extend(rowids.iter().map(|r| crate::sqlrepo::Value::Integer(*r)));
     (sql, args)
+}
+
+/// Failures of the executed media_file reads ([`MediaFileRepo`]).
+///
+/// Same two-variant shape as `UserRepo::UserError` (`user_repo.rs:609-622`),
+/// `PlayerRepo::PlayerError` (`player_repo.rs:243-260`) and the sibling
+/// [`crate::album_repo::AlbumError`].
+#[derive(Debug, thiserror::Error)]
+pub enum MediaFileError {
+    /// The SQLite statement failed, or a row's hydration failed. Go's read funnel
+    /// surfaces a `PostScan` failure as a column-conversion error
+    /// (`dbx@v1.12.0/rows.go:92-102`), so a decode failure arrives here too — via
+    /// [`crate::hydrate::HydrateError::into_sqlite`].
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10`), raised by
+    /// `Get` when `GetAll` returned zero rows (`mediafile_repository.go:217-219`).
+    #[error("record not found")]
+    NotFound,
+}
+
+/// `mediaFileRepository` (`mediafile_repository.go:80-108`) bound to one pooled
+/// connection — the executed READ side of the media_file repository.
+///
+/// Same DI shape as [`crate::album_repo::AlbumRepo`] and the `UserRepo`/`PlayerRepo`
+/// precedents: no ambient ctx, a caller-threaded lease from
+/// [`crate::store::SQLStore::with_connection_sync`], and every statement through
+/// [`crate::execution`]. Rows hydrate through the shared seam
+/// ([`crate::hydrate::row_to_mediafile`] → [`MediaFileRow::into_record`], with
+/// [`crate::hydrate::HydrateError::into_sqlite`] as the exit shape — the exact
+/// mapping `tests/runtime_hydrate_album_mediafile.rs:113-120` uses), then the
+/// artwork layer runs on the models (`hydrateArtwork`,
+/// `mediafile_repository.go:244-246`).
+///
+/// `Get` goes through `query_all`, not `query_optional`, for the same verified
+/// reason as the album repo: Go's `Get` (`:212-221`) is `GetAll` +
+/// `Eq{"media_file.id": id}` with the not-found decision taken from `len(res) == 0`,
+/// and dbx's `All` cannot return `sql.ErrNoRows` (`dbx@v1.12.0/query.go:274-277`,
+/// `rows.go:109-125` make an empty NON-nil slice; only `Rows.one`/`Rows.row` return
+/// it, `rows.go:237-244`, `:281-294`). So `queryAll`'s ErrNoRows arm
+/// (`sql_base_repository.go:451-454`) is dead here and an empty result is an empty
+/// `Vec` — never [`MediaFileError::NotFound`].
+///
+/// `enable_media_file_cover_art` is Go's `conf.Server.EnableMediaFileCoverArt`
+/// (default `true`, `conf/configuration.go:1003`) supplied by the caller, because
+/// nd-db does not read config (the `normalized_album_play_count` precedent,
+/// `album_repo::get_all_sql`). Go reads that flag TWICE per `GetRandom`/`GetAll` —
+/// once when collecting the eligible ids (`artwork_hydration.go:102`) and once per
+/// item (`:111`) — so a config reload between the two can make them disagree. The
+/// port reads the parameter ONCE per call: the deliberate, observably-equivalent
+/// difference (with a stable config both arms are the same value).
+#[derive(Debug)]
+pub struct MediaFileRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> MediaFileRepo<'a> {
+    /// `NewMediaFileRepository` (`mediafile_repository.go:80-108`): bind to `conn`.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get` (`mediafile_repository.go:212-221`): [`get_sql`] (== `GetAll` +
+    /// `Eq{"media_file.id": id}`), hydrated through both layers, zero rows mapped to
+    /// [`MediaFileError::NotFound`] the way Go decides it from `len(res)`.
+    ///
+    /// Go's `GetWithParticipants` (`:223-230`) stays unported: it re-reads the
+    /// `artist` table through `getParticipants` (`sql_participations.go:127-146`),
+    /// which is the artist-hydration lane.
+    ///
+    /// # Errors
+    /// [`MediaFileError::NotFound`] when the id matches nothing (or the library
+    /// filter excludes it); [`MediaFileError::Sqlite`] on a statement or hydration
+    /// failure. An artwork-lookup failure is NOT an error here — Go's `Get`
+    /// swallows it too, because it delegates to `GetAll`, whose `hydrateItems`
+    /// logs and returns an empty map (`artwork_hydration.go:62-66`): the track
+    /// comes back with both artwork fields zero. Use [`Self::get_all`] when the
+    /// caller needs that failure reported. Go's `Get` returns `nil` beside its error
+    /// on BOTH paths (`:214-216` `return nil, err`, `:217-219`
+    /// `return nil, model.ErrNotFound`), so the port's `Result` carries the same
+    /// information and is not a divergence.
+    pub fn get(
+        &self,
+        id: &str,
+        user_id: Option<&str>,
+        library_filter: Option<Sql>,
+        enable_media_file_cover_art: bool,
+    ) -> Result<MediaFileRecord, MediaFileError> {
+        let statement = get_sql(id, user_id, library_filter);
+        let records = self.read_hydrated(&statement)?;
+        let mut outcome = self.hydrate_artwork(records, enable_media_file_cover_art);
+        if outcome.items.is_empty() {
+            return Err(MediaFileError::NotFound);
+        }
+        Ok(outcome.items.remove(0))
+    }
+
+    /// `GetAll` (`mediafile_repository.go:232-242`): [`get_all_sql`] under the
+    /// caller's order-by and pagination, then artwork hydration. An empty result is
+    /// an empty `Vec`, never [`MediaFileError::NotFound`].
+    ///
+    /// `artwork_error` carries Go's swallowed `log.Error`
+    /// (`artwork_hydration.go:62-66`): the tracks come back either way, each with
+    /// both artwork fields zero (unresolved) exactly as Go's empty map leaves them.
+    /// A statement or row-hydration failure is `Err`, since Go returns
+    /// `queryAll`'s error unchanged (`mediafile_repository.go:235-238`).
+    ///
+    /// # Errors
+    /// [`MediaFileError::Sqlite`] when the statement fails or a row will not hydrate.
+    pub fn get_all(
+        &self,
+        user_id: Option<&str>,
+        library_filter: Option<Sql>,
+        order_by: &[&str],
+        max: i64,
+        offset: i64,
+        enable_media_file_cover_art: bool,
+    ) -> Result<crate::artwork_hydration::ReadOutcome<MediaFileRecord>, MediaFileError> {
+        let statement = get_all_sql(user_id, library_filter, order_by, max, offset);
+        let records = self.read_hydrated(&statement)?;
+        Ok(self.hydrate_artwork(records, enable_media_file_cover_art))
+    }
+
+    /// `GetRandom` (`mediafile_repository.go:250-283`), both passes:
+    /// phase 1 picks random rowids with [`get_random_rowid_sql`] — read as bare
+    /// `i64`s through `query_all` and NEVER handed to a hydrator, exactly like Go's
+    /// `queryAllSlice` into `[]int64` (`:264-266`) — then phase 2 hydrates only
+    /// those rowids with [`get_random_hydrate_sql`], whose `ORDER BY random()`
+    /// re-shuffle Go keeps deliberately (`:272-274`: `WHERE rowid IN (…)` returns
+    /// ascending rowids, so the hydrated subset is re-shuffled). Zero rowids return
+    /// an empty `Vec` WITHOUT running phase 2 (`:268-270`), so no artwork query
+    /// fires either.
+    ///
+    /// `library_filter` is threaded into BOTH passes. Go applies
+    /// `applyLibraryFilter` to the phase-1 rowid query (`:258`) AND to phase 2
+    /// implicitly, because phase 2 goes through `selectMediaFile`
+    /// (`:274`), which ends with an unconditional `applyLibraryFilter` (`:209`); the
+    /// port threads the ONE caller-supplied clause into both, which is the same
+    /// row set — see [`get_random_hydrate_sql`] for the ctx-vs-threaded argument
+    /// and for why neither side applies caller Filters or `applyOptions` in phase 2.
+    ///
+    /// # Errors
+    /// [`MediaFileError::Sqlite`] when either pass fails or a row will not hydrate.
+    pub fn get_random(
+        &self,
+        filters: Option<(&str, Vec<crate::sqlrepo::Value>)>,
+        library_filter: Option<Sql>,
+        max: i64,
+        user_id: Option<&str>,
+        enable_media_file_cover_art: bool,
+    ) -> Result<crate::artwork_hydration::ReadOutcome<MediaFileRecord>, MediaFileError> {
+        // Phase 1: the narrow rowid pick. Go applies opt.Filters then
+        // applyLibraryFilter, OrderBy("random()"), then Limit(opt.Max) (`:256-262`).
+        let rowids: Vec<i64> = crate::execution::query_all(
+            self.conn,
+            &get_random_rowid_sql(filters, library_filter.clone(), max),
+            |row| row.get::<_, i64>(0),
+        )?;
+        if rowids.is_empty() {
+            // Go: `return model.MediaFiles{}, nil` — empty slice, no second query.
+            return Ok(crate::artwork_hydration::ReadOutcome {
+                items: Vec::new(),
+                artwork_error: None,
+            });
+        }
+        // Phase 2: hydrate the shuffled subset UNDER THE SAME library filter
+        // (Go's selectMediaFile applies it unconditionally, :209), then the artwork
+        // layer.
+        let statement = get_random_hydrate_sql(user_id, library_filter, &rowids);
+        let records = self.read_hydrated(&statement)?;
+        Ok(self.hydrate_artwork(records, enable_media_file_cover_art))
+    }
+
+    /// Phase 1 + phase 2 (Go's `queryAll` + `toModels()`). A `PostScan` failure
+    /// aborts the whole read, as it does in Go.
+    fn read_hydrated(&self, statement: &Sql) -> Result<Vec<MediaFileRecord>, MediaFileError> {
+        let rows =
+            crate::execution::query_all(self.conn, statement, crate::hydrate::row_to_mediafile)?;
+        // Same exit shape as the album twin: a PostScan failure leaves the read as
+        // a column-conversion error (`HydrateError::into_sqlite`), wrapped by
+        // `MediaFileError::Sqlite`.
+        Ok(rows
+            .into_iter()
+            .map(MediaFileRow::into_record)
+            .collect::<Result<Vec<MediaFileRecord>, crate::hydrate::HydrateError>>()
+            .map_err(crate::hydrate::HydrateError::into_sqlite)?)
+    }
+
+    /// Phase 3 (`hydrateArtwork`, `mediafile_repository.go:244-246`): the two
+    /// batched lookups and the branch matrix
+    /// (`crate::artwork_hydration::hydrate_media_file_artwork`).
+    fn hydrate_artwork(
+        &self,
+        records: Vec<MediaFileRecord>,
+        enable_media_file_cover_art: bool,
+    ) -> crate::artwork_hydration::ReadOutcome<MediaFileRecord> {
+        let mut items = records;
+        let artwork_error = crate::artwork_hydration::hydrate_media_file_artwork(
+            self.conn,
+            &mut items,
+            enable_media_file_cover_art,
+        );
+        crate::artwork_hydration::ReadOutcome {
+            items,
+            artwork_error,
+        }
+    }
 }
 
 /// `getAllIDs` (`mediafile_repository.go:319-329`): the id-only projection,
@@ -517,7 +800,8 @@ pub struct FtsColumns {
 /// last by [`put_sql`]), plus the six **hydration-only** fields the read path owns —
 /// `id`, `library_path`, `library_name`, `annotation`, `bookmark_position`,
 /// `genres` (`persistence/mediafile_repository.go:29-67`, `selectMediaFile`
-/// `:204-210`).
+/// `:204-210`) — and the two read-path-only artwork fields `image`/`album_image`
+/// (S-D3c, Go's `ItemImage` embed and `AlbumImage` at `model/mediafile.go:30,34`).
 ///
 /// Deliberately absent from the WRITE map (entity write contract):
 /// `LibraryPath`/`LibraryName` (`structs:"-"`, join-only), `Genres` (`structs:"-"`),
@@ -747,6 +1031,25 @@ pub struct MediaFileRecord {
     /// value of `genre` survives. See [`crate::sql_tags::Genre`] for the DTO's
     /// nd-db-local precedent; never emitted by [`mediafile_row`].
     pub genres: Vec<crate::sql_tags::Genre>,
+    /// Go's embedded `ItemImage` (`model/mediafile.go:30`; every field
+    /// `structs:"-"` at `model/artwork.go:29-40`): the TRACK's own artwork state,
+    /// **read-path only**. Filled by
+    /// [`crate::artwork_hydration::hydrate_media_file_artwork`] — the second
+    /// hydration layer (`mediafile_repository.go:244-246`) whose branch matrix
+    /// decides between own embedded art and the inherited album image — never by
+    /// [`crate::hydrate::row_to_mediafile`]. The zero value means UNRESOLVED
+    /// (still requestable), not known-absent; see
+    /// [`crate::artwork_hydration::ItemImage`] and
+    /// [`MediaFileRecord::album_image`]. Never emitted by [`mediafile_row`].
+    pub image: crate::artwork_hydration::ItemImage,
+    /// `MediaFile.AlbumImage` (`model/mediafile.go:34`, `structs:"-"`): the parent
+    /// album's artwork state, hydrated alongside the track's own "so a song's
+    /// Jellyfin album-art tag can be pixel-versioned without a second query"
+    /// (Go's comment `:32-33`). Applied BEFORE the branch matrix
+    /// (`artwork_hydration.go:110`), so it is populated on EVERY branch —
+    /// including the own-art-wins `continue` (`:112-116`). Read-path only; never a
+    /// [`mediafile_row`] key.
+    pub album_image: crate::artwork_hydration::ItemImage,
 }
 
 /// The subtitle tag name (`model.TagSubtitle`, `model/tag.go:192`).
@@ -773,11 +1076,13 @@ pub fn full_title(rec: &MediaFileRecord, append_subtitle: bool) -> String {
 /// PostMapArgs overwrites routed through the S-D2a hook so the
 /// transformation lives in one place.
 ///
-/// **Write-map invariance (S-D3b):** the six hydration-only record fields (`id`,
-/// `library_path`, `library_name`, `annotation`, `bookmark_position`, `genres`) are
-/// NOT keys here — Go's `structs:"-"` tags keep them out of `structs.Map`, and `id`
-/// is the write legs' own argument — so a hydrated record renders the identical
-/// INSERT/UPDATE column set an unwritten one does.
+/// **Write-map invariance (S-D3b, extended by S-D3c):** the six hydration-only
+/// record fields (`id`, `library_path`, `library_name`, `annotation`,
+/// `bookmark_position`, `genres`) and the two read-path-only artwork fields
+/// (`image`, `album_image`) are NOT keys here — Go's `structs:"-"` tags keep them
+/// out of `structs.Map` (`model/mediafile.go:28-34`, `model/artwork.go:29-40`), and
+/// `id` is the write legs' own argument — so a hydrated record renders the identical
+/// 66-key INSERT/UPDATE column set an unwritten one does.
 ///
 /// **S-D2b consistency invariant:** the FTS inputs are derived *atomically*
 /// from the record's own `participants`/`tags` (see
@@ -1712,7 +2017,7 @@ mod tests {
             )),
             5,
         );
-        let (hydrate_sql, hydrate_args) = get_random_hydrate_sql(None, &[3, 7, 9]);
+        let (hydrate_sql, hydrate_args) = get_random_hydrate_sql(None, None, &[3, 7, 9]);
         // Assert:
         assert_eq!(
             rowid_sql,
@@ -1726,6 +2031,47 @@ mod tests {
         assert_eq!(
             hydrate_args,
             vec![Value::Integer(3), Value::Integer(7), Value::Integer(9)]
+        );
+    }
+
+    #[test]
+    fn get_random_phase_two_reapplies_the_library_filter() {
+        // Arrange: Go's phase 2 builds its statement with `selectMediaFile(ctx)`
+        // (`mediafile_repository.go:274`), whose last step is an unconditional
+        // `applyLibraryFilter` (`:209`), so the hydrated row set is
+        // {rowids} ∩ {visible libraries} — NOT just {rowids}.
+        let filter = (
+            "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+                .to_string(),
+            vec![Value::from("user1")],
+        );
+        // Act:
+        let (hydrate_sql, hydrate_args) =
+            get_random_hydrate_sql(Some("user1"), Some(filter), &[3, 7]);
+        // Assert: the filter owns the first WHERE and the IN-list AND-joins it
+        // (squirrel joins accumulated WhereParts with " AND ", select.go:111-114);
+        // appending a second WHERE would be a SQLite syntax error.
+        assert_eq!(
+            hydrate_sql.matches(" WHERE ").count(),
+            2,
+            "outer WHERE plus the subquery's own: {hydrate_sql}"
+        );
+        assert!(
+            hydrate_sql.contains(" AND media_file.rowid IN (?, ?) ORDER BY random()"),
+            "the IN-list must AND-join the library clause: {hydrate_sql}"
+        );
+        // Arg order follows clause order: annotation join (item_type, user),
+        // bookmark join (user), the library filter's user, then the rowids.
+        assert_eq!(
+            hydrate_args,
+            vec![
+                Value::from("media_file"),
+                Value::from("user1"),
+                Value::from("user1"),
+                Value::from("user1"),
+                Value::Integer(3),
+                Value::Integer(7),
+            ]
         );
     }
 
@@ -1847,6 +2193,10 @@ mod tests {
             annotation: nd_model::annotation::Annotation::default(),
             bookmark_position: 0,
             genres: Vec::new(),
+            // S-D3c read-path-only artwork state (Go's ItemImage embed + AlbumImage,
+            // structs:"-"); never write-map keys.
+            image: crate::artwork_hydration::ItemImage::default(),
+            album_image: crate::artwork_hydration::ItemImage::default(),
         }
     }
     #[test]

@@ -157,13 +157,16 @@ fn album_record() -> nd_db::album_repo::AlbumRecord {
         sub_role: "Vocals".to_string(),
     }];
     AlbumRecord {
-        // S-D3b hydration-only fields: left empty here (the write legs take the id as
-        // their own argument), and asserted absent from the write map.
+        // S-D3b hydration-only fields + the S-D3c read-path-only artwork state (Go's
+        // embedded ItemImage, structs:"-"): left empty here (the write legs take the id
+        // as their own argument, and artwork hydration is a separate layer), and
+        // asserted absent from the write map.
         id: String::new(),
         library_path: String::new(),
         library_name: String::new(),
         annotation: nd_model::annotation::Annotation::default(),
         genres: Vec::new(),
+        image: nd_db::artwork_hydration::ItemImage::default(),
         library_id: 1,
         name: "Abbey Road".to_string(),
         embed_art_path: "/music/cover.jpg".to_string(),
@@ -660,14 +663,18 @@ fn mediafile_record() -> nd_db::mediafile_repo::MediaFileRecord {
         sub_role: "Vocals".to_string(),
     }];
     MediaFileRecord {
-        // S-D3b hydration-only fields: left empty here (the write legs take the id as
-        // their own argument), and asserted absent from the write map.
+        // S-D3b hydration-only fields + the S-D3c read-path-only artwork state (Go's
+        // ItemImage embed and AlbumImage, structs:"-"): left empty here (the write legs
+        // take the id as their own argument, and artwork hydration is a separate layer),
+        // and asserted absent from the write map.
         id: String::new(),
         library_path: String::new(),
         library_name: String::new(),
         annotation: nd_model::annotation::Annotation::default(),
         bookmark_position: 0,
         genres: Vec::new(),
+        image: nd_db::artwork_hydration::ItemImage::default(),
+        album_image: nd_db::artwork_hydration::ItemImage::default(),
         album: "Abbey Road".to_string(),
         album_artist: "The Beatles".to_string(),
         album_artist_id: "aa-id-2".to_string(),

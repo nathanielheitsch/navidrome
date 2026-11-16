@@ -25,9 +25,9 @@
 //! (`library_path`, `library_name`, annotation, `bookmark_position`, `genres`,
 //! `id`) is an INSERT/UPDATE key.
 
-use nd_db::album_repo::{self, AlbumRecord, AlbumRow};
+use nd_db::album_repo::{self, AlbumRecord, AlbumRepo, AlbumRow};
 use nd_db::hydrate::{self, HydrateError, RowGet};
-use nd_db::mediafile_repo::{self, MediaFileRecord, MediaFileRow};
+use nd_db::mediafile_repo::{self, MediaFileRecord, MediaFileRepo, MediaFileRow};
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::sql_participations::{Participant, Participants, Role};
 use nd_db::sql_tags::Genre;
@@ -300,6 +300,9 @@ fn seed_album(store: &SQLStore, lib_id: i64, id: &str) -> AlbumRecord {
         library_name: String::new(),
         annotation: nd_model::annotation::Annotation::default(),
         genres: Vec::new(),
+        // Read-path-only artwork state (S-D3c): the seed writes no artwork, and
+        // these two fields are never write-map keys.
+        image: nd_db::artwork_hydration::ItemImage::default(),
     };
     let put = album_repo::put_sql(id, &record, stamp(T1), &[]).expect("renders");
     let args: Vec<rusqlite::types::Value> = put.insert.1.iter().map(bind).collect();
@@ -1222,6 +1225,10 @@ fn mediafile_seed(store: &SQLStore, lib_id: i64, id: &str) -> MediaFileRecord {
         annotation: nd_model::annotation::Annotation::default(),
         bookmark_position: 0,
         genres: Vec::new(),
+        // Read-path-only artwork state (S-D3c): the seed writes no artwork, and
+        // neither field is ever a write-map key.
+        image: nd_db::artwork_hydration::ItemImage::default(),
+        album_image: nd_db::artwork_hydration::ItemImage::default(),
     };
     let put = mediafile_repo::put_sql(id, &record, stamp(T1), false, &[]).expect("renders");
     let args: Vec<rusqlite::types::Value> = put.insert.1.iter().map(bind).collect();
@@ -1576,11 +1583,26 @@ fn mediafile_get_and_get_all_join_one_where_with_a_library_filter() {
     let rowids = query_all(&store, &(rowid_sql, rowid_args), |row| row.get_i64("rowid"))
         .expect("the rowid pick executes with filter AND library clause");
     assert_eq!(rowids.len(), 2);
-    let (hydrate_sql, hydrate_args) = mediafile_repo::get_random_hydrate_sql(Some("u-1"), &rowids);
+    // Phase 2 re-applies the library filter: Go builds it with `selectMediaFile(ctx)`
+    // (:274), whose last step is an unconditional `applyLibraryFilter` (:209), so the
+    // hydrated set is {rowids} ∩ {visible libraries}.
+    let (hydrate_sql, hydrate_args) = mediafile_repo::get_random_hydrate_sql(
+        Some("u-1"),
+        Some((
+            "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+                .to_string(),
+            vec![Value::from("u-1")],
+        )),
+        &rowids,
+    );
     assert_eq!(
         hydrate_sql.matches(" WHERE ").count(),
-        1,
-        "phase 2 opens exactly one WHERE: {hydrate_sql}"
+        2,
+        "one outer WHERE (the library clause) plus the subquery's own: {hydrate_sql}"
+    );
+    assert!(
+        hydrate_sql.contains(" AND media_file.rowid IN (?, ?) ORDER BY random()"),
+        "the rowid IN-list AND-joins the library clause rather than opening a second WHERE: {hydrate_sql}"
     );
     let shuffled = query_all(&store, &(hydrate_sql, hydrate_args), hydrate_mediafile_row)
         .expect("phase 2 hydrates the picked rowids");
@@ -2027,4 +2049,531 @@ fn mediafile_nested_json_null_in_shims_decodes_like_go() {
 
     drop(store);
     std::fs::remove_file(&path).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// S-D3c: the executed repo reads, wired to the shared seam.
+//
+// Everything above drives the seam from the test (row mapper + `query_all`).
+// These tests drive `AlbumRepo`/`MediaFileRepo` themselves, so the wiring —
+// statement → `query_all` → `row_to_*` → `into_record` →
+// `HydrateError::into_sqlite` → artwork layer — is what executes.
+// ---------------------------------------------------------------------------
+
+/// Run one closure on a leased connection for the S-D3c repo tests, which return
+/// the repo's own error type rather than a raw `rusqlite::Error` (the `on` helper
+/// above exists for the seam-level reads that return `rusqlite::Result`).
+fn lease<T>(store: &SQLStore, call: impl FnOnce(&rusqlite::Connection) -> T) -> T {
+    store
+        .with_connection_sync(|conn| Ok(call(conn)))
+        .unwrap_or_else(|e| panic!("store lease failed: {e}"))
+}
+
+/// `AlbumRepo::get` / `AlbumRepo::get_all` run the real statements on the fresh
+/// schema (`album_repository.go:234-243`, `:245-256`).
+#[test]
+fn album_repo_get_and_get_all_run_through_the_seam() {
+    let (store, path) = fresh_store();
+    let lib = seed_library(&store);
+    seed_album(&store, lib, "al-1");
+    seed_album(&store, lib, "al-2");
+
+    let one = lease(&store, |conn| {
+        AlbumRepo::new(conn).get("al-1", None, false, None)
+    })
+    .expect("get reads the row");
+    assert_eq!(one.id, "al-1");
+    assert_eq!(one.library_path, LIB_PATH, "the join columns hydrate");
+    assert_eq!(one.library_name, "Main");
+    // The PostScan layer ran: the shim JSON is decoded, not left raw.
+    assert_eq!(one.genre, "Rock");
+    assert_eq!(one.genres.len(), 2);
+    assert!(one.discs.is_some(), "the discs shim decoded");
+    assert!(one.folder_ids.is_some(), "the folder_ids shim decoded");
+    // No artwork was seeded, so the second layer leaves it unresolved — not absent.
+    assert_eq!(one.image, nd_db::artwork_hydration::ItemImage::default());
+    // Write-map invariance through the repo read, not just the raw seam read.
+    assert_write_map_unchanged(&one);
+
+    let all = lease(&store, |conn| {
+        AlbumRepo::new(conn).get_all(None, false, None, vec!["album.id".to_string()], 0, 0)
+    })
+    .expect("get_all reads both rows");
+    assert_eq!(all.artwork_error, None);
+    let ids: Vec<&str> = all.items.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, vec!["al-1", "al-2"], "each row keeps its own id");
+
+    // Go's Get decides NotFound from the empty slice (`album_repository.go:239-241`).
+    let miss = lease(&store, |conn| {
+        AlbumRepo::new(conn).get("al-missing", None, false, None)
+    });
+    assert!(
+        matches!(miss, Err(album_repo::AlbumError::NotFound)),
+        "{miss:?}"
+    );
+    // …while GetAll of the same empty set is an EMPTY Vec, not NotFound
+    // (dbx `All` makes an empty non-nil slice and never returns sql.ErrNoRows:
+    // `dbx@v1.12.0/query.go:274-277`, `rows.go:109-125`). Emptiness comes from a
+    // library filter that matches nothing — `get_all_sql` takes order-by
+    // expressions, not filters, so this is the filter-shaped way to get zero rows.
+    let nobody = album_lib_filter("u-nobody");
+    let none = lease(&store, |conn| {
+        AlbumRepo::new(conn).get_all(
+            None,
+            false,
+            Some(nobody),
+            vec!["album.id".to_string()],
+            0,
+            0,
+        )
+    })
+    .expect("empty page is not an error");
+    assert!(none.items.is_empty());
+    assert_eq!(
+        none.artwork_error, None,
+        "no rows, so no artwork query fires"
+    );
+
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// `MediaFileRepo::get` / `get_all` run the real statements, annotation and
+/// bookmark columns included for a logged-in user
+/// (`mediafile_repository.go:212-221`, `:232-242`).
+#[test]
+fn mediafile_repo_get_and_get_all_run_through_the_seam() {
+    let (store, path) = fresh_store();
+    let lib = seed_library(&store);
+    seed_user(&store, "u-1", "viewer");
+    grant_library(&store, "u-1", lib);
+    mediafile_seed(&store, lib, "mf-1");
+    mediafile_seed(&store, lib, "mf-2");
+    seed_annotation(&store, "u-1", "media_file", "mf-1");
+    seed_bookmark(&store, "u-1", "mf-1", 4242);
+
+    let filter = (
+        "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+            .to_string(),
+        vec![Value::from("u-1")],
+    );
+
+    let one = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get("mf-1", Some("u-1"), Some(filter.clone()), true)
+    })
+    .expect("get reads the row");
+    assert_eq!(one.id, "mf-1");
+    assert_eq!(one.bookmark_position, 4242, "the bookmark column hydrates");
+    assert_eq!(one.annotation.play_count, 7);
+    assert!(one.annotation.starred);
+    assert_eq!(
+        one.annotation.starred_at.as_deref(),
+        Some("2024-03-03T03:00:00+03:00")
+    );
+    assert_eq!(one.library_path, LIB_PATH);
+    assert_eq!(one.genre, "Rock");
+    assert_eq!(one.genres.len(), 3);
+    assert_mediafile_write_map_unchanged(&one);
+
+    let all = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_all(
+            Some("u-1"),
+            Some(filter.clone()),
+            &["media_file.id"],
+            0,
+            0,
+            true,
+        )
+    })
+    .expect("get_all reads both rows");
+    assert_eq!(all.artwork_error, None);
+    let ids: Vec<&str> = all.items.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, vec!["mf-1", "mf-2"]);
+    // Per-row identity: mf-1 has the annotation/bookmark, mf-2 has neither.
+    let second = all.items.iter().find(|m| m.id == "mf-2").expect("mf-2");
+    assert_eq!(second.bookmark_position, 0);
+    assert_eq!(second.annotation.play_count, 0);
+
+    let miss = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get("mf-nope", Some("u-1"), Some(filter.clone()), true)
+    });
+    assert!(
+        matches!(miss, Err(mediafile_repo::MediaFileError::NotFound)),
+        "{miss:?}"
+    );
+    // Empty page ⇒ empty Vec, same dbx rule as the album side. A library filter
+    // bound to a user with no grant narrows the statement to zero rows.
+    let ungranted = (
+        "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+            .to_string(),
+        vec![Value::from("u-nobody")],
+    );
+    let none = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_all(None, Some(ungranted), &["media_file.id"], 0, 0, true)
+    })
+    .expect("empty page is not an error");
+    assert!(none.items.is_empty());
+
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// `MediaFileRepo::get_random` (`mediafile_repository.go:250-283`): phase 1 reads
+/// bare rowids (never handed to a hydrator), phase 2 hydrates them, and the
+/// artwork layer runs on the result. `LIMIT` caps phase 1, so the returned set is
+/// exactly that many rows — each with its own id.
+#[test]
+fn mediafile_repo_get_random_runs_both_passes() {
+    let (store, path) = fresh_store();
+    let lib = seed_library(&store);
+    for n in 1..=5 {
+        mediafile_seed(&store, lib, &format!("mf-{n}"));
+    }
+    seed_album(&store, lib, "al-1");
+    seed_state(&store, "al", "al-1", "albumhash");
+
+    let outcome = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_random(None, None, 3, None, true)
+    })
+    .expect("both passes run");
+    assert_eq!(outcome.artwork_error, None);
+    assert_eq!(outcome.items.len(), 3, "phase 1's LIMIT is the page size");
+    let ids: Vec<&str> = outcome.items.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids.len(), 3);
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), 3, "each row is a distinct track: {ids:?}");
+    // Phase 2 hydrated full rows (not rowids): the join columns and shims are present.
+    for track in &outcome.items {
+        assert_eq!(track.library_path, LIB_PATH, "{}", track.id);
+        assert_eq!(track.genre, "Rock", "{}", track.id);
+        // The album kind was hydrated onto every track (artwork_hydration.go:110).
+        assert_eq!(track.album_image.image_hash, "albumhash", "{}", track.id);
+    }
+
+    // A filter that matches nothing short-circuits after phase 1: no phase-2
+    // statement, no artwork query, empty Vec (`:267-269`).
+    let none = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_random(
+            Some(("media_file.id = ?", vec![Value::from("mf-nope")])),
+            None,
+            0,
+            None,
+            true,
+        )
+    })
+    .expect("empty rowid set is not an error");
+    assert!(none.items.is_empty());
+    assert_eq!(none.artwork_error, None);
+
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// `GetRandom` phase 2 re-applies the library filter. Go's phase 2 is
+/// `r.selectMediaFile(ctx)` (`mediafile_repository.go:274`) and that helper ends
+/// with an UNCONDITIONAL `return r.applyLibraryFilter(ctx, sql)` (`:204-210`, `:209`),
+/// so the hydrated row set is {phase-1 rowids} ∩ {visible libraries}
+/// (`sql_base_repository.go:261-283`) — NOT merely the rowids. Two libraries,
+/// one granted: a rowid belonging to the ungranted one must not survive phase 2.
+#[test]
+fn mediafile_repo_get_random_phase_two_reapplies_the_library_filter() {
+    let (store, path) = fresh_store();
+    let granted = seed_library(&store);
+    // A second library, so phase 1 has rows from both to choose from. `insert`
+    // returns rows-affected, so the id is the literal bound above.
+    let ungranted: i64 = 2;
+    insert(
+        &store,
+        "INSERT INTO library (id, name, path, remote_path) VALUES (?, ?, ?, ?)",
+        &[
+            rusqlite::types::Value::Integer(ungranted),
+            rusqlite::types::Value::Text("Hidden".to_string()),
+            rusqlite::types::Value::Text("/hidden".to_string()),
+            rusqlite::types::Value::Text(String::new()),
+        ],
+    );
+    seed_user(&store, "u-1", "viewer");
+    grant_library(&store, "u-1", granted);
+    mediafile_seed(&store, granted, "mf-in");
+    mediafile_seed(&store, ungranted, "mf-out");
+
+    let filter = (
+        "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+            .to_string(),
+        vec![Value::from("u-1")],
+    );
+
+    // The executed read: both rowids exist, but the ungranted library's track
+    // cannot come back. `max = 0` means no LIMIT, so phase 1 definitely picks both.
+    let outcome = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_random(None, Some(filter.clone()), 0, Some("u-1"), true)
+    })
+    .expect("both passes run under a library filter");
+    assert_eq!(outcome.artwork_error, None);
+    let ids: Vec<&str> = outcome.items.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["mf-in"],
+        "phase 2 excluded the ungranted library: {ids:?}"
+    );
+
+    // The clause-level proof that the assertion above came from phase 2 (not from
+    // phase 1 happening to skip the rowid): the phase-2 statement carries the
+    // library clause AND-joined with the rowid IN-list, and its arg list binds the
+    // filter's user id BEFORE the rowids.
+    let (phase2_sql, phase2_args) =
+        mediafile_repo::get_random_hydrate_sql(Some("u-1"), Some(filter), &[1, 2]);
+    assert!(
+        phase2_sql.contains("media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"),
+        "phase 2 must carry the library clause: {phase2_sql}"
+    );
+    assert!(
+        phase2_sql.contains(" AND media_file.rowid IN (?, ?) ORDER BY random()"),
+        "the IN-list AND-joins the library clause: {phase2_sql}"
+    );
+    assert_eq!(
+        phase2_sql.matches(" WHERE ").count(),
+        2,
+        "one outer WHERE plus the subquery's own: {phase2_sql}"
+    );
+    // annotation join (item_type, user), bookmark join (user), filter user, rowids.
+    assert_eq!(
+        phase2_args,
+        vec![
+            Value::from("media_file"),
+            Value::from("u-1"),
+            Value::from("u-1"),
+            Value::from("u-1"),
+            Value::Integer(1),
+            Value::Integer(2),
+        ]
+    );
+
+    // Without the library clause the SAME rowids hydrate BOTH tracks — the control
+    // that shows the executed assertion above is the filter doing the work. It
+    // keeps `user_id` identical to the filtered read above, so the ONLY difference
+    // is the library clause (the annotation/bookmark joins are LEFT JOINs and never
+    // exclude a row, but keeping them identical removes even that dimension).
+    let (unfiltered_sql, unfiltered_args) =
+        mediafile_repo::get_random_hydrate_sql(Some("u-1"), None, &[1, 2]);
+    assert_eq!(
+        unfiltered_sql.matches(" WHERE ").count(),
+        1,
+        "no filter, so the IN-list opens the only WHERE: {unfiltered_sql}"
+    );
+    let both = query_all(
+        &store,
+        &(unfiltered_sql, unfiltered_args),
+        hydrate_mediafile_row,
+    )
+    .expect("the unfiltered phase-2 shape executes")
+    .len();
+    assert_eq!(both, 2, "the same rowids hydrate two rows without a filter");
+
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// A user with no `user_library` grant sees ZERO rows through the repo reads —
+/// the library-filter clause genuinely narrows the statement rather than the test
+/// vacuously passing (`sql_base_repository.go:261-282`'s resolved clause).
+#[test]
+fn repo_reads_return_nothing_for_an_ungranted_user() {
+    let (store, path) = fresh_store();
+    let lib = seed_library(&store);
+    seed_user(&store, "u-outsider", "outsider");
+    seed_album(&store, lib, "al-1");
+    mediafile_seed(&store, lib, "mf-1");
+
+    let album_filter = album_lib_filter("u-outsider");
+    let albums = lease(&store, |conn| {
+        AlbumRepo::new(conn).get_all(None, false, Some(album_filter.clone()), vec![], 0, 0)
+    })
+    .expect("statement runs");
+    assert!(albums.items.is_empty(), "no grant, no albums");
+    assert!(matches!(
+        lease(&store, |conn| AlbumRepo::new(conn).get(
+            "al-1",
+            None,
+            false,
+            Some(album_filter)
+        )),
+        Err(album_repo::AlbumError::NotFound)
+    ));
+
+    let track_filter = (
+        "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+            .to_string(),
+        vec![Value::from("u-outsider")],
+    );
+    let tracks = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_all(None, Some(track_filter.clone()), &[], 0, 0, true)
+    })
+    .expect("statement runs");
+    assert!(tracks.items.is_empty(), "no grant, no tracks");
+    assert!(matches!(
+        lease(&store, |conn| MediaFileRepo::new(conn).get(
+            "mf-1",
+            None,
+            Some(track_filter),
+            true
+        )),
+        Err(mediafile_repo::MediaFileError::NotFound)
+    ));
+    // Same clause bound to a GRANTED user returns the row, proving the previous
+    // assertions came from the filter and not from a broken statement.
+    seed_user(&store, "u-in", "in");
+    grant_library(&store, "u-in", lib);
+    let granted = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get_all(
+            None,
+            Some((
+                "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+                    .to_string(),
+                vec![Value::from("u-in")],
+            )),
+            &[],
+            0,
+            0,
+            true,
+        )
+    })
+    .expect("granted read");
+    assert_eq!(granted.items.len(), 1);
+
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// A hydrated record re-renders byte-identical write legs, so the two new
+/// read-path-only artwork fields never reach the map: `album_row` stays at 48
+/// keys and `mediafile_row` at 66 (`docs/rust-port/next-work.md:775-779`).
+#[test]
+fn repo_hydrated_records_re_render_the_same_write_maps() {
+    let (store, path) = fresh_store();
+    let lib = seed_library(&store);
+    seed_user(&store, "u-1", "viewer");
+    grant_library(&store, "u-1", lib);
+    seed_album(&store, lib, "al-1");
+    mediafile_seed(&store, lib, "mf-1");
+    seed_annotation(&store, "u-1", "album", "al-1");
+    seed_annotation(&store, "u-1", "media_file", "mf-1");
+    seed_bookmark(&store, "u-1", "mf-1", 99);
+    // Seed artwork so the hydrated records carry NON-zero image fields — the
+    // case a zero-valued fixture could not prove.
+    seed_state(&store, "al", "al-1", "albumhash");
+    seed_state(&store, "mf", "mf-1", "ownhash");
+
+    let album = lease(&store, |conn| {
+        AlbumRepo::new(conn).get("al-1", Some("u-1"), false, None)
+    })
+    .expect("album read");
+    assert_eq!(album.image.image_hash, "albumhash");
+    let album_map = album_repo::album_row(&album);
+    let keys: Vec<&str> = album_map.map().keys().map(String::as_str).collect();
+    assert_eq!(keys.len(), 48, "45 base + 3 FTS keys");
+    for forbidden in [
+        "id",
+        "library_path",
+        "library_name",
+        "annotation",
+        "genres",
+        "image",
+        "image_hash",
+        "image_absent",
+        "blur_hash",
+        "thumb_hash",
+        "dominant_color",
+        "image_width",
+        "image_height",
+    ] {
+        assert!(
+            !keys.contains(&forbidden),
+            "{forbidden} reached the album map: {keys:?}"
+        );
+    }
+    assert_eq!(
+        album_repo::put_sql("al-1", &album, stamp(T1), &[]).expect("renders"),
+        album_repo::put_sql(
+            "al-1",
+            &AlbumRecord {
+                image: nd_db::artwork_hydration::ItemImage::default(),
+                ..album.clone()
+            },
+            stamp(T1),
+            &[]
+        )
+        .expect("renders"),
+        "a populated image changes no write leg"
+    );
+
+    let track = lease(&store, |conn| {
+        MediaFileRepo::new(conn).get("mf-1", Some("u-1"), None, true)
+    })
+    .expect("media_file read");
+    assert_eq!(track.image.image_hash, "ownhash");
+    assert_eq!(track.album_image.image_hash, "albumhash");
+    let track_map = mediafile_repo::mediafile_row(&track, false);
+    let keys: Vec<&str> = track_map.map().keys().map(String::as_str).collect();
+    assert_eq!(keys.len(), 66, "63 base + 3 FTS keys");
+    for forbidden in [
+        "id",
+        "library_path",
+        "library_name",
+        "annotation",
+        "bookmark_position",
+        "genres",
+        "image",
+        "album_image",
+        "image_hash",
+        "image_absent",
+        "album_image_hash",
+        "blur_hash",
+        "thumb_hash",
+        "dominant_color",
+        "image_width",
+        "image_height",
+    ] {
+        assert!(
+            !keys.contains(&forbidden),
+            "{forbidden} reached the media_file map: {keys:?}"
+        );
+    }
+    assert_eq!(
+        mediafile_repo::put_sql("mf-1", &track, stamp(T1), false, &[]).expect("renders"),
+        mediafile_repo::put_sql(
+            "mf-1",
+            &MediaFileRecord {
+                image: nd_db::artwork_hydration::ItemImage::default(),
+                album_image: nd_db::artwork_hydration::ItemImage::default(),
+                ..track.clone()
+            },
+            stamp(T1),
+            false,
+            &[]
+        )
+        .expect("renders"),
+        "populated artwork fields change no write leg"
+    );
+
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// A seeded `item_artwork` + `artwork` row, in the kind-prefix spelling the
+/// column actually holds (`artwork_repository.go:96`, `model/artwork_id.go:22`).
+fn seed_state(store: &SQLStore, kind: &str, id: &str, hash: &str) {
+    insert(
+        store,
+        "INSERT INTO item_artwork (item_kind, item_id, image_type, hash, source, updated_at) \
+         VALUES (?, ?, 'primary', ?, 'folder', ?)",
+        &[
+            rusqlite::types::Value::Text(kind.to_string()),
+            rusqlite::types::Value::Text(id.to_string()),
+            rusqlite::types::Value::Text(hash.to_string()),
+            rusqlite::types::Value::Text(T1.to_string()),
+        ],
+    );
 }

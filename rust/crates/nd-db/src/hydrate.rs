@@ -2225,6 +2225,12 @@ pub fn row_to_album(row: &Row<'_>) -> SqliteResult<AlbumRow> {
             annotation: row_to_annotation(row)?,
             // Derived by phase 2 from the decoded tags.
             genres: Vec::new(),
+            // S-D3c: Go's `dbAlbum.PostScan` reads NO artwork column — the embedded
+            // ItemImage (`model/album.go:17`) is filled by the SECOND hydration layer
+            // (`persistence/artwork_hydration.go:79-90`, ported in
+            // `crate::artwork_hydration`), so this phase leaves it at Go's zero value,
+            // which means UNRESOLVED rather than known-absent.
+            image: crate::artwork_hydration::ItemImage::default(),
         },
     })
 }
@@ -2476,6 +2482,12 @@ pub fn row_to_mediafile(row: &Row<'_>) -> SqliteResult<MediaFileRow> {
             },
             // Derived by phase 2 from the decoded tags.
             genres: Vec::new(),
+            // S-D3c: same rule as the album — PostScan reads no artwork column. Go's
+            // `ItemImage` embed and `MediaFile.AlbumImage` (`model/mediafile.go:30,34`)
+            // are filled by `crate::artwork_hydration::hydrate_media_file_artwork`, so
+            // this phase leaves both at Go's zero value (= UNRESOLVED, not absent).
+            image: crate::artwork_hydration::ItemImage::default(),
+            album_image: crate::artwork_hydration::ItemImage::default(),
         },
     })
 }

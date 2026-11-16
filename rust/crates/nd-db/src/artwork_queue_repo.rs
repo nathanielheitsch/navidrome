@@ -18,6 +18,13 @@
 //! reproduced verbatim: dropping `ArtworkSourceFailed` from the requested
 //! sources decides between `source IN (…)`, the absent-state arm
 //! (`hash = '' AND last_failure != ''`), or an OR of both.
+//!
+//! Kind spelling (S-D3c): every `item_kind` value in this table is Go's
+//! `Kind.Prefix()` — `Get` binds it (`:38`), `EnqueueAllMissing` binds it twice
+//! (`:66-67`), `artworkSourceFilter` binds it (`:108`), and the queue filter uses
+//! `model.KindPrefixes(kinds)` (`:201`, `model/artwork_id.go:44-46`). The kind
+//! NAME (`"album"`, `"media_file"`) is never stored, so callers pass
+//! `nd_id::ARTWORK_KIND_*_PREFIX` and the fixtures below use `"al"`/`"mf"`.
 
 use chrono::{DateTime, Utc};
 
@@ -492,7 +499,7 @@ mod tests {
     fn enqueue_resets_the_lifecycle_on_conflict() {
         // Arrange: one item (Enqueue :47-52).
         let item = ArtworkQueueItem {
-            item_kind: "album".to_string(),
+            item_kind: nd_id::ARTWORK_KIND_ALBUM_PREFIX.to_string(),
             item_id: "al-1".to_string(),
             image_type: "".to_string(),
             priority: 0,
@@ -532,11 +539,20 @@ mod tests {
 
     #[test]
     fn enqueue_all_missing_skips_resolved_entities() {
-        // Act: EnqueueAllMissing for albums (:58-68).
-        let (sql, args) = enqueue_all_missing_sql("album", "album", 3, &at(2024, 1, 2, 3, 4, 5));
+        // Act: EnqueueAllMissing for albums (:58-68). Go binds `kind.Prefix()`
+        // twice (`artwork_queue_repository.go:66-67`), so the item_kind args are
+        // the 2-char prefix, while the entity table is the OWNER_TABLES value.
+        let (sql, args) = enqueue_all_missing_sql(
+            nd_id::ARTWORK_KIND_ALBUM_PREFIX,
+            "album",
+            3,
+            &at(2024, 1, 2, 3, 4, 5),
+        );
         // Assert: the NOT IN resolved-state guard, six bound values
         // (kind, primary, priority, now, now, kind, :66-68).
         assert_eq!(args.len(), 6);
+        assert_eq!(args[0], Value::Text("al".to_string()));
+        assert_eq!(args[5], Value::Text("al".to_string()));
         assert!(
             sql.contains("WHERE id NOT IN (SELECT item_id FROM item_artwork WHERE item_kind = ?)")
         );
@@ -544,8 +560,14 @@ mod tests {
 
     #[test]
     fn dequeue_batch_orders_priority_desc_then_enqueued_asc() {
-        // Act: DequeueBatch(n=5, kinds album) (:166-176).
-        let (sql, args) = dequeue_batch_sql(5, &at(2024, 1, 2, 3, 4, 5), &["album".to_string()]);
+        // Act: DequeueBatch(n=5, kinds album) (:166-176). `DequeueBatch` takes
+        // already-prefix strings — Go's `KindPrefixes(kinds)` output
+        // (`artwork_queue_repository.go:201`, `model/artwork_id.go:44-46`).
+        let (sql, args) = dequeue_batch_sql(
+            5,
+            &at(2024, 1, 2, 3, 4, 5),
+            &[nd_id::ARTWORK_KIND_ALBUM_PREFIX.to_string()],
+        );
         // Assert: eligibility + kind IN filter, the ORDER BY pair, limit last.
         // The `LIMIT 5` bound is a squirrel literal (`select.go:139-142`), so
         // only the eligibility bound and the kind filter are args.
@@ -556,7 +578,7 @@ mod tests {
             args[0],
             Value::Text("2024-01-02 03:04:05+00:00".to_string())
         );
-        assert_eq!(args.last(), Some(&Value::Text("album".to_string())));
+        assert_eq!(args.last(), Some(&Value::Text("al".to_string())));
     }
 
     #[test]
@@ -565,17 +587,18 @@ mod tests {
         // (artworkSourceFilter :112-120).
         let sources = vec![SOURCE_FAILED.to_string()];
         // Act:
-        let (sql, args) = source_filter_sql("album", &sources);
+        let (sql, args) = source_filter_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, &sources);
         // Assert: stored list is empty so no IN arm, absent arm present, and
         // asking absent+failed collapses to one arm.
         assert_eq!(sql, "item_kind = ? AND (hash = '' AND last_failure != '')");
-        assert_eq!(args, vec![Value::Text("album".to_string())]);
+        assert_eq!(args, vec![Value::Text("al".to_string())]);
     }
 
     #[test]
     fn count_and_purge_share_one_filter() {
-        // Arrange/Act: kinds+priorities filter (artworkQueueFilter :198-207).
-        let kinds = vec!["album".to_string()];
+        // Arrange/Act: kinds+priorities filter (artworkQueueFilter :198-207),
+        // whose kinds are `model.KindPrefixes(kinds)` (`:201`) — prefixes.
+        let kinds = vec![nd_id::ARTWORK_KIND_ALBUM_PREFIX.to_string()];
         let priorities = vec![2, 5];
         let (sql, args) = purge_queued_sql(&kinds, &priorities);
         // Assert: AND of both INs with three bound values, and the count
