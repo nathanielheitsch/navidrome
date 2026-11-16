@@ -1472,8 +1472,34 @@ fn bool_to_string(b: bool) -> String {
 
 /// Go `fmt.Sprintf("%v", float64)` uses `%g` thresholds and two-digit exponents.
 /// Persisted criteria numbers are decoded as float64 by Go's `encoding/json`.
+///
+/// `pub(crate)` because the hydration seam reuses it: `database/sql`'s int64 scan
+/// arm runs `strconv.ParseInt(asString(v), 10, 64)` over a driver `float64`
+/// (`convert.go:497-508`, `asString` at `:570-571`), so a REAL `play_count` cell
+/// needs this exact spelling before parsing (see `hydrate::annotation_play_count`).
 #[must_use]
-fn go_fmt_float64(value: f64) -> String {
+pub(crate) fn go_fmt_float64(value: f64) -> String {
+    // Go's `%g` renders non-finite values as `+Inf`/`-Inf`/`NaN` (verified:
+    // `strconv.FormatFloat(math.Inf(1), 'g', -1, 64)` = `+Inf`). Rust's `{:e}` prints
+    // them with NO exponent (`inf`, `-inf`, `NaN`), so the scientific split below
+    // would PANIC on a raw REAL cell the driver hands back — for example a
+    // `play_count` stored as `9e999`, which SQLite keeps as an infinite REAL that the
+    // normalized play-count expression propagates. Spell them Go's way instead:
+    // the caller's integer parse then rejects the spelling exactly as
+    // `strconv.ParseInt` rejects it, so Go's scan error is surfaced rather than
+    // aborting the process.
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value.is_infinite() {
+        return if value.is_sign_positive() {
+            "+Inf"
+        } else {
+            "-Inf"
+        }
+        .to_string();
+    }
+
     let magnitude = value.abs();
     if value == 0.0 || (1e-4..1e6).contains(&magnitude) {
         return format!("{value}");
@@ -1892,6 +1918,13 @@ mod criteria_sql_test {
         assert_eq!(go_fmt_float64(1e-5), "1e-05");
         assert_eq!(go_fmt_float64(1e6), "1e+06");
         assert_eq!(go_fmt_float64(-0.0), "-0");
+        // Go's %g spells non-finite values +Inf/-Inf/NaN, and Rust's {:e} prints them
+        // WITHOUT an exponent, so the renderer must not panic on them: a raw REAL cell
+        // from the driver can be infinite (see hydrate::annotation_play_count).
+        // Verified against Go: strconv.FormatFloat(math.Inf(1), 'g', -1, 64) == "+Inf".
+        assert_eq!(go_fmt_float64(f64::INFINITY), "+Inf");
+        assert_eq!(go_fmt_float64(f64::NEG_INFINITY), "-Inf");
+        assert_eq!(go_fmt_float64(f64::NAN), "NaN");
     }
 
     #[test]

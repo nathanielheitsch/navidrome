@@ -51,10 +51,10 @@ use crate::sql_tags::{album_genres, delete_tags_sql, genre_id_filter, insert_tag
 use crate::sqlrepo::{Repository, SqlError, Value};
 use chrono::{DateTime, Utc};
 
-/// `r.tableName` (`NewAlbumRepository`, `album_repository.go:120`).
+/// `r.tableName` (`NewAlbumRepository`, `album_repository.go:105-122`).
 pub const ALBUM_TABLE: &str = "album";
 
-/// `setSortMappings` (`album_repository.go:134-146`): the album sort field →
+/// `setSortMappings` (`album_repository.go:110-120`): the album sort field →
 /// order-by expression table as data. `natural_sort_album_name` is
 /// `naturalSort("album.name")` (`helpers.go:89-93` — the config-gated
 /// collate parens are the caller's; the plain column form pins here as
@@ -104,7 +104,7 @@ pub fn sort_mappings(
 /// `EnableNaturalSorting` off): the bare column, no collate parens.
 pub const NATURAL_SORT_ALBUM_NAME: &str = "album.name";
 
-/// `albumSearchConfig` (`album_repository.go:435-440`).
+/// `albumSearchConfig` (`album_repository.go:446-450`).
 #[must_use]
 pub fn album_search_config() -> SearchConfig {
     SearchConfig {
@@ -117,7 +117,7 @@ pub fn album_search_config() -> SearchConfig {
     }
 }
 
-/// `Search` (`album_repository.go:441-447`): dispatch through the shared
+/// `Search` (`album_repository.go:452-465`): dispatch through the shared
 /// `doSearch` (`crate::sql_search::do_search`, `sql_search.go:35-62`).
 /// `sq` arrives pre-built by the caller ([`select_album_sql`] + filters);
 /// `options` carries the same filters/pagination Phase 1 must apply.
@@ -176,17 +176,17 @@ pub fn get_search_strategy(
     }
 }
 
-/// The `selectAlbum` shape (`album_repository.go:166-172`): `album.*`, the
+/// The `selectAlbum` shape (`album_repository.go:227-232`): `album.*`, the
 /// library display columns (Go LEFT-joins `library` — the path/name are
 /// display-only), then the logged-in user's annotation LEFT JOIN
-/// (`withAnnotation`, `sql_annotations.go:63-77`). The sqlrepo builder models
+/// (`withAnnotation`, `sql_annotations.go:63-91`). The sqlrepo builder models
 /// only INNER JOIN, so — like the sibling `playlist` lane — the whole select
 /// renders as one literal with the joins at their FROM position; the join's
 /// `?` args bind BEFORE the WHERE args (squirrel binds join args at the join
 /// position).
 ///
 /// `user_id: None` keeps only `album.average_rating`
-/// (`sql_annotations.go:63-65` — Go's invalid-user branch adds the bare
+/// (`sql_annotations.go:65-66` — Go's invalid-user branch adds the bare
 /// column). `library_filter` is the caller-resolved `applyLibraryFilter`
 /// clause (`sql_base_repository.go:261-282`). `where_clauses` are the
 /// caller's already-materialized filter fragments; `order_by`/`max`/
@@ -259,7 +259,7 @@ pub fn select_album_sql(
     (sql, args)
 }
 
-/// `Get` (`album_repository.go:174-179`): `GetAll` with
+/// `Get` (`album_repository.go:234-243`): `GetAll` with
 /// `Filters: Eq{"album.id": id}` — [`select_album_sql`] by id.
 #[must_use]
 pub fn get_sql(
@@ -279,7 +279,7 @@ pub fn get_sql(
     )
 }
 
-/// `GetAll` (`album_repository.go:181-189`): [`select_album_sql`] with the
+/// `GetAll` (`album_repository.go:245-256`): [`select_album_sql`] with the
 /// caller's order-by and pagination.
 #[must_use]
 pub fn get_all_sql(
@@ -301,7 +301,7 @@ pub fn get_all_sql(
     )
 }
 
-/// `CountAll` (`album_repository.go:149-156`): `newSelect` + library filter +
+/// `CountAll` (`album_repository.go:193-200`): `newSelect` + library filter +
 /// the annotation join when the filters need one, then the base `count()`
 /// shape (`sql_base_repository.go:565-576`: `count(distinct album.id) as
 /// count`, pagination/order dropped). `filtersNeedAnnotation`
@@ -316,10 +316,12 @@ pub fn count_all_sql(
 ) -> Sql {
     let mut sql = format!("SELECT count(distinct {ALBUM_TABLE}.id) as count FROM {ALBUM_TABLE}");
     let mut args: Vec<Value> = Vec::new();
-    if let Some((filter_sql, filter_args)) = library_filter {
-        sql.push_str(&format!(" WHERE {filter_sql}"));
-        args.extend(filter_args);
-    }
+    // squirrel renders joins before WHERE (`select.go:92-118`), so the join args
+    // bind BEFORE the filter args even though Go applied the filter first
+    // (`album_repository.go:193-200`: applyLibraryFilter, then withAnnotation).
+    // Rendering WHERE first emits `FROM album WHERE … LEFT JOIN annotation …`,
+    // which SQLite rejects with `near "LEFT": syntax error`; this matches the
+    // mediafile twin (`mediafile_repo.rs:count_all_sql`).
     if need_annotation {
         if let Some(user) = user_id {
             sql.push_str(&format!(
@@ -331,10 +333,14 @@ pub fn count_all_sql(
             let _ = normalized_album_play_count;
         }
     }
+    if let Some((filter_sql, filter_args)) = library_filter {
+        sql.push_str(&format!(" WHERE {filter_sql}"));
+        args.extend(filter_args);
+    }
     (sql, args)
 }
 
-/// `Exists` (`album_repository.go:158-162`): the base count by id (Go counts
+/// `Exists` (`album_repository.go:202-206`): the base count by id (Go counts
 /// instead of `exists()` so the library filter applies).
 #[must_use]
 pub fn exists_sql(id: &str, library_filter: Option<Sql>) -> Sql {
@@ -348,7 +354,7 @@ pub fn exists_sql(id: &str, library_filter: Option<Sql>) -> Sql {
         .unwrap_or_default()
 }
 
-/// `albumFilters` (`album_repository.go:123-151`): the registered filter
+/// `albumFilters` (`album_repository.go:124-151`): the registered filter
 /// map, fixed keys. The album-level tag filters (one per `AlbumLevelTags()`
 /// name) and `role_<role>_id` (one per `AllRoles` role) are model-table-driven
 /// — their membership lives with the model slice, so those keys drop here
@@ -427,30 +433,58 @@ fn annotation_bool(field: &str, value: &str) -> String {
     crate::sql_annotations::annotation_bool_filter(field, value)
 }
 
-/// `model.Album`'s persisted row (`model/album.go:15-73`) — the 45 non-id
-/// persisted album columns (the contract's 46 minus `id`, which the seam
-/// forbids in the map; the id is appended last by [`put_sql`]).
+/// `model.Album`'s row as the seam reads and writes it (`model/album.go:15-73`):
+/// the 45 non-id persisted album columns (the contract's 46 minus `id`, which
+/// the seam forbids in the map; the id is appended last by [`put_sql`]), plus the
+/// five **hydration-only** fields the read path owns — `id`, `library_path`,
+/// `library_name`, `annotation`, `genres` (`persistence/album_repository.go:41-69`,
+/// `selectAlbum` `:226-232`).
 ///
-/// Deliberately absent (entity write contract): the DDL orphan column
-/// `releases` (no Go field, no Go writer — a put never emits it, so it stays
-/// at its DDL default 0), `average_rating` (annotation-managed, never
-/// written by entity Put), and the non-persisted fields (`LibraryPath`/
-/// `LibraryName`/`Genres` are `structs:"-"` join-only; the `Annotations`/
-/// `ItemImage` embeds carry no columns). The Go `RgAlbumGain`/`RgAlbumPeak`
-/// dbx shims (`album_repository.go:37-38`) exist only because dbx's default
-/// field-map cannot render `RGAlbumGain` to `rg_album_gain`; Rust binds the
-/// real column names directly, no shim. `discs`/`participants`/`tags`/
-/// `folder_ids` hold the *typed* values the Go shims shadow —
-/// PostMapArgs overwrites their column keys with JSON, which
-/// [`album_row`] routes through [`crate::marshal::album_post_map_args`].
+/// Deliberately absent from the WRITE map (entity write contract): the DDL orphan
+/// column `releases` (no Go field, no Go writer — a put never emits it, so it stays
+/// at its DDL default 0), `average_rating` (annotation-managed, never written by
+/// entity Put), and every non-persisted field (`LibraryPath`/`LibraryName`/
+/// `Genres` are `structs:"-"` join-only; the `Annotations`/`ItemImage` embeds carry
+/// no columns; `Album.ID` is appended by the write legs, not the map).
+/// [`album_row`] emits none of the five hydration-only fields, so the write SQL is
+/// byte-identical to a record whose derived fields are empty — asserted by
+/// `tests/runtime_hydrate_album_mediafile.rs`.
+///
+/// The Go `RgAlbumGain`/`RgAlbumPeak` dbx shims (`album_repository.go:37-38`) exist
+/// only because dbx's default field-map cannot render `RGAlbumGain` to
+/// `rg_album_gain`; Rust binds the real column names directly, so the two
+/// unconditional copies at `album_repository.go:66-67` are no-ops here — see
+/// [`crate::hydrate::album_post_scan`]. `discs`/`participants`/`tags`/`folder_ids`
+/// hold the *typed* values the Go shims shadow: PostMapArgs overwrites their column
+/// keys with JSON on the write side ([`album_row`] routes that through
+/// [`crate::marshal::album_post_map_args`]), and on the read side the raw TEXT
+/// columns sit on [`AlbumRow`] until [`crate::hydrate::album_post_scan`] decodes
+/// them.
 ///
 /// Timestamps are `DateTime<Utc>` bound through `crate::time`. `created_at`/
 /// `updated_at`/`external_info_updated_at` are nullable (Go zero
 /// `time.Time` / `*time.Time` nil → NULL); `imported_at` is NOT NULL — Go
 /// stamps `ImportedAt = Now` at `Put` entry (`album_repository.go:210`),
 /// mirrored in [`put_sql`].
+///
+/// `participant_names` is the FTS input the record carries beside the participant
+/// JSON (see [`NamedParticipant`]). A hydrated record gets it from the decoded
+/// `participants` column with an EMPTY `sort_name`: the column stores only
+/// `{id, name, subRole}` (`sql_participations.go:13-17`) and Go fills sort names
+/// only in `getParticipants` (`:127-146`), which re-reads the `artist` table and
+/// belongs to a later lane. So re-writing a hydrated album reproduces every
+/// participant name but no sort names — documented divergence, and the reason
+/// [`crate::hydrate::album_post_scan`] fills this field rather than leaving it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AlbumRecord {
+    /// The row's `id` (Go `Album.ID`, `structs:"id"` at `model/album.go:19`).
+    /// Read-path identity: [`crate::hydrate::row_to_album`] fills it from the row so
+    /// a bulk read keeps every row's own id. [`album_row`] does NOT emit it — the id
+    /// is appended by the repo's write legs ([`put_sql`] takes it as its own
+    /// argument, matching Go's `put(ctx, id, …)`, `sql_base_repository.go:618`).
+    /// Same precedent as `FolderRecord::id` (`folder_repo.rs:347`) and
+    /// `PlaylistRecord::id` (`playlist_repo.rs:486`).
+    pub id: String,
     /// `library_id` (Go `LibraryID`) — FK to `library`.
     pub library_id: i64,
     /// `name` (Go `Name`).
@@ -481,9 +515,12 @@ pub struct AlbumRecord {
     pub comment: String,
     /// `song_count` (Go `SongCount`).
     pub song_count: i32,
-    /// `duration` (Go `Duration`, `float32` at `model/album.go:41`). The DDL
+    /// `duration` (Go `Duration`, `float32` at `model/album.go:38`). The DDL
     /// column is `real` either way; `f64` matches the column affinity (same
-    /// precedent as `PlaylistRecord::duration`).
+    /// precedent as `PlaylistRecord::duration`). Go's `float32` destination
+    /// rejects a cell outside its range (`1e+40` → `to a float32: value out of
+    /// range`, executed); the `f64` field accepts it — documented residual in
+    /// `hydrate-contract.md`.
     pub duration: f64,
     /// `size` (Go `Size`).
     pub size: i64,
@@ -559,6 +596,35 @@ pub struct AlbumRecord {
     /// unchanged by [`put_sql`] (Go `Put` never touches it,
     /// `album_repository.go:208-219`).
     pub updated_at: Option<DateTime<Utc>>,
+    /// `library_path` (Go `Album.LibraryPath`, `structs:"-"` at `model/album.go:21`
+    /// — join-only). Hydrated from `library.path as library_path` (`selectAlbum`,
+    /// `album_repository.go:227`); [`album_row`] never emits it. The join is a LEFT
+    /// join, so a row whose library is gone holds SQL NULL, which Go's non-pointer
+    /// `string` rejects: [`crate::hydrate::row_to_album`] errors when the alias is
+    /// present but NULL, and leaves Go's zero (empty string) when a projection
+    /// omits the alias (`dbx@v1.12.0/rows.go:80-86` discards unmatched columns).
+    pub library_path: String,
+    /// `library_name` (Go `Album.LibraryName`, `structs:"-"`, `model/album.go:22`
+    /// — join-only), from `library.name as library_name`. Same read rules as
+    /// [`AlbumRecord::library_path`].
+    pub library_name: String,
+    /// The per-user annotation the select's `annotation` LEFT JOIN contributes
+    /// (`sql_annotations.go:63-91`), **derived, not persisted**: Go's
+    /// `Album.Annotations` embed is `structs:"-"` (`model/album.go:16`), so
+    /// [`album_row`] emits none of it and the write SQL is unchanged.
+    /// [`crate::hydrate::row_to_album`] fills it from the six joined columns plus the
+    /// base `album.average_rating`, with zero values where a light query omits them.
+    /// Its timestamp strings carry Go's RFC3339Nano wire form
+    /// ([`crate::hydrate::to_go_time_text`]), NOT the SQLite storage spelling.
+    pub annotation: nd_model::annotation::Annotation,
+    /// `genres` (Go `Album.Genres`, `structs:"-"` at `model/album.go:65` —
+    /// join-only, derived). Set ONLY by [`crate::hydrate::album_post_scan`] from the
+    /// decoded `tags` shim (`Tags.ToGenres`, `model/tag.go:138-148`), which also
+    /// overwrites [`AlbumRecord::genre`] (`album_repository.go:57`). Left empty when
+    /// the shim is empty, because Go's guard skips the assignment and the column
+    /// value of `genre` survives. See [`crate::sql_tags::Genre`] for why this DTO is
+    /// nd-db-local; never emitted by [`album_row`].
+    pub genres: Vec<crate::sql_tags::Genre>,
 }
 
 /// One artist name input for the FTS participant columns — Go's
@@ -608,21 +674,52 @@ pub fn participant_names(names: &[NamedParticipant]) -> Vec<String> {
     }
     out
 }
+/// The [`NamedParticipant`] view of a decoded `participants` column —
+/// `dbAlbum.PostScan`'s `unmarshalParticipants` result read the way Go's
+/// `Participants.AllNames()` (`model/participants.go:174-185`) sees it.
+///
+/// `sort_name` is EMPTY for every entry: the column stores only
+/// `{id, name, subRole}` (`persistence/sql_participations.go:13-17`) and Go fills
+/// sort names later in `getParticipants` (`:127-146`) by re-reading the `artist`
+/// table — a read this hydrator does not perform (that belongs to the
+/// artist-hydration lane). Keeping `participant_names` populated is what makes a
+/// hydrated record's re-write reproduce every participant name in `full_text`/
+/// `search_participants`; the absent sort names are the documented divergence in
+/// [`AlbumRecord`]'s docs. `sub_role` is carried through and is never a name source.
+#[must_use]
+pub fn participant_names_from_participants(participants: &Participants) -> Vec<NamedParticipant> {
+    participants
+        .values()
+        .flatten()
+        .map(|p| NamedParticipant {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            sort_name: String::new(),
+            sub_role: p.sub_role.clone(),
+        })
+        .collect()
+}
+
 /// The album-version tag name (`model.TagAlbumVersion`, `model/tag.go:197`).
 const TAG_ALBUM_VERSION: &str = "albumversion";
 /// The catalog-number tag name (`model.TagCatalogNumber`, `model/tag.go:206`).
 const TAG_CATALOG_NUMBER: &str = "catalognumber";
 
-/// `structs.Map(dbAlbum)` + `dbAlbum.PostMapArgs` (`album_repository.go:71-97`)
-/// as one sorted [`crate::marshal::ColumnMap`]: exactly the 45 non-id
-/// persisted album columns (`id` is appended last by [`put_sql`]), with the
-/// PostMapArgs overwrites routed through the S-D2a hook so the
-/// transformation lives in one place.
+/// `structs.Map(dbAlbum)` + `dbAlbum.PostMapArgs` (`album_repository.go:71-97`) as
+/// one sorted [`crate::marshal::ColumnMap`]: exactly the 45 non-id persisted album
+/// columns (`id` is appended last by [`put_sql`]), with the PostMapArgs overwrites
+/// routed through the S-D2a hook so the transformation lives in one place.
 ///
-/// **S-D2b consistency invariant:** the FTS inputs are derived *atomically*
-/// from the record's own `participants`/`discs`/`tags` (see
-/// [`album_derived`]) — the derived values and the JSON/junction values
-/// share one source, so they can never contradict each other.
+/// **Write-map invariance (S-D3b):** the five hydration-only record fields
+/// (`id`, `library_path`, `library_name`, `annotation`, `genres`) are NOT keys here
+/// — Go's `structs:"-"` tags keep them out of `structs.Map`, and `id` is the write
+/// legs' own argument — so a hydrated record renders the identical INSERT/UPDATE
+/// column set an unwritten one does.
+///
+/// **S-D2b consistency invariant:** the FTS inputs are derived *atomically* from
+/// the record's own `participants`/`discs`/`tags` (see [`album_derived`]) — the
+/// derived values and the JSON/junction values share one source, so they can never
+/// contradict each other.
 #[must_use]
 pub fn album_row(a: &AlbumRecord) -> crate::marshal::ColumnMap {
     let mut map = BTreeMap::new();
@@ -771,6 +868,61 @@ pub fn album_row(a: &AlbumRecord) -> crate::marshal::ColumnMap {
     );
     crate::marshal::album_post_map_args(crate::marshal::ColumnMap::new(map), album_derived(a)).0
 }
+/// `dbAlbum` raw row (phase 1 of the two-phase hydration seam,
+/// `persistence/album_repository.go:29-39`): the columns `selectAlbum` scans
+/// (`album_repository.go:227-232` — `album.*`, the two library display columns,
+/// the six annotation columns and the base `average_rating`) with the four JSON
+/// shim columns **still unparsed**.
+///
+/// The shims are Go's non-pointer `string` fields (`:31-34`), hence plain `String`
+/// here and [`crate::hydrate::RowGet::get_text`] on the read: SQL NULL in any of
+/// them aborts the scan for the same reason Go does with `converting NULL to
+/// string is unsupported` (Rust's payload names the column instead of
+/// reproducing that wording — see the `hydrate.rs` module-level note). Every
+/// column the DDL declares for these four carries a NOT NULL default
+/// (`schema_ddl.rs:58`: `discs`/`tags`/`participants` `'{}'`, `folder_ids` `'[]'`), so an
+/// empty string means "the shim column was not scanned", never "NULL" — and Go's
+/// `PostScan` guards (`:43`, `:52`, `:59`) treat it as the skip branch. `participants`
+/// is the one shim with NO guard (`:48`), so even the empty string reaches
+/// `unmarshalParticipants` and errors.
+///
+/// The join-only display columns, the annotation columns and `id` are read straight
+/// onto the record — Go scans `Album.LibraryPath`/`LibraryName` and the promoted
+/// `Annotations` embed by FIELD name despite `structs:"-"`
+/// (`dbx@v1.12.0/struct.go:163-215` descends into anonymous embeds and maps through
+/// `DefaultFieldMapFunc`) — so they are not duplicated on this raw struct. Phase 2 is
+/// [`crate::hydrate::album_post_scan`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct AlbumRow {
+    /// The album columns scanned from the row, the four shim fields still empty.
+    pub record: AlbumRecord,
+    /// The raw `discs` TEXT column, unparsed (Go `dbAlbum.Discs`, `:31`).
+    pub discs: String,
+    /// The raw `participants` TEXT column, unparsed (Go `dbAlbum.Participants`,
+    /// `:32`). Decoded UNGUARDED, like Go's unguarded `:48`.
+    pub participants: String,
+    /// The raw `tags` TEXT column, unparsed (Go `dbAlbum.Tags`, `:33`). Its decode
+    /// is what derives `genre`/`genres`.
+    pub tags: String,
+    /// The raw `folder_ids` TEXT column, unparsed (Go `dbAlbum.FolderIDs`, `:34`).
+    pub folder_ids: String,
+}
+
+impl AlbumRow {
+    /// `dbAlbum.PostScan` (`album_repository.go:41-69`): thin delegation onto
+    /// [`crate::hydrate::album_post_scan`], surfaced the way Go's `ScanStruct` error
+    /// leaves the read (`dbx@v1.12.0/rows.go:92-102` returns the hook's error
+    /// untouched, and the read funnel surfaces it as a column-conversion failure).
+    ///
+    /// # Errors
+    /// [`crate::hydrate::HydrateError::Decoded`] carrying one of Go's EXACT album
+    /// prefixes ([`crate::hydrate::ALBUM_DISCS_PREFIX`],
+    /// [`crate::hydrate::ALBUM_PREFIX`],
+    /// [`crate::hydrate::ALBUM_FOLDER_IDS_PREFIX`]).
+    pub fn into_record(self) -> Result<AlbumRecord, crate::hydrate::HydrateError> {
+        crate::hydrate::album_post_scan(self)
+    }
+}
 
 /// `AlbumDerived` computed atomically from the record — the S-D2b
 /// consistency invariant made type-level: there is no constructor that takes
@@ -800,7 +952,7 @@ fn album_derived(a: &AlbumRecord) -> crate::marshal::AlbumDerived {
     }
 }
 
-/// `Put` (`album_repository.go:164-172`), record-driven (S-D2b): the record
+/// `Put` (`album_repository.go:208-219`), record-driven (S-D2b): the record
 /// is the only write input — no caller-supplied column arrays.
 ///
 /// `now` stamps the row exactly like Go's `Put`
@@ -810,15 +962,15 @@ fn album_derived(a: &AlbumRecord) -> crate::marshal::AlbumDerived {
 /// `created_at` is still dropped from the UPDATE set by the seam.
 ///
 /// **Consistency invariant:** the PostMapArgs hook is fed the FTS inputs
-/// derived from the record's own `participants`/`discs`/`tags"
-/// ([`album_derived`]) — the same values the JSON columns and the
+/// derived from the record's own `participants`/`discs`/`tags`
+/// (`album_derived`) — the same values the JSON columns and the
 /// `album_artists`/`album_tags` junction maintenance are built from — so the
 /// FTS columns can never contradict the stored JSON.
 ///
 /// Both legs render through the shared [`crate::marshal::MarshalledRow`]:
-/// UPDATE = the `selectUpdateColumns`-filtered set (no `created_at`; `id"
+/// UPDATE = the `selectUpdateColumns`-filtered set (no `created_at`; `id`
 /// binds last via `WHERE id = ?`), INSERT = the full sorted columns with
-/// `id` last in both lists (`sql_base_repository.go:637-641`). Go's `put"
+/// `id` last in both lists (`sql_base_repository.go:637-641`). Go's `put`
 /// runs the UPDATE first and only INSERTs on a 0-row match; the caller
 /// picks the leg.
 ///
@@ -831,7 +983,7 @@ fn album_derived(a: &AlbumRecord) -> crate::marshal::AlbumDerived {
 ///
 /// # Errors
 ///
-/// Returns [`crate::marshal::MarshalError`] when the map carries `id"
+/// Returns [`crate::marshal::MarshalError`] when the map carries `id`
 /// (impossible from [`album_row`]) or the UPDATE set is empty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PutAlbumSql {
@@ -929,7 +1081,7 @@ pub const EXTERNAL_INFO_COLS: [&str; 6] = [
     "external_info_updated_at",
 ];
 
-/// `UpdateExternalInfo` (`album_repository.go:223-225`): `r.put` restricted
+/// `UpdateExternalInfo` (`album_repository.go:222-225`): `r.put` restricted
 /// to [`EXTERNAL_INFO_COLS`] — record-driven; the UPDATE leg sets only the
 /// six external columns, the INSERT leg is the full row (Go's `put` is
 /// full-column on the insert leg regardless of `colsToUpdate`,
@@ -946,7 +1098,7 @@ pub fn update_external_info_sql(
     put_sql(id, a, now, &EXTERNAL_INFO_COLS)
 }
 
-/// `Touch` (`album_repository.go:258-270`): one `imported_at = ?` UPDATE per
+/// `Touch` (`album_repository.go:360-374`): one `imported_at = ?` UPDATE per
 /// 200-id chunk (`slices.Chunk(ids, 200)`, `:264`).
 #[must_use]
 pub fn touch_sql(ids: &[String], imported_at: i64) -> Vec<Sql> {
@@ -964,7 +1116,7 @@ pub fn touch_sql(ids: &[String], imported_at: i64) -> Vec<Sql> {
         .collect()
 }
 
-/// `TouchByMissingFolder` (`album_repository.go:273-286`): the one UPDATE
+/// `TouchByMissingFolder` (`album_repository.go:376-390`): the one UPDATE
 /// whose EXISTS subquery walks `json_each(folder_ids)` into `folder` for
 /// missing folders. `imported_at` binds first.
 #[must_use]
@@ -979,7 +1131,7 @@ pub fn touch_by_missing_folder_sql(imported_at: i64) -> Sql {
     )
 }
 
-/// `GetYears` (`album_repository.go:229-241`): the distinct non-missing
+/// `GetYears` (`album_repository.go:317-330`): the distinct non-missing
 /// `max_year` values, optionally scoped to libraries, ordered by
 /// `max_year`. Go folds `ErrNotFound` into empty.
 #[must_use]
@@ -1002,7 +1154,7 @@ pub fn get_years_sql(library_ids: &[i64], library_filter: Option<Sql>) -> Sql {
     sq.to_sql().unwrap_or_default()
 }
 
-/// `purgeEmpty` (`album_repository.go:347-362`): one DELETE, optionally
+/// `purgeEmpty` (`album_repository.go:430-450`): one DELETE, optionally
 /// scoped to libraries.
 #[must_use]
 pub fn purge_empty_sql(library_ids: &[i64]) -> Sql {
@@ -1019,7 +1171,7 @@ pub fn purge_empty_sql(library_ids: &[i64]) -> Sql {
     (sql, args)
 }
 
-/// `CopyAttributes` (`album_repository.go:243-256`): the read of the source
+/// `CopyAttributes` (`album_repository.go:331-356`): the read of the source
 /// row cast to text (`go-sqlite3` re-formats datetimes otherwise), then the
 /// SET-map UPDATE onto the target id. The `created_at` poison guard
 /// (`:250-254`) is the caller's fold over the read row; `columns` are
@@ -1054,7 +1206,7 @@ pub fn copy_attributes_update_sql(to_id: &str, columns: &[String], values: Vec<V
     )
 }
 
-/// `RefreshPlayCounts` (`album_repository.go:326-344`): Go's literal CTE
+/// `RefreshPlayCounts` (`album_repository.go:411-428`): Go's literal CTE
 /// INSERT … ON CONFLICT upsert; the table names are compile-time constants,
 /// no user text reaches it.
 #[must_use]
@@ -1074,12 +1226,12 @@ pub fn refresh_play_counts_sql() -> Sql {
     )
 }
 
-/// `soleAlbumArtistFilter` (`album_repository.go:198-200`): the
+/// `soleAlbumArtistFilter` (`album_repository.go:273-275`): the
 /// `json_array_length(participants, '$.albumartist') = 1` fragment Go shares
 /// between `SoleAlbumArtistFilter` and `GetSoleAlbumArtistIDsInSubtrees`.
 pub const SOLE_ALBUM_ARTIST_FILTER: &str = "json_array_length(participants, '$.albumartist') = 1";
 
-/// `SoleAlbumArtistFilter` (`album_repository.go:202-206`): the album-artist
+/// `SoleAlbumArtistFilter` (`album_repository.go:279-281`): the album-artist
 /// semi-join AND the sole-artist fragment.
 #[must_use]
 pub fn sole_album_artist_filter_sql(artist_id: &str) -> Sql {
@@ -1087,7 +1239,7 @@ pub fn sole_album_artist_filter_sql(artist_id: &str) -> Sql {
     (format!("({sql} AND {SOLE_ALBUM_ARTIST_FILTER})"), args)
 }
 
-/// `GetSoleAlbumArtistIDsInSubtrees` (`album_repository.go:213-229`): the
+/// `GetSoleAlbumArtistIDsInSubtrees` (`album_repository.go:285-304`): the
 /// chunked `json_each(album.folder_ids)` EXISTS semi-join onto `folder`
 /// through `folderSubtreeFilter` (`folder_repository.go:210-227` →
 /// `crate::folder_repo::folder_subtree_filter`), selecting the one
@@ -1116,7 +1268,7 @@ pub fn get_sole_album_artist_ids_in_subtrees_sql(lib_id: i64, paths: &[String]) 
     result
 }
 
-/// `GetTouchedAlbums` (`album_repository.go:296-304`): the album select with
+/// `GetTouchedAlbums` (`album_repository.go:392-403`): the album select with
 /// the touched-since-last-scan restriction. Go wraps it in
 /// `queryWithStableResults` (the streaming slice); the pair pins here.
 #[must_use]
@@ -1143,7 +1295,7 @@ pub fn get_touched_albums_sql(
     )
 }
 
-/// `getAllIDs` (`album_repository.go:196-206`): the id-only projection
+/// `getAllIDs` (`album_repository.go:263-270`): the id-only projection
 /// (`album.id`) with the library filter and the annotation LEFT JOIN when
 /// the filters need one (`filtersNeedAnnotation`, `sql_annotations.go:55-61`,
 /// is the caller's regex scan — `need_annotation` carries its result).
@@ -1246,8 +1398,8 @@ mod tests {
 
     #[test]
     fn select_album_joins_library_left_and_annotation() {
-        // Arrange: selectAlbum (:166-172): library LEFT join then
-        // withAnnotation (sql_annotations.go:63-77); join args bind first.
+        // Arrange: selectAlbum (:227-232): library LEFT join then
+        // withAnnotation (sql_annotations.go:63-91); join args bind first.
         // Act:
         let (sql, args) = select_album_sql(Some("u1"), false, None, &[], &[], 0, 0);
         // Assert:
@@ -1321,6 +1473,28 @@ mod tests {
             vec![
                 Value::Text("album".to_string()),
                 Value::Text("u1".to_string()),
+            ]
+        );
+        // Assert: with BOTH a library filter and the join, squirrel's render order
+        // is FROM -> join -> WHERE and the join's args precede the filter's
+        // (`select.go:92-118`); Go applies the filter first
+        // (`album_repository.go:193-200`). Executed against the real schema by
+        // `tests/runtime_hydrate_album_mediafile.rs::album_light_queries_bind_join_first`.
+        let (both, both_args) = count_all_sql(Some("u1"), false, lib_filter(), true);
+        assert_eq!(
+            both,
+            "SELECT count(distinct album.id) as count FROM album \
+             LEFT JOIN annotation ON (annotation.item_id = album.id \
+             AND annotation.item_type = ? AND annotation.user_id = ?) \
+             WHERE album.library_id IN (SELECT ul.library_id FROM user_library ul \
+             WHERE ul.user_id = ?)"
+        );
+        assert_eq!(
+            both_args,
+            vec![
+                Value::Text("album".to_string()),
+                Value::Text("u1".to_string()),
+                Value::Text("user1".to_string()),
             ]
         );
     }
@@ -1520,6 +1694,8 @@ mod tests {
             }],
         );
         AlbumRecord {
+            // Read-path identity; the write legs take the id as their own argument.
+            id: "al-1".to_string(),
             library_id: 7,
             album_artist: "The Beatles".to_string(),
             album_artist_id: String::new(),
@@ -1571,6 +1747,12 @@ mod tests {
                 sub_role: String::new(),
             }],
             updated_at: None,
+            // Hydration-only fields: an unwritten test record keeps them empty, and
+            // the record-driven write tests assert they never reach the map.
+            library_path: String::new(),
+            library_name: String::new(),
+            annotation: nd_model::annotation::Annotation::default(),
+            genres: Vec::new(),
         }
     }
     #[test]
@@ -1815,7 +1997,7 @@ mod tests {
 
     #[test]
     fn refresh_play_counts_pins_go_literal_cte() {
-        // Arrange: RefreshPlayCounts (:326-344) is a fixed literal.
+        // Arrange: RefreshPlayCounts (:411-428) is a fixed literal.
         // Act:
         let (sql, args) = refresh_play_counts_sql();
         // Assert:
@@ -1857,7 +2039,7 @@ mod tests {
 
     #[test]
     fn touched_albums_pins_library_and_last_scan_conditions() {
-        // Arrange: GetTouchedAlbums (:296-304): Eq{library.id} and the
+        // Arrange: GetTouchedAlbums (:392-397): Eq{library.id} and the
         // imported_at > last_scan_at comparison.
         // Act:
         let (sql, args) = get_touched_albums_sql(None, false, None, 7);

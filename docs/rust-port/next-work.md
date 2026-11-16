@@ -351,7 +351,7 @@ integrates, runs the gate, and commits.
 | **S-D3 row mapper/hydration scout** | read-only, now | none (contract brief) | S-D3 |
 | **S-D3 scout brief** | read-only | `hydrate-scan-contract.md` (8-hook inventory, decoder gaps, seam design) | **DONE** |
 | **S-D3a hydrate core + folder/user** | write, after S-D2b1 | new `hydrate.rs` + `lib.rs`, folder/user hooks, executed reads | S-D3b |
-| **S-D3b album/mediafile hydration** | write, after S-D3a | album/mediafile repo read adapters + annotation/bookmark/ToGenres readers | S-D3c |
+| **S-D3b album/mediafile hydration** | write, after S-D3a | `hydrate.rs` (`row_to_album`/`album_post_scan`/`row_to_mediafile`/`mediafile_post_scan`), `album_repo::AlbumRow`, `mediafile_repo::MediaFileRow`, `sql_tags::tags_to_genres` + `Genre`, `tests/runtime_hydrate_album_mediafile.rs` | **IMPLEMENTED, review APPROVE** (uncommitted working tree; fresh-round reviewer found no P1/P2/P3; gate re-measured: fmt clean, clippy `-D warnings` clean, 1665 passed / 0 failed / 1 ignored across 63 binaries; blocks S-D3c) |
 | **S-D3c artist/playlist/track/scrobble** | write, after S-D3b | stats/similar-artists/criteria decoders + delegating hooks | #17 |
 
 S-D3 is pre-scoped in [`hydrate-scan-contract.md`](hydrate-scan-contract.md): all 8 `PostScan` hooks inventoried
@@ -448,7 +448,7 @@ failed**; worktree clean, all commits GPG-signed. That figure is historical — 
 
 **Next body of work (2026-11-04 text, superseded by the 2026-11-10 section above):** (1) #15 `nd-stream`
 serving half — `media_streamer`, `limiter`, `archiver`, `handle_streams`, Range matrix +
-cancellation soak (decider's probe path is stubbed to `ProbeInput::NotAvailable until this lands); (2) `nd-dbschema/src/repair.rs`; (3) specify + build the
+cancellation soak (decider's probe path is stubbed to `ProbeInput::NotAvailable` until this lands); (2) `nd-dbschema/src/repair.rs`; (3) specify + build the
 #12 non-scheduler half.
 
 Supersedes the earlier packet. Written after a full re-read of the ledger
@@ -692,3 +692,94 @@ folder_ids bytes with no divergence.
 
 Final workspace gate after the PID/sort/FTS lowercasing follow-up and review: fmt
 clean, clippy `-D warnings` clean, **1579 passed / 0 failed** across 60 binaries.
+
+## S-D3b: album + mediafile row hydration implemented, review in progress (2026-11-13)
+
+**S-D3b** — `hydrate.rs` gained `row_to_album`/`album_post_scan` and
+`row_to_mediafile`/`mediafile_post_scan` (Go's exact statement order and guards:
+discs guarded, participants **unguarded**, tags guarded then `ToGenres`,
+folder_ids guarded, then the unconditional `rg_*` copies), plus the four Go prefix
+consts (`ALBUM_DISCS_PREFIX`, `ALBUM_PREFIX`, `ALBUM_FOLDER_IDS_PREFIX`,
+`MEDIAFILE_PREFIX`) and the `join_text` accessor that splits
+"column absent" (Go's zero, per `dbx@v1.12.0/rows.go:80-86`) from "column present
+and NULL" (Go's scan failure). `album_repo::AlbumRow` / `mediafile_repo::MediaFileRow`
+hold the unparsed shim columns and delegate `into_record`; the records gained the
+hydration-only fields (`id`, `library_path`, `library_name`, `annotation`,
+`bookmark_position` on media_file, `genres`), and `sql_tags` gained `tags_to_genres`
+with an nd-db-local `Genre` DTO mirroring `model.Genre`.
+
+**Bugs found by executing the statements, not by a renderer test** (three of them,
+all SQL-text defects the renderer tests could not see):
+1. `select_media_file` appended the annotation and bookmark LEFT JOINs **before**
+   `FROM`, so every logged-in media_file read failed with `near "LEFT": syntax
+   error`. squirrel emits the column list, `FROM`, then joins in append order
+   (`select.go:92-118`), verified against the pinned builder.
+2. `album_repo::count_all_sql`/`get_all_ids_sql` pushed `WHERE` before the
+   annotation `LEFT JOIN`, producing the same `near "LEFT"` error for
+   filter-plus-annotation counts (`album_repository.go:193-200` applies the library
+   filter first, but the builder renders joins first, so the join's args bind
+   first). Both now match the mediafile twin.
+3. `mediafile_repo::get_sql` appended a **second** ` WHERE media_file.id = ?` onto
+   `select_media_file`, which already ends with ` WHERE <library clause>` whenever a
+   filter is present — `near "WHERE": syntax error`. Go's `Get` is `GetAll` with
+   `Eq{"media_file.id": id}` and squirrel AND-joins accumulated `WhereParts`
+   (`select.go:112-117`), so the id predicate now joins the open clause with
+   ` AND `, the same rule `exists_sql` already followed.
+
+Each of the three has an executed test that runs the statement against the real
+fresh schema (not just string rendering), including a case with BOTH a library
+filter and `need_annotation`, an ungranted user whose identical statement returns
+zero rows, and the `GetRandom` two-pass pair run end to end (rowid pick under a
+filter clause AND the library clause, then the phase-2 hydrate). The pinned SQL
+unit tests were updated to the corrected rendering. Auditing for the same two shapes (`get_all_sql`,
+`get_random_rowid_sql`, `get_random_hydrate_sql`, `count_by_suffix_sql`, the album
+`exists_sql`/`select_album_sql`) found no further double-WHERE or join-vs-WHERE
+defect: the rowid pick AND-joins its filter and library clause into one `WHERE`, the
+phase-2 hydrate passes `library_filter: None`, and `count_by_suffix_sql` has no
+`WHERE` at all.
+
+**Also fixed in this follow-up:** the normalized album play count
+(`sql_annotations.go:80-83`) is an expression column, so SQLite gives it REAL
+storage and rusqlite's Integer-only `FromSql for i64` aborted the read.
+`hydrate.rs::annotation_play_count` now reproduces Go's int64 scan arm —
+`asString`'s `%g` spelling (`database/sql/convert.go:497-508,570-571`) then
+`strconv.ParseInt`, reusing `criteria_sql::go_fmt_float64` — so the normalized cell for
+7 plays over 3 songs hydrates as 2 (its `typeof()` is `real` and its `%g` is `"2"`, verified
+against the pinned driver — go-sqlite3 v1.14.52's bundled SQLite, `select sqlite_version()` = **3.53.4** — while an exponent-form spelling
+(`1e+06`) returns Go's conversion error naming `play_count`. Truncation was deliberately NOT
+adopted: Go surfaces the failure.
+`created_at`/`updated_at` write→hydrate round-trips are executed for both entities.
+For media_file (and folder/playlist) `put_sql`'s stamp arm means a Rust-written row never
+stores NULL, so the NULL read error there is a foreign/legacy-row case only; album's `Put`
+mirrors Go and stamps only `imported_at` (`album_repository.go:208-219`), so a Rust album
+write whose record carries `created_at: None` DOES store NULL — and Go's non-pointer
+`time.Time` fails that same cell, which is why the read errors (asserted in
+`tests/runtime_marshal_records.rs:1064-1073` for the INSERT leg and
+`tests/runtime_hydrate_album_mediafile.rs` for the read). A cell that scans as Go's ZERO time is
+returned as `None` rather than a zero stamp — a record-shape divergence from Go's non-pointer
+`time.Time`, documented in `hydrate-contract.md`'s residual list and in
+`hydrate.rs::go_zero_or_none`, and consistent with the write path treating `None` as
+"never stamped".
+
+**Residuals carried forward** (recorded in `hydrate-contract.md`, none of them
+write-path): hydration overwrites caller-populated `participant_names` with sort
+names dropped (Go's base `GetAll` never calls `getParticipants`,
+`sql_participations.go:61-76`, so Go's hydrated participants carry none either);
+participant role order is `BTreeMap`-sorted vs Go's random map order, harmless only
+because `sql_feeders.rs::search_participants` sorts and re-dedupes; annotation
+stamps keep the stored zone while record stamps render as `Z` (the folder/playlist
+precedent); and **no repo-level read API is wired to `row_to_album`/
+`row_to_mediafile` yet — tests only. That wiring (plus `hydrateArtwork`) is the next
+lane's job.**
+
+**Write-map invariance holds:** `album_row` stays at 48 keys (45 base + 3 FTS) and
+`mediafile_row` at 66 (63 base + 3 FTS), with none of the hydration-only columns
+present, and a hydrated record re-renders byte-identical INSERT/UPDATE legs to one
+whose derived fields are empty. Executed in
+`rust/crates/nd-db/tests/runtime_hydrate_album_mediafile.rs` (23 tests).
+
+Final workspace gate after the S-D3b review follow-up: fmt clean, clippy
+`-D warnings` clean, **1665 passed / 0 failed / 1 ignored** across 63 binaries
+(`nd-db`: 586), `cargo doc -p nd-db --all-features --no-deps` at the same 23
+intra-doc-link warnings as pristine `HEAD` (message-set diff empty), and
+`git diff --check` clean.

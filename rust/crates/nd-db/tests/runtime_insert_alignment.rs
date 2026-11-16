@@ -157,6 +157,13 @@ fn album_record() -> nd_db::album_repo::AlbumRecord {
         sub_role: "Vocals".to_string(),
     }];
     AlbumRecord {
+        // S-D3b hydration-only fields: left empty here (the write legs take the id as
+        // their own argument), and asserted absent from the write map.
+        id: String::new(),
+        library_path: String::new(),
+        library_name: String::new(),
+        annotation: nd_model::annotation::Annotation::default(),
+        genres: Vec::new(),
         library_id: 1,
         name: "Abbey Road".to_string(),
         embed_art_path: "/music/cover.jpg".to_string(),
@@ -653,6 +660,14 @@ fn mediafile_record() -> nd_db::mediafile_repo::MediaFileRecord {
         sub_role: "Vocals".to_string(),
     }];
     MediaFileRecord {
+        // S-D3b hydration-only fields: left empty here (the write legs take the id as
+        // their own argument), and asserted absent from the write map.
+        id: String::new(),
+        library_path: String::new(),
+        library_name: String::new(),
+        annotation: nd_model::annotation::Annotation::default(),
+        bookmark_position: 0,
+        genres: Vec::new(),
         album: "Abbey Road".to_string(),
         album_artist: "The Beatles".to_string(),
         album_artist_id: "aa-id-2".to_string(),
@@ -722,7 +737,7 @@ fn mediafile_record() -> nd_db::mediafile_repo::MediaFileRecord {
 
 /// `media_file` + a seeded artist/tag: distinct value per column, every
 /// column read back in its own column (the record's 63 columns + `id`),
-/// the 4 RG columns NULL/Some arms, `birth_time` INSERT-only, `full_title"
+/// the 4 RG columns NULL/Some arms, `birth_time` INSERT-only, `full_title`
 /// subtitle behavior pinned (`append_subtitle` true/false), participants/
 /// tags JSON + junctions incl. sub_role, an empty-participants update
 /// proving delete-with-no-insert, and a camelCase restricted update

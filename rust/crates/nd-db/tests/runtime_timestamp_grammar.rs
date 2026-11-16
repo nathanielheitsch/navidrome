@@ -5,7 +5,7 @@
 //! * `SQLiteTimestampFormats` (`:331-343`), tried in order with
 //!   `time.ParseInLocation(…, time.UTC)`, after `strings.TrimSuffix(s, "Z")`
 //!   (`:2823`) — one final `Z`;
-//! * a parse failure assigns `time.Time{}` and reports NO error (`:2832-2842`);
+//! * a parse failure assigns `time.Time{}` and reports NO error (`:2831-2838`);
 //! * an INTEGER cell in a declared `timestamp`/`datetime`/`date` column becomes a
 //!   `time.Time` (`:2781-2797`): magnitude strictly beyond 1e12 is milliseconds,
 //!   everything else seconds, the multiplication is wrapping int64, and the result
@@ -218,7 +218,7 @@ fn text_grammar_accepts_the_nine_layouts_and_keeps_the_parsed_zone() {
 
 /// Spellings chrono accepts but Go's nine layouts do not; plus the DDL sentinel
 /// and outright garbage. All of them are Go's zero time with NO read error — the
-/// driver's failure arm (`:2832-2842`) never fails a TEXT DATETIME scan.
+/// driver's failure arm (`:2831-2838`) never fails a TEXT DATETIME scan.
 #[test]
 fn chrono_only_spellings_and_garbage_scan_as_go_zero_with_no_error() {
     let (store, path) = store();
@@ -320,6 +320,55 @@ fn chrono_only_spellings_and_garbage_scan_as_go_zero_with_no_error() {
             opt,
             Some(hydrate::go_zero_time()),
             "{key} is a pointer to Go's zero, not None"
+        );
+    }
+
+    // INVALID UTF-8 stored as a genuine TEXT cell, inserted through SQLite's own
+    // `cast(x'…' as text)` (verified with the CLI: `typeof()` = `text`, `hex()` = a
+    // non-decodable byte string). rusqlite hands those raw bytes back as
+    // `ValueRef::Text`. The pinned driver passes them to `time.ParseInLocation`,
+    // whose byte indexing rejects them as a parse error, and the DATETIME arm then
+    // assigns `time.Time{}` and reports NO scan error — verified against
+    // go-sqlite3 v1.14.52: scanning such a cell into `time.Time` gives
+    // `zero=true, err=nil`. Rust must agree: no error, Go's zero time.
+    run(&store, |conn| {
+        for (key, literal) in [
+            (
+                "bad_utf8_tail",
+                "cast(x'323032342d30322d30322030333a30303a303041c342' as text)",
+            ),
+            (
+                "bad_utf8_in_year",
+                "cast(x'3230ff342d30322d30322030333a30303a3030' as text)",
+            ),
+            (
+                "bad_utf8_lone_cont",
+                "cast(x'323032342d30322d30322030333a30303a3030c3' as text)",
+            ),
+        ] {
+            conn.execute(
+                &format!("INSERT INTO probe(key, dt) VALUES('{key}', {literal})"),
+                [],
+            )
+            .unwrap_or_else(|e| panic!("{key} invalid-UTF-8 insert: {e}"));
+        }
+    });
+    for key in ["bad_utf8_tail", "bad_utf8_in_year", "bad_utf8_lone_cont"] {
+        let t = fetched(gotime(&store, key, "dt"), "invalid UTF-8 cell");
+        assert!(t.is_go_zero(), "{key}: Go's zero time expected");
+        assert_eq!(t.to_rfc3339_nano(), "0001-01-01T00:00:00Z", "{key}");
+        let opt = run(&store, |conn| {
+            conn.query_row(
+                "SELECT dt FROM probe WHERE key = ?",
+                rusqlite::params![key],
+                |row| row.get_opt_dt("dt"),
+            )
+        })
+        .unwrap_or_else(|e| panic!("{key}: get_opt_dt errored on invalid UTF-8: {e}"));
+        assert_eq!(
+            opt,
+            Some(hydrate::go_zero_time()),
+            "{key} points at the zero"
         );
     }
 
@@ -591,17 +640,19 @@ fn the_declared_type_decides_and_a_non_timestamp_integer_errors() {
             row.get_gotime("t")
         })
     });
-    assert!(blob
-        .expect_err("[]byte into time.Time")
-        .to_string()
-        .contains("[]byte"));
+    assert!(
+        blob.expect_err("[]uint8 into time.Time")
+            .to_string()
+            .contains("[]uint8"),
+        "the driver's own type name for a BLOB, not `[]byte`"
+    );
 
     cleanup(store, path);
 }
 
 /// NULL stays Go's nil pointer for the optional getter and Go's
 /// NULL-into-non-pointer error for the bare one — on the INTEGER path exactly as
-/// on the TEXT path (`sqlite3.go:2832` assigns `nil` before the decltype switch).
+/// on the TEXT path (`sqlite3.go:2812-2813` assigns `nil` before the decltype switch).
 #[test]
 fn null_and_the_annotation_wire_text_keep_go_pointer_semantics() {
     let (store, path) = store();

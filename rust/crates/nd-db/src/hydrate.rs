@@ -5,8 +5,8 @@
 //!
 //! Go's dbx first scans the raw row columns into the `db*` struct and then
 //! runs the entity's `PostScan` hook to decode the JSON shim columns
-//! (`persistence/rows.go` machinery, `dbUser.PostScan`
-//! `persistence/user_repository.go:36-43`). The port mirrors that split
+//! (`dbx@v1.12.0/rows.go:92-100` calls the hook after `Scan`, and
+//! `dbUser.PostScan` is `persistence/user_repository.go:36-43`). The port mirrors that split
 //! exactly, following the landed `UserRow{record, libraries_json}` →
 //! `UserRow::into_record` precedent (`user_repo.rs`):
 //!
@@ -35,7 +35,7 @@
 //! name), which is what makes a bulk read carry per-row identity; `id` likewise
 //! stays out of the write map. Non-pointer timestamp columns use
 //! [`RowGet::get_dt`], which errors on NULL *only*: the pinned driver
-//! (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`) swallows ANY DATETIME parse
+//! (`go-sqlite3@v1.14.52/sqlite3.go:2831-2838`) swallows ANY DATETIME parse
 //! failure — the DDL's `'0000-00-00 00:00:00'` default included — and hands back
 //! the zero `time.Time` with no error, so a non-NULL unparseable cell scans as
 //! [`go_zero_time`], never as a failure, and [`is_go_zero`] is Go's `IsZero()`.
@@ -73,7 +73,7 @@
 //! into a pointer yields nil. [`RowGet`] enforces the same: the bare
 //! `get_*` getters error on NULL, the `get_opt_*` getters yield `None`.
 //! A timestamp that cannot be parsed is NOT a failure in either case — see
-//! [`go_zero_time`] above (`sqlite3.go:2832-2842`), and a pointer column gets a
+//! [`go_zero_time`] above (`sqlite3.go:2831-2838`), and a pointer column gets a
 //! pointer to that zero value, which is why `*time.Time` JSON still renders
 //! `0001-01-01T00:00:00Z` rather than being omitted. On the WIRE a stamp is
 //! Go's `RFC3339Nano` text ([`to_go_time_text`]), never the SQLite storage
@@ -85,7 +85,7 @@
 //! `bookmark`), but the *light* queries (e.g. scrobble-buffer's `m.*` on a
 //! missing media file) do not emit those columns, and dbx discards
 //! unmatched columns into a throwaway `NullString`
-//! (`persistence/rows.go:84`). A ported hydrator must therefore treat
+//! (`dbx@v1.12.0/rows.go:80-86`, the `else` branch at `:84`). A ported hydrator must therefore treat
 //! optional (joined) columns as **absent** on light queries — reading them
 //! with `get_opt_*` yields `None`-free access **only when the column is
 //! present**; when it is *absent* the accessor must not panic. Use
@@ -101,8 +101,39 @@
 //! depend only on the prefix: the suffix is the decode failure, and its
 //! wording comes from `serde_json`/`encoding-json`-style rendering, which
 //! is allowed to differ from Go's `encoding/json` byte-for-byte.
-//! No new prefixes are invented; hooks whose Go code has no wrapper use
-//! the codec's own message.
+//! No Go prefix is dropped or renamed. One addition is deliberate:
+//! [`crate::sql_json::JsonColumnError`] renders `{column}: {msg}` — executed:
+//! `parsing album discs from db: discs: key must be a string at line 1 column 2`
+//! where Go says `parsing album discs from db: invalid character 'b' looking for
+//! beginning of object key string`. The token names the failing column, which Go's
+//! message does not, and it is emitted ONLY by the three `sql_json` codecs
+//! (`discs`, `folder_ids`, `image_files`); callers must depend on the prefix only.
+//! The two codecs with their own Go inner prefix emit no token at all, via
+//! `JsonColumnError::Bare`: `parsing participants:`
+//! (`sql_participations.go:61-66`) and `parsing tags:` (`sql_tags.go:26`), both
+//! reproduced verbatim, so neither is port noise a caller may strip.
+//!
+//! Scan-side messages are Go-shaped but deliberately NOT byte-identical. Go's
+//! driver returns the bare `convert.go` text and `database/sql` then wraps it as
+//! `sql: Scan error on column index %d, name %q: %w` (`sql.go:3441, :3450`);
+//! rusqlite surfaces the wrapped payload's own `Display`, so there is no seam in
+//! which to inject that wrapper. The four Go-shaped scan payloads in this module
+//! — `NullRequired`, `UnsupportedScan`, `GoToInt64` and `GoToFloat64` — therefore
+//! name the column themselves: `UnsupportedScan`, `GoToInt64` and `GoToFloat64`
+//! reproduce Go's inner message and append an " (column `X`)" suffix carrying the
+//! identity Go's wrapper supplied, while `NullRequired` reports the failure Go's
+//! `converting NULL to %s is unsupported` arms produce — `database/sql` returns
+//! that text from four arms, int/uint/float/string at convert.go:499, :511,
+//! :523, :535 — but with its OWN wording (`NULL value in required column …`)
+//! plus the column name, since rusqlite's `Type` carries no Go kind to
+//! interpolate. `GoToBool` reproduces `driver.Bool`'s rejection text verbatim
+//! (`driver/types.go:75` string, `:81` []byte, `:93` int, `:99` uint, `:102`
+//! everything else including `float64`), except for a NULL cell, where Go's
+//! converter says `couldn't convert <nil> (<nil>) into type bool` and the port
+//! keeps the shared NULL payload. Executed tests therefore assert Go's inner
+//! message as a CONTAINED substring where Rust reproduces it, and assert
+//! `NullRequired` by its own text plus the column name — never by equality with
+//! Go's fully wrapped string.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
 use rusqlite::types::Type;
@@ -112,10 +143,15 @@ use nd_model::annotation::Annotation;
 use nd_model::criteria::unmarshal_criteria_str;
 use nd_model::fields::default_field_map;
 
+use crate::album_repo::{participant_names_from_participants, AlbumRecord, AlbumRow};
 use crate::folder_repo::{FolderRecord, FolderRow};
+use crate::mediafile_repo::{MediaFileRecord, MediaFileRow};
 use crate::playlist_repo::{PlaylistRecord, PlaylistRow};
-use crate::sql_json::unmarshal_image_files;
+use crate::sql_json::{unmarshal_discs, unmarshal_image_files, unmarshal_nullable_strings};
+use crate::sql_participations::unmarshal_participants;
+use crate::sql_tags::{tags_to_genres, unmarshal_tags};
 use crate::user_repo::{UserLibrary, UserRecord, UserRow};
+use std::collections::BTreeMap;
 
 /// Go's `dbUser.PostScan` wrapper, verbatim
 /// (`persistence/user_repository.go:38`).
@@ -125,9 +161,27 @@ pub const USER_LIBRARIES_PREFIX: &str = "parsing user libraries from db: ";
 /// (`persistence/folder_repository.go:42`).
 pub const FOLDER_IMAGE_FILES_PREFIX: &str = "parsing folder image files from db: ";
 
+/// Go's `dbAlbum.PostScan` discs wrapper, verbatim
+/// (`persistence/album_repository.go:45`).
+pub const ALBUM_DISCS_PREFIX: &str = "parsing album discs from db: ";
+
+/// Go's `dbAlbum.PostScan` wrapper for the `participants` and `tags` arms,
+/// verbatim (`persistence/album_repository.go:50` and `:55`). Both arms use the
+/// same sentence, so one constant covers them.
+pub const ALBUM_PREFIX: &str = "parsing album from db: ";
+
+/// Go's `dbAlbum.PostScan` folder_ids wrapper, verbatim
+/// (`persistence/album_repository.go:62`).
+pub const ALBUM_FOLDER_IDS_PREFIX: &str = "parsing album folder_ids from db: ";
+
+/// Go's `dbMediaFile.PostScan` wrapper, verbatim — the same sentence for both the
+/// `participants` and the `tags` arm
+/// (`persistence/mediafile_repository.go:57` and `:62`).
+pub const MEDIAFILE_PREFIX: &str = "parsing media_file from db: ";
+
 /// Go's zero `time.Time` (`time.Time{}`), the value the pinned driver returns
 /// for any DATETIME text it cannot parse
-/// (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`: the `SQLiteTimestampFormats`
+/// (`go-sqlite3@v1.14.52/sqlite3.go:2822-2838`: the `SQLiteTimestampFormats`
 /// loop leaves `err` set and the arm assigns `t = time.Time{}` with no error).
 ///
 /// chrono's `NaiveDate::MIN` is chrono's own floor (year **-262143**), not Go's
@@ -224,12 +278,14 @@ impl HydrateError {
 /// Missing *required* (base-table) columns surface as `InvalidColumnName`
 /// errors.
 pub trait RowGet {
-    /// A TEXT column Go scans into a non-pointer `string`: **NULL errors**
-    /// (Go parity), as does an absent column.
+    /// A column Go scans into a non-pointer `string`: **SQL NULL errors** (Go
+    /// parity), as does an absent column; every other storage class converts
+    /// through Go's `asString` (see [`RowGet::get_opt_text`]).
     fn get_text(&self, column: &str) -> SqliteResult<String>;
 
     /// A coalesce'd INTEGER `bool` column (Go's `bool` non-pointer):
-    /// **NULL errors**.
+    /// **NULL errors**. A column declared `boolean` follows the driver's own
+    /// `val > 0` rule instead (see [`RowGet::get_bool`]).
     fn get_bool(&self, column: &str) -> SqliteResult<bool>;
 
     /// A non-pointer `int` column: **NULL errors**.
@@ -238,21 +294,32 @@ pub trait RowGet {
     /// A non-pointer `int64` column: **NULL errors**.
     fn get_i64(&self, column: &str) -> SqliteResult<i64>;
 
-    /// A non-pointer `real` column: **NULL errors**.
+    /// A non-pointer `real` column: **NULL errors**. Non-REAL cells go through
+    /// Go's `asString` + `strconv.ParseFloat` (see [`RowGet::get_f64`]).
     fn get_f64(&self, column: &str) -> SqliteResult<f64>;
 
-    /// A `*string` column: NULL → `None`.
+    /// A `*string` column: SQL NULL → `None`; INTEGER, REAL and BLOB cells are
+    /// rendered by Go's `asString`, so a non-TEXT storage class is text rather
+    /// than a scan error (`database/sql/convert.go:533-544`).
     fn get_opt_text(&self, column: &str) -> SqliteResult<Option<String>>;
 
-    /// A `*float64` column (the `rg_*` shims, `average_rating`):
-    /// NULL → `None`.
+    /// A `*float64` column (the `Rg*` shims, `average_rating`): SQL NULL →
+    /// `None`, every other cell through Go's float arm (and its errors) — see
+    /// [`RowGet::get_f64`].
     fn get_opt_f64(&self, column: &str) -> SqliteResult<Option<f64>>;
+
+    /// A Go `*int` column (`bit_depth`, `bpm`): SQL NULL → `None` (Go's nil
+    /// pointer); every other cell goes through the SAME int64 arm as
+    /// [`RowGet::get_i64`] — TEXT `"16"` and a UTF-8 BLOB scan, an unparseable
+    /// cell reports Go's error — then narrows to the record's `i32`. rusqlite's
+    /// bare `Option<i32>` is INTEGER-only, so it must not be used here.
+    fn get_opt_i32(&self, column: &str) -> SqliteResult<Option<i32>>;
 
     /// A `*time.Time` column: SQL NULL → `None` (Go's nil pointer,
     /// `database/sql/convert.go:491-493`); text the driver cannot parse →
     /// `Some(`[`go_zero_time`]`)`, a POINTER TO THE ZERO VALUE, because the
     /// driver's parse-failure arm hands back `time.Time{}` with no error
-    /// (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`) and `database/sql` then
+    /// (`go-sqlite3@v1.14.52/sqlite3.go:2831-2838`) and `database/sql` then
     /// allocates a fresh `time.Time` for it (`convert.go:495-496`). That is why
     /// Go's JSON for such a field still renders `0001-01-01T00:00:00Z` instead
     /// of being dropped by `omitempty`.
@@ -268,7 +335,7 @@ pub trait RowGet {
     /// A non-pointer `time.Time` column: **SQL NULL errors** (Go parity —
     /// `convert.go` cannot store `driver.Value` nil into `*time.Time`), but a
     /// non-NULL value the driver cannot parse scans as [`go_zero_time`] with no
-    /// error, exactly as Go's DATETIME arm does (`sqlite3.go:2832-2842`). The
+    /// error, exactly as Go's DATETIME arm does (`sqlite3.go:2831-2838`). The
     /// DDL's [`crate::time::ZERO_DATE_SENTINEL`] default therefore scans, it does
     /// not fail the read — and only in a DECLARED timestamp column, since the
     /// arm is keyed on the declared type (`sqlite3.go:2822`).
@@ -302,49 +369,121 @@ impl RowGet for Row<'_> {
     }
 
     fn get_bool(&self, column: &str) -> SqliteResult<bool> {
-        let v: Option<bool> = self.get(column)?;
-        match v {
-            Some(v) => Ok(v),
-            None => Err(null_required(column, Type::Integer)),
+        // Go scans a non-pointer `bool` through `driver.Bool.ConvertValue`
+        // (`database/sql/convert.go:441-446` → `driver/types.go:68-102`), NOT
+        // through rusqlite's INTEGER-only cast. One branch precedes it: the
+        // driver's INTEGER arm for a column declared `boolean`
+        // (`go-sqlite3@v1.14.52/sqlite3.go:2797-2798`, `dest[i] = val > 0` after
+        // lowercasing the decltype) hands back a Go `bool`, which the converter
+        // returns unchanged — so `2` is TRUE and `-3` FALSE there (`val > 0`),
+        // while the same values in a column declared `bool` (not one of the
+        // driver's names) are rejected as `couldn't convert 2 into type bool`
+        // (verified against the pinned driver, both decltypes). A TEXT/BLOB cell
+        // is not the INTEGER arm, so it still goes through `strconv.ParseBool`;
+        // an INTEGER elsewhere is accepted only as 0 or 1, and a REAL errors.
+        match self.get_ref(column)? {
+            // Go's converter reports `couldn't convert <nil> (<nil>) into type
+            // bool`. The port keeps the shared NULL payload for every required
+            // getter, per the module-level note on scan wording.
+            rusqlite::types::ValueRef::Null => Err(null_required(column, Type::Integer)),
+            rusqlite::types::ValueRef::Integer(value) => match driver_bool_decl(self, column) {
+                // `dest[i] = val > 0`, so a negative cell is FALSE, not TRUE.
+                true => Ok(value > 0),
+                false => match value {
+                    0 => Ok(false),
+                    1 => Ok(true),
+                    other => Err(go_bool_error(column, format!("{other}"))),
+                },
+            },
+            rusqlite::types::ValueRef::Real(value) => Err(go_bool_error(
+                column,
+                format!("{} (float64)", crate::criteria_sql::go_fmt_float64(value)),
+            )),
+            rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes) => {
+                go_parse_bool(column, bytes)
+            }
         }
     }
 
     fn get_i32(&self, column: &str) -> SqliteResult<i32> {
-        let v: Option<i32> = self.get(column)?;
-        match v {
-            Some(v) => Ok(v),
-            None => Err(null_required(column, Type::Integer)),
-        }
+        // Same arms as `get_i64`; Go's `int` is 64-bit so a wider cell scans
+        // there and is truncated by the model's 32-bit field, while the port's
+        // `i32` field reports out-of-range (documented residual).
+        go_scan_int64(self, column).and_then(narrow_i32)
     }
 
     fn get_i64(&self, column: &str) -> SqliteResult<i64> {
-        let v: Option<i64> = self.get(column)?;
-        match v {
-            Some(v) => Ok(v),
-            None => Err(null_required(column, Type::Integer)),
-        }
+        go_scan_int64(self, column)
     }
 
     fn get_f64(&self, column: &str) -> SqliteResult<f64> {
-        let v: Option<f64> = self.get(column)?;
-        match v {
-            Some(v) => Ok(v),
-            None => Err(null_required(column, Type::Real)),
+        // Go's float arm (`convert.go:521-532`): NULL errors, a REAL scans
+        // directly, and INTEGER/TEXT/BLOB are rendered by `asString` and run
+        // through `strconv.ParseFloat` — so TEXT `"0.5"` succeeds, TEXT `"1e400"`
+        // reports `value out of range`, and a UTF-8 BLOB such as `"1.5"` scans
+        // because `asString` turns `[]uint8` into a Go `string`.
+        match self.get_ref(column)? {
+            rusqlite::types::ValueRef::Null => Err(null_required(column, Type::Real)),
+            rusqlite::types::ValueRef::Integer(value) => {
+                go_parse_float64(column, "int64", value.to_string().as_bytes())
+            }
+            rusqlite::types::ValueRef::Real(value) => Ok(value),
+            rusqlite::types::ValueRef::Text(bytes) => go_parse_float64(column, "string", bytes),
+            rusqlite::types::ValueRef::Blob(bytes) => go_parse_float64(column, "[]uint8", bytes),
         }
     }
 
     fn get_opt_text(&self, column: &str) -> SqliteResult<Option<String>> {
+        // Go's `reflect.String` arm (`convert.go:533-544`) accepts EVERY
+        // non-NULL storage class: it renders the driver value through `asString`
+        // (`convert.go:557-578`) and stores it, so INTEGER `7` becomes `"7"`, a
+        // REAL becomes its `%g` spelling, and a BLOB becomes a Go `string`
+        // holding the RAW bytes. rusqlite's `FromSql for String` is TEXT-only
+        // (`rusqlite-0.32.1/src/types/from_sql.rs:172-177`), so the arms are
+        // spelled out here instead of delegating to `self.get`.
         match self.get_ref(column)? {
-            // Go decodes malformed UTF-8 one byte at a time before JSON
-            // marshaling (encoding/json/encode.go:1037-1044).
-            rusqlite::types::ValueRef::Text(bytes) => Ok(Some(go_string_from_bytes(bytes))),
+            // Go: NULL into a non-pointer `string` errors; a pointer field
+            // stays nil.
             rusqlite::types::ValueRef::Null => Ok(None),
-            _ => self.get(column),
+            rusqlite::types::ValueRef::Integer(value) => Ok(Some(value.to_string())),
+            rusqlite::types::ValueRef::Real(value) => {
+                Ok(Some(crate::criteria_sql::go_fmt_float64(value)))
+            }
+            // Go decodes malformed UTF-8 one byte at a time before JSON
+            // marshaling (encoding/json/encode.go:1037-1044), so the per-byte
+            // replacement here yields byte-identical wire text even though Go's
+            // in-memory `string` keeps the raw bytes.
+            rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes) => {
+                Ok(Some(go_string_from_bytes(bytes)))
+            }
         }
     }
 
     fn get_opt_f64(&self, column: &str) -> SqliteResult<Option<f64>> {
-        self.get(column)
+        // Go's `*float64` dest (`convert.go:491-493`): SQL NULL leaves the
+        // pointer nil, and a non-NULL cell goes through the same float arm as
+        // [`RowGet::get_f64`] — including its failures. Verified against the
+        // pinned driver: a BLOB holding invalid UTF-8 and TEXT `"1e400"` both
+        // return an error with a `*float64` dest — invalid syntax and value out
+        // of range — and dbx propagates it (`dbx@v1.12.0/rows.go:88-91`), so
+        // failures are NOT swallowed.
+        match self.get_ref(column)? {
+            rusqlite::types::ValueRef::Null => Ok(None),
+            _ => self.get_f64(column).map(Some),
+        }
+    }
+
+    fn get_opt_i32(&self, column: &str) -> SqliteResult<Option<i32>> {
+        // Go's `*int` dest: SQL NULL leaves the pointer nil (`convert.go:491-493`),
+        // and a non-NULL cell runs the same int arm as `get_i64`
+        // (`convert.go:497-508`) — so TEXT `"16"` and a BLOB holding `"16"` scan
+        // as 16, while `"abc"` reports Go's conversion error rather than rusqlite's
+        // `InvalidColumnType`. The record field is `i32`, so a cell outside that
+        // range is out-of-range like `get_i32` (documented residual).
+        match self.get_ref(column)? {
+            rusqlite::types::ValueRef::Null => Ok(None),
+            _ => go_scan_int64(self, column).and_then(narrow_i32).map(Some),
+        }
     }
 
     fn get_opt_dt(&self, column: &str) -> SqliteResult<Option<DateTime<Utc>>> {
@@ -366,12 +505,12 @@ impl RowGet for Row<'_> {
     }
 
     fn get_gotime(&self, column: &str) -> SqliteResult<Option<GoTime>> {
-        // The driver switches on the STORAGE type first (`sqlite3.go:2779`,
+        // The driver switches on the STORAGE type first (`sqlite3.go:2778`,
         // `:2813`) and only then on the column's DECLARED type, so both have to be
         // inspected: an INTEGER in a `datetime` column is a timestamp, an INTEGER
         // in a plain `INTEGER` column is not.
         match self.get_ref(column)? {
-            // `SQLITE_NULL` → `dest[i] = nil` (`:2832`): a nil pointer for the
+            // `SQLITE_NULL` → `dest[i] = nil` (`:2812-2813`): a nil pointer for the
             // `opt` form, which the bare getter turns into its error.
             rusqlite::types::ValueRef::Null => Ok(None),
             rusqlite::types::ValueRef::Integer(number) => {
@@ -386,12 +525,12 @@ impl RowGet for Row<'_> {
             rusqlite::types::ValueRef::Real(_) => Err(unsupported_scan(column, "float64")),
             rusqlite::types::ValueRef::Text(bytes) => {
                 // The TEXT arm is likewise gated on the DECLARED type
-                // (`sqlite3.go:2822`): only `timestamp`/`datetime`/`date` run the
+                // (`sqlite3.go:2821-2841`): only `timestamp`/`datetime`/`date` run the
                 // nine-format parse and hand back a `time.Time` (zero on parse
-                // failure, no error, `:2832-2842`). Every OTHER declared type —
+                // failure, no error, `:2831-2838`). Every OTHER declared type —
                 // `TEXT`, `varchar(255)`, `datetime(3)`, and an expression column
                 // such as `SELECT '…' AS dt` or `CAST(dt AS TEXT)`, which has no
-                // decltype at all — falls to `default` (`:2841`) and the driver
+                // decltype at all — falls to `default` (`:2839-2840`) and the driver
                 // hands back a `string`, which `database/sql` cannot store into
                 // `time.Time`: a scan error, not a silent parse
                 // (`database/sql/convert.go`, verified against the pinned driver
@@ -408,7 +547,7 @@ impl RowGet for Row<'_> {
                 };
                 Ok(Some(driver_parse_text_dt(text)))
             }
-            rusqlite::types::ValueRef::Blob(_) => Err(unsupported_scan(column, "[]byte")),
+            rusqlite::types::ValueRef::Blob(_) => Err(unsupported_scan(column, "[]uint8")),
         }
     }
 
@@ -443,6 +582,120 @@ fn go_string_from_bytes(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+/// Go's `%q`/`strconv.Quote` over a driver value's own bytes — the spelling
+/// `database/sql` puts in `converting driver.Value type %T (%q) …`
+/// (`convert.go:505`, and the same form at `:517` and `:529`). `asString` returns a
+/// `string`/`[]uint8` unchanged (`:557-562`), so TEXT and BLOB cells quote over the
+/// SAME raw bytes and a TEXT cell with invalid UTF-8 quotes identically to a BLOB.
+/// Two things make this its own function rather than `escape_debug`:
+/// * a byte that starts an invalid UTF-8 sequence is emitted as `\xNN`, keeping
+///   the raw byte (`strconv/quote.go:42-46`), where Rust's `escape_debug`
+///   substitutes `\u{fffd}`;
+/// * printability is Go's `strconv.IsPrint` (`quote.go:518-559`), whose Latin-1
+///   window `¡`–`ÿ` is printable except the soft hyphen `U+00AD`.
+///
+/// Above Latin-1 the oracle is Rust's `char::escape_debug` (see
+/// [`go_is_print`]). This text only ever surfaces inside a scan-error message.
+fn go_quote_bytes(bytes: &[u8]) -> String {
+    let mut out = String::from("\"");
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let rest = &bytes[offset..];
+        // Go decodes one rune at a time and emits `\xNN` for a width-1 invalid
+        // byte; the valid prefix before that byte is emitted as runes.
+        let valid_up_to = match std::str::from_utf8(rest) {
+            Ok(valid) => valid.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        for ch in std::str::from_utf8(&rest[..valid_up_to])
+            .unwrap_or_default()
+            .chars()
+        {
+            go_append_escaped_rune(&mut out, ch);
+        }
+        offset += valid_up_to;
+        if offset < bytes.len() {
+            let byte = rest[valid_up_to];
+            out.push_str("\\x");
+            out.push(go_lower_hex(byte >> 4));
+            out.push(go_lower_hex(byte & 0x0f));
+            offset += 1;
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// One lowercase hex digit, as `strconv.lowerhex`.
+fn go_lower_hex(nibble: u8) -> char {
+    (b"0123456789abcdef"[usize::from(nibble & 0x0f)]) as char
+}
+
+/// `strconv.appendEscapedRune` (`quote.go:64-115`) for `Quote` — neither
+/// `ASCIIonly` nor `graphicOnly`.
+fn go_append_escaped_rune(out: &mut String, ch: char) {
+    if ch == '"' || ch == '\\' {
+        out.push('\\');
+        out.push(ch);
+        return;
+    }
+    let code = u32::from(ch);
+    if go_is_print(code) {
+        out.push(ch);
+        return;
+    }
+    match ch {
+        '\u{07}' => out.push_str("\\a"),
+        '\u{08}' => out.push_str("\\b"),
+        '\u{0c}' => out.push_str("\\f"),
+        '\n' => out.push_str("\\n"),
+        '\r' => out.push_str("\\r"),
+        '\t' => out.push_str("\\t"),
+        '\u{0b}' => out.push_str("\\v"),
+        _ if code < 0x20 || code == 0x7f => {
+            out.push_str("\\x");
+            out.push(go_lower_hex(u8::try_from(code >> 4).unwrap_or(0)));
+            out.push(go_lower_hex(u8::try_from(code & 0x0f).unwrap_or(0)));
+        }
+        _ if code < 0x10000 => {
+            out.push_str("\\u");
+            for shift in [12u32, 8, 4, 0] {
+                out.push(go_lower_hex(u8::try_from(code >> shift & 0xf).unwrap_or(0)));
+            }
+        }
+        _ => {
+            out.push_str("\\U");
+            for shift in [28u32, 24, 20, 16, 12, 8, 4, 0] {
+                out.push(go_lower_hex(u8::try_from(code >> shift & 0xf).unwrap_or(0)));
+            }
+        }
+    }
+}
+
+/// `strconv.IsPrint` (`quote.go:518-559`) for the Latin-1 fast paths exactly as
+/// Go spells them, and Rust's `char::escape_debug` as the oracle above that — a
+/// rune is printable here iff `escape_debug` emits it unchanged.
+///
+/// Known divergence, immaterial to where this text appears: above Latin-1 the
+/// oracle is Rust's `char::escape_debug`, and the two disagree on exactly the
+/// Unicode **mark** categories. Measured over the whole scalar-value range,
+/// `escape_debug` escapes 954,591 code points; Go's `IsPrint` accepts 2,140 of
+/// those (2,133 of them `unicode.IsMark` — combining marks such as `U+0300`/
+/// `U+0301`, plus 7 other printable marks), and Go emits each raw while this
+/// renders `\uNNNN`. In the other direction the divergence is empty: Go rejects
+/// everything else `escape_debug` escapes. Only a TEXT/BLOB/REAL cell's
+/// scan-error message goes through this, so the difference is cosmetic in a
+/// diagnostic string rather than a stored or marshalled value; the executed
+/// comparisons below pin the invalid-UTF-8, Latin-1 and CJK/emoji cases Go
+/// itself reports, which agree byte-for-byte.
+fn go_is_print(code: u32) -> bool {
+    if code <= 0xff {
+        return (0x20..=0x7e).contains(&code) || ((0xa1..=0xff).contains(&code) && code != 0xad);
+    }
+    let value = char::from_u32(code).unwrap_or('\u{FFFD}');
+    value.escape_debug().next() == Some(value) && value.escape_debug().count() == 1
 }
 /// The boxed error payload for NULL into a required column.
 #[derive(Debug)]
@@ -651,7 +904,7 @@ fn is_timestamp_decltype(decl_type: Option<&str>) -> bool {
 }
 
 /// The declared type of a row's column, lower-cased exactly as the driver's
-/// `declTypes` does (`sqlite3.go:2638-2649`).
+/// `declTypes` does (`sqlite3.go:2638-2650`).
 ///
 /// rusqlite exposes the same `sqlite3_column_decltype` through the statement
 /// behind the row (`Row::as_ref` → `Statement::columns()`, feature
@@ -669,6 +922,15 @@ fn column_decl_type(row: &Row<'_>, column: &str) -> Option<String> {
     Some(decl.to_lowercase())
 }
 
+/// The pinned driver's bool decltype: an INTEGER cell in a column whose
+/// lowercased declared type is exactly `boolean` is handed back as a Go `bool`
+/// (`sqlite3.go:2797-2798`, `dest[i] = val > 0`), which `driver.Bool` then
+/// accepts unchanged. `bool`/`BOOL` are NOT driver names, so they keep the
+/// strict 0/1 rule.
+fn driver_bool_decl(row: &Row<'_>, column: &str) -> bool {
+    column_decl_type(row, column).as_deref() == Some("boolean")
+}
+
 /// The pinned driver's TEXT DATETIME decode (`sqlite3.go:2821-2842`) as Go's own
 /// grammar, shared by [`RowGet::get_dt`], [`RowGet::get_opt_dt`] and the
 /// annotation wire-text reader:
@@ -678,7 +940,7 @@ fn column_decl_type(row: &Row<'_>, column: &str) -> Option<String> {
 ///   `…ZZ` matches nothing;
 /// * `SQLiteTimestampFormats` (`:331-343`) are tried in order, each with
 ///   `time.ParseInLocation(format, s, time.UTC)` — the first success wins;
-/// * **any** failure assigns `time.Time{}` and reports NO error (`:2832-2842`):
+/// * **any** failure assigns `time.Time{}` and reports NO error (`:2831-2838`):
 ///   the DDL's `'0000-00-00 00:00:00'` default and outright garbage land there
 ///   (a NAIVE `CURRENT_TIMESTAMP` value such as `2024-02-02 03:00:00` does NOT —
 ///   it matches layout 3 and is a real stamp parsed as UTC);
@@ -1198,7 +1460,20 @@ pub fn parse_libraries_json(json: &str) -> Result<Vec<UserLibrary>, serde_json::
     if json.is_empty() {
         return Ok(Vec::new());
     }
-    serde_json::from_str(json)
+    // Go decodes each array element independently: an element that is `null`
+    // leaves the destination struct untouched (zero-valued) with NO error,
+    // verified against the stdlib (`[{0 "" ""}], err = nil`). serde_json instead
+    // rejects `null` as a type mismatch, so null elements are mapped to the
+    // default here. The outer shape still has to be an array: Go rejects a
+    // top-level object (`json: cannot unmarshal object into Go value of type
+    // Libraries`) and serde_json rejects it too (`invalid type: map, expected a
+    // sequence`) — the same accept/reject decision with different wording, per
+    // the message-scope note in `hydrate-contract.md`.
+    let raw: Vec<Option<UserLibrary>> = serde_json::from_str(json)?;
+    Ok(raw
+        .into_iter()
+        .map(|element| element.unwrap_or_default())
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -1208,7 +1483,7 @@ pub fn parse_libraries_json(json: &str) -> Result<Vec<UserLibrary>, serde_json::
 // ---------------------------------------------------------------------------
 
 /// `dbFolder` row mapping (phase 1 of the two-phase seam): the columns
-/// `selectFolder` scans (`persistence/folder_repository.go:58-62` —
+/// `selectFolder` scans (`persistence/folder_repository.go:74-78` —
 /// `folder.*` plus the INNER-joined `library.path as library_path`), with the
 /// `image_files` shim **still unparsed**.
 ///
@@ -1263,7 +1538,8 @@ pub fn row_to_folder(row: &Row<'_>) -> SqliteResult<FolderRow> {
             updated_at: go_zero_time(),
             // Go's non-pointer `CreatedAt`: SQL NULL errors, an unparseable
             // default scans as Go's zero — which the record spells `None`.
-            created_at: folder_created_at(row)?,
+            // Same helper as the album/mediafile pair (`go_zero_or_none`).
+            created_at: go_zero_or_none(row, "created_at")?,
             // Join-only (`structs:"-"`): read onto the record, never written.
             library_path: row.get_text("library_path")?,
             // The row's own primary key (`Folder.ID` scans `id` normally).
@@ -1271,18 +1547,6 @@ pub fn row_to_folder(row: &Row<'_>) -> SqliteResult<FolderRow> {
         },
         image_files,
     })
-}
-
-/// `Folder.CreatedAt` as the record spells it: Go's non-pointer `time.Time`
-/// scanned from `created_at` — SQL NULL errors the read (`get_dt`), a value the
-/// driver cannot parse scans as Go's zero time, and Go's zero means "never
-/// stamped", which this record writes as `None`.
-///
-/// # Errors
-/// Propagates the NULL-into-non-pointer scan failure.
-fn folder_created_at(row: &Row<'_>) -> SqliteResult<Option<DateTime<Utc>>> {
-    row.get_dt("created_at")
-        .map(|dt| if is_go_zero(&dt) { None } else { Some(dt) })
 }
 
 /// `dbFolder.PostScan` (phase 2, `folder_repository.go:38-46`): decode the raw
@@ -1320,7 +1584,7 @@ pub fn parse_folder_image_files(
 
 /// `dbPlaylist` row mapping (phase 1): the columns `selectPlaylist` emits
 /// (`persistence/playlist_repository.go:257-260` through
-/// `sql_annotations.go:63-88`) — `playlist.*`, the six annotation columns and
+/// `sql_annotations.go:63-91`) — `playlist.*`, the six annotation columns and
 /// the base `average_rating` — with the `rules` shim **still unparsed**.
 ///
 /// `rules` is Go's `sql.NullString` shim (`:26`), so it is read with
@@ -1368,7 +1632,7 @@ pub fn row_to_playlist(row: &Row<'_>) -> SqliteResult<PlaylistRow> {
             sync: row.get_bool("sync")?,
             uploaded_image: row.get_text("uploaded_image")?,
             external_image_url: row.get_text("external_image_url")?,
-            created_at: playlist_created_at(row)?,
+            created_at: go_zero_or_none(row, "created_at")?,
             updated_at: row.get_dt("updated_at")?,
             imported_hash: row.get_text("imported_hash")?,
             // Decoded by phase 2 from the raw shim column.
@@ -1407,11 +1671,12 @@ pub fn row_to_playlist(row: &Row<'_>) -> SqliteResult<PlaylistRow> {
 ///
 /// # Errors
 /// Propagates a [`RowGet`] failure on a *present* column (NULL into a
-/// non-pointer one).
+/// non-pointer one, or a REAL `play_count` cell whose Go `%g` spelling is not an
+/// integer — see `annotation_play_count`).
 pub fn row_to_annotation(row: &Row<'_>) -> SqliteResult<Annotation> {
     Ok(Annotation {
         play_count: if row.has_column("play_count") {
-            row.get_i64("play_count")?
+            annotation_play_count(row, "play_count")?
         } else {
             0
         },
@@ -1436,6 +1701,306 @@ pub fn row_to_annotation(row: &Row<'_>) -> SqliteResult<Annotation> {
     })
 }
 
+/// Go's int64 scan for a non-pointer `int64` column — [`go_scan_int64`] — kept
+/// as its own entry point because the **normalized** album play count is the
+/// case that motivated it:
+/// `sql_annotations.go:80-83` renders
+/// `round(coalesce(round(cast(play_count as float) / coalesce(album.song_count, 1), 1), 0)) as play_count`,
+/// an expression column with no declared type, so SQLite stores it as REAL
+/// (`typeof()` = `real`) even when the value is integral. Go does NOT truncate:
+/// `asString` renders a `float64` with `strconv.FormatFloat(f, 'g', -1, 64)`
+/// (`convert.go:570-571`) and `strconv.ParseInt(s, 10, 64)` decides the outcome
+/// (`convert.go:499-505`). Probes against the pinned go-sqlite3 driver confirm both
+/// arms: `round(7.0/3.0)` = 2 scans as `pc = 2, err = nil`; `1e+06` fails with
+/// `converting driver.Value type float64 ("1e+06") to a int64: invalid syntax`;
+/// `4.1152263e+07` fails with the same shape carrying `"4.1152263e+07"`. A
+/// fractional cell (`2.3333`) fails identically, because `%g` keeps the decimal point.
+///
+/// So a REAL cell is rendered with [`crate::criteria_sql::go_fmt_float64`] — the
+/// crate's existing Go-`%g` renderer, reused rather than duplicated — and parsed as
+/// an integer. A spelling `ParseInt` rejects (exponent notation, a fraction, a
+/// non-finite value, or a magnitude outside `int64`) becomes Go's conversion error,
+/// carrying the column name. This deliberately diverges from a
+/// truncate/round-toward-integer suggestion:
+/// Go surfaces the failure rather than guessing, and the failure stays visible to
+/// the caller instead of silently corrupting `play_count`.
+///
+/// # Errors
+/// Go's NULL-into-non-pointer failure for a NULL cell, and Go's
+/// `converting driver.Value type float64 ("<%g spelling>") to a int64:
+/// invalid syntax` failure when a REAL cell's `%g` spelling is not an `int64`
+/// — including an infinite cell, which Go spells `+Inf`/`-Inf` and rejects the
+/// same way.
+fn annotation_play_count(row: &Row<'_>, column: &str) -> SqliteResult<i64> {
+    go_scan_int64(row, column)
+}
+
+/// Narrow a Go-parity int64 scan into the record's 32-bit field. Go's `int` is
+/// 64-bit, so a wider cell scans there and is truncated by the model's field; the
+/// port reports out-of-range instead (documented residual in
+/// `hydrate-contract.md`), which keeps a silent truncation from becoming data.
+///
+/// # Errors
+/// `SqliteError::IntegralValueOutOfRange` for a cell outside `i32`.
+fn narrow_i32(value: i64) -> SqliteResult<i32> {
+    i32::try_from(value).map_err(|_| SqliteError::IntegralValueOutOfRange(0, value))
+}
+
+/// Go's int64 scan for a non-pointer `int64`/`int` column
+/// (`database/sql/convert.go:497-508`): NULL errors; an INTEGER cell is the
+/// driver's `int64` and stores directly; every other driver value is rendered by
+/// `asString` (`:557-578`) and run through `strconv.ParseInt`. That is why TEXT
+/// `"7"` scans as 7, TEXT `"True"` fails, and a REAL cell is judged by its `%g`
+/// spelling rather than truncated.
+///
+/// # Errors
+/// Go's NULL-into-non-pointer failure, or Go's
+/// `converting driver.Value type <T> ("<asString>") to a int64: <reason>`.
+fn go_scan_int64(row: &Row<'_>, column: &str) -> SqliteResult<i64> {
+    match row.get_ref(column)? {
+        rusqlite::types::ValueRef::Null => Err(null_required(column, Type::Integer)),
+        rusqlite::types::ValueRef::Integer(value) => Ok(value),
+        rusqlite::types::ValueRef::Real(value) => go_parse_int64(
+            column,
+            "float64",
+            &crate::criteria_sql::go_fmt_float64(value),
+            go_quote_bytes(crate::criteria_sql::go_fmt_float64(value).as_bytes()),
+        ),
+        // `asString` returns a driver `string`/`[]uint8` unchanged
+        // (`convert.go:557-562`). The driver's type name for a BLOB is `[]uint8`
+        // — verified against the pinned driver — and Go quotes the RAW bytes
+        // (escaping undecodable ones as `\xNN`), so the BLOB arm uses
+        // [`go_quote_bytes`] rather than a lossy decode.
+        rusqlite::types::ValueRef::Text(bytes) => go_parse_int64(
+            column,
+            "string",
+            &go_string_from_bytes(bytes),
+            go_quote_bytes(bytes),
+        ),
+        // A BLOB is a driver `[]uint8`, quoted over the same raw bytes.
+        rusqlite::types::ValueRef::Blob(bytes) => {
+            let text = go_string_from_bytes(bytes);
+            go_parse_int64(column, "[]uint8", &text, go_quote_bytes(bytes))
+        }
+    }
+}
+
+/// Go's float64 scan (`database/sql/convert.go:521-532`): NULL errors, a REAL
+/// cell stores directly, and INTEGER/TEXT/BLOB go through `asString` +
+/// `strconv.ParseFloat`, so TEXT `"0.5"` scans and `"1e400"` reports
+/// `value out of range`. The parse always sees the `asString` text; only the
+/// failure message quotes it with `%q` over the value's raw bytes.
+///
+/// # Errors
+/// Go's NULL failure, or `converting driver.Value type <T> (<quoted>) to a
+/// float64`, where the reason is Go's inner `strconv` error text.
+fn go_parse_float64(column: &str, driver_type: &str, bytes: &[u8]) -> SqliteResult<f64> {
+    let text = go_string_from_bytes(bytes);
+    let reason = match text.parse::<f64>() {
+        Ok(value) => {
+            if value.is_finite() {
+                return Ok(value);
+            }
+            // A non-finite result is either Go's own special spelling or an
+            // overflow beyond float64, where `ParseFloat` returns `±Inf` WITH
+            // `ErrRange` — Rust returns the infinity silently, so the two are
+            // told apart from the text, not from the value.
+            match go_float_special(&text) {
+                GoFloatSpecial::Infinity(v) => return Ok(v),
+                GoFloatSpecial::NaN => return Ok(f64::NAN),
+                GoFloatSpecial::SignedNaN => "invalid syntax",
+                GoFloatSpecial::NotSpecial => "value out of range",
+            }
+        }
+        Err(_) => "invalid syntax",
+    };
+    // `%q` runs over the driver value's own bytes, so invalid UTF-8 keeps its
+    // `\xNN` spelling for a TEXT cell exactly as it does for a BLOB.
+    let quoted = go_quote_bytes(bytes);
+    Err(SqliteError::FromSqlConversionFailure(
+        0,
+        Type::Real,
+        Box::new(GoToFloat64 {
+            column: column.to_string(),
+            driver_type: driver_type.to_string(),
+            quoted,
+            reason,
+        }),
+    ))
+}
+
+/// Go's `special` (`internal/strconv/atof.go:49-76`), the case-insensitive
+/// infinity and NaN spellings `strconv.ParseFloat` recognises *before* trying a
+/// decimal. Only a complete `inf`/`infinity` (never a longer prefix such as
+/// `infin`) and an UNSIGNED `nan` are special: the sign branch falls through to
+/// `inf` alone, so `+nan` is a syntax error even though Rust parses it.
+enum GoFloatSpecial {
+    Infinity(f64),
+    NaN,
+    /// `±nan`, which Go rejects.
+    SignedNaN,
+    /// No special spelling, so a non-finite parse is an overflow.
+    NotSpecial,
+}
+
+fn go_float_special(text: &str) -> GoFloatSpecial {
+    let signed = matches!(text.as_bytes().first(), Some(b'+') | Some(b'-'));
+    let sign = if text.starts_with('-') { -1.0 } else { 1.0 };
+    let rest = if signed { &text[1..] } else { text };
+    let lower = rest.to_ascii_lowercase();
+    if lower == "inf" || lower == "infinity" {
+        return GoFloatSpecial::Infinity(sign * f64::INFINITY);
+    }
+    if lower == "nan" {
+        return if signed {
+            GoFloatSpecial::SignedNaN
+        } else {
+            GoFloatSpecial::NaN
+        };
+    }
+    GoFloatSpecial::NotSpecial
+}
+
+/// `strconv.ParseBool`'s accepted spellings — `1`, `t`, `T`, `TRUE`, `true`,
+/// `True`, `0`, `f`, `F`, `FALSE`, `false`, `False` — which Rust's
+/// `bool::from_str` accepts as a subset (`true`/`false`) and Go rejects nothing
+/// else, so the set is spelled out rather than delegated to `parse::<bool>`.
+/// Anything else is `driver.Bool`'s rejection.
+///
+/// # Errors
+/// Go's `sql/driver: couldn't convert "<text>" into type bool`, carried with the
+/// column name.
+fn go_parse_bool(column: &str, bytes: &[u8]) -> SqliteResult<bool> {
+    // `strconv.ParseBool` over the driver's `string`/`[]byte` (`driver/types.go:71-83`),
+    // whose accepted spellings are exactly the twelve below — six true and six
+    // false (verified: `TrUe`, `yes`, `2`, `1.0`, `""` and `" t "` all fail). Both
+    // arms report Go's `%q` of the raw bytes, so a BLOB and the same TEXT spell
+    // identically in the message.
+    match bytes {
+        b"1" | b"t" | b"T" | b"TRUE" | b"true" | b"True" => Ok(true),
+        b"0" | b"f" | b"F" | b"FALSE" | b"false" | b"False" => Ok(false),
+        _ => Err(go_bool_error(column, go_quote_bytes(bytes))),
+    }
+}
+
+/// `driver.Bool`'s failure text (`driver/types.go:75, :81, :93, :99, :102`),
+/// carried with the column name so a bulk read stays diagnosable. `described` is
+/// Go's own `%q`/`%d`/`%v` rendering of the offending driver value.
+fn go_bool_error(column: &str, described: String) -> SqliteError {
+    SqliteError::FromSqlConversionFailure(
+        0,
+        Type::Integer,
+        Box::new(GoToBool {
+            column: column.to_string(),
+            described,
+        }),
+    )
+}
+
+/// The `strconv.ParseInt(asString(v), 10, 64)` step of Go's int64 scan arm
+/// (`database/sql/convert.go:497-505`). On failure Go renders
+/// `converting driver.Value type %T (%q) to a %s: %v` with the **`%q` of `s`**,
+/// the `asString` text (not of the driver value), and `strconvErr`
+/// (`convert.go:550-555`) unwraps the `*strconv.NumError` to its inner `Err` —
+/// `invalid syntax` or `value out of range`. A non-numeric `float64` spelling
+/// such as `-Inf` is rejected as `invalid syntax`, which is what `ParseInt`
+/// reports for a first character that is not a digit or sign.
+///
+/// # Errors
+/// Go's conversion failure carrying the driver type, the quoted spelling that
+/// failed (already `strconv.Quote`-formatted, so `Display` adds no quotes) and
+/// the column name.
+fn go_parse_int64(
+    column: &str,
+    driver_type: &str,
+    parse_text: &str,
+    quoted: String,
+) -> SqliteResult<i64> {
+    let reason = match parse_text.parse::<i64>() {
+        Ok(value) => return Ok(value),
+        Err(err) => match err.kind() {
+            std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
+                "value out of range"
+            }
+            _ => "invalid syntax",
+        },
+    };
+    Err(SqliteError::FromSqlConversionFailure(
+        0,
+        Type::Integer,
+        Box::new(GoToInt64 {
+            column: column.to_string(),
+            driver_type: driver_type.to_string(),
+            quoted,
+            reason,
+        }),
+    ))
+}
+
+/// The boxed Go-parity payload for a driver value whose decimal spelling is not an
+/// `int64` (`database/sql/convert.go:505`, same form at `:517`). `quoted` is already
+/// `strconv.Quote`-formatted, exactly like Go's `%q` of the `asString` text.
+#[derive(Debug)]
+struct GoToInt64 {
+    column: String,
+    driver_type: String,
+    quoted: String,
+    reason: &'static str,
+}
+
+impl std::fmt::Display for GoToInt64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "converting driver.Value type {} ({}) to a int64: {} (column `{}`)",
+            self.driver_type, self.quoted, self.reason, self.column
+        )
+    }
+}
+
+impl std::error::Error for GoToInt64 {}
+
+/// The boxed Go-parity payload for a driver value whose `asString` spelling is
+/// not a `float64` (`database/sql/convert.go:529`).
+#[derive(Debug)]
+struct GoToFloat64 {
+    column: String,
+    driver_type: String,
+    quoted: String,
+    reason: &'static str,
+}
+
+impl std::fmt::Display for GoToFloat64 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "converting driver.Value type {} ({}) to a float64: {} (column `{}`)",
+            self.driver_type, self.quoted, self.reason, self.column
+        )
+    }
+}
+
+impl std::error::Error for GoToFloat64 {}
+
+/// The boxed Go-parity payload for `driver.Bool`'s rejection
+/// (`database/sql/driver/types.go:75, :93, :99, :102`).
+#[derive(Debug)]
+struct GoToBool {
+    column: String,
+    described: String,
+}
+
+impl std::fmt::Display for GoToBool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "sql/driver: couldn't convert {} into type bool (column `{}`)",
+            self.described, self.column
+        )
+    }
+}
+
+impl std::error::Error for GoToBool {}
 /// A joined `*time.Time` column as the model's wire string: absent → `None`,
 /// SQL NULL → `None` (Go's nil pointer), an undecodable cell →
 /// `Some(0001-01-01T00:00:00Z)` (a pointer to Go's zero time), a real stamp →
@@ -1471,17 +2036,6 @@ pub fn to_go_time_text(dt: &DateTime<Utc>) -> String {
     } else {
         format!("{head}{fraction}Z")
     }
-}
-
-/// `Playlist.CreatedAt` as the record spells it: Go's non-pointer `time.Time`
-/// scanned from `created_at`. SQL NULL fails the read; Go's zero (an unparseable
-/// cell) means "never stamped" and is the record's `None`.
-///
-/// # Errors
-/// Propagates the NULL-into-non-pointer scan failure.
-fn playlist_created_at(row: &Row<'_>) -> SqliteResult<Option<DateTime<Utc>>> {
-    row.get_dt("created_at")
-        .map(|dt| if is_go_zero(&dt) { None } else { Some(dt) })
 }
 
 /// The `owner_name` alias, tolerant of projections that do not JOIN `user`
@@ -1550,6 +2104,427 @@ pub fn parse_playlist_rules(
     }
     unmarshal_criteria_str(&default_field_map(), payload.to_string()).map(Some)
 }
+// ---------------------------------------------------------------------------
+// S-D3b: album + mediafile — the PostScan hooks of
+// `persistence/album_repository.go:41-69` and
+// `persistence/mediafile_repository.go:49-67`.
+// ---------------------------------------------------------------------------
+
+/// `dbAlbum` row mapping (phase 1): the columns `selectAlbum` emits
+/// (`persistence/album_repository.go:227-232` — `album.*`, the LEFT-joined
+/// `library.path as library_path`/`library.name as library_name`, and
+/// `withAnnotation`'s six columns plus `album.average_rating`
+/// (`sql_annotations.go:63-91`)), with the four JSON shim columns **still
+/// unparsed** on the returned [`crate::album_repo::AlbumRow`].
+///
+/// Shim reads: all four are Go's non-pointer `string`
+/// (`album_repository.go:31-34`), so [`RowGet::get_text`] — SQL NULL fails the scan,
+/// the same failure Go's `converting NULL to string is unsupported` reports (Rust's
+/// payload names the column rather than reproducing that wording; see the module
+/// `## Errors` note). The DDL gives each shim a NOT NULL default
+/// (`schema_ddl.rs:58`), so an empty string is the
+/// "shim column not scanned" case, which phase 2's guards treat as the skip
+/// branch.
+///
+/// Absent-column tolerance: the annotation columns come from a LEFT JOIN that the
+/// anonymous (no-user) base read does not emit at all, so [`row_to_annotation`] probes each with
+/// [`RowGet::has_column`] and decodes an absent one to its zero. The two library
+/// display columns are likewise LEFT-joined aliases: an absent alias leaves Go's
+/// zero (empty string) — dbx hands an unmatched column a throwaway `NullString`
+/// (`dbx@v1.12.0/rows.go:80-86`) — while a PRESENT alias holding NULL errors, like
+/// Go's non-pointer `string` (`model/album.go:21-22`). See `join_text`.
+///
+/// `rg_album_gain`/`rg_album_peak` are read straight from their columns: Go's
+/// `RgAlbumGain`/`RgAlbumPeak` shim fields exist only because dbx's field-map cannot
+/// render `RGAlbumGain` to `rg_album_gain` (`album_repository.go:37-38`), and the
+/// `*float64` pointer means NULL → `None` — the same shape as
+/// [`RowGet::get_opt_f64`]. The unconditional copies at `:66-67` therefore have
+/// nothing to do here (see [`album_post_scan`]).
+///
+/// `created_at`/`updated_at` are Go non-pointer `time.Time` →
+/// [`RowGet::get_dt`] (SQL NULL fails the scan, an unparseable cell — the DDL's
+/// `'0000-00-00 00:00:00'` — scans as Go's zero), and this record spells Go's zero
+/// as `None`. `imported_at` is NOT NULL and the record keeps the scanned value as-is
+/// (`DateTime<Utc>`, no `None` spelling). `external_info_updated_at` is
+/// `*time.Time` → [`RowGet::get_opt_dt`] (NULL → `None`, unparseable →
+/// `Some(`[`go_zero_time`]`)` — a pointer to Go's zero).
+///
+/// # Errors
+/// A missing or NULL *required* album column fails, per Go parity. The four shim
+/// columns are the exception: they are read through `join_text`, so an absent
+/// one is Go's zero value rather than an error.
+pub fn row_to_album(row: &Row<'_>) -> SqliteResult<AlbumRow> {
+    Ok(AlbumRow {
+        discs: join_text(row, "discs")?,
+        participants: join_text(row, "participants")?,
+        tags: join_text(row, "tags")?,
+        folder_ids: join_text(row, "folder_ids")?,
+        record: AlbumRecord {
+            // The row's own primary key (`Album.ID` scans `id` by field name).
+            id: row.get_text("id")?,
+            library_id: row.get_i64("library_id")?,
+            name: row.get_text("name")?,
+            embed_art_path: row.get_text("embed_art_path")?,
+            album_artist: row.get_text("album_artist")?,
+            album_artist_id: row.get_text("album_artist_id")?,
+            min_year: row.get_i32("min_year")?,
+            max_year: row.get_i32("max_year")?,
+            date: row.get_text("date")?,
+            min_original_year: row.get_i32("min_original_year")?,
+            max_original_year: row.get_i32("max_original_year")?,
+            original_date: row.get_text("original_date")?,
+            release_date: row.get_text("release_date")?,
+            compilation: row.get_bool("compilation")?,
+            comment: row.get_text("comment")?,
+            song_count: row.get_i32("song_count")?,
+            duration: row.get_f64("duration")?,
+            size: row.get_i64("size")?,
+            // Decoded by phase 2 from the raw shim column.
+            discs: None,
+            sort_album_name: row.get_text("sort_album_name")?,
+            sort_album_artist_name: row.get_text("sort_album_artist_name")?,
+            order_album_name: row.get_text("order_album_name")?,
+            order_album_artist_name: row.get_text("order_album_artist_name")?,
+            catalog_num: row.get_text("catalog_num")?,
+            mbz_album_id: row.get_text("mbz_album_id")?,
+            mbz_album_artist_id: row.get_text("mbz_album_artist_id")?,
+            mbz_album_type: row.get_text("mbz_album_type")?,
+            mbz_album_comment: row.get_text("mbz_album_comment")?,
+            mbz_release_group_id: row.get_text("mbz_release_group_id")?,
+            // Decoded by phase 2 from the raw shim column.
+            folder_ids: None,
+            explicit_status: row.get_text("explicit_status")?,
+            // `*float64` read from Go's `Rg*` shim column; spelling the real column
+            // name directly is exactly what that shim exists to achieve.
+            rg_album_gain: row.get_opt_f64("rg_album_gain")?,
+            rg_album_peak: row.get_opt_f64("rg_album_peak")?,
+            description: row.get_text("description")?,
+            small_image_url: row.get_text("small_image_url")?,
+            medium_image_url: row.get_text("medium_image_url")?,
+            large_image_url: row.get_text("large_image_url")?,
+            external_url: row.get_text("external_url")?,
+            external_info_updated_at: row.get_opt_dt("external_info_updated_at")?,
+            // The COLUMN value. Phase 2 overwrites it only when the tags shim is
+            // non-empty (`album_repository.go:52-57`: the guard, then its `ToGenres`
+            // assignment), so an empty shim leaves
+            // whatever the column says.
+            genre: row.get_text("genre")?,
+            // Decoded by phase 2 from the raw shim column.
+            tags: BTreeMap::new(),
+            // Decoded by phase 2 from the raw shim column.
+            participants: BTreeMap::new(),
+            // Derived from the decoded participants in phase 2.
+            participant_names: Vec::new(),
+            missing: row.get_bool("missing")?,
+            imported_at: row.get_dt("imported_at")?,
+            created_at: go_zero_or_none(row, "created_at")?,
+            updated_at: go_zero_or_none(row, "updated_at")?,
+            // Join-only (`structs:"-"`): read onto the record, never written.
+            library_path: join_text(row, "library_path")?,
+            library_name: join_text(row, "library_name")?,
+            annotation: row_to_annotation(row)?,
+            // Derived by phase 2 from the decoded tags.
+            genres: Vec::new(),
+        },
+    })
+}
+
+/// A Go non-pointer `time.Time` column, read into the record's
+/// `Option<DateTime<Utc>>`. Introduced for the album/mediafile reads and reused by
+/// the pre-existing folder/playlist `created_at` readers — six columns across four
+/// tables, each `Option<DateTime<Utc>>` on its record. Two arms, deliberately
+/// different:
+///
+/// * **SQL NULL errors the read** (`get_dt`), which IS Go parity: Go scans the same
+///   cell into a non-pointer `time.Time` and `database/sql` fails it.
+/// * **A cell that scans as Go's zero time becomes `None`, not an error and not a
+///   zero stamp.** This is a record-shape divergence, recorded in
+///   `hydrate-contract.md`'s residual list: Go's non-pointer `time.Time` holds
+///   year-1 midnight (`IsZero() == true`, `err == nil`), and these records have no
+///   zero-time value to hold — `None` is their only "never stamped" spelling.
+///   `is_go_zero`/`go_zero_time` keep Go's semantics explicit where a record CAN
+///   represent zero (`folder.updated_at`, annotation stamps).
+///
+/// A NULL cell normally means a foreign or legacy row: the mediafile, folder and
+/// playlist writers stamp `created_at` when the record holds `None`
+/// (`mediafile_repo::put_sql` at `mediafile_repository.go:185-187`, which Go's `Put`
+/// mirrors, and `folder_repo::put_sql`/`playlist_repo::put_sql` follow the same
+/// precedent), so those writes never store NULL. Album's `Put` stamps only
+/// `imported_at` (`album_repository.go:208-219`), so a NULL `album.created_at` is
+/// reachable in principle — but Go reads the same cell into a non-pointer
+/// `time.Time` and fails there too, which is the behavior this reproduces. Erroring
+/// on NULL is therefore Go parity, not a Rust-only hazard — Go's driver reports
+/// `sql: Scan error on column index 0, name "created_at": unsupported Scan, storing
+/// driver.Value type <nil> into type *time.Time` (verified probe), and the executed
+/// put→hydrate round-trips in `tests/runtime_hydrate_album_mediafile.rs` show the
+/// write and read paths agree for both entities.
+///
+/// # Errors
+/// Propagates the NULL-into-non-pointer scan failure.
+fn go_zero_or_none(row: &Row<'_>, column: &str) -> SqliteResult<Option<DateTime<Utc>>> {
+    row.get_dt(column)
+        .map(|dt| if is_go_zero(&dt) { None } else { Some(dt) })
+}
+
+/// A TEXT column dbx + Go read into a **non-pointer `string`**: absent → Go's zero
+/// value (empty string, because the column gets a throwaway `sql.NullString` and is
+/// discarded — `dbx@v1.12.0/rows.go:80-86`); present-and-NULL → Go's scan failure;
+/// present → the text.
+///
+/// LEFT-joined display aliases (`library_path`, `library_name`, `owner_name`) are
+/// the plain case: the alias is only emitted by the join, so a light query leaves
+/// Go's zero value.
+///
+/// The JSON **shim** columns (`discs`, `participants`, `tags`, `folder_ids`) use the
+/// same accessor for a different reason: dbx binds a reference only for a column its
+/// field map names, so a projection that omits a shim leaves the Go field empty and
+/// `PostScan`'s `!= ""` guard takes the skip branch (`album_repository.go:43`,
+/// `mediafile_repository.go:59`). That is why the light projections (`getAllIDs`, the
+/// rowid pick) hydrate without erroring — their column list simply omits the shims.
+/// A present shim cell keeps Go's non-pointer `string` behavior: SQL NULL aborts the
+/// read.
+///
+/// # Errors
+/// Propagates Go's NULL-into-non-pointer-string failure when the column is present
+/// but NULL.
+fn join_text(row: &Row<'_>, column: &str) -> SqliteResult<String> {
+    if !row.has_column(column) {
+        return Ok(String::new());
+    }
+    row.get_text(column)
+}
+
+/// `dbAlbum.PostScan` (phase 2, `persistence/album_repository.go:41-69`), in Go's
+/// exact statement order and with Go's guards:
+///
+/// 1. `discs` — guarded non-empty (`:43`), decoded by
+///    [`crate::sql_json::unmarshal_discs`], wrapped with [`ALBUM_DISCS_PREFIX`] (`:45`).
+/// 2. `participants` — **UNGUARDED** (`:48`): even the empty string goes through
+///    `unmarshalParticipants`, which rejects it, and the failure carries
+///    [`ALBUM_PREFIX`] (`:50`). Also fills the record's FTS participant-name input
+///    from the same decoded map
+///    ([`crate::album_repo::participant_names_from_participants`]).
+/// 3. `tags` — guarded non-empty (`:52`), decoded by
+///    [`crate::sql_tags::unmarshal_tags`] then [`crate::sql_tags::tags_to_genres`],
+///    which OVERWRITES `genre` and `genres` (`:57`). Wrapped with [`ALBUM_PREFIX`] (`:55`).
+/// 4. `folder_ids` — guarded non-empty (`:59`), decoded by
+///    [`crate::sql_json::unmarshal_nullable_strings`], wrapped with
+///    [`ALBUM_FOLDER_IDS_PREFIX`] (`:62`).
+/// 5. The two unconditional `RG*` copies (`:66-67`). **No shim to copy in Rust:**
+///    Go's `RgAlbumGain`/`RgAlbumPeak` shim fields exist only because dbx's default
+///    field-map cannot render `RGAlbumGain` to `rg_album_gain`
+///    (`album_repository.go:37-38`); [`row_to_album`] reads `rg_album_gain`/
+///    `rg_album_peak` straight onto the record's real fields, so these assignments are
+///    identity no-ops. Documented rather than emulated with a fake shim.
+///
+/// # Errors
+/// [`HydrateError::Decoded`] carrying one of Go's EXACT prefixes above.
+pub fn album_post_scan(raw: AlbumRow) -> Result<AlbumRecord, HydrateError> {
+    let mut record = raw.record;
+
+    // 1. discs — Go's `if a.Discs != ""` guard (`:43`).
+    if !raw.discs.is_empty() {
+        record.discs = unmarshal_discs(&raw.discs)
+            .map_err(|err| HydrateError::Decoded(format!("{ALBUM_DISCS_PREFIX}{err}")))?;
+    }
+
+    // 2. participants — no guard in Go (`:48`), so the empty string is decoded too.
+    let (participants, err) = unmarshal_participants(&raw.participants);
+    if !err.is_empty() {
+        return Err(HydrateError::Decoded(format!("{ALBUM_PREFIX}{err}")));
+    }
+    record.participant_names = participant_names_from_participants(&participants);
+    record.participants = participants;
+
+    // 3. tags — guarded (`:52`); the decode also derives genre/genres (`:57`).
+    if !raw.tags.is_empty() {
+        let (tags, err) = unmarshal_tags(raw.tags.clone());
+        if !err.is_empty() {
+            return Err(HydrateError::Decoded(format!("{ALBUM_PREFIX}{err}")));
+        }
+        record.tags = tags;
+        let (genre, genres) = tags_to_genres(&record.tags);
+        record.genre = genre;
+        record.genres = genres;
+    }
+
+    // 4. folder_ids — guarded (`:59`).
+    if !raw.folder_ids.is_empty() {
+        record.folder_ids = unmarshal_nullable_strings(&raw.folder_ids)
+            .map_err(|err| HydrateError::Decoded(format!("{ALBUM_FOLDER_IDS_PREFIX}{err}")))?;
+    }
+
+    // 5. `a.Album.RGAlbumGain = a.RgAlbumGain`/`…Peak…` (`:66-67`): identity in Rust,
+    // since row_to_album reads rg_* straight onto the real fields. Nothing to assign.
+    Ok(record)
+}
+
+/// `dbMediaFile` row mapping (phase 1): the columns `selectMediaFile` emits
+/// (`persistence/mediafile_repository.go:204-210` — `media_file.*`, the two
+/// LEFT-joined library aliases, `withAnnotation`'s columns plus
+/// `media_file.average_rating`, and — for a logged-in user ONLY —
+/// `coalesce(position, 0) as bookmark_position` from `withBookmark`
+/// (`sql_bookmarks.go:18-28`)), with the two JSON shim columns **still unparsed**.
+///
+/// `bookmark_position` is read behind [`RowGet::has_column`]: the anonymous (no-user)
+/// base read omits the column entirely (`sql_bookmarks.go:20-22` returns the query
+/// unchanged), and dbx discards unmatched columns (`dbx@v1.12.0/rows.go:80-86`), so
+/// absence decodes to Go's zero (`0`), not an error. A projection that also drops
+/// base-table columns (the id/rowid-only ones) is not hydratable on either side.
+/// The coalesce means a present column is never NULL.
+///
+/// `participants`/`tags` are Go's non-pointer `string` shims
+/// (`mediafile_repository.go:31-32`) → [`RowGet::get_text`], so NULL aborts the scan
+/// for the same reason Go's `converting NULL to string is unsupported` does.
+///
+/// `bit_depth`/`bpm` are Go `*int` (`model/mediafile.go:67,84`) → NULL yields `None`;
+/// every other plain numeric/string column is non-pointer and errors on NULL.
+/// `birth_time` is Go's non-pointer `time.Time` and NOT NULL in the DDL →
+/// [`RowGet::get_dt`]; `created_at`/`updated_at` are nullable and spell Go's zero as
+/// `None`, exactly like the album pair.
+///
+/// # Errors
+/// A missing or NULL *required* media_file column fails, per Go parity.
+pub fn row_to_mediafile(row: &Row<'_>) -> SqliteResult<MediaFileRow> {
+    Ok(MediaFileRow {
+        participants: join_text(row, "participants")?,
+        tags: join_text(row, "tags")?,
+        record: MediaFileRecord {
+            // The row's own primary key (`MediaFile.ID` scans `id` by field name).
+            id: row.get_text("id")?,
+            album: row.get_text("album")?,
+            album_artist: row.get_text("album_artist")?,
+            album_artist_id: row.get_text("album_artist_id")?,
+            album_id: row.get_text("album_id")?,
+            artist: row.get_text("artist")?,
+            artist_id: row.get_text("artist_id")?,
+            birth_time: row.get_dt("birth_time")?,
+            // Go `*int` → NULL is the nil pointer.
+            bit_depth: row.get_opt_i32("bit_depth")?,
+            bit_rate: row.get_i32("bit_rate")?,
+            bpm: row.get_opt_i32("bpm")?,
+            catalog_num: row.get_text("catalog_num")?,
+            channels: row.get_i32("channels")?,
+            codec: row.get_text("codec")?,
+            comment: row.get_text("comment")?,
+            compilation: row.get_bool("compilation")?,
+            created_at: go_zero_or_none(row, "created_at")?,
+            date: row.get_text("date")?,
+            disc_number: row.get_i32("disc_number")?,
+            disc_subtitle: row.get_text("disc_subtitle")?,
+            duration: row.get_f64("duration")?,
+            explicit_status: row.get_text("explicit_status")?,
+            folder_id: row.get_text("folder_id")?,
+            // The COLUMN value; phase 2 overwrites it only when tags is non-empty.
+            genre: row.get_text("genre")?,
+            has_cover_art: row.get_bool("has_cover_art")?,
+            library_id: row.get_i64("library_id")?,
+            lyrics: row.get_text("lyrics")?,
+            mbz_recording_id: row.get_text("mbz_recording_id")?,
+            mbz_release_track_id: row.get_text("mbz_release_track_id")?,
+            mbz_album_id: row.get_text("mbz_album_id")?,
+            mbz_release_group_id: row.get_text("mbz_release_group_id")?,
+            mbz_artist_id: row.get_text("mbz_artist_id")?,
+            mbz_album_artist_id: row.get_text("mbz_album_artist_id")?,
+            mbz_album_type: row.get_text("mbz_album_type")?,
+            mbz_album_comment: row.get_text("mbz_album_comment")?,
+            missing: row.get_bool("missing")?,
+            order_album_artist_name: row.get_text("order_album_artist_name")?,
+            order_album_name: row.get_text("order_album_name")?,
+            order_artist_name: row.get_text("order_artist_name")?,
+            order_title: row.get_text("order_title")?,
+            original_date: row.get_text("original_date")?,
+            original_year: row.get_i32("original_year")?,
+            path: row.get_text("path")?,
+            pid: row.get_text("pid")?,
+            probe_data: row.get_text("probe_data")?,
+            release_date: row.get_text("release_date")?,
+            release_year: row.get_i32("release_year")?,
+            // `*float64` read from Go's `Rg*` shim columns — the copies at
+            // `mediafile_repository.go:50-53` are identity no-ops here.
+            rg_album_gain: row.get_opt_f64("rg_album_gain")?,
+            rg_album_peak: row.get_opt_f64("rg_album_peak")?,
+            rg_track_gain: row.get_opt_f64("rg_track_gain")?,
+            rg_track_peak: row.get_opt_f64("rg_track_peak")?,
+            sample_rate: row.get_i32("sample_rate")?,
+            size: row.get_i64("size")?,
+            sort_album_artist_name: row.get_text("sort_album_artist_name")?,
+            sort_album_name: row.get_text("sort_album_name")?,
+            sort_artist_name: row.get_text("sort_artist_name")?,
+            sort_title: row.get_text("sort_title")?,
+            suffix: row.get_text("suffix")?,
+            // Decoded by phase 2 from the raw shim column.
+            tags: BTreeMap::new(),
+            title: row.get_text("title")?,
+            track_number: row.get_i32("track_number")?,
+            year: row.get_i32("year")?,
+            // Decoded by phase 2 from the raw shim column.
+            participants: BTreeMap::new(),
+            // Derived from the decoded participants in phase 2.
+            participant_names: Vec::new(),
+            updated_at: go_zero_or_none(row, "updated_at")?,
+            // Join-only (`structs:"-"`): read onto the record, never written.
+            library_path: join_text(row, "library_path")?,
+            library_name: join_text(row, "library_name")?,
+            annotation: row_to_annotation(row)?,
+            // `withBookmark` emits the column only for a logged-in user; an absent
+            // column is Go's zero value, exactly as dbx discarding it leaves it.
+            bookmark_position: if row.has_column("bookmark_position") {
+                row.get_i64("bookmark_position")?
+            } else {
+                0
+            },
+            // Derived by phase 2 from the decoded tags.
+            genres: Vec::new(),
+        },
+    })
+}
+
+/// `dbMediaFile.PostScan` (phase 2, `persistence/mediafile_repository.go:49-67`), in
+/// Go's exact statement order:
+///
+/// 1. The four unconditional `RG*` copies (`:50-53`). **No shim to copy in Rust** —
+///    the same identity no-op as the album hook's `:66-67`, because
+///    [`row_to_mediafile`] reads `rg_track_gain`/`rg_track_peak`/`rg_album_gain`/
+///    `rg_album_peak` straight onto the record's real fields. Documented rather than
+///    emulated with a fake shim.
+/// 2. `participants` — **UNGUARDED** (`:55`): the empty string is decoded and
+///    rejected, and the failure carries [`MEDIAFILE_PREFIX`] (`:57`). Also fills the
+///    record's FTS participant-name input from the same decoded map.
+/// 3. `tags` — guarded non-empty (`:59`), decoded then
+///    [`crate::sql_tags::tags_to_genres`], which OVERWRITES `genre`/`genres` (`:64`),
+///    wrapped with [`MEDIAFILE_PREFIX`] (`:62`).
+///
+/// # Errors
+/// [`HydrateError::Decoded`] carrying [`MEDIAFILE_PREFIX`].
+pub fn mediafile_post_scan(raw: MediaFileRow) -> Result<MediaFileRecord, HydrateError> {
+    let mut record = raw.record;
+
+    // 1. `m.RGTrackGain = m.RgTrackGain` etc. (`:50-53`): identity in Rust —
+    // row_to_mediafile reads rg_* straight onto the real fields. Nothing to assign.
+
+    // 2. participants — no guard in Go (`:55`).
+    let (participants, err) = unmarshal_participants(&raw.participants);
+    if !err.is_empty() {
+        return Err(HydrateError::Decoded(format!("{MEDIAFILE_PREFIX}{err}")));
+    }
+    record.participant_names = participant_names_from_participants(&participants);
+    record.participants = participants;
+
+    // 3. tags — guarded (`:59`); the decode also derives genre/genres (`:64`).
+    if !raw.tags.is_empty() {
+        let (tags, err) = unmarshal_tags(raw.tags.clone());
+        if !err.is_empty() {
+            return Err(HydrateError::Decoded(format!("{MEDIAFILE_PREFIX}{err}")));
+        }
+        record.tags = tags;
+        let (genre, genres) = tags_to_genres(&record.tags);
+        record.genre = genre;
+        record.genres = genres;
+    }
+
+    Ok(record)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1579,6 +2554,426 @@ mod tests {
          NULL AS last_access_at, '2024-01-01 00:00:00+00:00' AS created_at, \
          '2024-01-01 00:00:00+00:00' AS updated_at, '' AS scrobble_filter, \
          'CIPHER' AS password, 0 AS token_epoch";
+
+    #[test]
+    fn libraries_json_matches_gos_zero_fill_and_null_element_rules() {
+        // Executed against Go 1.27.4 `encoding/json` with `model.Libraries`
+        // (`model/library.go:72`, element `model.Library` json tags `id`/`name`/
+        // `path`):
+        //   [{"id":1}]                                    -> [{1 "" ""}], err = nil
+        //   [null]                                       -> [{0 "" ""}], err = nil
+        //   [{"id":1,"name":2}]                          -> err "cannot unmarshal number ... of type string"
+        //   {"a":1}                                      -> err "cannot unmarshal object into Go value of type Libraries"
+        // serde's derive turns an absent field into an error, so the struct
+        // declares `#[serde(default)]` and null elements are mapped to the
+        // default above.
+        let partial = parse_libraries_json(r#"[{"id":1}]"#)
+            .expect("Go leaves missing fields at their zero value");
+        assert_eq!(partial[0].id, 1);
+        assert_eq!(partial[0].name, "");
+        assert_eq!(partial[0].path, "");
+
+        let nulls =
+            parse_libraries_json("[null]").expect("Go decodes a null element as the zero value");
+        assert_eq!(nulls.len(), 1);
+        assert_eq!(nulls[0], UserLibrary::default());
+
+        // Shape and type errors stay errors, like Go's.
+        assert!(parse_libraries_json(r#"{"a":1}"#).is_err());
+        assert!(parse_libraries_json(r#"[{"id":1,"name":2}]"#).is_err());
+        assert!(parse_libraries_json(r#"[{"id":1,"name":"a","path":"p"}]"#).is_ok());
+    }
+
+    #[test]
+    fn optional_int_columns_follow_gos_pointer_int_arms() {
+        // Executed against the pinned driver with `*int` destinations:
+        //   TEXT '16' -> 16, BLOB '16' -> 16, REAL 16.0 -> 16, NULL -> nil, all err = nil
+        //   TEXT 'abc' -> converting driver.Value type string ("abc") to a int: invalid syntax
+        // rusqlite's bare `Option<i32>` rejects Text/Real/Blob outright, so the
+        // accessor goes through Go's int arm.
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE t (bd text, bb blob, br real, nn integer);
+             INSERT INTO t VALUES ('16', cast(x'3136' as blob), 16.0, NULL);",
+        )
+        .expect("table");
+        conn.query_row("SELECT bd, bb, br, nn FROM t", [], |row| {
+            assert_eq!(
+                row.get_opt_i32("bd")?,
+                Some(16),
+                "Go scans TEXT \"16\" into *int"
+            );
+            assert_eq!(
+                row.get_opt_i32("bb")?,
+                Some(16),
+                "Go scans a []uint8 into *int"
+            );
+            assert_eq!(
+                row.get_opt_i32("br")?,
+                Some(16),
+                "Go's %g spelling parses as 16"
+            );
+            assert_eq!(row.get_opt_i32("nn")?, None, "SQL NULL is Go's nil pointer");
+            Ok(())
+        })
+        .expect("row");
+        conn.execute("INSERT INTO t VALUES ('abc', NULL, NULL, NULL)", [])
+            .expect("insert");
+        let msg = conn
+            .query_row("SELECT bd FROM t WHERE bd = 'abc'", [], |row| {
+                row.get_opt_i32("bd")
+            })
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            msg.contains(
+                r#"converting driver.Value type string ("abc") to a int64: invalid syntax"#
+            ),
+            "{msg}"
+        );
+        assert!(msg.contains("column `bd`"), "the column is named: {msg}");
+    }
+
+    #[test]
+    fn boolean_declared_column_with_real_storage_errors_like_go() {
+        // SQLite's NUMERIC affinity narrows only an exactly-representable REAL
+        // literal to INTEGER on insert: executed through rusqlite (bundled SQLite
+        // 3.46.0), a `boolean` column keeps `2.0`/`cast(2 as real)` as INTEGER but
+        // `2.5`, `1.5` and `cast(2.5 as real)` as REAL. Executed against the pinned
+        // driver with `cast(2.5 as real)` and a `bool` dest, Go reports
+        // `sql/driver: couldn't convert 2.5 (float64) into type bool`; `cast(2 as
+        // real)` stores as INTEGER and Go's `val > 0` arm returns true.
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE t (b boolean);
+             INSERT INTO t VALUES (cast(2.5 as real)), (cast(2 as real));",
+        )
+        .expect("table");
+        let msg = {
+            let mut stmt = conn
+                .prepare("SELECT b, typeof(b) FROM t")
+                .expect("statement");
+            let mut rows = stmt.query([]).expect("rows");
+            let row = rows.next().expect("row").expect("first row");
+            assert_eq!(
+                rusqlite::Row::get::<_, String>(row, 1).expect("typeof"),
+                "real",
+                "the cell really is REAL storage"
+            );
+            row.get_bool("b").err().unwrap().to_string()
+        };
+        assert!(
+            msg.contains("sql/driver: couldn't convert 2.5 (float64) into type bool"),
+            "{msg}"
+        );
+        conn.query_row("SELECT b FROM t WHERE typeof(b) = 'integer'", [], |row| {
+            assert!(
+                row.get_bool("b")?,
+                "the decltype arm's `val > 0` is reached before driver.Bool"
+            );
+            Ok(())
+        })
+        .expect("row");
+    }
+
+    #[test]
+    fn bool_failure_messages_match_gos_driver_bool() {
+        // Executed against the pinned driver on Go 1.27.4 with a column declared
+        // `bool`: REAL 1.5 -> `couldn't convert 1.5 (float64) into type bool`,
+        // INTEGER 2 -> `couldn't convert 2 into type bool`, BLOB 00 ff ->
+        // `couldn't convert "\x00\xff" into type bool`.
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE b (v bool);
+             INSERT INTO b VALUES (1.5), (2), (cast(x'00ff' as blob));",
+        )
+        .expect("table");
+        let msg = |index: usize| {
+            conn.query_row("SELECT v FROM b LIMIT 1 OFFSET ?", [index], |row| {
+                row.get_bool("v")
+            })
+            .err()
+            .unwrap()
+            .to_string()
+        };
+        let real = msg(0);
+        let integer = msg(1);
+        let blob = msg(2);
+        assert!(
+            real.contains("couldn't convert 1.5 (float64) into type bool"),
+            "{real}"
+        );
+        assert!(
+            integer.contains("couldn't convert 2 into type bool"),
+            "{integer}"
+        );
+        assert!(
+            blob.contains("couldn't convert \"\\x00\\xff\" into type bool"),
+            "{blob}"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_in_a_text_cell_is_quoted_like_gos_driver_string() {
+        // Go's `%q` runs over the driver value's own bytes, so a TEXT cell holding
+        // invalid UTF-8 keeps the `\xNN` spelling rather than a replacement
+        // character. Executed on Go 1.27.4 with an `int64` destination:
+        //   cast(x'ff' as text)       -> converting driver.Value type string ("\xff") to a int64: invalid syntax
+        //   cast(x'6869ff41' as text) -> converting driver.Value type string ("hi\xffA") to a int64: invalid syntax
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE t (s text, n integer);
+             INSERT INTO t VALUES (cast(x'ff' as text), 1), (cast(x'6869ff41' as text), 2);",
+        )
+        .expect("table");
+        let msg = |index: usize| {
+            conn.query_row("SELECT s FROM t LIMIT 1 OFFSET ?", [index], |row| {
+                row.get_i64("s")
+            })
+            .err()
+            .unwrap()
+            .to_string()
+        };
+        let single = msg(0);
+        let mixed = msg(1);
+        let cell_type = conn
+            .query_row("SELECT typeof(cast(x'ff' as text))", [], |row| {
+                rusqlite::Row::get::<_, String>(row, 0)
+            })
+            .expect("typeof");
+        assert_eq!(cell_type, "text", "the cell really is TEXT storage");
+        assert!(
+            single.contains(
+                r#"converting driver.Value type string ("\xff") to a int64: invalid syntax"#
+            ),
+            "{single}"
+        );
+        assert!(
+            mixed.contains(
+                r#"converting driver.Value type string ("hi\xffA") to a int64: invalid syntax"#
+            ),
+            "{mixed}"
+        );
+        // Go's wrapper supplies the column name, and the port's documented
+        // substitute is the ` (column `X`)` suffix — spelled exactly, with the
+        // backticks around the name only.
+        assert!(single.ends_with(" (column `s`)"), "{single}");
+        assert!(mixed.ends_with(" (column `s`)"), "{mixed}");
+    }
+
+    #[test]
+    fn go_quote_matches_strconv_quote_for_raw_bytes() {
+        // Go's `%q` over a driver value: undecodable bytes stay as `\xNN` rather
+        // than becoming U+FFFD, and printability is Go's Latin-1 rule (`¡`–`ÿ`
+        // printable, soft hyphen not). Compared against the exact Go output
+        // captured from `fmt.Sprintf("%q", []byte(...))` on Go 1.27.4, asserted
+        // byte-for-byte below. The CJK/emoji rows cover the above-Latin-1 path where
+        // `escape_debug` agrees with Go's `IsPrint`; the only disagreement there is
+        // the Unicode mark categories, documented on [`go_is_print`].
+        assert_eq!(
+            go_quote_bytes(&[0x00, 0xc3, 0xf8, 0xff]),
+            "\"\\x00\\xc3\\xf8\\xff\""
+        );
+        assert_eq!(go_quote_bytes(b""), "\"\"");
+        assert_eq!(go_quote_bytes(b"0123456789"), "\"0123456789\"");
+        assert_eq!(go_quote_bytes("café".as_bytes()), "\"café\"");
+        assert_eq!(go_quote_bytes(&[0x01, 0x7f]), "\"\\x01\\x7f\"");
+        assert_eq!(go_quote_bytes(b"\t\n\r\"\\x"), "\"\\t\\n\\r\\\"\\\\x\"");
+        assert_eq!(go_quote_bytes("€".as_bytes()), "\"€\"");
+        assert_eq!(go_quote_bytes("你好".as_bytes()), "\"你好\"");
+        assert_eq!(
+            go_quote_bytes(b"a\xed\xbf\xbf"),
+            "\"a\\xed\\xbf\\xbf\"",
+            "a surrogate is three invalid bytes, each its own \\xNN"
+        );
+        assert_eq!(go_quote_bytes(b"trunc\xc3"), "\"trunc\\xc3\"");
+        let mut emoji_bad = "emoji🙂bad".as_bytes().to_vec();
+        emoji_bad.push(0xc3); // Go's `"…\xc3"` is the raw byte, not U+00C3
+        assert_eq!(go_quote_bytes(&emoji_bad), "\"emoji🙂bad\\xc3\"");
+        assert_eq!(
+            go_quote_bytes(&[0x7e, 0x80, 0xa0, 0xff]),
+            "\"~\\x80\\xa0\\xff\""
+        );
+        assert_eq!(go_quote_bytes("😀".as_bytes()), "\"😀\"");
+        assert_eq!(go_quote_bytes(&[0x1b, 0x07]), "\"\\x1b\\a\"");
+        assert_eq!(
+            go_quote_bytes("\u{3000}ideographic space".as_bytes()),
+            "\"\\u3000ideographic space\"",
+            "Go's Ideographic Space is not printable"
+        );
+        assert_eq!(go_quote_bytes("é\u{00}tail".as_bytes()), "\"é\\x00tail\"");
+        assert_eq!(
+            go_quote_bytes("\u{00ad}".as_bytes()),
+            "\"\\u00ad\"",
+            "the soft hyphen is the one Latin-1 non-printable"
+        );
+        assert_eq!(go_quote_bytes("\u{00a1}".as_bytes()), "\"¡\"");
+    }
+
+    #[test]
+    fn text_and_float_getters_convert_every_storage_class_like_go() {
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE s (k text, v);
+             INSERT INTO s VALUES ('int', 7), ('real', 1.5), ('realint', 2.0),
+             ('blobutf8', cast(x'312e35' as blob)), ('blobnul', cast(x'312e3500' as blob)),
+             ('bad', cast(x'00c3f8ff' as blob)),
+             ('txt', 'hi'), ('nantxt', 'nan'), ('nul', NULL), ('bigreal', 1e400);",
+        )
+        .expect("table");
+        let text = |key: &str| {
+            conn.query_row("SELECT v FROM s WHERE k = ?", [key], |row| {
+                row.get_opt_text("v")
+            })
+            .expect("row")
+        };
+        // Go's `reflect.String` arm renders every non-NULL storage class through
+        // `asString`, so these are values, not scan errors.
+        assert_eq!(text("int"), Some("7".to_string()));
+        assert_eq!(text("real"), Some("1.5".to_string()));
+        assert_eq!(
+            text("realint"),
+            Some("2".to_string()),
+            "Go's %g drops the trailing zero, unlike Rust's `{{}}` on a float"
+        );
+        assert_eq!(text("txt"), Some("hi".to_string()));
+        assert_eq!(
+            text("bigreal"),
+            Some("+Inf".to_string()),
+            "an infinite REAL is Go's `+Inf` spelling in text"
+        );
+        // A BLOB becomes a Go `string` of raw bytes (`convert.go:541-543`), and
+        // the per-byte replacement below is what `encoding/json` writes on the way
+        // out, so that is the form the port keeps.
+        assert_eq!(text("blobutf8"), Some("1.5".to_string()));
+        assert_eq!(
+            text("blobnul"),
+            Some("1.5\u{00}".to_string()),
+            "NUL is valid UTF-8, so Go's string keeps it raw"
+        );
+        // 0x00 is itself valid UTF-8, so it survives; the three bytes after it
+        // each start an invalid sequence and get one replacement apiece.
+        assert_eq!(
+            text("bad"),
+            Some("\u{00}\u{FFFD}\u{FFFD}\u{FFFD}".to_string())
+        );
+        assert_eq!(text("nul"), None, "NULL leaves a pointer field nil");
+        assert!(
+            conn.query_row("SELECT v FROM s WHERE k = ?", ["nul"], |row| {
+                row.get_text("v")
+            })
+            .is_err(),
+            "NULL into a non-pointer string errors"
+        );
+        // get_f64 reaches TEXT through `asString`, and a UTF-8 BLOB scans because
+        // `asString` maps `[]uint8` to a Go `string` (verified: `1.5\0` -> 1.5).
+        let f64_of = |key: &str| {
+            conn.query_row("SELECT v FROM s WHERE k = ?", [key], |row| row.get_f64("v"))
+        };
+        assert!(f64_of("txt").is_err(), "`hi` is Go's invalid syntax");
+        assert!(
+            f64_of("nantxt").unwrap().is_nan(),
+            "Go's `special` accepts the bare `nan` spelling"
+        );
+        assert_eq!(f64_of("blobutf8").unwrap(), 1.5, "Go accepts a UTF-8 BLOB");
+        assert!(f64_of("bad").is_err(), "U+FFFD is not a number");
+        assert!(
+            f64_of("nul").is_err(),
+            "NULL into a non-pointer float errors"
+        );
+        assert_eq!(f64_of("int").unwrap(), 7.0);
+        assert_eq!(
+            f64_of("bigreal").unwrap(),
+            f64::INFINITY,
+            "REAL stores directly"
+        );
+    }
+
+    #[test]
+    fn numeric_scan_arms_follow_gos_asstring_and_parses() {
+        let conn = Connection::open_in_memory().expect("memory db opens");
+        conn.execute_batch(
+            "CREATE TABLE n (k text, v);
+             INSERT INTO n VALUES ('txt7', '7'), ('txtTrue', 'True'), ('real15', 1.5),
+             ('int2', 2), ('blobT', cast(x'54727565' as blob)), ('big', '5000000000'),
+             ('txt15', '15.0'), ('txt1e400', '1e400'), ('txtinf', 'Inf'),
+             ('txtplusnan', '+nan'), ('txtmax', '9223372036854775808'),
+             ('blobbad', cast(x'00c3f8ff' as blob)), ('nul', NULL);",
+        )
+        .expect("table");
+        fn read<T, F>(conn: &Connection, key: &str, get: F) -> rusqlite::Result<T>
+        where
+            F: FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+        {
+            conn.query_row("SELECT v FROM n WHERE k = ?", [key], get)
+        }
+        // TEXT reaches `asString` + `ParseInt`, so "7" scans and "True" fails.
+        assert_eq!(read(&conn, "txt7", |r| r.get_i64("v")).unwrap(), 7);
+        assert!(read(&conn, "txtTrue", |r| r.get_i64("v")).is_err());
+        // A REAL cell is judged by its `%g` spelling; an INTEGER stores directly.
+        assert!(read(&conn, "real15", |r| r.get_i64("v")).is_err());
+        assert_eq!(read(&conn, "int2", |r| r.get_i64("v")).unwrap(), 2);
+        // A BLOB is the driver's `[]uint8`: quoted text is the RAW bytes.
+        let blob_err = read(&conn, "blobbad", |r| r.get_i64("v"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            blob_err.contains("[]uint8") && blob_err.contains("\\x00\\xc3\\xf8\\xff"),
+            "raw-byte quoting: {blob_err}"
+        );
+        // A BLOB holding text still parses through `asString`, quoted as `[]uint8`.
+        let blob_text = read(&conn, "blobT", |r| r.get_i64("v"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            blob_text.contains("[]uint8 (\"True\")") && blob_text.contains("invalid syntax"),
+            "Go's `[]uint8` rejection: {blob_text}"
+        );
+        // Floats: TEXT parses, overflow is Go's range failure, `Inf` is a value,
+        // and `+nan` is a syntax error even though Rust would parse it.
+        assert_eq!(read(&conn, "txt15", |r| r.get_f64("v")).unwrap(), 15.0);
+        assert!(read(&conn, "txt1e400", |r| r.get_f64("v"))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("value out of range"));
+        assert_eq!(
+            read(&conn, "txtinf", |r| r.get_f64("v")).unwrap(),
+            f64::INFINITY
+        );
+        assert!(read(&conn, "txtplusnan", |r| r.get_f64("v")).is_err());
+        // int64 overflow in TEXT is Go's range failure, not a wrap.
+        assert!(read(&conn, "txtmax", |r| r.get_i64("v"))
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("value out of range"));
+        // `i32` reports out-of-range for a cell Go's 64-bit `int` would accept.
+        assert_eq!(
+            read(&conn, "big", |r| r.get_i64("v")).unwrap(),
+            5_000_000_000
+        );
+        assert!(read(&conn, "big", |r| r.get_i32("v")).is_err());
+        // NULL keeps the shared required-column payload.
+        assert!(read(&conn, "nul", |r| r.get_i64("v")).is_err());
+        // A `*float64` dest errors on a failed conversion too, and dbx
+        // propagates it; only NULL becomes None.
+        assert!(read(&conn, "blobbad", |r| r.get_opt_f64("v")).is_err());
+        assert_eq!(
+            read(&conn, "txt15", |r| r.get_opt_f64("v")).unwrap(),
+            Some(15.0)
+        );
+        assert_eq!(read(&conn, "nul", |r| r.get_opt_f64("v")).unwrap(), None);
+        conn.query_row("SELECT 1 AS only", [], |row| {
+            assert!(
+                row.get_opt_f64("missing").is_err(),
+                "absent column surfaces"
+            );
+            Ok(())
+        })
+        .expect("row");
+    }
 
     #[test]
     fn two_phase_split_hydrates_libraries() {
@@ -1819,7 +3214,7 @@ mod tests {
 
     /// Finding 5, executed: the same spellings stored in a declared `datetime`
     /// column scan as Go's zero time with no error, exactly as the driver's
-    /// failure arm (`sqlite3.go:2832-2842`).
+    /// failure arm (`sqlite3.go:2831-2838`).
     #[test]
     fn malformed_month_day_signs_scan_as_go_zero_in_a_timestamp_column() {
         let conn = Connection::open_in_memory().expect("memory db opens");

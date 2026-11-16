@@ -681,6 +681,13 @@ fn album_record() -> AlbumRecord {
         sub_role: "Vocals".to_string(),
     }];
     AlbumRecord {
+        // S-D3b hydration-only fields: left empty here (the write legs take the id as
+        // their own argument), and asserted absent from the write map.
+        id: String::new(),
+        library_path: String::new(),
+        library_name: String::new(),
+        annotation: nd_model::annotation::Annotation::default(),
+        genres: Vec::new(),
         library_id: 1,
         name: "Abbey Road".to_string(),
         embed_art_path: "/cover.jpg".to_string(),
@@ -1142,6 +1149,14 @@ fn mediafile_record() -> MediaFileRecord {
         sub_role: "Vocals".to_string(),
     }];
     MediaFileRecord {
+        // S-D3b hydration-only fields: left empty here (the write legs take the id as
+        // their own argument), and asserted absent from the write map.
+        id: String::new(),
+        library_path: String::new(),
+        library_name: String::new(),
+        annotation: nd_model::annotation::Annotation::default(),
+        bookmark_position: 0,
+        genres: Vec::new(),
         album: "Abbey Road".to_string(),
         album_artist: "The Beatles".to_string(),
         album_artist_id: "aa-m".to_string(),

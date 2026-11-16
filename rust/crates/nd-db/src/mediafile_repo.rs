@@ -172,7 +172,7 @@ pub fn get_search_strategy(
 }
 
 /// `withBookmark`'s fragment as `selectMediaFile` composes it
-/// (`sql_bookmarks.go:17-29` via `mediafile_repository.go:208`): the LEFT
+/// (`sql_bookmarks.go:18-28` via `mediafile_repository.go:208`): the LEFT
 /// JOIN text with the user id bound (the crate's parameterized form of Go's
 /// inline literal — `sql_bookmarks.rs:38-48` owns the same shape), plus the
 /// `bookmark_position` column.
@@ -185,11 +185,11 @@ fn bookmark_join_parts(user_id: &str) -> (String, Vec<crate::sqlrepo::Value>) {
 }
 
 /// The `bookmark_position` column `withBookmark` appends
-/// (`sql_bookmarks.go:28`).
+/// (`sql_bookmarks.go:27`).
 const BOOKMARK_POSITION_COLUMN: &str = "coalesce(position, 0) as bookmark_position";
 
 /// `withAnnotation`'s fragment as the media_file select composes it
-/// (`sql_annotations.go:63-77` via `selectMediaFile`'s `withAnnotation`): the
+/// (`sql_annotations.go:63-91` via `selectMediaFile`'s `withAnnotation`): the
 /// LEFT JOIN text plus its two bound args (`item_type` then `user_id`),
 /// re-derived from the public constants like the album lane
 /// (`album_repo.rs:annotation_join_parts`); `media_file` never takes the
@@ -213,7 +213,7 @@ fn annotation_join_parts(user_id: &str) -> (String, Vec<crate::sqlrepo::Value>) 
     )
 }
 
-/// The annotation columns `withAnnotation` appends (`sql_annotations.go:67-76`)
+/// The annotation columns `withAnnotation` appends (`sql_annotations.go:68-88`)
 /// in squirrel's declaration order, plus the base-table `average_rating`.
 const ANNOTATION_COLUMNS: [&str; 7] = [
     "coalesce(starred, 0) as starred",
@@ -233,9 +233,12 @@ const ANNOTATION_COLUMNS: [&str; 7] = [
 /// `library_filter` is the caller-resolved clause.
 ///
 /// Rendered directly (not through [`crate::sqlrepo::Repository`], whose
-/// builder models only INNER JOIN): Go LEFT-joins via string fragments, and
-/// the two join args must bind after the select's earlier WHERE args in
-/// squirrel's part order.
+/// builder models only INNER JOIN): Go LEFT-joins via string fragments. squirrel
+/// emits the column list, then `FROM`, then the join parts **in append order**
+/// (`select.go:64-108`), so `selectMediaFile`'s chain — library join
+/// (`:205-206`), annotation join (`sql_annotations.go:68-88`), bookmark join
+/// (`sql_bookmarks.go:22-28`) — lands in that order after `FROM media_file`, and
+/// the join args bind in the same order.
 #[must_use]
 pub fn select_media_file(
     user_id: Option<&str>,
@@ -244,6 +247,8 @@ pub fn select_media_file(
     let mut sql = String::from(
         "SELECT media_file.*, library.path as library_path, library.name as library_name",
     );
+    let mut join_sql =
+        String::from(" FROM media_file LEFT JOIN library ON media_file.library_id = library.id");
     let mut args: Vec<crate::sqlrepo::Value> = Vec::new();
     match user_id {
         Some(user) => {
@@ -253,14 +258,14 @@ pub fn select_media_file(
                 ", {}, {BOOKMARK_POSITION_COLUMN}",
                 ANNOTATION_COLUMNS.join(", ")
             ));
-            sql.push_str(&ann_join);
+            join_sql.push_str(&ann_join);
             args.extend(ann_args);
-            sql.push_str(&format!(" {bmk_join}"));
+            join_sql.push_str(&format!(" {bmk_join}"));
             args.extend(bmk_args);
         }
         None => sql.push_str(", media_file.average_rating"),
     }
-    sql.push_str(" FROM media_file LEFT JOIN library ON media_file.library_id = library.id");
+    sql.push_str(&join_sql);
     if let Some((clause, clause_args)) = library_filter {
         sql.push_str(&format!(" WHERE {clause}"));
         args.extend(clause_args);
@@ -281,16 +286,18 @@ pub fn count_all_sql(
 ) -> Sql {
     let mut sql = format!("SELECT count(distinct {TABLE}.id) as count FROM {TABLE}");
     let mut args: Vec<crate::sqlrepo::Value> = Vec::new();
-    if let Some((clause, clause_args)) = library_filter {
-        sql.push_str(&format!(" WHERE {clause}"));
-        args.extend(clause_args);
-    }
+    // squirrel renders joins before WHERE (`select.go:97-113`), so the join args
+    // bind BEFORE the filter args even though the filter was applied first.
     if need_annotation {
         if let Some(user) = user_id {
             let (join_sql, join_args) = annotation_join_parts(user);
             sql.push_str(&join_sql);
             args.extend(join_args);
         }
+    }
+    if let Some((clause, clause_args)) = library_filter {
+        sql.push_str(&format!(" WHERE {clause}"));
+        args.extend(clause_args);
     }
     (sql, args)
 }
@@ -325,12 +332,38 @@ pub fn exists_sql(id: &str, library_filter: Option<Sql>) -> Sql {
     (sql, args)
 }
 
-/// `Get` (`mediafile_repository.go:212-219`): `GetAll` with
-/// `Filters: Eq{"media_file.id": id}`.
+/// `Get` (`mediafile_repository.go:212-221`): `GetAll` with
+/// `Filters: Eq{"media_file.id": id}`. squirrel AND-joins that filter into the
+/// SAME `WHERE` clause (`select.go:112-117` renders the accumulated `WhereParts`
+/// joined by ` AND `), so the id predicate is appended as ` AND media_file.id = ?`
+/// whenever a `WHERE` is already open. Appending a second ` WHERE ` — the
+/// previous shape — emits `... WHERE <filter> WHERE media_file.id = ?`, which
+/// SQLite rejects with `near "WHERE": syntax error`. Same rule as [`exists_sql`],
+/// and the args stay interleaved with the clauses they belong to (filter args
+/// first, then the id).
+///
+/// Clause ORDER is the crate-wide seam convention rather than Go's: Go's
+/// `GetAll` runs `newSelect(ctx, options)`, so `applyFilters`
+/// (`sql_base_repository.go:247-252`) lands the id predicate before
+/// `applyLibraryFilter` (`:261`), while this seam takes the caller-resolved
+/// `library_filter` as its own first parameter and emits it first (identical to
+/// [`crate::album_repo::select_album_sql`]). The two orders are result-equivalent —
+/// predicates are AND-joined and each clause's args bind in the same order the
+/// clause is rendered — so no result differs; only the SQL text does.
 #[must_use]
 pub fn get_sql(id: &str, user_id: Option<&str>, library_filter: Option<Sql>) -> Sql {
+    // The library filter owns the first WHERE; the id predicate joins it with AND
+    // (squirrel accumulates `WhereParts` and renders them with " AND ",
+    // `select.go:112-117`). Probing the flag rather than the rendered text keeps a
+    // filter clause that contains its own subquery `WHERE` from being mistaken for
+    // an open outer clause.
+    let has_where = library_filter.is_some();
     let (mut sql, mut args) = select_media_file(user_id, library_filter);
-    sql.push_str(&format!(" WHERE {TABLE}.id = ?"));
+    if has_where {
+        sql.push_str(&format!(" AND {TABLE}.id = ?"));
+    } else {
+        sql.push_str(&format!(" WHERE {TABLE}.id = ?"));
+    }
     args.push(crate::sqlrepo::Value::from(id));
     (sql, args)
 }
@@ -425,16 +458,18 @@ pub fn get_all_ids_sql(
 ) -> Sql {
     let mut sql = format!("SELECT {TABLE}.id FROM {TABLE}");
     let mut args: Vec<crate::sqlrepo::Value> = Vec::new();
-    if let Some((clause, clause_args)) = library_filter {
-        sql.push_str(&format!(" WHERE {clause}"));
-        args.extend(clause_args);
-    }
+    // Same render order as [`count_all_sql`]: the annotation join's args precede the
+    // library-filter args (`select.go:97-113`).
     if need_annotation {
         if let Some(user) = user_id {
             let (join_sql, join_args) = annotation_join_parts(user);
             sql.push_str(&join_sql);
             args.extend(join_args);
         }
+    }
+    if let Some((clause, clause_args)) = library_filter {
+        sql.push_str(&format!(" WHERE {clause}"));
+        args.extend(clause_args);
     }
     (sql, args)
 }
@@ -476,22 +511,33 @@ pub struct FtsColumns {
 /// (`sql_base_repository.go:618-642`); the participants pair is
 /// `updateParticipants` (`sql_participations.go:93-119`: delete-all then the
 /// json_each INSERT); the tags pair is `updateTags` (`sql_tags.go:57-79`).
-/// `model.MediaFile`'s persisted row (`model/mediafile.go:27-107`) — the 63
-/// non-id persisted media_file columns (the contract's 64 minus `id`, which
-/// the seam forbids in the map; the id is appended last by [`put_sql`]).
+/// `model.MediaFile`'s row as the seam reads and writes it
+/// (`model/mediafile.go:27-107`) — the 63 non-id persisted media_file columns (the
+/// contract's 64 minus `id`, which the seam forbids in the map; the id is appended
+/// last by [`put_sql`]), plus the six **hydration-only** fields the read path owns —
+/// `id`, `library_path`, `library_name`, `annotation`, `bookmark_position`,
+/// `genres` (`persistence/mediafile_repository.go:29-67`, `selectMediaFile`
+/// `:204-210`).
 ///
-/// Deliberately absent (entity write contract): `LibraryPath`/`LibraryName`
-/// (`structs:"-"`, join-only), `Genres` (`structs:"-"`),
-/// `Bookmarkable.BookmarkPosition` (`structs:"-"`), `AlbumImage` (no
-/// columns), the `Annotations`/`ItemImage` embeds, and `average_rating"
-/// (annotation-managed, never written by entity Put). The Go
-/// `RgAlbumGain`/`RgAlbumPeak`/`RgTrackGain`/`RgTrackPeak` dbx shims
-/// (`mediafile_repository.go:35-38`) exist only because dbx's default
-/// field-map cannot render `RG*` to `rg_*`; Rust binds the real column
-/// names directly, no shim. `tags`/`participants` hold the *typed* values
-/// the Go shims shadow — PostMapArgs overwrites their column keys with
-/// JSON, which [`mediafile_row`] routes through
-/// [`crate::marshal::mediafile_post_map_args`].
+/// Deliberately absent from the WRITE map (entity write contract):
+/// `LibraryPath`/`LibraryName` (`structs:"-"`, join-only), `Genres` (`structs:"-"`),
+/// `Bookmarkable.BookmarkPosition` (`structs:"-"` at `model/bookmark.go:9`),
+/// `AlbumImage` (no columns), the `Annotations`/`ItemImage` embeds,
+/// `average_rating` (annotation-managed, never written by entity Put), and `id`
+/// (the write legs' own argument). [`mediafile_row`] emits none of the six
+/// hydration-only fields, so the write SQL is byte-identical to a record whose
+/// derived fields are empty — asserted by `tests/runtime_hydrate_album_mediafile.rs`.
+///
+/// The Go `RgAlbumGain`/`RgAlbumPeak`/`RgTrackGain`/`RgTrackPeak` dbx shims
+/// (`mediafile_repository.go:35-38`) exist only because dbx's default field-map
+/// cannot render `RG*` to `rg_*`; Rust binds the real column names directly, so the
+/// four unconditional copies at `mediafile_repository.go:50-53` are no-ops here — see
+/// [`crate::hydrate::mediafile_post_scan`]. `tags`/`participants` hold the *typed*
+/// values the Go shims shadow: PostMapArgs overwrites their column keys with JSON on
+/// the write side ([`mediafile_row`] routes that through
+/// [`crate::marshal::mediafile_post_map_args`]), and on the read side the raw TEXT
+/// columns sit on [`MediaFileRow`] until [`crate::hydrate::mediafile_post_scan`]
+/// decodes them.
 ///
 /// Timestamps are `DateTime<Utc>` bound through `crate::time`.
 /// `created_at`/`updated_at`/`birth_time` are Go non-pointer `time.Time`:
@@ -502,8 +548,25 @@ pub struct FtsColumns {
 /// through the record unchanged (Go `Put` never touches it).
 ///
 /// `bit_depth`/`bpm` are Go `*int` (nullable in the DDL) → `Option<i32>`.
+///
+/// `participant_names` follows the album record's rule: a hydrated record fills it
+/// from the decoded `participants` column with an EMPTY `sort_name`
+/// (`crate::album_repo::participant_names_from_participants`), because the column
+/// stores only `{id, name, subRole}` and Go's sort names come from the unported
+/// `getParticipants` artist re-read (`sql_participations.go:127-146`). Documented
+/// divergence, recorded in the S-D3b report.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaFileRecord {
+    /// The row's `id` (Go `MediaFile.ID`, `structs:"id"` at `model/mediafile.go:36`).
+    /// Go scans it (`ID` snake-cases to the selected `id`), so a bulk read keeps
+    /// every row's own identity. [`mediafile_row`] does NOT emit it — the id is
+    /// appended by the repo's write legs ([`put_sql`] takes it as its own argument,
+    /// matching Go's `put(ctx, id, …)`, `sql_base_repository.go:618`). Same
+    /// precedent as `FolderRecord::id` (`folder_repo.rs:347`) and
+    /// `PlaylistRecord::id` (`playlist_repo.rs:486`); the delegating hooks of the next
+    /// slice overwrite it from `media_file_id`
+    /// (`playlist_track_repository.go:32`, `scrobble_buffer_repository.go:28`).
+    pub id: String,
     /// `album` (Go `Album`).
     pub album: String,
     /// `album_artist` (Go `AlbumArtist`).
@@ -545,7 +608,7 @@ pub struct MediaFileRecord {
     pub disc_number: i32,
     /// `disc_subtitle` (Go `DiscSubtitle`).
     pub disc_subtitle: String,
-    /// `duration` (Go `Duration`, `float32` at `model/mediafile.go:66`).
+    /// `duration` (Go `Duration`, `float32` at `model/mediafile.go:64`).
     /// The DDL column is `real`; `f64` matches the column affinity (same
     /// precedent as `AlbumRecord::duration`).
     pub duration: f64,
@@ -646,6 +709,44 @@ pub struct MediaFileRecord {
     /// unchanged by [`put_sql`] (Go `Put` never touches it,
     /// `mediafile_repository.go:184-190`).
     pub updated_at: Option<DateTime<Utc>>,
+    /// `library_path` (Go `MediaFile.LibraryPath`, `structs:"-"` at
+    /// `model/mediafile.go:40` — join-only). Hydrated from
+    /// `library.path as library_path` (`selectMediaFile`,
+    /// `mediafile_repository.go:205`); [`mediafile_row`] never emits it. LEFT join, so
+    /// a row whose library is gone holds SQL NULL, which Go's non-pointer `string`
+    /// rejects: [`crate::hydrate::row_to_mediafile`] errors when the alias is present
+    /// but NULL and leaves Go's zero when a projection omits it.
+    pub library_path: String,
+    /// `library_name` (Go `MediaFile.LibraryName`, `structs:"-"`,
+    /// `model/mediafile.go:40` — join-only), from `library.name as library_name`.
+    pub library_name: String,
+    /// The per-user annotation the select's `annotation` LEFT JOIN contributes
+    /// (`sql_annotations.go:63-91`), **derived, not persisted**: Go's
+    /// `MediaFile.Annotations` embed is `structs:"-"` (`model/mediafile.go:28`), so
+    /// [`mediafile_row`] emits none of it and the write SQL is unchanged. Filled from
+    /// the six joined columns plus the base `media_file.average_rating`
+    /// (`crate::hydrate::row_to_annotation`), with zero values where a light query —
+    /// [`get_all_ids_sql`], [`get_random_rowid_sql`] — omits the joined columns.
+    /// Timestamp strings carry Go's RFC3339Nano wire form
+    /// ([`crate::hydrate::to_go_time_text`]), NOT the SQLite storage spelling.
+    pub annotation: nd_model::annotation::Annotation,
+    /// `bookmark_position` (Go `Bookmarkable.BookmarkPosition`, `structs:"-"` at
+    /// `model/bookmark.go:9` — derived, never persisted). `withBookmark`
+    /// (`sql_bookmarks.go:18-28`) emits `coalesce(position, 0) as bookmark_position`
+    /// ONLY for a logged-in user, so the column is ABSENT on an anonymous base read
+    /// and on every light query; [`crate::hydrate::row_to_mediafile`] reads it behind
+    /// [`crate::hydrate::RowGet::has_column`] and decodes an absent column to Go's
+    /// zero (`0`). The coalesce makes a LEFT-join miss `0`, never NULL, and a
+    /// NULL `position` cell would be Go's `0` too.
+    pub bookmark_position: i64,
+    /// `genres` (Go `MediaFile.Genres`, `structs:"-"` at `model/mediafile.go:72` —
+    /// join-only, derived). Set ONLY by [`crate::hydrate::mediafile_post_scan`] from
+    /// the decoded `tags` shim (`Tags.ToGenres`, `model/tag.go:138-148`), which also
+    /// overwrites [`MediaFileRecord::genre`] (`mediafile_repository.go:64`). Left empty
+    /// when the shim is empty, because Go's guard skips the assignment and the column
+    /// value of `genre` survives. See [`crate::sql_tags::Genre`] for the DTO's
+    /// nd-db-local precedent; never emitted by [`mediafile_row`].
+    pub genres: Vec<crate::sql_tags::Genre>,
 }
 
 /// The subtitle tag name (`model.TagSubtitle`, `model/tag.go:192`).
@@ -671,6 +772,12 @@ pub fn full_title(rec: &MediaFileRecord, append_subtitle: bool) -> String {
 /// media_file columns (`id` is appended last by [`put_sql`]), with the
 /// PostMapArgs overwrites routed through the S-D2a hook so the
 /// transformation lives in one place.
+///
+/// **Write-map invariance (S-D3b):** the six hydration-only record fields (`id`,
+/// `library_path`, `library_name`, `annotation`, `bookmark_position`, `genres`) are
+/// NOT keys here — Go's `structs:"-"` tags keep them out of `structs.Map`, and `id`
+/// is the write legs' own argument — so a hydrated record renders the identical
+/// INSERT/UPDATE column set an unwritten one does.
 ///
 /// **S-D2b consistency invariant:** the FTS inputs are derived *atomically*
 /// from the record's own `participants`/`tags` (see
@@ -868,6 +975,54 @@ pub fn mediafile_row(m: &MediaFileRecord, append_subtitle: bool) -> crate::marsh
     )
     .0
 }
+/// `dbMediaFile` raw row (phase 1 of the two-phase hydration seam,
+/// `persistence/mediafile_repository.go:29-39`): the columns `selectMediaFile` scans
+/// (`mediafile_repository.go:204-210` — `media_file.*`, the two library display
+/// columns, the six annotation columns, the base `average_rating` and, for a
+/// logged-in user only, the coalesced `bookmark_position`) with the two JSON shim
+/// columns **still unparsed**.
+///
+/// The shims are Go's non-pointer `string` fields (`:30-31`), hence plain `String` here
+/// and [`crate::hydrate::RowGet::get_text`] on the read: SQL NULL in either
+/// aborts the scan for the same reason Go does with `converting NULL to
+/// string is unsupported` (`dbMediaFile.Participants` is NOT NULL in the DDL —
+/// `schema_ddl.rs:64` defaults it to `'{}'` — but a raw NULL written behind the
+/// write path reproduces Go's failure, which the golden asserts). Rust's
+/// payload names the column rather than reproducing Go's wording; see the
+/// `hydrate.rs` module-level note on scan wording.
+/// `participants` has NO `PostScan` guard (`:55`), so the empty string reaches
+/// `unmarshalParticipants` and errors too.
+///
+/// The join-only display columns, the annotation columns, `bookmark_position` and `id`
+/// are read straight onto the record — Go scans `MediaFile.LibraryPath`/`LibraryName`
+/// and the promoted `Annotations`/`Bookmarkable` embeds by FIELD name despite
+/// `structs:"-"` (`dbx@v1.12.0/struct.go:163-215` descends into anonymous embeds and
+/// maps through `DefaultFieldMapFunc`) — so they are not duplicated on this raw
+/// struct. Phase 2 is [`crate::hydrate::mediafile_post_scan`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaFileRow {
+    /// The media_file columns scanned from the row, the two shim fields still empty.
+    pub record: MediaFileRecord,
+    /// The raw `participants` TEXT column, unparsed (Go `dbMediaFile.Participants`,
+    /// `:30`). Decoded UNGUARDED, like Go's `:55`.
+    pub participants: String,
+    /// The raw `tags` TEXT column, unparsed (Go `dbMediaFile.Tags`, `:31`). Its
+    /// decode is what derives `genre`/`genres`.
+    pub tags: String,
+}
+
+impl MediaFileRow {
+    /// `dbMediaFile.PostScan` (`mediafile_repository.go:49-67`): thin delegation onto
+    /// [`crate::hydrate::mediafile_post_scan`], surfaced the way Go's `ScanStruct`
+    /// error leaves the read (`dbx@v1.12.0/rows.go:92-102`).
+    ///
+    /// # Errors
+    /// [`crate::hydrate::HydrateError::Decoded`] carrying
+    /// [`crate::hydrate::MEDIAFILE_PREFIX`].
+    pub fn into_record(self) -> Result<MediaFileRecord, crate::hydrate::HydrateError> {
+        crate::hydrate::mediafile_post_scan(self)
+    }
+}
 
 /// `MediaFileDerived` computed atomically from the record — the S-D2b
 /// consistency invariant made type-level: there is no constructor that takes
@@ -940,7 +1095,7 @@ fn mediafile_derived(
 ///
 /// # Errors
 ///
-/// Returns [`crate::marshal::MarshalError`] when the map carries `id"
+/// Returns [`crate::marshal::MarshalError`] when the map carries `id`
 /// (impossible from [`mediafile_row`]) or the UPDATE set is empty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PutMediaFileSql {
@@ -1406,10 +1561,10 @@ mod tests {
              coalesce(starred, 0) as starred, coalesce(rating, 0) as rating, starred_at, \
              play_date, rated_at, coalesce(play_count, 0) as play_count, media_file.average_rating, \
              coalesce(position, 0) as bookmark_position \
+             FROM media_file LEFT JOIN library ON media_file.library_id = library.id \
              LEFT JOIN annotation ON (annotation.item_id = media_file.id \
              AND annotation.item_type = ? AND annotation.user_id = ?) \
-             LEFT JOIN bookmark ON (bookmark.item_id = media_file.id AND bookmark.user_id = ?) \
-             FROM media_file LEFT JOIN library ON media_file.library_id = library.id"
+             LEFT JOIN bookmark ON (bookmark.item_id = media_file.id AND bookmark.user_id = ?)"
         );
         assert_eq!(
             args,
@@ -1508,6 +1663,41 @@ mod tests {
         // so the page contributes no args.
         assert!(sql.ends_with(" ORDER BY title asc LIMIT 10 OFFSET 20"));
         assert!(args.is_empty());
+
+        // With a library filter the id predicate AND-joins the `WHERE` the base
+        // select already emits (`select.go:112-117`); appending a second
+        // ` WHERE ` is a SQLite `near "WHERE": syntax error`. Executed against the
+        // real schema by
+        // `tests/runtime_hydrate_album_mediafile.rs::mediafile_get_and_get_all_join_one_where_with_a_library_filter`.
+        let lib_filter = (
+            "media_file.library_id IN (SELECT ul.library_id FROM user_library ul \
+             WHERE ul.user_id = ?)"
+                .to_string(),
+            vec![Value::Text("user1".to_string())],
+        );
+        let (filtered, filtered_args) = get_sql("mf-1", Some("u1"), Some(lib_filter.clone()));
+        assert!(
+            !filtered.contains(" WHERE media_file.id = ?"),
+            "the id predicate must not open a second WHERE: {filtered}"
+        );
+        assert!(filtered.ends_with(" AND media_file.id = ?"), "{filtered}");
+        assert_eq!(
+            filtered_args,
+            vec![
+                Value::Text("media_file".to_string()),
+                Value::Text("u1".to_string()),
+                Value::Text("u1".to_string()),
+                Value::Text("user1".to_string()),
+                Value::Text("mf-1".to_string()),
+            ]
+        );
+        let (page, page_args) = get_all_sql(Some("u1"), Some(lib_filter), &["title asc"], 5, 0);
+        assert!(
+            page.contains(" WHERE media_file.library_id IN"),
+            "the filter still opens the clause: {page}"
+        );
+        // Annotation join (item_type, user), bookmark join (user), then the filter.
+        assert_eq!(page_args.len(), 4, "join args bind before the filter arg");
     }
 
     #[test]
@@ -1579,6 +1769,8 @@ mod tests {
         let mut tags = DbTags::new();
         tags.insert("genre".to_string(), vec!["Rock".to_string()]);
         MediaFileRecord {
+            // Read-path identity; the write legs take the id as their own argument.
+            id: "mf-1".to_string(),
             album: "Album".to_string(),
             album_artist: "AA".to_string(),
             album_artist_id: String::new(),
@@ -1648,6 +1840,13 @@ mod tests {
                 sub_role: "Vocals".to_string(),
             }],
             updated_at: None,
+            // Hydration-only fields: an unwritten test record keeps them empty, and
+            // the record-driven write tests assert they never reach the map.
+            library_path: String::new(),
+            library_name: String::new(),
+            annotation: nd_model::annotation::Annotation::default(),
+            bookmark_position: 0,
+            genres: Vec::new(),
         }
     }
     #[test]

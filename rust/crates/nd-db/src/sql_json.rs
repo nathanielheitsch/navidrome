@@ -65,12 +65,21 @@ pub enum JsonColumnError {
         /// The raw serde_json error text.
         msg: String,
     },
+    /// A message with **no** column token. Go's `unmarshalTags`
+    /// (`persistence/sql_tags.go:26`) and `unmarshalParticipants`
+    /// (`persistence/sql_participations.go:65`) wrap with only their own prefix
+    /// and never name the column, so their codecs must not add one either.
+    Bare {
+        /// The raw message (serde_json text or a Go-shaped rejection wording).
+        msg: String,
+    },
 }
 
 impl fmt::Display for JsonColumnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Raw { column, msg } => write!(f, "{column}: {msg}"),
+            Self::Bare { msg } => write!(f, "{msg}"),
         }
     }
 }
@@ -78,7 +87,14 @@ impl fmt::Display for JsonColumnError {
 impl std::error::Error for JsonColumnError {}
 
 impl JsonColumnError {
-    fn raw(column: &'static str, err: serde_json::Error) -> Self {
+    /// A message with no column token (see [`Self::Bare`]).
+    pub(crate) fn bare(err: serde_json::Error) -> Self {
+        Self::Bare {
+            msg: err.to_string(),
+        }
+    }
+
+    pub(crate) fn raw(column: &'static str, err: serde_json::Error) -> Self {
         Self::Raw {
             column,
             msg: err.to_string(),

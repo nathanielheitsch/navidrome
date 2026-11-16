@@ -488,7 +488,7 @@ pub struct PlaylistRecord {
     pub name: String,
     /// `comment` (Go `Comment`).
     pub comment: String,
-    /// `duration` (Go `Duration`, `float32` at `model/playlist.go:25`). The
+    /// `duration` (Go `Duration`, `float32` at `model/playlist.go:27`). The
     /// DDL column is `real` either way (`schema_ddl.rs:66`); `f64` matches the
     /// column affinity and differs from Go only at the float32-rounding
     /// boundary — pre-existing, not introduced here.

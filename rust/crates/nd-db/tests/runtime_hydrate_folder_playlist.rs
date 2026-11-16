@@ -292,7 +292,7 @@ fn folder_base_read_hydrates_image_files_library_path_and_id() {
 /// the `PostScan` skip branch (`ImageFiles` stays nil), a malformed payload is a
 /// decode error carrying Go's EXACT prefix out of the read, and the DDL's
 /// `'0000-00-00 00:00:00'` default SCANS as Go's zero `time.Time` — the pinned
-/// driver swallows the parse failure (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`)
+/// driver swallows the parse failure (`go-sqlite3@v1.14.52/sqlite3.go:2831-2838`)
 /// rather than failing the row.
 #[test]
 fn folder_empty_shim_skips_and_malformed_json_carries_gos_prefix() {

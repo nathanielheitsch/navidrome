@@ -17,9 +17,10 @@
 //! scale (`:27`) — negated with `NOT IN` for the negative filter.
 //!
 //! Squirrel renders `Eq{artist_id}` as `artist_id = ?` and the role
-//! `Eq`-slice as `role IN (?, …)` (`:38-41`); an empty-role slice is
-//! `roles: &[&str]` port keeps the same `IN`-rendering specialization for
-//! arity as Go's always-nonempty branch — see the tests.
+//! `Eq`-slice as `role IN (?, …)` (`:38-41`). Go adds that clause only when
+//! `len(roles) > 0` (`:39`), and the port matches it: an empty `roles` slice
+//! renders the plain semi-join with no `role IN` at all ("any role", per the
+//! comment at `:27`) — pinned by the filter tests below.
 //!
 //! Deliberate divergences, pinned by `tests/participants_json.rs` against the
 //! Go oracle in `tests/testdata/go_participants/` (README there):
@@ -43,9 +44,11 @@
 //! caller-supplied per the Go API contract (`:26` "matches rows of table");
 //! `artist_id` is a bound `?` value.
 
+use crate::sql_json::JsonColumnError;
 use crate::sqlrepo::Value;
 use serde::de::Error;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
@@ -253,7 +256,7 @@ pub type Participants = BTreeMap<Role, Vec<Participant>>;
 /// embeds `Artist`; the marshal keeps only ID/Name/SubRole (`:54`), so the
 /// column representation does too — the `getParticipants` hydration
 /// (`:127-146`) re-fetches the rest from the `artist` table at read time.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Participant {
     /// The artist id (`model.Artist.ID`), the `artist` table join key.
     #[serde(default)]
@@ -317,7 +320,19 @@ pub fn marshal_flat_participants(participants: &Participants) -> String {
 /// `unwrap_or_else` follows `sql_tags::marshal_tags`.
 #[must_use]
 pub fn marshal_participants(participants: &Participants) -> String {
-    serde_json::to_string(participants).unwrap_or_else(|_| "{}".to_string())
+    // Go's `marshalParticipants` (`:50-59`) builds a fresh
+    // `map[model.Role][]participant` and appends per entry, so a role with an empty
+    // or nil list never gets a key: executed against the real function,
+    // `model.Participants{"artist": {}}` and `{"artist": nil}` both marshal `{}`.
+    // serde over the map would emit `{"artist":[]}`, so empty lists are dropped
+    // first — same shape Go writes, same reason a role is absent from the column.
+    // Borrowed, not rebuilt: serde serializes `&Vec<Participant>` under the same
+    // `Serialize` impl, so this only skips keys instead of cloning every entry.
+    let populated: BTreeMap<&Role, &Vec<Participant>> = participants
+        .iter()
+        .filter(|(_, list)| !list.is_empty())
+        .collect();
+    serde_json::to_string(&populated).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// `unmarshalParticipants` (`persistence/sql_participations.go:61-76`): the
@@ -326,6 +341,11 @@ pub fn marshal_participants(participants: &Participants) -> String {
 /// prefix and `""` for no error. Only invalid-role text is byte-identical;
 /// serde and encoding/json use different structural-error wording, and callers
 /// must not depend on text beyond the prefix.
+///
+/// Marshal-side parity note: Go's `marshalParticipants` (`:50-59`) never writes a
+/// key for a role whose list is empty or nil, so [`marshal_participants`] drops
+/// those roles rather than emitting `{"role":[]}` (executed against the real
+/// function: both give `{}`).
 ///
 /// Go semantics carried over:
 /// - **`""` is an error** — `json.Unmarshal` of empty input fails
@@ -341,28 +361,23 @@ pub fn marshal_participants(participants: &Participants) -> String {
 /// - **Missing/absent fields zero-fill** (`""`) as Go's struct fields do;
 ///   a `null` list under a role stays an empty list, exactly as Go's
 ///   `slice.Map` over a nil slice returns an empty slice.
+/// - **A `null` element and a `null` field also zero-fill**, which is NOT
+///   serde's default: `encoding/json` assigns the zero value to a non-pointer
+///   element/field for a JSON `null` (`decode.go` `literalStore`, executed
+///   against the real `unmarshalParticipants` — `[null]` and
+///   `[{"id":null,"name":null}]` both give one `Participant{}` with `err=nil`),
+///   while serde would reject both as a type mismatch. Decoding therefore goes
+///   through `RawParticipant`'s `Option<String>` fields. Any OTHER type in those
+///   positions still errors, as Go's `cannot unmarshal string into ... of type
+///   persistence.participant` does.
 /// - **Duplicate keys** keep the last value (Go's map assignment; serde
 ///   agrees).
 /// - **Entry order within a role is preserved** from the column — the only
 ///   order this column has, and nothing downstream may depend on it.
 #[must_use]
 pub fn unmarshal_participants(data: &str) -> (Participants, String) {
-    match serde_json::from_str::<Option<BTreeMap<Role, Option<Vec<Participant>>>>>(data) {
-        Ok(raw) => {
-            // Go reads into `map[model.Role][]participant` (`:62-63`), and its
-            // `null` handling (pinned by the oracle's `nil_participants` case):
-            // a `null` column is an empty (non-nil) map — Go marshals `nil
-            // model.Participants` as `null` — and a role's `null` list is an
-            // empty list (Go's `slice.Map` over a nil slice, `:70-72`). The
-            // `Option` wrappers accept both; `unwrap_or_default` gives Go's
-            // non-nil empties.
-            let parsed: Participants = raw
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(role, artists)| (role, artists.unwrap_or_default()))
-                .collect();
-            (parsed, String::new())
-        }
+    match decode_participants(data) {
+        Ok(parsed) => (parsed, String::new()),
         Err(error) => {
             // serde_json appends ` at line N column M` to custom errors; Go's
             // `%w` wrap does not — strip the suffix so the two spell the same
@@ -377,6 +392,105 @@ pub fn unmarshal_participants(data: &str) -> (Participants, String) {
                 format!("parsing participants: {stripped}"),
             )
         }
+    }
+}
+
+/// The column shape `encoding/json` actually decodes into, with every nullable
+/// position an `Option`: Go's `map[model.Role][]participant` (`:62`) assigns the
+/// **zero value** for a JSON `null` at the map, list, element and field level
+/// (`decode.go` `literalStore`/`array`/`struct`), where a plain `Vec<Participant>`
+/// /`String` in serde is a hard type mismatch. Field types other than `null`
+/// (e.g. a number for `id`) still error, as Go's
+/// `cannot unmarshal number into ... of type persistence.participant` does.
+#[derive(Debug, Deserialize)]
+struct RawParticipant {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "subRole")]
+    sub_role: Option<String>,
+}
+
+impl From<RawParticipant> for Participant {
+    fn from(raw: RawParticipant) -> Self {
+        Self {
+            id: raw.id.unwrap_or_default(),
+            name: raw.name.unwrap_or_default(),
+            sub_role: raw.sub_role.unwrap_or_default(),
+        }
+    }
+}
+
+/// `json.Unmarshal(data, &dbParticipants)` (`persistence/sql_participations.go:61-66`)
+/// over the null-tolerant shape above. `Err` carries the codec message **without**
+/// Go's `parsing participants:` prefix, which the caller adds.
+fn decode_participants(data: &str) -> Result<Participants, JsonColumnError> {
+    let root: JsonValue = serde_json::from_str(data).map_err(JsonColumnError::bare)?;
+    match &root {
+        // Go: `null` into a map leaves it nil; `unmarshalParticipants` returns that
+        // nil map with no error, and callers cannot distinguish it from empty.
+        JsonValue::Null => return Ok(Participants::new()),
+        JsonValue::Object(_) => {}
+        other => {
+            return Err(JsonColumnError::bare(serde_json::Error::custom(format!(
+                "participants column must be a JSON object or null, not {}",
+                json_type_name(other)
+            ))));
+        }
+    }
+    let map = root.as_object().expect("matched above");
+    let mut out = Participants::new();
+    for (key, value) in map {
+        // Go validates the key through `model.Role.UnmarshalText` before touching
+        // the value; the same rejection order is kept here.
+        let role: Role = key
+            .parse()
+            .map_err(|message: String| JsonColumnError::bare(serde_json::Error::custom(message)))?;
+        let list = match value {
+            JsonValue::Null => Vec::new(),
+            JsonValue::Array(items) => {
+                let mut list = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    match item {
+                        JsonValue::Null => list.push(Participant::default()),
+                        JsonValue::Object(_) => {
+                            let raw: RawParticipant = serde_json::from_value(item.clone())
+                                .map_err(JsonColumnError::bare)?;
+                            list.push(raw.into());
+                        }
+                        other => {
+                            return Err(JsonColumnError::bare(serde_json::Error::custom(format!(
+                                "cannot unmarshal {} into participants entry {i}",
+                                json_type_name(other)
+                            ))));
+                        }
+                    }
+                }
+                list
+            }
+            other => {
+                return Err(JsonColumnError::bare(serde_json::Error::custom(format!(
+                    "cannot unmarshal {} into participants list for role {key}",
+                    json_type_name(other)
+                ))));
+            }
+        };
+        out.insert(role, list);
+    }
+    Ok(out)
+}
+
+/// Go's `decode.go` names JSON types in its error text (`json: cannot unmarshal
+/// string into ...`); this is the same vocabulary for the value-level rejections.
+fn json_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
     }
 }
 
@@ -397,7 +511,24 @@ pub fn delete_participants_sql(table: String, item_id: String) -> (String, Vec<V
 /// (artist_id, <table>_id, role, sub_role) DO NOTHING` for repeat puts.
 /// `None` when the participants map has no role keys — Go returns before
 /// building the query (`len(participants) == 0`, `:87-89`); a map that holds
-/// only empty lists still gets the (empty-array) INSERT, as Go's would.
+/// only empty lists still gets an INSERT, as Go's would. The bind BYTES for that
+/// map are a documented residual: Go's `var flatParticipants []flatParticipant`
+/// (`:91`) stays **nil** when every role list is empty, so its `json.Marshal` (`:102`)
+/// binds `null`, while [`marshal_flat_participants`] builds a `Vec` and binds `[]`.
+/// Both are inert: executed against the real statement with rusqlite 0.32.1
+/// (SQLite 3.46.0), `json_each('null')` yields one row whose `artist_id` is NULL,
+/// which the INNER `JOIN artist` (`:118`) rejects, and `json_each('[]')` yields no
+/// rows — `rows_affected = 0` and `album_artists` stays empty either way. The port
+/// keeps `[]` because `tests/participants_json.rs` parses this bind as
+/// `Vec<FlatParticipant>` (`null` cannot deserialize into a Vec) and the Go oracle
+/// builds a non-nil slice (`make([]flatParticipant, 0)`,
+/// `tests/testdata/go_participants/main.go:184`), so the oracle cannot express
+/// `null`. The tags analogue has no such gap: Go returns at `len(tagIDs) == 0`
+/// (`sql_tags.go:68`) before marshalling.
+///
+/// The `participants` COLUMN write for that same map yields `{}`, because Go's
+/// `marshalParticipants` never creates a key for an empty list (see
+/// [`marshal_participants`]).
 #[must_use]
 pub fn insert_participants_sql(
     table: String,
@@ -573,6 +704,40 @@ mod tests {
     }
 
     #[test]
+    fn marshal_participants_drops_roles_with_an_empty_list_like_go() {
+        // Arrange: a role mapped to an EMPTY list. Go's `marshalParticipants`
+        // (`:50-59`) appends per entry into a fresh map, so the key is never
+        // created — executed against the real function, `{"artist": {}}` and
+        // `{"artist": nil}` both marshal `{}`, and a mixed map keeps only the
+        // populated role. serde over the map would emit `{"artist":[]}`.
+        let mut empty = Participants::new();
+        empty.insert(Role::from("artist"), Vec::new());
+        // Act:
+        let json = marshal_participants(&empty);
+        // Assert:
+        assert_eq!(json, "{}", "an empty role gets no key, as Go");
+        let mut mixed = Participants::new();
+        mixed.insert(Role::from("artist"), Vec::new());
+        mixed.insert(
+            Role::from("composer"),
+            vec![Participant {
+                id: "c-1".into(),
+                name: "C".into(),
+                sub_role: String::new(),
+            }],
+        );
+        assert_eq!(
+            marshal_participants(&mixed),
+            r#"{"composer":[{"id":"c-1","name":"C"}]}"#,
+            "only the populated role survives, matching Go"
+        );
+        // It still round-trips: the dropped role is simply absent on read.
+        let (back, err) = unmarshal_participants(&json);
+        assert_eq!(err, "");
+        assert!(back.is_empty());
+    }
+
+    #[test]
     fn marshal_participants_empty_and_omitempty_round_trip() {
         // Arrange: the empty map and an empty subRole.
         let empty: Participants = BTreeMap::new();
@@ -656,6 +821,73 @@ mod tests {
         let composer = participants.get(&Role::from("composer")).expect("composer");
         assert_eq!(composer[0].id, "");
         assert_eq!(composer[0].name, "n");
+    }
+
+    #[test]
+    fn null_elements_and_null_fields_zero_fill_like_go() {
+        // Arrange / Assert: executed against the real Go `unmarshalParticipants`,
+        // a JSON `null` at element or field level is the ZERO value with no error
+        // (`encoding/json` `literalStore`), where serde's plain derive would
+        // reject both as `invalid type: null, expected struct Participant`.
+        for data in [
+            r#"{"albumartist":[null]}"#,
+            r#"{"albumartist":[{"id":null,"name":null}]}"#,
+            r#"{"albumartist":[{}]}"#,
+            r#"{"albumartist":[{"id":"ar","name":"N","subRole":null}]}"#,
+        ] {
+            let (participants, err) = unmarshal_participants(data);
+            assert_eq!(err, "", "{data}");
+            let list = participants
+                .get(&Role::from("albumartist"))
+                .unwrap_or_else(|| panic!("{data} lost its role"));
+            assert_eq!(list.len(), 1, "{data} must keep the element");
+        }
+        let (participants, err) =
+            unmarshal_participants(r#"{"albumartist":[{"id":null,"name":null}]}"#);
+        assert_eq!(err, "");
+        assert_eq!(
+            participants[&Role::from("albumartist")][0],
+            Participant::default()
+        );
+        let (participants, err) =
+            unmarshal_participants(r#"{"albumartist":[{"id":"ar","name":"N","subRole":null}]}"#);
+        assert_eq!(err, "");
+        assert_eq!(
+            participants[&Role::from("albumartist")][0],
+            Participant {
+                id: "ar".into(),
+                name: "N".into(),
+                sub_role: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn non_null_wrong_types_are_rejected_with_a_cannot_unmarshal_message() {
+        // Go rejects a non-object element and a non-array list
+        // (`json: cannot unmarshal string into .albumartist.0 of type
+        // persistence.participant`); the accept/reject decision is what matters,
+        // not the wording (hydrate-contract.md message scope).
+        let (participants, err) = unmarshal_participants(r#"{"albumartist":["x"]}"#);
+        assert!(participants.is_empty());
+        assert!(err.starts_with("parsing participants: "), "got {err:?}");
+        assert!(err.contains("cannot unmarshal"), "got {err:?}");
+
+        let (participants, err) = unmarshal_participants(r#"{"albumartist":"x"}"#);
+        assert!(participants.is_empty());
+        assert!(err.contains("cannot unmarshal"), "got {err:?}");
+
+        // A wrong FIELD type is still a hard error on both sides.
+        let (participants, err) = unmarshal_participants(r#"{"albumartist":[{"id":5}]}"#);
+        assert!(participants.is_empty());
+        assert!(err.starts_with("parsing participants: "), "got {err:?}");
+
+        // The top level must be an object or null, never an array.
+        let (participants, err) = unmarshal_participants("[]");
+        assert!(participants.is_empty());
+        assert!(err.starts_with("parsing participants: "), "got {err:?}");
+        let (_, err) = unmarshal_participants("");
+        assert!(err.starts_with("parsing participants: "), "got {err:?}");
     }
 
     #[test]
@@ -757,7 +989,8 @@ mod tests {
     fn insert_participants_sql_none_for_empty_map_and_rendered_for_entries() {
         // Arrange / Act / Assert: Go returns before building the query at
         // `len(participants) == 0` (:87-89) — map length, so a map with only
-        // empty lists still renders (with an empty-array bind).
+        // empty lists still renders (with an empty-array bind; Go's own bind for
+        // that map is `null` — see the next test for that documented residual).
         let empty: Participants = BTreeMap::new();
         assert!(insert_participants_sql("album".into(), "alb-1".into(), &empty).is_none());
         let mut only_empty: Participants = BTreeMap::new();
@@ -774,6 +1007,57 @@ mod tests {
             args,
             vec![Value::Text("alb-1".into()), Value::Text("[]".into())]
         );
+    }
+
+    #[test]
+    fn flat_bind_divergence_for_only_empty_roles_is_inert() {
+        // Documented residual, pinned with executed evidence. Go declares
+        // `var flatParticipants []flatParticipant` (:91) and appends per entry, so a
+        // map whose role lists are ALL empty leaves it nil and json.Marshal (:102)
+        // binds `null`; the port builds a Vec and binds `[]`. Both are inert against
+        // the real statement: `json_each('null')` yields one row with a NULL
+        // artist_id, which the INNER JOIN to `artist` rejects, and `json_each('[]')`
+        // yields no rows — either way nothing reaches <table>_artists.
+        let mut only_empty: Participants = BTreeMap::new();
+        only_empty.insert(Role::from("artist"), vec![]);
+        only_empty.insert(Role::from("composer"), vec![]);
+        let Some((sql, args)) =
+            insert_participants_sql("album".into(), "alb-1".into(), &only_empty)
+        else {
+            panic!("a map with role keys must render, as Go's len() > 0 arm would");
+        };
+        let port_bind = match &args[1] {
+            Value::Text(s) => s.clone(),
+            other => panic!("unexpected bind payload {other:?}"),
+        };
+        // Assert: the port's bind is `[]` (Go's would be `null`).
+        assert_eq!(port_bind, "[]");
+
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("create table artist(id text primary key, name text);")
+            .expect("artist schema");
+        conn.execute_batch("create table album_artists(album_id text, artist_id text, role text,\n             sub_role text, unique(artist_id, album_id, role, sub_role));")
+            .expect("album_artists schema");
+        conn.execute("insert into artist values ('art-1', 'X')", [])
+            .expect("seed artist");
+        let item_id = match &args[0] {
+            Value::Text(s) => s.clone(),
+            other => panic!("unexpected id payload {other:?}"),
+        };
+        // Act: run the statement with the port's bind and with Go's `null` bind.
+        let port_rows = conn
+            .execute(&sql, rusqlite::params![item_id.clone(), port_bind])
+            .expect("port bind executes");
+        let go_rows = conn
+            .execute(&sql, rusqlite::params![item_id, "null".to_string()])
+            .expect("Go bind executes");
+        let stored: i64 = conn
+            .query_row("select count(*) from album_artists", [], |row| row.get(0))
+            .expect("count");
+        // Assert: both binds write nothing — the byte difference has no effect.
+        assert_eq!(port_rows, 0, "the port's `[]` bind writes no row");
+        assert_eq!(go_rows, 0, "Go's `null` bind writes no row either");
+        assert_eq!(stored, 0, "<table>_artists stays empty either way");
     }
 
     #[test]

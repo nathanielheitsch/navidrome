@@ -1,7 +1,7 @@
 //! Port of `persistence/folder_repository.go` (327L) — the folder repository.
 //!
 //! Go's repository is a `sqlRepository` over `folder` whose selects join
-//! `library` for the caller's path (`selectFolder`, `:58-62`:
+//! `library` for the caller's path (`selectFolder`, `:74-78`:
 //! `folder.*`, `library.path as library_path`, INNER JOIN — a folder row
 //! always has its library). Every method builds a squirrel statement and
 //! hands it to `queryOne`/`queryAll`/`count`/`exists`/`executeSQL`, which
@@ -9,7 +9,7 @@
 //! `(sql, args)`; execution stays with the caller (`store.rs` seam), so this
 //! port stops at the same [`Sql`] pairs and pins their shapes.
 //!
-//! `PostScan`/`PostMapArgs` (`:25-53`) marshal the `image_files` JSON column
+//! `PostScan`/`PostMapArgs` (`:25-58`) marshal the `image_files` JSON column
 //! (TEXT in the table, `json.Unmarshal` into `model.Folder.ImageFiles`,
 //! `"[]"` for a nil slice). The write path is the record-driven
 //! [`put_sql`] (S-D2b): [`FolderRecord`] → [`folder_row`] (the
@@ -17,15 +17,16 @@
 //! [`crate::marshal::MarshalledRow`] seam — no caller-supplied column
 //! arrays for the write path.
 //!
-//! `GetTouchedWithPlaylists`/`GetAllWithPlaylists` (`:282-297`) wrap Go's
+//! `GetTouchedWithPlaylists`/`GetAllWithPlaylists` (`:276-299`) wrap Go's
 //! `queryWithStableResults` cursor machinery, which is the streaming slice's
 //! to port; their WHERE shapes pin here so the caller can hand the pair to
 //! its own cursor seam.
 //!
-//! `GetFolderUpdateInfo` (`:86-117`) batches target paths at
-//! [`BATCH_SIZE`] (100: each path adds ~3 conditions and SQLite rejects
-//! expression trees deeper than 1000, `:81-83`); a path of `""`/`"."` selects
-//! the whole library (`:90-93` → [`get_folder_update_info_all_sql`]).
+//! `GetFolderUpdateInfo` (`:105-132`) batches target paths at
+//! [`BATCH_SIZE`] (`slices.Chunk` at `:120-123`; the comment at `:118-119` says
+//! each path adds ~3 conditions and SQLite rejects expression trees deeper
+//! than 1000); a path of `""`/`"."` selects the whole library (`:111-116` →
+//! [`get_folder_update_info_all_sql`]).
 //!
 //! Safety rule (`sqlrepo.rs`): identifiers are caller-supplied names only;
 //! every value — paths, ids, LIKE patterns — is bound to a `?` parameter.
@@ -37,18 +38,18 @@ use std::collections::BTreeMap;
 use crate::sqlrepo::{Repository, Value};
 use chrono::{DateTime, Utc};
 
-/// `r.tableName` (`newFolderRepository`, `folder_repository.go:56`).
+/// `r.tableName` (`newFolderRepository`, `folder_repository.go:67-72`).
 pub const FOLDER_TABLE: &str = "folder";
 
 /// One materialized statement: `(sql, args)`, the `toSQL()`
 /// (`sql_base_repository.go:358-372`) output shape.
 pub type Sql = (String, Vec<Value>);
 
-/// `GetFolderUpdateInfo`'s path batch size (`folder_repository.go:82`).
+/// `GetFolderUpdateInfo`'s path batch size (`folder_repository.go:118-120`).
 pub const BATCH_SIZE: usize = 100;
 
 /// `MarkMissing`'s id chunk size (`slices.Chunk(ids, 200)`,
-/// `folder_repository.go:265`).
+/// `folder_repository.go:263`.
 pub const MARK_MISSING_CHUNK_SIZE: usize = 200;
 
 /// `escapeLikePrefix` (`folder_repository.go:251-253`): escapes the SQL LIKE
@@ -108,7 +109,7 @@ fn clean_path(p: &str) -> String {
 }
 
 /// `FolderID` (`model/folder.go:46-52`, reached via `model.NewFolder` at
-/// `folder_repository.go:71`): strip the library root prefix and a leading
+/// `folder_repository.go:88` (`GetByPath`)): strip the library root prefix and a leading
 /// separator, clean, then hash `"<libID>:<path>"`.
 #[must_use]
 pub fn folder_id(lib_id: i64, lib_path: &str, path: &str) -> String {
@@ -118,7 +119,7 @@ pub fn folder_id(lib_id: i64, lib_path: &str, path: &str) -> String {
     nd_id::new_hash(&[&lib_id.to_string(), &cleaned])
 }
 
-/// `selectFolder` (`folder_repository.go:58-62`): the base select —
+/// `selectFolder` (`folder_repository.go:74-78`): the base select —
 /// `folder.*` plus `library.path as library_path`, INNER-joined — then the
 /// library-access filter. `library_filter` is the caller-resolved
 /// `applyLibraryFilter` clause (`sql_base_repository.go:261-282`;
@@ -134,7 +135,7 @@ pub fn select_folder(library_filter: Option<Sql>) -> Repository {
     }
 }
 
-/// `Get` (`folder_repository.go:64-67`): the base select by id.
+/// `Get` (`folder_repository.go:80-85`): the base select by id.
 #[must_use]
 pub fn get_sql(id: &str, library_filter: Option<Sql>) -> Sql {
     select_folder(library_filter)
@@ -143,10 +144,10 @@ pub fn get_sql(id: &str, library_filter: Option<Sql>) -> Sql {
         .unwrap_or_default()
 }
 
-/// `GetAll` (`folder_repository.go:74-77`): the base select with the
+/// `GetAll` (`folder_repository.go:92-97`): the base select with the
 /// caller-supplied order-by expressions (already direction-carrying, per
 /// `buildSortOrder` output) and `applyOptions`' Max/Offset
-/// (`sql_base_repository.go:105-108`, non-positive drops the clause).
+/// (`sql_base_repository.go:149-156`, non-positive drops the clause).
 #[must_use]
 pub fn get_all_sql(
     library_filter: Option<Sql>,
@@ -174,7 +175,7 @@ pub fn get_all_sql(
     .unwrap_or_default()
 }
 
-/// `CountAll` (`folder_repository.go:79-82`): `newSelect` + `count(*)` +
+/// `CountAll` (`folder_repository.go:99-103`): `newSelect` + `count(*)` +
 /// `applyLibraryFilter`. Go's folder repository counts `count(*)` (not the
 /// base `count(distinct id)` shape), because every folder row is one id.
 #[must_use]
@@ -188,14 +189,17 @@ pub fn count_all_sql(library_filter: Option<Sql>) -> Sql {
     .unwrap_or_default()
 }
 
-/// `queryFolderUpdateInfo`'s select (`folder_repository.go:167-169`), shared
+/// `queryFolderUpdateInfo`'s select (`folder_repository.go:179`), shared
 /// by [`get_folder_update_info_all_sql`] and
 /// [`get_folder_update_info_batch_sql`].
 const UPDATE_INFO_COLUMNS: &str = "id, updated_at, hash, image_files, images_updated_at";
 
-/// `getFolderUpdateInfoAll` (`folder_repository.go:123-131`): the
+/// `getFolderUpdateInfoAll` (`folder_repository.go:135-141`): the
 /// update-info columns for every non-missing folder of the library.
-/// `image_files` is TEXT; its JSON decode (`:172-177`) is the caller's.
+/// `image_files` is TEXT; its JSON decode (`:194-198`) is the caller's, and
+/// that lane wraps failures as `parsing folder image_files:` (`:196`) — NOT
+/// [`crate::hydrate::FOLDER_IMAGE_FILES_PREFIX`], which belongs to
+/// `dbFolder.PostScan` (`:38-46`).
 #[must_use]
 pub fn get_folder_update_info_all_sql(lib_id: i64) -> Sql {
     (
@@ -207,15 +211,15 @@ pub fn get_folder_update_info_all_sql(lib_id: i64) -> Sql {
     )
 }
 
-/// `getFolderUpdateInfoBatch` (`folder_repository.go:134-161`) for one batch
-/// of paths (`GetFolderUpdateInfo` chunks at [`BATCH_SIZE`], `:82-89`):
+/// `getFolderUpdateInfoBatch` (`folder_repository.go:144-175`) for one batch
+/// of paths (`GetFolderUpdateInfo` chunks at [`BATCH_SIZE`], `:120-123`):
 /// non-missing folders of the library whose id is one of the target folder
 /// ids OR whose path equals / starts with a target path. Go's `And`/`Or`
 /// render parenthesized, so the `id IN` group and the per-path OR group wrap;
 /// args bind in fragment order (library_id, missing, ids, then per path:
 /// equality, LIKE prefix). `clean_path` mirrors `path.Clean(TrimPrefix(p,
-/// "/"))` (`:141-143`) and the ids come from [`folder_id`]
-/// (`model.FolderID`, `:145`).
+/// "/"))` (`:154-156`) and the ids come from [`folder_id`]
+/// (`model.FolderID`, called at `:159`).
 #[must_use]
 pub fn get_folder_update_info_batch_sql(lib_id: i64, target_paths: &[String]) -> Sql {
     let mut id_args: Vec<Value> = Vec::with_capacity(target_paths.len());
@@ -284,8 +288,8 @@ pub fn folder_subtree_filter(lib_id: i64, paths: &[String]) -> Sql {
 /// `HasAudioOutsideFolders` (`folder_repository.go:236-247`): any non-missing
 /// folder in `parent`'s subtree, other than the excluded ids, that holds
 /// audio files. `parent_path` is Go's
-/// `TrimPrefix(path.Join(parent.Path, parent.Name), "/")` (`:240`); the
-/// `parent.NumAudioFiles > 0` fast path (`:237-239`) is a caller-side check
+/// `TrimPrefix(path.Join(parent.Path, parent.Name), "/")` (`:236`); the
+/// `parent.NumAudioFiles > 0` fast path (`:233-235`) is a caller-side check
 /// and produces no SQL. Go's `Eq{"library_id": …, "missing": false}` map
 /// iterates randomly; the port pins `library_id` first for a stable shape.
 #[must_use]
@@ -333,7 +337,7 @@ pub fn has_audio_outside_folders_sql(
 /// Timestamps are `DateTime<Utc>` bound through `crate::time` (explicit
 /// `'%F %T%.f%:z'` TEXT; the DDL's localtime defaults are never relied on).
 /// `created_at` is `None` for a never-stamped row (Go zero `time.Time`);
-/// [`put_sql`] stamps it like Go's `NewFolder` (`folder.go:65-67`).
+/// [`put_sql`] stamps it like Go's `NewFolder` (`folder.go:65-73`).
 ///
 /// There is deliberately no `Default`: a write record must name every persisted
 /// column, so the hydration-owned fields can only arrive through the read path.
@@ -378,7 +382,7 @@ pub struct FolderRecord {
     /// `created_at` (Go `CreatedAt`); `None` = never stamped (Go zero
     /// `time.Time`), stamped to `now` by [`put_sql`].
     pub created_at: Option<DateTime<Utc>>,
-    /// The select's `library.path as library_path` (`folder_repository.go:60`),
+    /// The select's `library.path as library_path` (`folder_repository.go:75`),
     /// **join-only**: Go's `Folder.LibraryPath` is `structs:"-"`
     /// (`model/folder.go:21`), so [`folder_row`] deliberately does NOT emit it
     /// and the write SQL is unchanged. Read onto the record by
@@ -437,7 +441,7 @@ pub fn folder_row(f: &FolderRecord) -> crate::marshal::ColumnMap {
 }
 
 /// `dbFolder` raw row (phase 1 of the two-phase hydration seam,
-/// `persistence/folder_repository.go:25-31`): the columns `selectFolder`'
+/// `persistence/folder_repository.go:25-28`): the columns `selectFolder`'
 /// `folder.*` + `library.path as library_path` scan into, with the
 /// `image_files` JSON shim **still unparsed** (it is a non-pointer `string`
 /// on the raw struct, exactly like Go's `dbFolder.ImageFiles`). Phase 2 is
@@ -451,7 +455,7 @@ pub struct FolderRow {
     /// The folder columns scanned from the row, `image_files` still empty.
     pub record: FolderRecord,
     /// The raw `image_files` TEXT column, unparsed (Go's `dbFolder.ImageFiles`,
-    /// `folder_repository.go:26`). Empty means the shim was not scanned: Go's
+    /// `folder_repository.go:27`). Empty means the shim was not scanned: Go's
     /// `PostScan` guard (`:40`) skips the decode and leaves `ImageFiles` nil.
     pub image_files: String,
 }
@@ -492,7 +496,7 @@ pub struct PutFolderSql {
 ///
 /// The record is the only write input (S-D2b — no caller-supplied column
 /// arrays): it stamps the row like Go's `NewFolder`/`Put` (`model/folder.go`
-/// `:65-67`) — `created_at` to `now` when the record carries none,
+/// `:65-73`) — `created_at` to `now` when the record carries none,
 /// `updated_at` to `now` — and renders both legs through the shared
 /// [`crate::marshal::MarshalledRow`] from the [`folder_row`] map. The
 /// UPDATE leg is the `selectUpdateColumns`-filtered set (no `created_at`;
@@ -522,7 +526,7 @@ pub struct PutFolderSql {
 /// `updated_at` slightly older than commit time. This seam takes `now` and
 /// always stamps it, keeping the render-time value explicit instead of relying
 /// on a caller-side stamp. The drift is bounded by the scan interval, and the
-/// only consumer (`GetTouchedWithPlaylists`, `folder_repository.go:282-289`)
+/// only consumer (`GetTouchedWithPlaylists`, `folder_repository.go:276-287`)
 /// compares against `library.last_scan_at`. A future wiring slice can pass the
 /// caller's `UpdateAt` in as `now`.
 pub fn put_sql(
@@ -578,8 +582,8 @@ pub fn put_marshalled_sql(
     })
 }
 
-/// `MarkMissing` (`folder_repository.go:261-273`): one UPDATE per 200-id
-/// chunk (`slices.Chunk(ids, 200)`, `:265`), setting `missing` and
+/// `MarkMissing` (`folder_repository.go:261-274`): one UPDATE per 200-id
+/// chunk (`slices.Chunk(ids, 200)`, `:263`), setting `missing` and
 /// `updated_at` (the caller binds the timestamp).
 #[must_use]
 pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<Sql> {
@@ -599,7 +603,7 @@ pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<S
         .collect()
 }
 
-/// `GetTouchedWithPlaylists` (`folder_repository.go:282-289`): non-missing
+/// `GetTouchedWithPlaylists` (`folder_repository.go:276-287`): non-missing
 /// folders with playlists touched since the library's last scan. Go wraps the
 /// select in `queryWithStableResults` (the streaming slice's port); this pins
 /// the select pair it wraps.
@@ -613,7 +617,7 @@ pub fn get_touched_with_playlists_sql(library_filter: Option<Sql>) -> Sql {
         .unwrap_or_default()
 }
 
-/// `GetAllWithPlaylists` (`folder_repository.go:291-297`): non-missing
+/// `GetAllWithPlaylists` (`folder_repository.go:289-299`): non-missing
 /// folders with playlists.
 #[must_use]
 pub fn get_all_with_playlists_sql(library_filter: Option<Sql>) -> Sql {
@@ -624,7 +628,7 @@ pub fn get_all_with_playlists_sql(library_filter: Option<Sql>) -> Sql {
         .unwrap_or_default()
 }
 
-/// `purgeEmpty` (`folder_repository.go:315-333`): one DELETE, optionally
+/// `purgeEmpty` (`folder_repository.go:305-325`): one DELETE, optionally
 /// restricted to the given library ids. Go's `And{...}` clause order pins
 /// as written (an empty `image_files` cell is the literal `"[]"` the
 /// PostMapArgs default writes).
@@ -693,7 +697,7 @@ mod tests {
 
     #[test]
     fn select_folder_joins_library_and_applies_filter() {
-        // Arrange: selectFolder (:58-62) + applyLibraryFilter.
+        // Arrange: selectFolder (:74-78) + applyLibraryFilter.
         // Act:
         let (sql, args) = select_folder(lib_filter()).to_sql().expect("renders");
         // Assert:
@@ -715,7 +719,7 @@ mod tests {
 
     #[test]
     fn get_sql_filters_by_bound_folder_id() {
-        // Arrange: Get (:64-67).
+        // Arrange: Get (:80-85).
         // Act:
         let (sql, args) = get_sql("f-1", None);
         // Assert:
@@ -729,7 +733,7 @@ mod tests {
 
     #[test]
     fn get_all_applies_order_and_pagination() {
-        // Arrange: GetAll (:74-77) via applyOptions (:105-108): order-by
+        // Arrange: GetAll (:92-97) via applyOptions (:149-156): order-by
         // expressions arrive direction-carrying; non-positive bounds drop.
         // Act:
         let (sql, args) = get_all_sql(None, vec!["folder.name asc".to_string()], 10, 20);
@@ -752,7 +756,7 @@ mod tests {
 
     #[test]
     fn count_all_uses_plain_count_star() {
-        // Arrange: CountAll (:79-82) keeps count(*), not count(distinct id).
+        // Arrange: CountAll (:99-103) keeps count(*), not count(distinct id).
         // Act:
         let (sql, args) = count_all_sql(None);
         // Assert:
@@ -762,7 +766,7 @@ mod tests {
 
     #[test]
     fn update_info_all_pins_non_missing_library_scope() {
-        // Arrange: getFolderUpdateInfoAll (:123-131).
+        // Arrange: getFolderUpdateInfoAll (:135-141).
         // Act:
         let (sql, args) = get_folder_update_info_all_sql(7);
         // Assert:
@@ -776,7 +780,7 @@ mod tests {
 
     #[test]
     fn update_info_batch_pins_id_in_group_and_path_or_group() {
-        // Arrange: one-batch getFolderUpdateInfoBatch (:134-161): the
+        // Arrange: one-batch getFolderUpdateInfoBatch (:144-175): the
         // `Or{Eq{"id": folderIDs}, pathConditions}` renders as
         // `(id IN (…)) OR (…)` inside Go's And — squirrel Or wraps each
         // element, Eq-slice renders the IN-list.
@@ -808,7 +812,7 @@ mod tests {
     #[test]
     fn subtree_filter_root_path_selects_whole_library() {
         // Arrange: the cleanPath "." early return (:215-217), reached via
-        // GetFolderUpdateInfo's ""/"." whole-library rule (:90-93).
+        // GetFolderUpdateInfo's ""/"." whole-library rule (:111-116).
         // Act:
         let (sql, args) = folder_subtree_filter(7, &["".to_string(), ".".to_string()]);
         // Assert:
@@ -1032,7 +1036,7 @@ mod tests {
 
     #[test]
     fn mark_missing_chunks_ids_and_sets_updated_at() {
-        // Arrange: 201 ids → 2 chunks (:261-273, chunk 200).
+        // Arrange: 201 ids → 2 chunks (:261-274, chunk 200 at :263).
         let ids = (0..201).map(|i| format!("f-{i}")).collect::<Vec<_>>();
         // Act:
         let stmts = mark_missing_sql(true, &ids, 1_700_000_000);
@@ -1053,8 +1057,8 @@ mod tests {
 
     #[test]
     fn playlist_cursor_wheres_pin_their_conditions() {
-        // Arrange: GetTouchedWithPlaylists (:282-289) adds the last_scan_at
-        // comparison GetAllWithPlaylists (:291-297) omits.
+        // Arrange: GetTouchedWithPlaylists (:276-287) adds the last_scan_at
+        // comparison GetAllWithPlaylists (:289-299) omits.
         // Act:
         let touched = get_touched_with_playlists_sql(None);
         let all = get_all_with_playlists_sql(None);

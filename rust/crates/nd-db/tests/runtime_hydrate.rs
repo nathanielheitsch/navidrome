@@ -205,7 +205,7 @@ fn hydrate_error_carries_gos_prefix_verbatim() {
 /// driver cannot parse in a DECLARED timestamp column — the `0000-00-00
 /// 00:00:00` sentinel and outright garbage — yields `Some(Go's zero time)`:
 /// the driver assigns `time.Time{}` with NO error
-/// (`go-sqlite3@v1.14.52/sqlite3.go:2832-2842`) and `database/sql` allocates a
+/// (`go-sqlite3@v1.14.52/sqlite3.go:2831-2838`) and `database/sql` allocates a
 /// pointer for it (`convert.go:495-496`). The same text in a column declared
 /// `TEXT` is a scan error instead: the driver's parse arm is keyed on the
 /// DECLARED type (`:2822`) and a `string` cannot be stored into `time.Time`.
@@ -334,4 +334,107 @@ fn absent_optional_column_is_an_error_not_a_panic() {
         .unwrap_or_else(|e| panic!("store lease failed: {e}"));
     drop(store);
     std::fs::remove_file(&path).unwrap();
+}
+
+/// The driver's declared-type bool arms, EXECUTED against the real fresh DDL:
+/// `library.full_scan_in_progress` is declared `boolean`, which the pinned driver
+/// turns into a Go `bool` (`sqlite3.go:2797-2798`, `val > 0`), so a cell of `2`
+/// scans as TRUE and `-3` as FALSE. `user.is_admin`/`media_file.has_cover_art`
+/// are declared `bool` — NOT one of the driver's names — so the same `2` reaches
+/// `driver.Bool` and is rejected as `couldn't convert 2 into type bool` (all
+/// verified against the pinned driver). TEXT spellings go through
+/// `strconv.ParseBool`: `True` scans, `yes` does not.
+#[test]
+fn bool_columns_follow_the_declared_type_and_gos_converter() {
+    let (store, path) = store();
+    /// Read one cell of one table by rowid order, index 0.., as `get_bool`.
+    fn read(store: &SQLStore, table: &str, index: usize) -> Result<bool, rusqlite::Error> {
+        let sql = format!("SELECT v FROM {table} LIMIT 1 OFFSET {index}");
+        store
+            .with_connection_sync(move |conn| Ok(conn.query_row(&sql, [], |row| row.get_bool("v"))))
+            .unwrap_or_else(|e| panic!("{table}#{index} lease failed: {e}"))
+    }
+    store
+        .with_connection_sync(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE pboolean (v boolean);
+                 CREATE TABLE pbool (v bool);
+                 CREATE TABLE pbare (v);
+                 INSERT INTO pboolean VALUES (2), (-3), (0), ('True'), ('yes');
+                 INSERT INTO pbool VALUES (2), (-3), (0), ('True'), ('yes');
+                 INSERT INTO pbare VALUES (2), (-3), (0), ('True'), ('yes');",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    // Declared `boolean`: the driver hands a Go `bool` for an INTEGER cell via
+    // `val > 0`, so 2 is TRUE and -3 is FALSE — neither reaches `driver.Bool`.
+    assert!(read(&store, "pboolean", 0).unwrap(), "2 in `boolean`");
+    assert!(!read(&store, "pboolean", 1).unwrap(), "-3 in `boolean`");
+    assert!(!read(&store, "pboolean", 2).unwrap(), "0 in `boolean`");
+    // A TEXT cell is not the INTEGER arm, so it still goes through ParseBool.
+    assert!(read(&store, "pboolean", 3).unwrap(), "True scans");
+    assert!(read(&store, "pboolean", 4).is_err(), "'yes' is rejected");
+
+    // Declared `bool` is NOT a driver name, so the same INTEGER cells reach
+    // `driver.Bool` as int64 and only 0/1 are accepted.
+    assert!(read(&store, "pbool", 0).is_err(), "2 in `bool` is rejected");
+    assert!(
+        read(&store, "pbool", 1).is_err(),
+        "-3 in `bool` is rejected"
+    );
+    assert!(!read(&store, "pbool", 2).unwrap(), "0 in `bool`");
+    assert!(
+        read(&store, "pbool", 0)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("couldn't convert 2 into type bool"),
+        "Go's driver.Bool wording"
+    );
+    // No decltype at all behaves like `bool`, not `boolean`.
+    assert!(read(&store, "pbare", 0).is_err(), "2 with no decltype");
+    drop(store);
+    std::fs::remove_file(&path).unwrap();
+}
+
+/// The driver's `bool` arm is a `get_bool`-only behavior. `hydrate.rs::driver_bool_decl`
+/// is consulted solely by `get_bool`, so the other accessors on a `boolean`-declared
+/// INTEGER keep the numeric cell — an ACCEPT-versus-REJECT difference, not a wording
+/// one: executed against the pinned go-sqlite3, a `boolean` INTEGER `2` into `*string`
+/// gives `"true"`, and into `*int64`/`*float64` it FAILS with
+/// `converting driver.Value type bool ("true") to a int64: invalid syntax`. That is the
+/// reachable consequence of the hydrate-contract.md bullet: a reader added for one of
+/// the six `boolean` columns must go through the bool arm rather than widening these
+/// accessors.
+#[test]
+fn bool_declared_columns_read_as_integers_without_the_driver_bool_arm() {
+    let (store, path) = store();
+    let got = store
+        .with_connection_sync(|conn| {
+            conn.execute_batch("create table bdecl (v boolean)")?;
+            conn.execute("insert into bdecl values (2)", [])?;
+            conn.execute("insert into bdecl values (-3)", [])?;
+            let mut out = Vec::new();
+            for i in 0..2 {
+                let sql = format!("SELECT v FROM bdecl LIMIT 1 OFFSET {i}");
+                out.push((
+                    conn.query_row(&sql, [], |row| row.get_bool("v"))?,
+                    conn.query_row(&sql, [], |row| RowGet::get_i64(row, "v"))?,
+                    conn.query_row(&sql, [], |row| RowGet::get_f64(row, "v"))?,
+                    conn.query_row(&sql, [], |row| RowGet::get_text(row, "v"))?,
+                ));
+            }
+            Ok(out)
+        })
+        .unwrap_or_else(|e| panic!("store lease failed: {e}"));
+
+    // get_bool reproduces the driver's `val > 0` bool arm; the numeric accessors
+    // return the stored INTEGER, which Go's destinations reject outright.
+    assert_eq!(got[0], (true, 2, 2.0, "2".to_string()));
+    assert_eq!(got[1], (false, -3, -3.0, "-3".to_string()));
+
+    drop(store);
+    std::fs::remove_file(&path).ok();
 }

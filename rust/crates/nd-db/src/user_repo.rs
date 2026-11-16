@@ -474,13 +474,24 @@ pub fn insert_user_libraries_sql(user_id: &str, library_ids: &[i64]) -> Option<S
 /// real dbx v1.12.0 scanner). The port carries exactly those three instead
 /// of inventing a richer record; the full library row is the library
 /// repository's model half.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+// Go's `encoding/json` never errors on an absent field: the object decoder only
+// touches keys it finds (`decode.go:700-743`), so a payload with just `id`
+// unmarshals to `{ID:1, Name:"", Path:""}` with `err = nil` (executed), and a
+// `null` literal leaves a struct/primitive element untouched
+// (`decode.go:897-909`), so `[null]` yields one zero-valued element with
+// `err = nil` (executed, over the array loop at `decode.go:542-567`). serde's
+// derive makes absent fields an error, hence `#[serde(default)]` here; the null
+// element is mapped by `crate::hydrate::parse_libraries_json`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 pub struct UserLibrary {
     /// `library.id`.
+    #[serde(default)]
     pub id: i64,
     /// `library.name`.
+    #[serde(default)]
     pub name: String,
     /// `library.path`.
+    #[serde(default)]
     pub path: String,
 }
 
@@ -488,7 +499,26 @@ pub struct UserLibrary {
 /// (`model/user.go:12-35`).
 ///
 /// Timestamps stay the stored datetime TEXT — date parsing sits at the
-/// `nd-utils`/`nd-model` boundary and the repository stops at the row.
+/// `nd-utils`/`nd-model` boundary and the repository stops at the row. This is a
+/// documented divergence from Go, which does NOT hand those columns verbatim:
+/// `go-sqlite3` converts a `datetime`-declared cell to a `time.Time`
+/// (`sqlite3.go:2822-2838`), and `database/sql`'s `case time.Time:` arm renders
+/// a `*string` destination with `s.Format(time.RFC3339Nano)`
+/// (`convert.go:323-329`) — `asString` is not reached for that destination — so
+/// Go's text for such a column carries `2024-01-02T03:04:05Z` where this record
+/// carries the stored `2024-01-02 03:04:05+00:00`, an epoch integer becomes
+/// `2024-02-06T19:00:00Z`, and unparseable text becomes Go's zero time
+/// `0001-01-01T00:00:00Z` (all verified against the pinned driver; see
+/// `hydrate-contract.md`'s residual list). Nothing marshals these fields today:
+/// the only consumer is nd-auth's login handler, whose serialized `LoginPayload`
+/// (`login.rs:67-75`, emitted at `:155-162`) carries
+/// `id`/`name`/`username`/`is_admin`/`avatar`/`token` and no timestamp at all, so
+/// the divergence is inert. A user-facing DTO must instead read such a column
+/// through `RowGet::get_gotime` and render it with `GoTime::to_rfc3339_nano`,
+/// which reproduces Go's `FormatTime(RFC3339Nano)` including the zone the driver
+/// parsed. Fixing that here would change these fields' types, so it belongs to
+/// the lane that adds a user DTO.
+///
 /// `password` is the stored ciphertext: Go scans it the same way and only
 /// `FindByUsernameWithPassword` decrypts it (`user_repository.go:209-216`,
 /// `:464-472`), so decryption is nd-auth's call, never the repository's.

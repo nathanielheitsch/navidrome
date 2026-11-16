@@ -33,11 +33,14 @@
 
 use std::collections::BTreeMap;
 
+use crate::sql_json::JsonColumnError;
 use crate::sqlrepo::Repository;
 use crate::sqlrepo::Value;
+use serde_json::Value as JsonValue;
 
 use nd_id::new_tag_id;
 
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use serde_json::from_str;
 use serde_json::to_string;
@@ -121,14 +124,90 @@ pub fn album_genres() -> GenreFilterDef {
         join_col: "album_id".to_string(),
     }
 }
+/// The genre tag name (`model.TagGenre`, `model/tag.go:193`; the same value as
+/// `INDEXED_TAG_NAMES[0]`). Restated here so this module stays self-contained:
+/// `genre_repo::GENRE_TAG_NAME` lives in another lane's file, and its `Genre`
+/// type carries aggregate counts a hydration read cannot fill.
+pub const GENRE_TAG_NAME: &str = "genre";
+
+/// Hydrated genre entry — the port of `model.Genre` (`model/genre.go:9-14`) as
+/// `Tags.ToGenres` (`model/tag.go:138-148`) produces it. Go's `SongCount`/
+/// `AlbumCount` (`model/genre.go:12-13`) are `structs:"-"` aggregate columns only
+/// the genre repository's `COALESCE(SUM(…))` select fills, and `ToGenres` leaves
+/// them at Go's zero, so this hydrated shape declares the two fields `ToGenres`
+/// actually sets. `genre_repo::Genre` (`genre_repo.rs:28-36`) carries the counts
+/// and is not this lane's file, so the DTO is declared here — DTOs stay local to
+/// nd-db (`hydrate-contract.md` §4: nd-model must not gain them).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Genre {
+    /// `NewTag("genre", value).ID` (`model/tag.go:63-71`), i.e.
+    /// [`nd_id::new_tag_id`], which lowercases name AND value before hashing.
+    pub id: String,
+    /// The tag value verbatim (`Genre.Name`, `model/tag.go:145`): not lowercased,
+    /// not deduplicated, not sorted.
+    pub name: String,
+}
+
+/// `Tags.ToGenres` (`model/tag.go:138-148`): the `genre` tag values as
+/// `(first name, entries)`, the pair `dbAlbum.PostScan`/`dbMediaFile.PostScan`
+/// assign to `Genre`/`Genres` (`album_repository.go:57`,
+/// `mediafile_repository.go:64`).
+///
+/// Semantics pinned by the Go source (verified with
+/// `{"genre":["Rock","Jazz","rock","Rock"]}` — scalar `Rock`, 4 entries, stored
+/// order, `Rock`/`rock` sharing an id):
+/// * `Values("genre")` (`model/tag.go:81-83`) is a plain map read, so a missing
+///   key is a nil slice and no other tag name is ever consulted;
+/// * an empty or absent list returns `("", vec![])` — Go's early return
+///   (`:140-142`) yields `""` and a NIL `Genres`, which the empty `Vec` spells.
+///   Neither reaches a write map (`Genres` is `structs:"-"`), so the distinction
+///   is invisible to SQL;
+/// * one entry per value in STORED order with NO dedup and NO sort — `slice.Map`
+///   (`:143-146`) maps element-wise;
+/// * `id` comes from `NewTag("genre", g)` (`model/tag.go:63-71`), which lowercases
+///   the name and the value before hashing (`tagID`, `:77-79`), while `Name` stays
+///   verbatim;
+/// * the scalar is `genres[0].Name` (`:147`) — the FIRST value, not the most
+///   common one, and whatever the `genre` column said is overwritten.
+#[must_use]
+pub fn tags_to_genres(tags: &DbTags) -> (String, Vec<Genre>) {
+    let Some(values) = tags.get(GENRE_TAG_NAME) else {
+        return (String::new(), Vec::new());
+    };
+    if values.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let genres: Vec<Genre> = values
+        .iter()
+        .map(|value| Genre {
+            id: new_tag_id(GENRE_TAG_NAME, value),
+            name: value.clone(),
+        })
+        .collect();
+    // `genres[0].Name` — the guard above makes the index safe.
+    (genres[0].name.clone(), genres)
+}
 
 /// `marshalTags` (`:37-47`): the dbTags JSON column — one `{id, value}` entry per
 /// tag value, the id from [`nd_id::new_tag_id`] (Go's `model.NewTag`). Go ignores
 /// `json.Marshal`'s error (`:45`), which cannot occur for this shape.
+///
+/// **A name with no values gets no key.** Go's loop appends per value, so an empty
+/// (or nil) value list never creates `dbTags[name]`: executed against the real
+/// `marshalTags`, `model.Tags{"genre": {}}` and `model.Tags{"genre": nil}` both
+/// marshal `{}`, and `{"genre": {}, "mood": {"Chill"}}` marshals only the `mood`
+/// key. serde's `BTreeMap` would emit `{"genre":[]}`, so empty lists are dropped
+/// here — the same shape Go writes, and the reason a name is absent from the column
+/// rather than present-but-empty.
 #[must_use]
 pub fn marshal_tags(tags: DbTags) -> String {
     let mut db_tags: BTreeMap<String, Vec<DbTag>> = BTreeMap::new();
     for (name, values) in tags {
+        // Go's `for _, value := range values` appends nothing for an empty list, so
+        // the key is never created (`dbTags[name]` stays absent).
+        if values.is_empty() {
+            continue;
+        }
         let entries = values
             .iter()
             .map(|value| DbTag {
@@ -144,17 +223,103 @@ pub fn marshal_tags(tags: DbTags) -> String {
 /// `unmarshalTags` (`:22-35`): dbTags JSON → name → values, dropping the ids (Go
 /// reads only `tag.Value`, `:31`). `(tags, error)` is this crate's spelling of Go's
 /// two-value return, carrying Go's `parsing tags:` prefix and `""` for no error.
+///
+/// Decoding is Go-faithful about `null`, which serde is not: `encoding/json`
+/// assigns the **zero value** to a non-pointer map/list/element/field for a JSON
+/// `null` (`decode.go` `literalStore`), executed against the real `unmarshalTags`:
+/// `null` → empty map with `err=nil` (`model.Tags{}`), `{"genre":null}` →
+/// `[]string{}`, `{"genre":[null]}` and `{"genre":[{"id":null,"value":null}]}` →
+/// `[""]`. serde would reject all four as type mismatches, so they go through
+/// `decode_tags`'s `Option` fields. Any other wrong type still errors, as Go's
+/// `json: cannot unmarshal array into dbTags.genre.0 of type persistence.dbTag`
+/// does. `""` is an error on both sides (Go never calls it: the hook guards
+/// `a.Tags != ""`, `album_repository.go:52`).
 #[must_use]
 pub fn unmarshal_tags(data: String) -> (DbTags, String) {
-    let db_tags: BTreeMap<String, Vec<DbTag>> = match from_str(&data) {
-        Ok(parsed) => parsed,
-        Err(error) => return (DbTags::new(), format!("parsing tags: {error}")),
-    };
-    let mut tags = DbTags::new();
-    for (name, entries) in db_tags {
-        tags.insert(name, entries.iter().map(|tag| tag.value.clone()).collect());
+    match decode_tags(&data) {
+        Ok(tags) => (tags, "".to_string()),
+        Err(error) => (DbTags::new(), format!("parsing tags: {error}")),
     }
-    (tags, "".to_string())
+}
+
+/// The element shape as `encoding/json` decodes it: both fields nullable, so a
+/// JSON `null` becomes the empty string rather than a serde type error.
+#[derive(Deserialize)]
+struct RawDbTag {
+    /// Go's `dbTag.ID`. `unmarshalTags` never reads it (`:31-34` reads only
+    /// `tag.Value`), but its decoder still type-checks the field, so keeping it is
+    /// what makes `{"genre":[{"id":5}]}` an error on both sides rather than being
+    /// silently ignored.
+    #[allow(dead_code)]
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+}
+
+/// `json.Unmarshal(data, &dbTags)` (`persistence/sql_tags.go:22-27`) over the
+/// null-tolerant shape. Errors carry no column token, because Go's wrap is only
+/// `parsing tags:` (`:26`) and never names the column.
+fn decode_tags(data: &str) -> Result<DbTags, JsonColumnError> {
+    let root: JsonValue = from_str(data).map_err(JsonColumnError::bare)?;
+    match &root {
+        // Go: `null` into a map leaves it nil and returns no error; `unmarshalTags`
+        // then builds `make(model.Tags, 0)` — an empty, non-nil map.
+        JsonValue::Null => return Ok(DbTags::new()),
+        JsonValue::Object(_) => {}
+        other => {
+            return Err(JsonColumnError::bare(serde_json::Error::custom(format!(
+                "tags column must be a JSON object or null, not {}",
+                json_type_name(other)
+            ))));
+        }
+    }
+    let mut out = DbTags::new();
+    for (name, value) in root.as_object().expect("matched above") {
+        let values: Vec<String> = match value {
+            JsonValue::Null => Vec::new(),
+            JsonValue::Array(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    match item {
+                        JsonValue::Null => values.push(String::new()),
+                        JsonValue::Object(_) => {
+                            let raw: RawDbTag = serde_json::from_value(item.clone())
+                                .map_err(JsonColumnError::bare)?;
+                            values.push(raw.value.unwrap_or_default());
+                        }
+                        other => {
+                            return Err(JsonColumnError::bare(serde_json::Error::custom(format!(
+                                "cannot unmarshal {} into dbTags.{name}.{i}",
+                                json_type_name(other)
+                            ))));
+                        }
+                    }
+                }
+                values
+            }
+            other => {
+                return Err(JsonColumnError::bare(serde_json::Error::custom(format!(
+                    "cannot unmarshal {} into dbTags.{name}",
+                    json_type_name(other)
+                ))));
+            }
+        };
+        out.insert(name.clone(), values);
+    }
+    Ok(out)
+}
+
+/// Go's `decode.go` error vocabulary for value-level rejections.
+fn json_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
 }
 
 /// `updateTags`' id collection (`:61-65`): one `model.NewTag` id per indexed tag
@@ -316,6 +481,118 @@ pub fn where_tag_library_id(sq: Repository, library_id: String) -> Repository {
 mod tests {
     use super::*;
 
+    /// `Tags.ToGenres` (`model/tag.go:138-148`), the four modes its Go body
+    /// distinguishes. The `{"genre":[…]}` payloads are what a `tags` column
+    /// decodes to after `unmarshalTags`, and the ids are `NewTag("genre", v)`
+    /// (`model/tag.go:63-71`) — `new_tag_id` lowercases name AND value, so the
+    /// case-variant and the repeat share one id while `name` stays verbatim.
+    #[test]
+    fn empty_or_absent_genre_list_is_the_go_early_return() {
+        // Absent key: Go's map read returns a nil slice (`model/tag.go:81-83`).
+        let tags = DbTags::new();
+        assert_eq!(tags_to_genres(&tags), (String::new(), Vec::new()));
+        // Present-but-empty list: `len(values) == 0` takes the same arm (`:140`).
+        let mut tags = DbTags::new();
+        tags.insert("genre".to_string(), vec![]);
+        assert_eq!(tags_to_genres(&tags), (String::new(), Vec::new()));
+        // A non-genre name never contributes (`Values("genre")` only).
+        let mut tags = DbTags::new();
+        tags.insert("mood".to_string(), vec!["Chill".to_string()]);
+        assert_eq!(tags_to_genres(&tags), (String::new(), Vec::new()));
+    }
+
+    #[test]
+    fn single_genre_is_both_the_scalar_and_the_one_entry() {
+        let mut tags = DbTags::new();
+        tags.insert("genre".to_string(), vec!["Rock".to_string()]);
+        let (scalar, genres) = tags_to_genres(&tags);
+        assert_eq!(scalar, "Rock".to_string());
+        assert_eq!(
+            genres,
+            vec![Genre {
+                id: new_tag_id("genre", "Rock"),
+                name: "Rock".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn genre_entries_keep_stored_order_and_never_dedup() {
+        // The brief's verified case: 4 entries, no dedup, no sort, scalar = first.
+        let mut tags = DbTags::new();
+        tags.insert(
+            "genre".to_string(),
+            vec![
+                "Rock".to_string(),
+                "Jazz".to_string(),
+                "rock".to_string(),
+                "Rock".to_string(),
+            ],
+        );
+        let (scalar, genres) = tags_to_genres(&tags);
+        assert_eq!(scalar, "Rock".to_string());
+        assert_eq!(genres.len(), 4, "slice.Map is element-wise, no dedup");
+        let names: Vec<&str> = genres.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, vec!["Rock", "Jazz", "rock", "Rock"]);
+        // NewTag lowercases before hashing: Rock/rock/Rock share one id, Jazz has
+        // its own (`id.NewTagID`, model/id/id.go:46-48).
+        let shared = new_tag_id("genre", "Rock");
+        assert_eq!(new_tag_id("genre", "rock"), shared, "case-insensitive id");
+        assert_eq!(genres[0].id, shared);
+        assert_eq!(genres[1].id, new_tag_id("genre", "Jazz"));
+        assert_eq!(genres[2].id, shared);
+        assert_eq!(genres[3].id, shared);
+        assert_ne!(genres[0].id, genres[1].id);
+    }
+
+    #[test]
+    fn genre_name_is_verbatim_including_odd_case_and_spacing() {
+        // `Genre.Name` is the tag value unchanged; only the id is lowercased.
+        let mut tags = DbTags::new();
+        tags.insert(
+            "genre".to_string(),
+            vec!["Post-Punk".to_string(), "  Nu Jazz  ".to_string()],
+        );
+        let (scalar, genres) = tags_to_genres(&tags);
+        assert_eq!(scalar, "Post-Punk".to_string());
+        assert_eq!(genres[1].name, "  Nu Jazz  ".to_string());
+        assert_eq!(genres[1].id, new_tag_id("genre", "  Nu Jazz  "));
+    }
+
+    #[test]
+    fn marshal_tags_drops_names_with_an_empty_value_list_like_go() {
+        // Arrange: a tag name mapped to NO values. Go's `marshalTags` (`:39-47`)
+        // appends per value into `dbTags`, so the key is never created — executed
+        // against the real function: `model.Tags{"genre": {}}` and
+        // `model.Tags{"genre": nil}` both marshal `{}`, and
+        // `{"genre": {}, "mood": {"Chill"}}` marshals only the `mood` key.
+        // serde's map would emit `{"genre":[]}`.
+        let mut empty = DbTags::new();
+        empty.insert("genre".to_string(), Vec::new());
+        // Act:
+        let json = marshal_tags(empty);
+        // Assert:
+        assert_eq!(json, "{}", "an empty tag name gets no key, as Go");
+        let mut mixed = DbTags::new();
+        mixed.insert("genre".to_string(), Vec::new());
+        mixed.insert("mood".to_string(), vec!["Chill".to_string()]);
+        assert_eq!(
+            marshal_tags(mixed),
+            format!(
+                r#"{{"mood":[{{"id":"{}","value":"Chill"}}]}}"#,
+                new_tag_id("mood", "Chill")
+            ),
+            "only the populated name survives, matching Go"
+        );
+        // Absent-on-write stays absent-on-read: ToGenres sees no genre key at all.
+        let (tags, err) = unmarshal_tags(json);
+        assert_eq!(err, "");
+        assert_eq!(tags.get("genre"), None);
+        let (scalar, genres) = tags_to_genres(&tags);
+        assert_eq!(scalar, "");
+        assert!(genres.is_empty());
+    }
+
     #[test]
     fn tags_json_round_trips_with_ids_from_new_tag_id() {
         // Arrange: model.Tags with one indexed and one unindexed name (sql_tags.go:22-47).
@@ -338,6 +615,71 @@ mod tests {
             json,
             format!("{{\"custom.Label\":[{{\"id\":\"{label_x_id}\",\"value\":\"X\"}}],\"genre\":[{{\"id\":\"{rock_id}\",\"value\":\"Rock\"}},{{\"id\":\"{punk_id}\",\"value\":\"Punk\"}}]}}"),
         );
+    }
+
+    #[test]
+    fn null_list_null_element_and_null_field_zero_fill_like_go() {
+        // Arrange / Assert: executed against the real Go `unmarshalTags`, every
+        // `null` position decodes to the zero value with `err=nil` —
+        // `{"genre":null}` -> `[]string{}`, `{"genre":[null]}` and
+        // `{"genre":[{"id":null,"value":null}]}` -> `[""]`, and a top-level `null`
+        // -> an empty, NON-nil map. serde's plain derive rejects all of these as
+        // `invalid type: null, expected a sequence`, so decode_tags goes through
+        // nullable fields.
+        let (tags, err) = unmarshal_tags(r#"{"genre":null}"#.to_string());
+        assert_eq!(err, "");
+        assert_eq!(tags.get("genre"), Some(&Vec::new()));
+
+        let (tags, err) = unmarshal_tags(r#"{"genre":[null]}"#.to_string());
+        assert_eq!(err, "");
+        assert_eq!(tags.get("genre"), Some(&vec![String::new()]));
+
+        let (tags, err) = unmarshal_tags(r#"{"genre":[{"id":null,"value":null}]}"#.to_string());
+        assert_eq!(err, "");
+        assert_eq!(tags.get("genre"), Some(&vec![String::new()]));
+
+        let (tags, err) = unmarshal_tags("null".to_string());
+        assert_eq!(err, "");
+        assert!(tags.is_empty());
+        // A null list still yields a `genre` entry, so ToGenres sees an empty
+        // genre list and clears the scalar genre (Go: tags["genre"] is non-nil).
+        let (scalar, genres) = tags_to_genres(&tags_with_null_genre());
+        assert_eq!(scalar, "");
+        assert!(genres.is_empty());
+
+        let (tags, err) = unmarshal_tags(r#"{"genre":[{"value":"Rock"}]}"#.to_string());
+        assert_eq!(err, "");
+        assert_eq!(tags.get("genre"), Some(&vec!["Rock".to_string()]));
+    }
+
+    /// The shape `{"genre":null}` materializes: entry present, list empty.
+    fn tags_with_null_genre() -> DbTags {
+        let (tags, err) = unmarshal_tags(r#"{"genre":null}"#.to_string());
+        assert_eq!(err, "");
+        tags
+    }
+
+    #[test]
+    fn non_null_wrong_types_are_rejected_and_empty_input_errors() {
+        // Go rejects a non-object element, a non-array list and a top-level
+        // non-object; `""` errors because Go's PostScan guard keeps it away from
+        // `json.Unmarshal` but the codec has no guard of its own.
+        let (tags, err) = unmarshal_tags(r#"{"genre":[[1]]}"#.to_string());
+        assert!(tags.is_empty());
+        assert!(err.starts_with("parsing tags: "), "got {err:?}");
+        assert!(err.contains("cannot unmarshal"), "got {err:?}");
+
+        let (tags, err) = unmarshal_tags(r#"{"genre":"Rock"}"#.to_string());
+        assert!(tags.is_empty());
+        assert!(err.contains("cannot unmarshal"), "got {err:?}");
+
+        let (tags, err) = unmarshal_tags("{}".to_string());
+        assert_eq!(err, "");
+        assert!(tags.is_empty());
+
+        let (tags, err) = unmarshal_tags(String::new());
+        assert!(tags.is_empty());
+        assert!(err.starts_with("parsing tags: "), "got {err:?}");
     }
 
     #[test]
