@@ -3,29 +3,48 @@
 //!
 //! Scope: the stats select shape ([`select_artist_parts`], `:207-214` via
 //! `applyLibraryFilterToArtistQuery`, `:191-203`), `Get`/`GetAll`
-//! ([`get_sql`]/[`get_all_sql`]), `CountAll` (`:217-227`, the annotation
+//! ([`get_sql`]/[`get_all_sql`]), `CountAll` (`:217-226`, the annotation
 //! join only when the filters reference annotation columns), the
 //! `count(distinct …)` `Exists` (`:229-236`), the `Put`/`UpdateExternalInfo`
-//! upserts (`:239-253` via `put`, `sql_base_repository.go:613-641`, with
+//! upserts (`:239-253` via `put`, `sql_base_repository.go:618-642`, with
 //! `dbArtist.PostMapArgs`' derived columns and the empty
-//! `sort_artist_name`/`mbz_artist_id` drops, `:98-121`), `getAllIDs`
+//! `sort_artist_name`/`mbz_artist_id` drops, `:100-121`), `getAllIDs`
 //! (`:283-291`), `GetCursor`'s id pre-pass + chunking (`:293-308`),
-//! `GetIndex` (`:327-367`, including `getIndexKey`, `:310-325`), the
+//! `GetIndex` (`:327-368`, including `getIndexKey`, `:310-322`), the
 //! maintenance statements (`purgeEmpty` `:370-405`, `markOrphansMissing`
-//! `:408-419`, `markMissing` `:421-439`, `RefreshPlayCounts` `:441-463`,
+//! `:410-418`, `markMissing` `:421-437`, `RefreshPlayCounts` `:441-460`,
 //! `RefreshStats`' id selects + batched `library_artist` update + cleanup,
-//! `:465-590`), the search config + scoping (`searchCfg` `:616-630`,
-//! `artistLibraryFilter` `:632-649`, `Search` `:651-665`, `searchScope`
-//! `:667-700`, `requestedLibraryIDs`/`isLibraryIDFilter` `:702-727`), and
-//! the rest-facing `registerModel`/`setSortMappings` registry (`:52-69`).
+//! `:465-614`), the search config + scoping (`searchCfg` `:618-633`,
+//! `artistLibraryFilter` `:640-650`, `Search` `:652-671`, `searchScope`
+//! `:676-696`, `requestedLibraryIDs` `:700-707` / `isLibraryIDFilter` `:711-718`), and
+//! the rest-facing `registerModel` (`:138-146`) / `setSortMappings` (`:147-159`) registry.
 //!
 //! Rendering deviation, named: `selectArtist`'s stats column
 //! (`JSON_GROUP_OBJECT(...)`) and `GROUP BY artist.id` have no
 //! [`crate::sqlrepo::Repository`] spelling (that builder renders neither),
-//! so the artist selects are hand-rendered here in squirrel's clause order
-//! (JOIN, WHERE, GROUP BY, ORDER BY, LIMIT/OFFSET) with every filter value
-//! bound and every identifier fixed; the bounds themselves are squirrel
-//! literals (`select.go:139-147`) and contribute no args. The search path composes the shared
+//! so the artist selects are hand-rendered here following squirrel's clause
+//! ORDER for the clauses that are rendered (JOIN, WHERE, GROUP BY,
+//! LIMIT/OFFSET) with every filter value bound and every identifier fixed;
+//! the bounds themselves are squirrel literals (`select.go:139-147`) and
+//! contribute no args.
+//!
+//! The ORDER BY leg is NOT among them. Go's `applyOptions` renders
+//! `OrderBy(buildSortOrder(sort, order))` for a non-empty sort
+//! (`sql_base_repository.go:157-158`) inside `newSelect` (`:139-146`), which
+//! `GetAll` and `Search` reach through `selectArtist(ctx, options...)`
+//! (`artist_repository.go:270`, `:664`); `getAllIDs` runs the same `applyOptions`
+//! via `newSelect(ctx, options...)` directly (`:284`).
+//! `pagination_fragment` emits only LIMIT/OFFSET, so `QueryOptions::sort` and
+//! [`QueryOptions::order`] are IGNORED by every artist select here: row order is
+//! SQLite's, not the caller's. [`sort_mapping`] holds the mappings but nothing in
+//! this crate's artist selects consumes them (`player_repo`'s `build_sort_order`
+//! is player-specific). Wiring the leg is a separate lane, not a one-line change:
+//! [`search_sql`] reuses the base select and pushes its OWN `WHERE`/`ORDER BY`
+//! after the `GROUP BY` tail, so giving the tail an ORDER BY requires reworking
+//! the clause-ordered tail together with the search path. Pinned by
+//! `tests/runtime_hydrate_artist.rs::get_all_sql_ignores_the_sort_leg_until_options_are_wired`.
+//!
+//! The search path composes the shared
 //! exported phases ([`crate::sql_search::rowid_page_phase`]'s filter stack)
 //! instead of [`crate::sql_search::do_search`], for the same reason — the
 //! base select cannot ride through a `Repository` without losing the
@@ -34,10 +53,10 @@
 //! (`sql_search.go:35-62`) verbatim.
 //!
 //! Roles: Go's `model.Role` string set (`model/participants.go:28-48`) is
-//! pinned as [`ALL_ROLES`]; `sanitizeArtistStatsRole` (`:79-88`) allowlists
+//! pinned as [`ALL_ROLES`]; `sanitizeArtistStatsRole` (`:175-183`) allowlists
 //! them (plus `"total"`, the scanner's aggregate key) before any role
-//! reaches SQL concatenation — `roleFilter` (`:71-77`) and the role sort
-//! mappings (`:60-69`, `sortMappingsForRole` `:704-716`) build JSON paths
+//! reaches SQL concatenation — `roleFilter` (`:163-170`) and the role sort
+//! mappings (`:147-159`, `sortMappingsForRole` `:730-744`) build JSON paths
 //! from the sanitized value only. The always-false `Eq{"1": 2}` fallback
 //! of both is [`FALSE_EXPR`] — no bound args.
 //!
@@ -49,24 +68,41 @@
 //! `DateTime<Utc>` shape; see `time.rs` for why epoch integers silently break
 //! range predicates and ordering), with a caller-owned clock.
 //!
-//! Not ported, with the reason: `hydrateArtwork` (`:294-296`) is the shared
-//! batched `item_artwork` lookup (`artwork_hydration.go:77-94`) — that
-//! select belongs to the artwork lane (`artwork_repo.rs`).
-//! `dbArtist.PostScan`'s stats-JSON fold into `model.ArtistStats`
-//! (`:43-67`) reads the row the caller materializes; the model type is the
-//! #06 slice's. `visibleLibraryIDs`/`userSeesAllLibraries`
+//! Not ported, with the reason: `visibleLibraryIDs`/`userSeesAllLibraries`
 //! (`sql_base_repository.go:286-320`) need the user row; [`search_scope`]
 //! takes the resolved visible set and the caller owns the fail-safe.
+//! `CountAll`/`getAllIDs`/`GetCursor`/`GetIndex` stay SQL-only builders
+//! (`count_all_sql` `:217-226`, `get_all_ids_sql` `:283-291`,
+//! `chunk_options` `:676-700`, `get_index_key` `:714-733`): `GetCursor`
+//! streams id chunks through `streamByIDs` + `chunkOptions`
+//! (`artwork_hydration.go:21-37`, `:41-54`), both unported (streaming lane),
+//! and `GetIndex` groups hydrated records in Go — it hydrates transitively
+//! because `GetIndex` (`:327-368`) delegates to `GetAll` (`:269-279`) via its `:355` call site, so it inherits this slice's hydration
+//! once its statement lands. `getParticipants` (`sql_participations.go:127-146`)
+//! has no artist-side caller in Go — `GetWithParticipants` exists only on the
+//! media file repository (`mediafile_repository.go:223-230`) — so neither is
+//! ported here.
+//!
+//! Landed here (S-D3d): the `dbArtist.PostScan` stats/similar-artists fold
+//! (`hydrate::row_to_artist` → `hydrate::artist_post_scan`, `:43-98`), the
+//! executed read record ([`ArtistRow::into_record`]), the repo read side
+//! ([`ArtistRepo`] — `Get` `:255-267`, `GetAll` `:269-279`) and artwork
+//! hydration ([`crate::artwork_hydration::hydrate_artist_artwork`],
+//! `hydrateArtwork` `:294-297`).
 
 use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
+use crate::artwork_hydration::{hydrate_artist_artwork, ItemImage, ReadOutcome};
+use crate::sql_participations::Role;
 use crate::sql_restful::{Filter, QueryOptions, RestRepository};
 use crate::sql_search::{mbid_expr, rowid_page_phase, SearchConfig, Sql};
 use crate::sql_search_fts as fts;
 use crate::sql_search_like as like;
 use crate::sqlrepo::{Repository, SqlError, Value};
 use crate::time;
+use nd_model::annotation::Annotation;
 use nd_utils::str::{normalize_for_fts, sanitize_strings};
 
 /// `r.tableName` (`:54`).
@@ -101,7 +137,7 @@ pub const ALL_ROLES: [&str; 14] = [
 ];
 
 /// The scanner's aggregate key, always a valid role path
-/// (`sanitizeArtistStatsRole` `:83-84`).
+/// (`sanitizeArtistStatsRole` `:175-183`, and the `"total"` pass-through at `:176-178`).
 pub const TOTAL_ROLE: &str = "total";
 
 /// `Eq{"1": 2}` (`:76`, `:706`) — the always-false fallback, arg-free.
@@ -170,6 +206,106 @@ pub struct ArtistRecord {
     pub created_at: Option<DateTime<Utc>>,
     /// `updated_at` — Go's `*time.Time` (`artist.go:46`), stamped by `Put`.
     pub updated_at: Option<DateTime<Utc>>,
+
+    // ---- hydration-only state (S-D3d). Every field below is `structs:"-"` in
+    // Go, so NONE of it appears in `put_cols`/`put_sql`: `Stats`/`Size`/
+    // `AlbumCount`/`SongCount` are the `structs:"-"` computed block
+    // (`model/artist.go:27-30`), `annotation` is the `structs:"-"` `Annotations`
+    // embed (`:15`, `model/annotation.go:8-16`) and `image` is the `structs:"-"`
+    // `ItemImage` embed (`:16`, `model/artwork.go:29-40`).
+    /// `Stats` (`model/artist.go:27`): the per-role fold `PostScan` builds from
+    /// the `library_stats_json` alias (`artist_repository.go:44-80`). Empty
+    /// when the alias is `""` — Go creates the map unconditionally at `:44`.
+    pub stats: BTreeMap<Role, ArtistStats>,
+    /// `Size` (`:28`): Go `int64`. Accumulated ONLY by the `"total"` arm
+    /// (`:63-67`), never by a per-role entry.
+    pub size: i64,
+    /// `AlbumCount` (`:29`): Go `int` → `i32` (the port-wide narrowing).
+    pub album_count: i32,
+    /// `SongCount` (`:30`): Go `int` → `i32` (the port-wide narrowing).
+    pub song_count: i32,
+    /// The promoted `Annotations` embed (`model/artist.go:15`): read by
+    /// [`crate::hydrate::row_to_annotation`] from the annotation join's columns,
+    /// or from `artist.*` alone when the join is skipped.
+    pub annotation: Annotation,
+    /// The promoted `ItemImage` embed (`model/artist.go:16`): filled by the
+    /// SECOND layer ([`hydrate_artist_artwork`]), zero (= unresolved) from
+    /// phase 1/2.
+    pub image: ItemImage,
+    /// `SimilarArtists` (`model/artist.go:38`) DECODED, id+name only — Go's
+    /// `dbSimilarArtist` (`:38-41`) keeps exactly those two fields. The raw
+    /// column text stays in [`ArtistRecord::similar_artists`], which is what the
+    /// write map emits; see that field's note on the round-trip direction.
+    pub similar: Vec<SimilarArtist>,
+}
+
+/// `model.ArtistStats` (`model/artist.go:49-53`): one role's aggregate.
+/// `SongCount`/`AlbumCount` are Go `int` → `i32` (port-wide narrowing);
+/// `Size` is Go `int64`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArtistStats {
+    /// `SongCount` (`:50`), from the stats key `m` (`artist_repository.go:57`).
+    pub song_count: i32,
+    /// `AlbumCount` (`:51`), from the stats key `a` (`:58`).
+    pub album_count: i32,
+    /// `Size` (`:52`), from the stats key `s` (`:59`).
+    pub size: i64,
+}
+
+/// `dbArtist`'s `dbSimilarArtist` (`artist_repository.go:38-41`): the stored
+/// `{id, name}` pair. `omitempty` on both keys means `marshal_similar_artists`
+/// skips an empty one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SimilarArtist {
+    /// `ID` (`:39`).
+    pub id: String,
+    /// `Name` (`:40`).
+    pub name: String,
+}
+
+/// The raw row of an artist read — phase 1's output, before
+/// [`crate::hydrate::artist_post_scan`].
+///
+/// `dbArtist` (`artist_repository.go:32-36`) is `*model.Artist` flattened plus
+/// two `structs:"-"` shim strings. Only ONE shim needs a slot here:
+/// `LibraryStatsJSON` (`:35`), the `JSON_GROUP_OBJECT` alias emitted by
+/// [`select_artist_sql`] via `LIBRARY_STATS_COLUMN` (kept private: it is the
+/// same text in every artist select) with no destination field on
+/// `model.Artist`.
+/// `SimilarArtists` (`:34`) is the `similar_artists` COLUMN, so its text
+/// already lands on [`ArtistRecord::similar_artists`] — where the write map
+/// needs it — and phase 2 decodes it into [`ArtistRecord::similar`] rather than
+/// keeping a second copy.
+///
+/// The `artist.*` expansion also carries `full_text` and `search_normalized`,
+/// which have no destination field on `dbArtist` either; dbx binds them to a
+/// throwaway `sql.NullString` and drops them (`dbx@v1.12.0/rows.go:80-86`), so
+/// [`crate::hydrate::row_to_artist`] does not read them and must not fail when
+/// they are present.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArtistRow {
+    /// The artist columns scanned from the row, with the stats/similar lists
+    /// still empty and `image` still zero.
+    pub record: ArtistRecord,
+    /// The raw `library_stats_json` alias, unparsed (Go `dbArtist.LibraryStatsJSON`,
+    /// `:35`). Guarded by `!= ""` at `:46`.
+    pub library_stats_json: String,
+}
+
+impl ArtistRow {
+    /// `dbArtist.PostScan` (`artist_repository.go:43-98`): thin delegation onto
+    /// [`crate::hydrate::artist_post_scan`], surfaced the way Go's `ScanStruct`
+    /// error leaves the read (`dbx@v1.12.0/rows.go:92-102` returns the hook's
+    /// error untouched, and the read funnel surfaces it as a column-conversion
+    /// failure — [`crate::hydrate::HydrateError::into_sqlite`]).
+    ///
+    /// # Errors
+    /// [`crate::hydrate::HydrateError::Decoded`] carrying one of Go's EXACT
+    /// artist prefixes ([`crate::hydrate::ARTIST_STATS_PREFIX`],
+    /// [`crate::hydrate::ARTIST_SIMILAR_PREFIX`]).
+    pub fn into_record(self) -> Result<ArtistRecord, crate::hydrate::HydrateError> {
+        crate::hydrate::artist_post_scan(self)
+    }
 }
 
 /// The `library_artist` + `user_library` joins every artist select carries
@@ -200,7 +336,11 @@ fn where_fragment(options: Option<&QueryOptions>) -> Option<(String, Vec<Value>)
     options.and_then(|o| o.where_clause())
 }
 
-/// The `LIMIT n [OFFSET n]` tail `applyOptions` appends (`:149-159`).
+/// The `LIMIT n [OFFSET n]` tail `applyOptions` appends (`:149-159`) —
+/// ONLY the bounds. The same function's `OrderBy` leg (`:157-158`) is not
+/// rendered here, so a caller's `sort`/`order` has no effect on the row
+/// order these statements return (see the module doc and
+/// `tests/runtime_hydrate_artist.rs::get_all_sql_ignores_the_sort_leg_until_options_are_wired`).
 /// Squirrel renders both bounds as decimal literals and contributes no
 /// arguments (`select.go:139-147`), so this returns SQL only.
 #[must_use]
@@ -256,7 +396,7 @@ pub fn select_artist_sql(
     (sql, args)
 }
 
-/// `Get`/`Read` (`:255-267,718-720`): the stats select narrowed to one id.
+/// `Get`/`Read` (`:255-267,724-726`): the stats select narrowed to one id.
 /// Go appends `Eq{"artist.id": id}` to `selectArtist()`'s WHERE stack, so
 /// the id binds after the join args and before any filter args.
 #[must_use]
@@ -291,11 +431,22 @@ fn select_artist_prefix(
     )
 }
 
-/// `GetAll`/`ReadAll` (`:269-281`): the stats select with the caller's
-/// filters and pagination.
+/// `GetAll`/`ReadAll` (`:269-279,746-750`): the stats select with the caller's
+/// filters and pagination. `annotation` is the `withAnnotation` fragment
+/// (see [`select_artist_sql`]); `None` matches Go's `invalidUserId` skip.
+/// [`ArtistRepo::get_all`] passes the caller's annotation user here, so
+/// `selectArtist`'s columns are the same as Go's for a logged user.
+///
+/// `options` reaches ONLY the filter and the LIMIT/OFFSET legs: Go's
+/// `applyOptions` also renders an ORDER BY (`sql_base_repository.go:157-158`),
+/// which this builder does not, so `sort`/`order` are silently ignored.
 #[must_use]
-pub fn get_all_sql(user: &User, options: Option<&QueryOptions>) -> Sql {
-    select_artist_sql(user, options, None)
+pub fn get_all_sql(
+    user: &User,
+    options: Option<&QueryOptions>,
+    annotation: Option<&(String, Vec<String>, Vec<Value>)>,
+) -> Sql {
+    select_artist_sql(user, options, annotation)
 }
 
 /// The annotation columns `filtersNeedAnnotation`'s Go regex matches
@@ -310,7 +461,7 @@ pub const ANNOTATION_COLUMNS: [&str; 7] = [
     "average_rating",
 ];
 
-/// `filtersNeedAnnotation` (`sql_annotations.go:37-42`): whether any filter
+/// `filtersNeedAnnotation` (`sql_annotations.go:55-61`): whether any filter
 /// references an annotation column, gating `CountAll`'s annotation join
 /// (`:221-225`). The port walks [`Filter`] — the crate's filter set —
 /// matching whole column words case-insensitively, as Go's `\b` regex does.
@@ -344,7 +495,7 @@ fn is_annotation_column(column: &str) -> bool {
     ANNOTATION_COLUMNS.contains(&name)
 }
 
-/// `CountAll` (`:217-227`): `count(distinct artist.id) as count` over the
+/// `CountAll` (`:217-226`): `count(distinct artist.id) as count` over the
 /// library joins (kept — an artist spans libraries), the filters, and the
 /// annotation join only when [`filters_need_annotation`] says so. The
 /// GROUP BY drops with the columns (`count()`, `sql_base_repository.go:
@@ -426,7 +577,7 @@ pub fn search_normalized(name: &str) -> String {
     normalize_for_fts(&[name])
 }
 
-/// `sanitizeArtistStatsRole` (`:79-88`): allowlist a role for JSON-path
+/// `sanitizeArtistStatsRole` (`:175-183`): allowlist a role for JSON-path
 /// interpolation. `"total"` (the aggregate key) is always valid; `None`
 /// marks rejection. Unknown values must not reach SQL concatenation.
 #[must_use]
@@ -440,7 +591,7 @@ pub fn sanitize_artist_stats_role(role: &str) -> Option<String> {
     None
 }
 
-/// `roleFilter` (`:71-77`): `JSON_EXTRACT(library_artist.stats,
+/// `roleFilter` (`:163-170`): `JSON_EXTRACT(library_artist.stats,
 /// '$.<role>.m') IS NOT NULL` for a sanitized role that is not `total`,
 /// else [`FALSE_EXPR`]. The JSON path interpolates only the allowlisted
 /// role (`:75`), never the raw filter value.
@@ -455,7 +606,7 @@ pub fn role_filter(role: &str) -> Sql {
     }
 }
 
-/// `artistLibraryIdFilter` (`:90-92`): `library_artist.library_id = ?`.
+/// `artistLibraryIdFilter` (`:186-188`): `library_artist.library_id = ?`.
 #[must_use]
 pub fn artist_library_id_filter(library_id: Value) -> Sql {
     (
@@ -464,8 +615,8 @@ pub fn artist_library_id_filter(library_id: Value) -> Sql {
     )
 }
 
-/// `artistLibraryFilter` (`:632-649`): the join-free EXISTS scope. The
-/// inner `LIMIT 1` is load-bearing (`:643-647`): it stops SQLite from
+/// `artistLibraryFilter` (`:640-650`): the join-free EXISTS scope. The
+/// inner `LIMIT 1` is load-bearing (`:644-648`): it stops SQLite from
 /// flattening the EXISTS back into a fan-out join while still using the
 /// `(library_id, artist_id)` UNIQUE autoindex. Empty ids → [`FALSE_EXPR`]
 /// (Go's `Eq{"1": 2}`, `:638`).
@@ -496,7 +647,7 @@ pub const EXTERNAL_INFO_COLS: [&str; 7] = [
     "external_info_updated_at",
 ];
 
-/// `dbSimilarArtist` marshalling (`:31-34`, `PostMapArgs` `:102-107`):
+/// `dbSimilarArtist` marshalling (`:38-41`, `PostMapArgs` `:101-106`):
 /// `[{id, name}]` with Go's `omitempty` key skipping, `[]` when empty.
 #[must_use]
 pub fn marshal_similar_artists(similar: &[(String, String)]) -> String {
@@ -516,7 +667,7 @@ pub fn marshal_similar_artists(similar: &[(String, String)]) -> String {
     format!("[{}]", entries.join(","))
 }
 
-/// `PostMapArgs` (`:98-121`) as the SET pair list of the upsert — the
+/// `PostMapArgs` (`:100-121`) as the SET pair list of the upsert — the
 /// struct columns plus the derived `full_text`/`search_normalized`, minus
 /// Go's `delete` of an empty `sort_artist_name`/`mbz_artist_id` (`:113-120`)
 /// so an empty value never overwrites the stored one.
@@ -589,13 +740,20 @@ pub fn put_cols(artist: &ArtistRecord) -> Vec<(String, Value)> {
 }
 
 /// `Put` (`:239-245`) / `UpdateExternalInfo` (`:247-253`) via `put`
-/// (`sql_base_repository.go:613-641`): the UPDATE-first/INSERT-fallback
-/// upsert. `selectUpdateColumns` (`:587-604`) filters the SET list to the
-/// requested columns (all when none), always minus `created_at`;
+/// (`sql_base_repository.go:618-642`): the UPDATE-first/INSERT-fallback
+/// upsert. `selectUpdateColumns` (`sql_base_repository.go:593-610`) filters the SET
+/// list to the requested columns (all when none), minus `created_at`/`birth_time`;
 /// `Put` stamps `CreatedAt = new(time.Now())` and `UpdatedAt = CreatedAt`
-/// (`:240-241`): a row carrying no `created_at` gets `now`, an existing one
-/// keeps its stamp, and every save re-stamps `updated_at`. The UPDATE's row
-/// count decides which statement ran — the caller's.
+/// (`:240-241`), so an unfiltered save re-stamps `updated_at` — TRUE for `Put` (no
+/// `cols_to_update`, the full-column SET includes it), FALSE for a FILTERED update,
+/// where Go's SET is exactly the requested columns and `UpdateExternalInfo`
+/// (`:247-253`) never lists `updated_at`, so Go does not re-stamp it there. The
+/// `updated_at` push below (`:765-768`) nonetheless appends it to every filtered
+/// UPDATE — a pre-existing divergence at HEAD (`git show HEAD:rust/crates/nd-db/src/artist_repo.rs
+/// | grep -n 'wanted.push'`), pinned by `put_sql_update_leg_filters_cols_and_appends_updated_at`
+/// and deliberately not changed (write path outside S-D3d's read scope; see the S-D3d
+/// residual list E in `docs/rust-port/hydrate-contract.md`). The UPDATE's row count
+/// decides which statement ran — the caller's.
 #[must_use]
 pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str]) -> (Sql, Sql) {
     let stamped = ArtistRecord {
@@ -646,7 +804,7 @@ pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str
 /// `getAllIDs` (`:283-291`): `SELECT artist.id` over the library joins,
 /// `GROUP BY artist.id`, the annotation join gated like `CountAll`'s, plus
 /// the caller's filters/pagination — the `GetCursor` pre-pass
-/// (`:299-308` + `artwork_hydration.go:37-50`'s `chunkOptions`, which
+/// (`:299-308` + `artwork_hydration.go:41-54`'s `chunkOptions`, which
 /// reuses the sort and swaps the filters for an id IN-list).
 #[must_use]
 pub fn get_all_ids_sql(user: &User, options: Option<&QueryOptions>) -> Sql {
@@ -672,7 +830,7 @@ pub fn get_all_ids_sql(user: &User, options: Option<&QueryOptions>) -> Sql {
     (sql, args)
 }
 
-/// `chunkOptions` (`artwork_hydration.go:37-50`): the per-chunk options of
+/// `chunkOptions` (`artwork_hydration.go:41-54`): the per-chunk options of
 /// `GetCursor`'s hydrating fetch — the base sort kept, Max/Offset dropped
 /// (the id pre-pass consumed them), the filters replaced by
 /// `Eq{artist.id: chunk}` AND-joined over the base filters.
@@ -703,7 +861,7 @@ pub fn chunk_options(base: Option<&QueryOptions>, id_chunk: &[String]) -> QueryO
     opts
 }
 
-/// `getIndexKey` (`:310-325`): the first matching index-group prefix of
+/// `getIndexKey` (`:310-322`): the first matching index-group prefix of
 /// the lowercased source name — `order_artist_name` unless
 /// `PreferSortTags` and a `sort_artist_name` exists (`cmp.Or`,
 /// `:315-317`), else `"#"`. The groups are caller-supplied config
@@ -746,7 +904,7 @@ pub fn purge_empty_sql() -> (Sql, Sql) {
     (select, delete)
 }
 
-/// `markOrphansMissing` (`:408-419`): the verbatim UPDATE.
+/// `markOrphansMissing` (`:410-418`): the verbatim UPDATE.
 #[must_use]
 pub fn mark_orphans_missing_sql() -> Sql {
     (
@@ -759,7 +917,7 @@ pub fn mark_orphans_missing_sql() -> Sql {
     )
 }
 
-/// `markMissing` (`:421-439`): the CTE UPDATE, verbatim.
+/// `markMissing` (`:421-437`): the CTE UPDATE, verbatim.
 #[must_use]
 pub fn mark_missing_sql() -> Sql {
     (
@@ -776,7 +934,7 @@ pub fn mark_missing_sql() -> Sql {
     )
 }
 
-/// `RefreshPlayCounts` (`:441-463`): the annotation upsert from the
+/// `RefreshPlayCounts` (`:441-460`): the annotation upsert from the
 /// `json_tree` participant fold, verbatim.
 #[must_use]
 pub fn refresh_play_counts_sql() -> Sql {
@@ -914,7 +1072,7 @@ pub fn refresh_stats_cleanup_sql() -> Sql {
     )
 }
 
-/// `searchCfg` (`:616-630`): the artist search config — natural order by
+/// `searchCfg` (`:618-633`): the artist search config — natural order by
 /// id (the GROUP BY, `:622`), the text-search order (Go's literal
 /// `sum(json_extract(...)) desc, name`, `:624`), MBID field
 /// `mbz_artist_id` (`:625`). `scope` is [`search_scope`]'s resolved
@@ -933,7 +1091,7 @@ pub fn search_cfg(scope: Option<&[i64]>) -> (SearchConfig, Option<Sql>) {
     (cfg, scope.map(artist_library_filter))
 }
 
-/// `getSearchStrategy` (`sql_search.go:27-33`) for the artist table: the
+/// `getSearchStrategy` (`sql_search.go:41-49`) for the artist table: the
 /// legacy/full-string LIKE family, the CJK LIKE fallback, or the FTS
 /// default with its two-phase rowid core. Config flags
 /// (`Search.Backend`/`Search.FullString`) are the caller's conf.
@@ -981,7 +1139,7 @@ pub enum ArtistSearchOutcome {
     Query(Sql),
 }
 
-/// `Search` (`:651-665`): consume the `library_id` filter into the
+/// `Search` (`:652-671`): consume the `library_id` filter into the
 /// Phase-1 scope, build the stats base select, and dispatch in
 /// `doSearch`'s order (`sql_search.go:41-61`): empty/`""` query → the
 /// natural-order rowid page hydrated onto the base; UUID → the MBID
@@ -1092,7 +1250,7 @@ fn select_artist_prefix_with_args(user: &User) -> (String, Vec<Value>) {
     )
 }
 
-/// `hydrateRowidPage` (`sql_search.go:108-121`): splice the ranked rowid
+/// `hydrateRowidPage` (`sql_search.go:117-130`): splice the ranked rowid
 /// subquery into the base select's FROM (before its WHERE), strip the
 /// base's pagination (the page query owns it), and order by the row
 /// number so Phase 2 preserves Phase 1's order. The base's GROUP BY
@@ -1167,7 +1325,7 @@ fn strip_pagination(sql: &str) -> String {
     s
 }
 
-/// `requestedLibraryIDs` (`:702-710`): the `[]int` of an
+/// `requestedLibraryIDs` (`:700-707`): the `[]int` of an
 /// `Eq{"library_id": ids}` filter. The crate's [`Filter::Eq`] carries one
 /// value, so the port's spelling is a comma-joined id list — the caller
 /// lifting the filter splits it back.
@@ -1187,7 +1345,7 @@ pub fn requested_library_ids(filter: Option<&Filter>) -> Option<Vec<i64>> {
     }
 }
 
-/// `isLibraryIDFilter` (`:712-720`): whether the filter is the
+/// `isLibraryIDFilter` (`:711-718`): whether the filter is the
 /// `library_id` key, so [`search_sql`] can consume it before it reaches
 /// the bare artist table (which has no `library_id` column).
 #[must_use]
@@ -1195,7 +1353,7 @@ pub fn is_library_id_filter(filter: Option<&Filter>) -> bool {
     matches!(filter, Some(Filter::Eq { column, .. }) if column == "library_id")
 }
 
-/// `searchScope` (`:667-700`): intersect the requested libraries with the
+/// `searchScope` (`:676-696`): intersect the requested libraries with the
 /// user's visible set. `None` for either result is the fast-path (no
 /// Phase-1 filter). Comparison is by membership, not length
 /// (`:691-699`) — requested ids may repeat. `visible: None` is Go's
@@ -1216,7 +1374,7 @@ pub fn search_scope(visible: Option<&[i64]>, requested: Option<&[i64]>) -> Optio
     Some(requested.to_vec())
 }
 
-/// `sortMappingsForRole` (`:704-716`): a copy of the shared stats sort
+/// `sortMappingsForRole` (`:730-744`): a copy of the shared stats sort
 /// mappings narrowed to the sanitized role (falling back to `total`), in
 /// `song_count`/`album_count`/`size` order. The caller grafts them over
 /// [`sort_mapping`]'s shared values.
@@ -1232,7 +1390,7 @@ pub fn sort_mappings_for_role(role_filter_value: Option<&str>) -> [String; 3] {
     ]
 }
 
-/// `setSortMappings` (`:60-69`): the artist sort mappings, keyed by the
+/// `setSortMappings` (`sql_base_repository.go:126-137`; call site at `artist_repository.go:147-159`): the artist sort mappings, keyed by the
 /// sanitized sort name — caller-supplied sort keys resolving to fixed
 /// order-by expressions, never user text.
 #[must_use]
@@ -1329,6 +1487,185 @@ fn library_id_filter_fn() -> crate::sql_restful::FilterFn {
             raw_args: args,
         })
     })
+}
+
+/// Failures of the executed artist reads ([`ArtistRepo`]).
+///
+/// The variant set follows the sibling `AlbumRepo::AlbumError`
+/// (`album_repo.rs:1403-1417`), which itself follows `UserRepo::UserError` and
+/// `PlayerRepo::PlayerError`: a statement/hydration failure and the not-found
+/// case, nothing else.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtistError {
+    /// The SQLite statement failed, or a row's hydration failed. Go's read funnel
+    /// surfaces a `PostScan` failure as a column-conversion error
+    /// (`dbx@v1.12.0/rows.go:92-102`), which is why a decode failure arrives here
+    /// too — via [`crate::hydrate::HydrateError::into_sqlite`].
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10`), which
+    /// `Get` decides from `len(dba) == 0` (`artist_repository.go:261-263`).
+    ///
+    /// This can ONLY come from the zero-row check, never from a driver-level
+    /// "no rows" condition: `dbx`'s `All` loops `Next` then `Close` and makes an
+    /// empty NON-nil slice for a zero-row result (`dbx@v1.12.0/query.go:274-291`,
+    /// `rows.go:109-125`), and `sql.ErrNoRows` is only ever returned by
+    /// `Rows.one`/`Rows.row` (`rows.go:237-244`, `:281-294`) — which the artist
+    /// read never reaches, because Go's `Get` is `queryAll` + a `len` check
+    /// (`:258-262`), not `queryOne`. So `queryAll`'s ErrNoRows→ErrNotFound arm
+    /// (`sql_base_repository.go:451-454`) is dead code on this path, and
+    /// [`ArtistRepo::get_all`] must NEVER report this variant.
+    #[error("record not found")]
+    NotFound,
+}
+
+/// `artistRepository` (`artist_repository.go:26-30`) bound to one pooled
+/// connection — the executed READ side of the artist repository.
+///
+/// Go binds a `dbx.Builder` and reaches the DB through the ambient ctx; this
+/// crate has no ambient context (the `sqlrepo.rs` DI freeze), so the caller
+/// threads a lease from [`crate::store::SQLStore::with_connection_sync`] (a
+/// transaction derefs to a `&Connection`) and every statement runs through
+/// [`crate::execution`] — the port of `executeSQL`/`queryOne`/`queryAll`
+/// (`sql_base_repository.go:336-355,375-388,441-457`). Rows are hydrated through
+/// the shared seam exactly as the album/mediafile reads do —
+/// [`crate::hydrate::row_to_artist`] → [`ArtistRow::into_record`], with
+/// [`crate::hydrate::HydrateError::into_sqlite`] as the exit shape — and artwork
+/// hydration is the second layer, [`hydrate_artist_artwork`]
+/// (`hydrateArtwork`, `artist_repository.go:294-297`).
+///
+/// **Why `get` goes through `query_all` and not `query_optional`:** Go's `Get`
+/// (`:255-267`) is `queryAll` over `selectArtist` narrowed to one id, then
+/// `if len(dba) == 0 { return nil, model.ErrNotFound }`, then `toModels()` +
+/// `hydrateArtwork` over the whole (0-or-1 element) slice and `&res[0]`. It
+/// never reaches `queryOne`, so `sql.ErrNoRows` is not this code path — see
+/// [`ArtistError::NotFound`] for the dbx proof. Neither `Get` nor `GetAll` ever
+/// takes `optimizePagination`: `queryAll` is called with no options at `:258`
+/// and `:272` (contrast `mediafile_repository.go:235`).
+///
+/// **Note on `annotation_user`:** `None` is Go's `invalidUserId`
+/// (`sql_base_repository.go:51`), for which `withAnnotation` returns the query
+/// untouched (`sql_annotations.go:63-65`) — no join and no annotation columns.
+/// Go's single annotation column for that case is then `artist.average_rating`,
+/// which `artist.*` already carries (`nd-dbschema::schema_ddl`'s artist DDL:
+/// `average_rating REAL NOT NULL DEFAULT 0`), so no extra projection column is
+/// added: [`crate::hydrate::row_to_annotation`]'s `has_column` probe sees it in
+/// the `artist.*` expansion and reads it, while the six per-user columns stay
+/// absent and decode to zeros.
+#[derive(Debug)]
+pub struct ArtistRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> ArtistRepo<'a> {
+    /// `NewArtistRepository` (`artist_repository.go:133-161`): bind to `conn`
+    /// (the pooled lease).
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get` (`artist_repository.go:255-267`): [`get_sql`] (the stats select
+    /// narrowed to one id), hydrated through both layers, with a zero-row read
+    /// mapped to [`ArtistError::NotFound`] the way Go decides it from `len(dba)`.
+    ///
+    /// `annotation_user` is Go's `loggedUser(ctx).ID` for
+    /// `withAnnotation`; `None` is `invalidUserId` (no join — see [`ArtistRepo`]).
+    ///
+    /// # Errors
+    /// [`ArtistError::NotFound`] when the id matches nothing — also when the
+    /// `library_artist` INNER join drops the artist (an artist with no junction
+    /// row) or the `user_library` join excludes it for a non-admin
+    /// (`artist_repository.go:199-202`); [`ArtistError::Sqlite`] on a statement
+    /// or hydration failure. An artwork-lookup failure is NOT an error here —
+    /// Go swallows it too, because `hydrateItems` logs and returns an EMPTY map
+    /// (`artwork_hydration.go:58-68`), leaving the artist with a zero
+    /// (unresolved) [`crate::artwork_hydration::ItemImage`]. Use
+    /// [`ArtistRepo::get_all`] when the caller needs that failure reported.
+    /// Go's `Get` returns `nil` beside its error on BOTH paths (`:259-262`), so
+    /// the port's `Result` carries the same information.
+    pub fn get(
+        &self,
+        id: &str,
+        user: &User,
+        annotation_user: Option<&str>,
+    ) -> Result<ArtistRecord, ArtistError> {
+        let annotation = annotation_user.and_then(annotation_join);
+        let statement = get_sql(id, user, annotation.as_ref());
+        let records = self.read_hydrated(&statement)?;
+        // Go hydrates the whole (0-or-1 element) slice, then takes res[0] (`:264-266`).
+        let mut outcome = self.hydrate_artwork(records);
+        if outcome.items.is_empty() {
+            return Err(ArtistError::NotFound);
+        }
+        // Go's swallow-and-log path: the page still renders (artwork_hydration.go:62-66).
+        let _ = outcome.artwork_error;
+        Ok(outcome.items.remove(0))
+    }
+
+    /// `GetAll` (`artist_repository.go:269-279`): [`get_all_sql`] under the
+    /// caller's options, then artwork hydration. Go's
+    /// `selectArtist(ctx, options...)` runs BOTH `applyOptions`
+    /// (`sql_base_repository.go:149-161`) and `applyFilters` (`:247-252`);
+    /// this port expresses only part of that: `filters` ARE rendered
+    /// (`where_fragment`), LIMIT/OFFSET ARE (`pagination_fragment`), but the
+    /// `OrderBy(buildSortOrder(sort, order))` leg (`:157-158`) is NOT rendered,
+    /// so a non-empty [`QueryOptions::sort`] changes nothing and rows come back
+    /// in SQLite's order. Executed:
+    /// `tests/runtime_hydrate_artist.rs::get_all_sql_ignores_the_sort_leg_until_options_are_wired`.
+    ///
+    /// An empty result is an empty `Vec`, never [`ArtistError::NotFound`]:
+    /// `GetAll` returns `res` (`dba.toModels()`, which `make`s a non-nil slice)
+    /// with `err` from the `queryAll` call (`:272-275`).
+    ///
+    /// `artwork_error` carries Go's swallowed `log.Error`
+    /// (`artwork_hydration.go:62-66`): the artists come back either way, each
+    /// with a zero (unresolved) [`crate::artwork_hydration::ItemImage`], exactly
+    /// as Go's empty map leaves them. That is why this returns `Ok` for an
+    /// artwork failure and `Err` only for a statement or row-hydration failure
+    /// (`:273-275` returns `queryAll`'s error unchanged).
+    ///
+    /// # Errors
+    /// [`ArtistError::Sqlite`] when the statement fails or a row will not hydrate.
+    pub fn get_all(
+        &self,
+        user: &User,
+        annotation_user: Option<&str>,
+        options: Option<&QueryOptions>,
+    ) -> Result<ReadOutcome<ArtistRecord>, ArtistError> {
+        let annotation = annotation_user.and_then(annotation_join);
+        let statement = get_all_sql(user, options, annotation.as_ref());
+        let records = self.read_hydrated(&statement)?;
+        Ok(self.hydrate_artwork(records))
+    }
+
+    /// Phase 1 + phase 2 (Go's `queryAll` + `toModels()`): the raw rows through
+    /// the shared seam, the stats shim and the similar-artists column decoded.
+    /// A `PostScan` failure aborts the whole read, as it does in Go.
+    fn read_hydrated(&self, statement: &Sql) -> Result<Vec<ArtistRecord>, ArtistError> {
+        let rows =
+            crate::execution::query_all(self.conn, statement, crate::hydrate::row_to_artist)?;
+        // Go's read funnel leaves a PostScan failure as a column-conversion error,
+        // so `into_sqlite` is the exit shape and `ArtistError::Sqlite` wraps it.
+        Ok(rows
+            .into_iter()
+            .map(ArtistRow::into_record)
+            .collect::<Result<Vec<ArtistRecord>, crate::hydrate::HydrateError>>()
+            .map_err(crate::hydrate::HydrateError::into_sqlite)?)
+    }
+
+    /// Phase 3 (`hydrateArtwork`, `artist_repository.go:294-297`): one batched
+    /// `ar`-kind lookup over the hydrated records.
+    fn hydrate_artwork(&self, records: Vec<ArtistRecord>) -> ReadOutcome<ArtistRecord> {
+        let mut items = records;
+        let mut artwork_error = None;
+        hydrate_artist_artwork(self.conn, &mut items, &mut artwork_error);
+        ReadOutcome {
+            items,
+            artwork_error,
+        }
+    }
 }
 
 #[cfg(test)]

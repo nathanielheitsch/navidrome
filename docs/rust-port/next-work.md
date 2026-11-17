@@ -352,7 +352,7 @@ integrates, runs the gate, and commits.
 | **S-D3 scout brief** | read-only | `hydrate-scan-contract.md` (8-hook inventory, decoder gaps, seam design) | **DONE** |
 | **S-D3a hydrate core + folder/user** | write, after S-D2b1 | new `hydrate.rs` + `lib.rs`, folder/user hooks, executed reads | S-D3b |
 | **S-D3b album/mediafile hydration** | write, after S-D3a | `hydrate.rs` (`row_to_album`/`album_post_scan`/`row_to_mediafile`/`mediafile_post_scan`), `album_repo::AlbumRow`, `mediafile_repo::MediaFileRow`, `sql_tags::tags_to_genres` + `Genre`, `tests/runtime_hydrate_album_mediafile.rs` | **IMPLEMENTED, review APPROVE** (uncommitted working tree; fresh-round reviewer found no P1/P2/P3; gate re-measured: fmt clean, clippy `-D warnings` clean, 1665 passed / 0 failed / 1 ignored across 63 binaries; blocks S-D3c) |
-| **S-D3c artist/playlist/track/scrobble** | write, after S-D3b | stats/similar-artists/criteria decoders + delegating hooks | #17 |
+| **S-D3c artist/playlist/track/scrobble** | write, after S-D3b | stats/similar-artists/criteria decoders + delegating hooks | #17. **PARTIAL: the ARTIST part LANDED** as lane "S-D3d" (stats fold + similar-artists decoder + `ArtistRow`/`ArtistRepo` reads + `hydrate_artist_artwork`, `tests/runtime_hydrate_artist.rs`, gate 1720/0 across 65 after fix round 2 — see the S-D3d section below). Still open: playlist `criteria` rules hook wiring beyond S-D3a, playlist_track, scrobble_buffer, and the playlist/radio artwork wrappers |
 
 S-D3 is pre-scoped in [`hydrate-scan-contract.md`](hydrate-scan-contract.md): all 8 `PostScan` hooks inventoried
 with exact guards/prefixes, column-to-decoder map, the six missing decoders (annotation columns, `bookmark_position`,
@@ -995,3 +995,242 @@ status` shows `rust/crates/nd-stream` clean, the parent ran it in isolation 3× 
 passed, and both parent full-suite runs reported 0 failed. Environmental flakiness in an
 untouched crate, not a regression from this slice; worth decoupling from the workspace
 gate in a later lane.
+
+## S-D3d: artist stats fold, similar-artists decode, artist read record + repo reads (2026-11-17)
+
+**Lane name vs the two numbering schemes.** The parent issued this as "S-D3d"
+(`hydrate-scan-contract.md:203-206`, the artist sub-slice). In the slice table above it
+is the ARTIST half of the row **S-D3c artist/playlist/track/scrobble**, which is now
+marked PARTIAL: the artist part landed, playlist_track/scrobble_buffer and the
+playlist/radio artwork wrappers did not. The parent's file list for this lane was
+`hydrate.rs`, `artist_repo.rs`, `artwork_hydration.rs`, the new
+`tests/runtime_hydrate_artist.rs`, and these two docs; nothing else was touched and
+nothing was committed.
+
+**Landed** (single writer, no new crate, no dependency change):
+
+- `nd-db/src/hydrate.rs` (+400L) — `ARTIST_STATS_PREFIX` = `"parsing artist stats from db: "`
+  and `ARTIST_SIMILAR_PREFIX` = `"parsing similar artists from db: "`, copied from
+  `fmt.Errorf("…: %w", err)` at `artist_repository.go:49` / `:89` including the trailing
+  space. `row_to_artist` (phase 1, the `dbArtist` columns `:32-36`) and `artist_post_scan`
+  (phase 2, `PostScan` `:43-98`) statement by statement: the stats map created
+  UNCONDITIONALLY before the `!= ""` guard (`:44`, `:46`); the nested
+  `map<library, map<role, map<string,int64>>` decode with Go's zero-fill for a missing key
+  and for `null` at every nesting level (executed Go oracle: `"null"`, `"{"1":null}"`,
+  `"{"1":{}}"`, missing `a`/`s` all decode with `err == nil`); the `key == "total"` arm
+  ACCUMULATING with `+=` onto the artist's own `size`/`song_count`/`album_count` (`:63-67`)
+  and then being dropped by the invalid-role `continue` (`:69-72`) so it never becomes a
+  stats key; unknown roles contributing NOTHING (the `+=` block is gated on `"total"`, not
+  on the role parsing) with the `invalid role:` text discarded exactly as Go's bare
+  `continue` discards it; per-role `+=` merge (`:74-78`); then the similar-artists decode
+  with its guard (`:83-90`). Reuses the existing `row_to_annotation`, `join_text`
+  absent-column tolerance and `sql_participations::Role::from_str` rather than inventing
+  new plumbing; `narrow_i32_go` accumulates the stats value with `wrapping_add` and
+  CLAMPS it to the `i32` field's bounds. It does NOT reproduce Go's conversion: Go's
+  `int` is 64-bit (executed `int bits=64`), so `int(stat["m"])` narrows nothing and the
+  port's `i32` fields are a deliberate port-wide narrowing Go does not perform — see the
+  S-D3d residual list.
+- `nd-db/src/artist_repo.rs` (+306L) — `ArtistRecord` gained the seven hydration-only
+  read fields (`stats`, `size`, `album_count`, `song_count`, `annotation`, `image`,
+  `similar`), none of them in `put_cols`; `ArtistRow::into_record` delegating to
+  `artist_post_scan` (the `album_repo.rs:962` shape); `ArtistError { Sqlite, NotFound }`
+  with `"record not found"`; `ArtistRepo<'a>` with `get`/`get_all` plus private
+  `read_hydrated`/`hydrate_artwork` over `crate::execution::query_all`, mirroring
+  `album_repo.rs:1448-1557`. Module doc updated: the PostScan fold and artwork hydration
+  are no longer listed as unported, and what stays unported keeps its reason.
+- `nd-db/src/artwork_hydration.rs` (+30L) — `hydrate_artist_artwork` over the existing
+  `hydrate_items` with `nd_id::ARTWORK_KIND_ARTIST_PREFIX` (`"ar"`, `artwork.rs:30-35`;
+  Go binds the PREFIX at `artwork_repository.go:169`, `model/artwork_id.go:29`).
+- `nd-db/tests/runtime_hydrate_artist.rs` (NEW, 2502L, 31 `#[test]` functions — 53 `fn` occurrences counting helpers) — the read, artwork and write tests execute against
+  `nd_dbschema::schema::apply_fresh_schema` on a real on-disk pooled DB. The earlier "never against
+  string-rendered SQL" claim was overstated: `get_all_sql_ignores_the_sort_leg_until_options_are_wired` asserts on the RENDERED statement text for the sort/filter/pagination legs ("no ORDER BY", `ends_with(" GROUP BY artist.id LIMIT 10 OFFSET 5")`, `WHERE` presence) and on a deliberately-broken stats-backed sort executed against the fresh schema, while the guard/decode arms assert on the `artist_post_scan` seam directly. Coverage: multi-library fold with a `total` key; `total` never a
+  stats key; unknown role contributes nothing; pre-seeded totals accumulate; the total-arm
+  and per-role WRAPPING accumulation (no panic at `i64::MAX`, with the `i32`-clamping
+  interplay pinned next to Go's executed value); the guard and
+  decode arms (`""`, `null`, `{}`, null library entry, null role entry, and the rejection
+  arms with Go's exact prefix); missing `a`/`s` and null stats zero-fill; the four
+  similar-artists empty forms plus `[null,{…}]` and unknown JSON fields; the similar
+  decode's FIELD-level Go error sentences (`.0.id`, `.0.name`, `.0.ID`, `.1.id`) plus the
+  error-free null/unknown-field arms; the similar
+  failure carrying its prefix with the stats fold proven to have run first; annotation with
+  and without a row plus `annotation_user = None`; `GROUP BY` one row per artist; `Get`
+  NotFound for unknown id / ungranted non-admin / no junction row; `get_all` returning an
+  empty Vec; the unrendered ORDER BY leg (`get_all_sql` with a non-empty sort emits no
+  `ORDER BY`, and the dropped `artist.stats` column makes the stats-backed sort keys fail
+  on the fresh schema); the three artwork states under the `ar` prefix; the artwork-failure channel
+  (`get_all` reports it, `get` discards it); write-map key-count invariance with the count
+  DERIVED (`put_cols` 18 keys with sort+mbz set, 16 with both empty, minus `created_at` in
+  the UPDATE leg) and byte-identical UPDATE/INSERT text and args for a hydrated record vs a
+  hydration-reset clone; raw `similar_artists` surviving a read-then-write cycle; the
+  `Put` stamping contract after hydration; the INNER-vs-LEFT join wording pin; and the
+  NULL-alias required-column error.
+
+**Fix round after review (2026-11-17), two behavioral corrections.** (1) The fold used a
+plain `+=`, which PANICS where Go wraps: overflow checks are on in this workspace
+(`rust/Cargo.toml`'s `[profile.dev]`/`[profile.test]` set only `debug`/`incremental`),
+executed probe → `attempt to add with overflow` at `i64::MAX += 1`, while Go wraps
+(`2147483647 += 2147483647` → `4294967294`). All six accumulation sites now add through
+`hydrate.rs::wrapping_int64` / the `wrapping_add` inside `narrow_i32_go`.
+(2) A non-string `id`/`name` in a similar-artists element fell through to serde's text
+(`invalid type: integer \`3\`, expected a string`); the decoder now reads the two fields
+field-by-field and emits Go's field-level sentence verbatim, including the `.0.id` path and
+the `string` target (executed oracle). See the S-D3d residual list for the two residuals
+that remain in that decoder.
+
+**Claims in the parent's brief that were wrong at source, corrected against the pinned
+files.** (1) `dbArtist` is `artist_repository.go:32-36` and `dbSimilarArtist` is `:38-41`,
+not `:34-36`/`:38-41` as cited; `Get`/`GetAll` are `:255-267`/`:269-279`, not `:263-273`/
+`:297-299`; `hydrateArtwork` is its OWN method at `:293-297` (comment `:293`, signature
+`:294`, body `:295-296`) — the brief cited that range under `Get`, whose only connection is
+that `Get` CALLS it at `:265` (and `GetAll` at `:277`); `PostMapArgs`
+is `:100-121`, not `:98-105`; `marshal_similar_artists`' Go counterpart is `:101-106`, not
+`:502` (`RefreshStats` is `:465`, its `batchUpdateStatsSQL` string starts at `:494` and its
+`WITH artist_role_counters AS (` CTE is `:495`). (2) `squirrel` renders `JOIN` for `.Join` at
+`select.go:298-299` — confirmed, and `InnerJoin` at `:313-314` is what emits `INNER JOIN`.
+(3) The brief's `put_cols` figure of 18/16 keys is right, but the UPDATE arg count is 18
+(17 SET + `WHERE id`), not 19: the function is `selectUpdateColumns` (there is no
+`select_update_cols` in the tree), `sql_base_repository.go:593-610`, and
+`delete(updateValues, "created_at")` is `:605`. (4) `RowGet::get_opt_text` is NOT what reads the stats
+alias — `row_to_artist` uses the established `join_text` helper (`hydrate.rs:2314`), which
+maps an ABSENT column to `""` and a present NULL to an error.
+(5) A reviewer claim that the annotation `LEFT JOIN` placement diverges from squirrel is
+WRONG and was rejected: squirrel renders ALL joins as one space-joined block BEFORE `WHERE`
+(`select.go:103-109`), and Go's `withAnnotation` appends to that same `Joins` list even
+though it is called after `GroupBy` (`artist_repository.go:212-214`,
+`sql_annotations.go:68-72`). The port matches; no code or test changed.
+
+**Two divergences the brief predicted differently than the executed builds behaved**, both
+recorded rather than papered over: a NULL `library_artist.stats` cell does NOT fold to the
+empty string on the bundled build (`json_group_object(1, jsonb(null))` → `{"1":null}` on
+SQLite 3.46.0, executed) so it decodes as a zero-contributing entry, and a NULL `library_id`
+KEY renders as the unquoted `{:{}}` on 3.46.0 — which Go's JSON decoder rejects — while
+3.53.4 drops the entry entirely; both are unreachable under `schema_ddl.rs:62`'s
+`library_id NOT NULL`. Likewise a null ROLE value still CREATES a zero-valued stats entry,
+which the brief did not state.
+
+**Gate after the fix round** (from `rust/`, all actually run): `cargo fmt --all -- --check`
+0; `cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test --all-targets
+--all-features` 0 — **1719 passed / 0 failed / 1 ignored across 65 binaries**; `nd-db`
+**640** across its 22 `--all-targets` binaries; `cargo test -p nd-db --test
+runtime_hydrate_artist` 0 — 28 passed / 0 failed; `cargo doc -p nd-db --all-features
+--no-deps` at the SAME 23 intra-doc-link warnings (9 unresolved-link + 14 private-item,
+including the PRE-EXISTING `select_artist_parts` link at `artist_repo.rs:4`) with no new
+warning; `git diff --check` 0. No test was lost; the known `nd-stream` timing flake did not
+fire in this run. (Earlier in this lane, before the fix round: 1715 passed / `nd-db` 636,
+which the +4 tests replaced.)
+
+**Gate after fix round 2** (from `rust/`, all actually run): `cargo fmt --all -- --check` 0;
+`cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test --all-targets
+--all-features` 0 — **1720 passed / 0 failed / 1 ignored across 65 binaries**; `nd-db`
+**641** across its 22 `--all-targets` binaries; `cargo test -p nd-db --test
+runtime_hydrate_artist` 0 — **29 passed / 0 failed** (the 28 above, plus
+`digit_path_tokens_drop_the_go_struct_field_phrase`); `cargo doc -p nd-db --all-features
+--no-deps` 0 with the SAME 23 intra-doc-link warnings (9 unresolved-link + 14 private-item,
+including the PRE-EXISTING `select_artist_parts` link) — no new warning from `go_into_what`,
+whose intra-doc links resolve; `git diff --check` 0. The known `nd-stream`
+`transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` flake did
+not fire in this run (it passed).
+
+**Fix round 2 after review (2026-11-17), the `Go struct field ` phrase.** The stats decoder
+hard-coded Go's `intoWhat` choice per arm — the library-level arm always DROPPED the phrase,
+the role and stat-key arms always KEPT it — which diverged from Go in two symmetric
+directions, both executed against Go 1.27.4: `{"alpha":5}` keeps it
+(`json: cannot unmarshal number into Go struct field .alpha of type
+map[string]map[string]int64`) while the port dropped it; `{"1":{"2":5}}` drops it
+(`json: cannot unmarshal number into .1.2 of type map[string]int64`) and
+`{"1":{"albumartist":{"5":true}}}` drops it (`json: cannot unmarshal bool into
+.1.albumartist.5 of type int64`) while the port kept both. Go's rule is POSITIONAL, not
+type-driven: `encoding/json/v2_decode.go:143-147` drops the phrase when the token after the
+LAST `.` of `UnmarshalTypeError.Field` is non-empty and all ASCII digits, so the same arm
+reads both ways depending on the key's spelling, and `{"01":5}` counts as all-digits
+(`TrimRight` strips a cutset, it does not parse a number). `hydrate.rs::go_into_what` now
+computes it from the last path token and is applied in all FOUR `decode_library_stats` arms;
+`go_type_error`'s signature and the root-level `Go value of type` arm are unchanged (Go's
+root case carries no field, `v2_decode.go:149-151`). The similar-artists decoder was left
+alone on purpose: Go ignores an unrecognized key there (`[{"5":3}]` → `err == nil`), so no
+digit token can be the last token of one of its field sentences, and its element arm already
+passes `into_what = ""` for the bare `.0` index, which is what Go's rule produces. Pinned by
+the new test plus five additional rows in `stats_guard_and_decode_arms_match_go`'s malformed
+table, every expectation a Go sentence executed against
+`map[string]map[string]map[string]int64` rather than port output. What is now byte-exact is
+the sentence SHAPE; the remaining value-level divergence is only the number LITERAL
+(serde renders its parsed `Number`, Go echoes the source text), scoped with executed
+evidence in `hydrate-contract.md`'s S-D3d list: `1.0`, `1.5`, `12345678901234567890`,
+`9223372036854775808` and `-0.0` agree, exponent spellings (`1e3`/`1E3`/`-1e3`/`1e9`) and
+integers above `u64::MAX` (`-9223372036854775809`, `18446744073709551616`) do not. Found
+while pinning those literals: a BEHAVIORAL divergence the review had not flagged — Go
+accepts the integer spelling `-0` into int64 (executed: `err == nil`, value 0), but
+serde_json stores `-0` as a float so `as_i64` is `None` (executed probe) and the port
+rejects it; recorded as its own residual bullet and pinned in the new test.
+
+**Stale citations corrected at source in `artist_repo.rs`** (three comment lines only, each
+verified with `cat -n` against `persistence/artist_repository.go`): `TOTAL_ROLE` cited
+`sanitizeArtistStatsRole :83-84` -> real `:175-183` (`:83-84` is `PostScan`'s
+similar-artists null guard); `role_filter` cited `roleFilter :71-77` -> real `:163-170`;
+`marshal_similar_artists` cited `:31-34`/`PostMapArgs :102-107` -> `dbSimilarArtist` is
+`:38-41` and the marshal statement is `:101-106`. The `similar_artists` field doc's
+`PostMapArgs :102-107` was left as-is: that citation names the whole `PostMapArgs` derived-
+column block, which really is `:102-107` (`m["similar_artists"] = string(similarArtists)` is
+`:106`), so it was never wrong. MORE stale citations for the same symbols remain in the tree
+and were NOT touched, because they sit outside the lines this lane was scoped to: module doc
+`:56` and the `sanitize_artist_stats_role` fn doc (`:580`) cite `:79-88` (real `:175-183`);
+module doc `:58` and the test comment `:1706` cite `roleFilter :71-77` (real `:163-170`);
+test comments `:1683` and `:1953` repeat `:79-88` and `:31-34`/`:102-107`; and `FALSE_EXPR`
+cites `:76`, `:706` while `Eq{"1": 2}` is actually at `:169` and `:642`. Flagged for the next
+lane rather than silently widened.
+
+**Fix round 3 (2026-11-17), citation hygiene — round 2's "three stale cites" claim was FALSE.** Round 2's "Stale citations corrected" block above corrected three comment lines and then asserted the rest were either never-wrong or out-of-scope, implying three was the complete set. That was wrong. A mechanical audit of the lane's files found **25 mismatched func-ranged comment citations — 22 pre-existing at HEAD, 3 introduced by this lane's own edits** — not three. (My own independent re-audit, which additionally covers the no-paren `//!` module-header idiom and cross-file function-body cites that a paren-only `` `Name` (`:a-b`) `` regex misses, flagged a further 22 comment lines in `artist_repo.rs`; round 3 rewrote **47 comment lines** (its own count) — all 25 from the audit plus those 22 — and the file-aware re-audit afterwards reported 0 non-OK func-range cites. The cumulative lane diff now carries 57 changed comment lines in `artist_repo.rs` (rounds 1-4 combined), so 47 is round 3's own figure, not a number reproducible from HEAD.) The audit's method is reproducible: parse `func (recv) Name(` boundaries in each pinned Go source (`persistence/artist_repository.go`, `sql_base_repository.go`, `sql_participations.go`, `artwork_hydration.go`, `sql_annotations.go`, `sql_search.go`, `artwork_repository.go`, `mediafile_repository.go`) to get each function's true body (start = the `func` line, end = the matching closing `}`), then compare every `` `Name` (`:a-b`) `` / `` `Name` `:a-b` `` citation in `///`/`//!`/`//` comments against that body and flag any cite whose range is not contained in the named function's real range; every corrected range's end was confirmed as a real closing brace via `cat -n`. The three round-2 fixes (`sanitizeArtistStatsRole :79-88`→`:175-183`, `roleFilter :71-77`→`:163-170`, `marshal_similar_artists :31-34`→`:38-41`) were themselves part of the 25, not the only ones: the audit additionally found the same symbols cited stale in the module header (e.g. `CountAll :217-227`→`:217-226`, `getIndexKey :310-325`→`:310-322`, `markOrphansMissing :408-419`→`:410-418`, `markMissing :421-439`→`:421-437`, `RefreshPlayCounts :441-463`→`:441-460`, `searchCfg :616-630`→`:618-633`, `artistLibraryFilter :632-649`→`:640-650`, `Search :651-665`→`:652-671`, `searchScope :667-700`→`:676-696`, `requestedLibraryIDs :702-710`→`:700-707`, `isLibraryIDFilter :712-720`→`:711-718`, `sortMappingsForRole :704-716`→`:730-744`) and cross-file body cites in other sources (e.g. `selectUpdateColumns :587-604`→`sql_base_repository.go:593-610`, `filtersNeedAnnotation`→`sql_annotations.go:55-61`, `getSearchStrategy`→`sql_search.go:41-49`, `hydrateRowidPage`→`sql_search.go:117-130`, `chunkOptions`→`artwork_hydration.go:41-54`, `put`→`sql_base_repository.go:618-642`). Round-2's own edits had introduced two of the 25 (`GetAll :269-282`→`:269-279` at `:80`, `queryAll` call-site `:272-279` at `:1613`); the remaining 22 of the 25 pre-dated this lane.
+**Gate after fix round 3** (from `rust/`, all actually run): `cargo fmt --all -- --check` 0; `cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test --all-targets --all-features` 0 — **1720 passed / 0 failed / 1 ignored across 65 binaries** (identical to round 2 — comment-only edits cannot change a test outcome); `cargo doc -p nd-db --all-features --no-deps` 0 with the SAME 23 intra-doc-link warnings (9 unresolved-link + 14 private-item); `git diff --check` 0. The known `nd-stream` `transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` flake passed (did not fire). Comment-only change confirmed: `git diff` shows only `//`/`///`/`//!` lines altered in `artist_repo.rs` (and one line in `runtime_hydrate_artist.rs`); no code line, no Cargo.toml/Cargo.lock, no generated file, no Go source touched.
+**Residuals recorded** in `hydrate-contract.md`'s S-D3d list (28 bullets plus three
+sub-bullets on the number-literal split, each with a citation and, where behavioral, the test
+that executed it): stats-prefix parity but not PARSE-error wording, with the value-level
+sentence SHAPE now byte-exact once Go's positional digit-token rule is applied and the
+number LITERAL as the only remaining value-level divergence — a claim round 4 found
+FALSE (duplicate-key ACCEPT, error ORDERING, and JSON-Pointer escaping all diverge
+inside a value-level sentence; see the round-4 section below and the narrowed
+hydrate-contract.md bullet); similar-artists FIELD-level sentences reproduced BYTE-EXACTLY (executed oracle: the cell `[{"id":3}]` yields exactly
+`json: cannot unmarshal number into Go struct field .0.id of type string`, and the
+null/unknown-field/`{}`/`[null,{…}]` arms stay error-free),
+with two residuals inside that decoder — element/root sentences name the port's own type
+name, and when BOTH fields of one element are wrong (or two keys case-fold to the same
+field) Go resolves in SOURCE order while the port walks serde_json's `BTreeMap`; the RAW-`similar_artists` round-trip direction (the port preserves unknown
+fields Go would drop, and a caller that edits `similar` must re-marshal via
+`marshal_similar_artists`); the `i32` narrowing being a port choice Go does NOT make
+(`int bits=64`, so `int(stat["m"])` narrows nothing) and accumulation going through
+`wrapping_add` so an overflow WRAPS instead of panicking — with `narrow_i32_go`
+(clamp-on-overflow) and `hydrate.rs::narrow_i32` (`IntegralValueOutOfRange`) diverging by
+design; the discarded
+`invalid role:` text; `"total"` never a stats key and accumulation semantics; the
+unconditionally-created map; stats-before-similar ordering (port returns `Err` instead of
+reproducing Go's partial mutation); the executed 3.46.0-vs-3.53.4 NULL-key divergence;
+NULL-vs-`''` cell behavior (`''` is a hard `malformed JSON` read failure on BOTH builds, so
+no Rust pre-filter was added); NULL alias error vs absent alias tolerance; artist reads
+never taking `optimizePagination`, `get_all` forwarding `QueryOptions.Filters` (which makes
+the S-D3c "repo `get_all` cannot express filters" residual entity-specific, not
+port-wide) but NOT rendering the ORDER BY leg at all — `QueryOptions.sort`/`order` are
+silently ignored, rows come back in SQLite's order, and the stats-backed sort mappings
+reference the `artist.stats` column that
+`db/migrations/20250701010108_add_multi_library_support.go:59` dropped and that the fresh
+schema's artist DDL does not have (so those keys fail upstream too); `NotFound` coming from `len == 0` with the dbx proof that `All` never yields
+`sql.ErrNoRows`; `Get` hydrating the whole 0-or-1 slice and discarding the artwork failure;
+`annotation_user = None` needing no extra projection column because `artist.*` already
+carries `average_rating` (the 19 columns enumerated from `schema_ddl.rs:48`); dropped
+`full_text`/`search_normalized`; `JOIN` vs `INNER JOIN` wording; `GetCursor`/`GetIndex`
+inheriting hydration transitively while remaining statement-only builders; and the unported
+playlist/radio/playlist-track artwork wrappers plus `getParticipants`/
+`GetWithParticipants`.
+
+**Round 4 (2026-11-16), residual documentation plus two new tests — no production code changed.** Scope: the round-3 review's documentation-completeness findings. The parent's verified fact list was re-executed end to end (Go 1.27.4 via `$(go env GOROOT)`, serde_json 1.0.154 exactly as in `rust/Cargo.lock`, no `preserve_order` feature), and all new claims below carry executed strings. Production code was NOT touched; the parent added two test functions after the writer stopped (`duplicate_keys_and_sorted_error_order_diverge_from_go` by the writer, `path_escaping_and_empty_key_diverge_from_go` by the parent), and the parent corrected the writer's Go type legs in this section and in `hydrate-contract.md` — see (D).
+ - **Line-count correction (task a).** The `Landed` bullet's `NEW, 2123L, 28 tests` pre-dated the fix rounds' additions; measured after round 4's edits and the parent's follow-up test the file is **2502 lines with 31 `#[test]` functions** (53 `fn` occurrences counting helpers — "tests" means `#[test]` fns).
+ - **"Never against string-rendered SQL" was overstated (task b).** `get_all_sql_ignores_the_sort_leg_until_options_are_wired` asserts on the RENDERED statement text for the sort/filter/pagination legs (no `ORDER BY`, `ends_with(" GROUP BY artist.id LIMIT 10 OFFSET 5")`, `WHERE` presence) and executes one deliberately-broken stats-backed `ORDER BY` against the fresh schema (to prove the dropped `artist.stats` column fails); the guard/decode arms assert on the `artist_post_scan` seam directly, and the read/artwork/write tests execute against the fresh schema. The corrected bullet is in the Landed list above.
+ - **What round 4 added to `hydrate-contract.md`'s S-D3d list (each VERIFIED by execution, not inferred).** All type legs below are the ones Go actually prints, re-executed by the parent against `map[string]map[string]map[string]int64` (`persistence/artist_repository.go:47`): Go names the type of the DESTINATION level, so a bad library-level value names `map[string]map[string]int64`, a bad role-level value names `map[string]int64`, and a bad stat value names `int64` — only a payload that is not an object at all names the full 3-level type. (A) duplicate keys inside a stats cell — a BEHAVIORAL divergence: Go keeps the first value and errors (executed: `{"albumartist":{"m":true,"m":1}}` → `json: cannot unmarshal bool into Go struct field .albumartist.m of type map[string]int64`; `{"1":{"albumartist":{"m":true,"m":1}}}` → `… of type int64`), while serde_json collapses to the last value so the port ACCEPTS with `m = 1` (executed probe and seam); reachable only through a hand-edited/corrupted `library_artist.stats` TEXT cell, not through a normal scan. (B) error ordering — Go reports the first offending entry in DOCUMENT order (executed: `{"b":{"y":true},"a":{"x":true}}` → `.b.y`), the port walks serde's `BTreeMap` and reports the first in SORTED order (seam: `.a.x`); the similar-artists bullet's B-tree-walk root cause is named as shared. (C) JSON-Pointer escaping — Go escapes keys in `UnmarshalTypeError.Field` (executed: `{"a/b":5}` → `… Go struct field .a~1b of type map[string]map[string]int64`, `{"a~b":5}` → `… .a~0b …`, deeper `{"1":{"a/b":{"m":true}}}` → `… .1.a~1b.m of type int64`), the port interpolates the raw key (`.a/b`, `.a~b`, `.1.a/b.m` — seam-executed); unreachable under the fresh DDL (`library_artist.library_id INTEGER NOT NULL`, `schema_ddl.rs:62`), same reachability class as the documented NULL-key bullet. (D) EMPTY library-id key — executed Go: `{"":5}` → `json: cannot unmarshal number into Go value of type map[string]map[string]int64` (Go's `Field` is empty at that level, so the sentence has NO field leg); the seam produces `parsing artist stats from db: json: cannot unmarshal number into Go struct field . of type map[string]map[string]int64` (executed by `path_escaping_and_empty_key_diverge_from_go`) — the port BUILDS a field `"."` that Go never has, so the divergence is the `Go struct field .` phrase, NOT the port naming its own Rust type. An earlier `/tmp` probe of a hand-copied `go_into_what`/`go_type_error` and the parent's round-4 brief both claimed a 3-level type leg here; both were wrong — the library-level arm names `map[string]map[string]int64` (`hydrate.rs:2755`), which is Go's type for that level, and the 3-level spelling only appears in the port's ROOT arm (`hydrate.rs:2656`), where it matches Go verbatim. Deeper levels DO match byte-for-byte: `{"a":{"":5}}` → `json: cannot unmarshal number into Go struct field .a. of type map[string]int64` on both sides (executed). (E) `put_sql`'s forced `updated_at` — the comment above `put_sql` (now `artist_repo.rs:742-756`) now states BOTH cases: TRUE for `Put` (no `cols_to_update`), FALSE for filtered updates; the push itself is at `:765-767`, and the comment HEAD carried at `artist_repo.rs:597` said only "every save re-stamps `updated_at`", where Go's `selectUpdateColumns` (`sql_base_repository.go:593-610`) filters the SET map to exactly the requested columns minus `created_at`/`birth_time` and `UpdateExternalInfo` (`artist_repository.go:247-253`) does not list `updated_at`, so Go never writes it on that path; the divergence is PRE-EXISTING at HEAD (`git show HEAD:rust/crates/nd-db/src/artist_repo.rs | grep -n 'wanted.push'` → `:609`), pinned by the pre-existing `put_sql_update_leg_filters_cols_and_appends_updated_at`, and deliberately NOT changed (write path outside S-D3d's read scope).
+ - **New tests (task 4):** `runtime_hydrate_artist.rs::duplicate_keys_and_sorted_error_order_diverge_from_go` pins the duplicate-key ACCEPT (stat-key level and role-key level) and the sorted-vs-document error ordering through the real `artist_post_scan` seam; `path_escaping_and_empty_key_diverge_from_go` (parent-added after the writer stopped) pins the raw-key rendering for `/` and `~`, the `Go struct field .` shape for an empty library id, and the deeper `{"a":{"":5}}` case where the two sides agree. Go strings are quoted in the doc comments, not assertable in Rust. Existing tests untouched.
+ - **Rounds 2-3 citation audit, for the record (task c):** the stale-cite sweep found 25 mismatched Go citations (22 pre-existing at HEAD, 3 lane-introduced) by a brace-matched audit; round 3 rewrote 47 comment lines (its own count; see the round-3 entry above, which notes the cumulative lane diff now shows 57 changed comment lines in `artist_repo.rs` across rounds 1-4).
+
+**Gate after round 4** (from `rust/`, all run by the parent after the writer stopped and after the parent's follow-up test; all actually executed): `cargo fmt --all -- --check` 0; `cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test --all-targets --all-features --no-fail-fast` 0 — **1722 passed / 0 failed / 1 ignored across 65 binaries** (round-3 baseline 1720 plus the two new tests); `cargo test -p nd-db --all-features --test runtime_hydrate_artist` 0 — 31 passed / 0 failed; `cargo doc -p nd-db --all-features --no-deps` 0 with the SAME 23 intra-doc-link warnings (9 unresolved + 14 private); `git diff --check` 0. The known `nd-stream` `transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` flake did not fire in these runs. No executable code line changed in round 4: `git diff` shows only comment lines in `artist_repo.rs`, plus the new test function in `runtime_hydrate_artist.rs` and the two doc files; no Cargo.toml/Cargo.lock, no generated file, no Go source touched.
+
+**Round 5 (2026-11-16), fresh read-only review - APPROVE WITH FINDINGS, no P0/P1 defect in the code.** Reviewer 2ad490bb (bifrost/openrouter/reasoning, a different model from the round-4 writer) built its own Go 1.27.4 oracle and confirmed every quoted string in bullets A-E and in both new tests is byte-identical to Go, including all destination-level type legs, and confirmed the port-side asserted strings are what the seam produces and that neither new test can pass vacuously. Findings: (i) a protocol P0 - hydrate-contract.md changed from 59c197d1... to 40184ff4... DURING its session, because the parent corrected bullet E mid-review; the reviewer verified the post-edit citations as accurate and flagged the snapshot drift; (ii) a P1 - next-work.md:1226 still cited artist_repo.rs:748 for the put_sql comment (HEAD :748 is markOrphansMissing; the comment HEAD carried is at HEAD :597, now :742-756), corrected by the parent afterwards. The parent independently re-verified all 12 third-party citations against the pinned sources (Go 1.27.4 encoding/json/v2_decode.go:149-151 and decode.go:136-141; dbx v1.12.0 rows.go:82-86, :244, :294; squirrel v1.5.4 select.go:103-109, :298-299, :313-314) and the Put/UpdateExternalInfo/selectUpdateColumns column lists.
+
+**Round 6 (2026-11-16), final read-only verification - APPROVE, zero findings.** Verifier 5e8590e1 (bifrost/openrouter/coding, a different model from the round-5 reviewer) ran against a frozen hash snapshot that stayed unchanged for its whole session and re-measured every doc assertion: put_sql's executable body identical to HEAD (sed -n '600,644p' of HEAD vs sed -n '758,802p' of the worktree with comments excluded, diff exit 0 - the parent reproduced this), the updated_at push at :767 inside the if at :766-768 (the docs cite the enclosing :765-768 span), comment at :742-756, HEAD comment at :597, HEAD wanted.push at :609, markdown integrity (even backtick and quote counts on the lane's lines), and the metrics (2502 lines / 31 #[test] / 53 fn; 28 residual bullets; 1722/0/1 across 65; nd-db 643 across 22; 23 doc warnings, 9 + 14). The known nd-stream flake passed in its full run.
+
+**Gate after rounds 5-6** (run by the parent after the last doc edit; real exit codes): cargo fmt --all -- --check 0; cargo clippy --all-targets --all-features -- -D warnings 0; cargo test --all-targets --all-features --no-fail-fast 0 - **1722 passed / 0 failed / 1 ignored across 65 binaries**, reproduced in a clean copy of rust/ outside the checkout with identical totals; cargo test -p nd-db --all-targets --all-features --no-fail-fast - **643 passed / 0 failed / 0 ignored across 22 binaries** (was 612 across 21 at the S-D3c baseline); cargo test -p nd-db --all-features --test runtime_hydrate_artist 0 - 31/0/0; cargo doc -p nd-db --all-features --no-deps 0 with 23 warnings (9 unresolved + 14 private, unchanged baseline); git diff --check 0. Status at lane close: HEAD was `1c215a7e` when the gates were measured; the lane is then committed as one GPG-signed commit on master atop it. Working tree = 5 modified + 1 untracked before that commit; no Cargo.toml/Cargo.lock, no generated file, no Go source, no scratch dir touched. The only executable lines this lane changed relative to HEAD are the S-D3d read/hydration additions themselves (get_all_sql gained the annotation threading, ArtistRepo::get/get_all were wired, the artist post-scan seam and artist artwork wrapper added); rounds 4-6 changed comments, docs and tests only.

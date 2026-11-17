@@ -39,6 +39,15 @@
 //! that lane, and playlist-track hydration reuses
 //! [`hydrate_media_file_artwork`] once that lane has media files to fill.
 //!
+//! Also unported, as residuals recorded in `docs/rust-port/hydrate-contract.md`:
+//! the playlist/radio/folder wrappers of the same `hydrateItems` helper —
+//! `playlistRepository.hydrateArtwork` + the track-cursor variants
+//! (`playlist_repository.go:191-192`, `:207`, `:253`, `:406`),
+//! `radioRepository.hydrateArtwork` (`radio_repository.go:80-81`), and the
+//! folder `image_files`-based artwork path (`artwork_hydration.go:169`). Each
+//! is a thin wrapper over [`hydrate_items`] with its own kind prefix, so they
+//! land with their own repository slices rather than here.
+//!
 //! Two chunk sizes exist in Go and only one belongs here: `artworkBatchSize` =
 //! 200 (`artwork_repository.go:16`, used by `GetInfoForItems` at `:161`) is
 //! [`crate::artwork_repo::BATCH_SIZE`] and drives [`hydrate_item_images`];
@@ -57,6 +66,7 @@ use rusqlite::Connection;
 use rusqlite::Row;
 
 use crate::album_repo::AlbumRecord;
+use crate::artist_repo::ArtistRecord;
 use crate::artwork_repo;
 use crate::mediafile_repo::MediaFileRecord;
 
@@ -275,6 +285,26 @@ pub fn hydrate_album_artwork(
         conn,
         nd_id::ARTWORK_KIND_ALBUM_PREFIX,
         albums,
+        |a| a.id.as_str(),
+        |a| &mut a.image,
+        artwork_error,
+    );
+}
+
+/// `artistRepository.hydrateArtwork` (`artist_repository.go:293-297`): the
+/// embedded [`ItemImage`] of every artist, from one `ar`-kind lookup
+/// ([`nd_id::ARTWORK_KIND_ARTIST_PREFIX`], mirroring Go's
+/// `model.KindArtistArtwork` prefix `ar`, `model/artwork_id.go:29`; the lookup
+/// binds the PREFIX, not the name — `artwork_repository.go:169`).
+pub fn hydrate_artist_artwork(
+    conn: &Connection,
+    artists: &mut [ArtistRecord],
+    artwork_error: &mut Option<String>,
+) {
+    hydrate_items(
+        conn,
+        nd_id::ARTWORK_KIND_ARTIST_PREFIX,
+        artists,
         |a| a.id.as_str(),
         |a| &mut a.image,
         artwork_error,

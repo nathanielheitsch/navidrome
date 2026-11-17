@@ -23,7 +23,10 @@
 //! pair ([`row_to_folder`] → [`folder_post_scan`], which decodes the
 //! `image_files` shim and carries the INNER-joined `library_path`) and the
 //! playlist pair ([`row_to_playlist`] → [`playlist_post_scan`], which decodes
-//! the `rules` shim and the LEFT-joined annotation columns).
+//! the `rules` shim and the LEFT-joined annotation columns). S-D3d landed the
+//! artist pair ([`row_to_artist`] → [`artist_post_scan`], `:43-98`), whose
+//! second phase folds the `JSON_GROUP_OBJECT` library-stats alias into
+//! `Stats`/`Size`/`AlbumCount`/`SongCount` and decodes `similar_artists`.
 //!
 //! A raw row for these entities also carries a **join-only** column that the
 //! record keeps but the write map must not: `FolderRecord::library_path`
@@ -144,14 +147,19 @@ use nd_model::criteria::unmarshal_criteria_str;
 use nd_model::fields::default_field_map;
 
 use crate::album_repo::{participant_names_from_participants, AlbumRecord, AlbumRow};
+use crate::artist_repo::{ArtistRecord, ArtistRow, SimilarArtist, TOTAL_ROLE};
 use crate::folder_repo::{FolderRecord, FolderRow};
 use crate::mediafile_repo::{MediaFileRecord, MediaFileRow};
 use crate::playlist_repo::{PlaylistRecord, PlaylistRow};
 use crate::sql_json::{unmarshal_discs, unmarshal_image_files, unmarshal_nullable_strings};
 use crate::sql_participations::unmarshal_participants;
+use crate::sql_participations::Role;
 use crate::sql_tags::{tags_to_genres, unmarshal_tags};
 use crate::user_repo::{UserLibrary, UserRecord, UserRow};
+use serde_json::from_str;
+use serde_json::Value as JsonValue;
 use std::collections::BTreeMap;
+use std::str::FromStr;
 
 /// Go's `dbUser.PostScan` wrapper, verbatim
 /// (`persistence/user_repository.go:38`).
@@ -178,6 +186,16 @@ pub const ALBUM_FOLDER_IDS_PREFIX: &str = "parsing album folder_ids from db: ";
 /// `participants` and the `tags` arm
 /// (`persistence/mediafile_repository.go:57` and `:62`).
 pub const MEDIAFILE_PREFIX: &str = "parsing media_file from db: ";
+
+/// Go's `dbArtist.PostScan` stats wrapper, verbatim INCLUDING the trailing
+/// space (`fmt.Errorf("parsing artist stats from db: %w", err)`,
+/// `persistence/artist_repository.go:49`).
+pub const ARTIST_STATS_PREFIX: &str = "parsing artist stats from db: ";
+
+/// Go's `dbArtist.PostScan` similar-artists wrapper, verbatim INCLUDING the
+/// trailing space (`fmt.Errorf("parsing similar artists from db: %w", err)`,
+/// `persistence/artist_repository.go:89`).
+pub const ARTIST_SIMILAR_PREFIX: &str = "parsing similar artists from db: ";
 
 /// Go's zero `time.Time` (`time.Time{}`), the value the pinned driver returns
 /// for any DATETIME text it cannot parse
@@ -2536,6 +2554,533 @@ pub fn mediafile_post_scan(raw: MediaFileRow) -> Result<MediaFileRecord, Hydrate
     }
 
     Ok(record)
+}
+
+/// `dbArtist` phase 1 (`artist_repository.go:32-36`): the artist columns the
+/// stats select emits, with the two `PostScan` inputs left as raw text and the
+/// artwork slot left zero.
+///
+/// Two `artist.*` columns are deliberately NOT read — `full_text` and
+/// `search_normalized` have no destination field on `dbArtist`
+/// (`model/artist.go:14-47` has neither), so dbx binds them to a throwaway
+/// `sql.NullString` and discards them (`dbx@v1.12.0/rows.go:80-86`).
+/// [`RowGet::has_column`] guards below are what makes a projection that OMITS
+/// them (or a light query that omits the annotation columns) hydrate to Go's
+/// zero values instead of failing.
+///
+/// `similar_artists` is the one shim that needs no extra slot: it is a real
+/// column on `model.Artist` (`:38`), so its text lands on
+/// [`ArtistRecord::similar_artists`] — where the write map needs it — and
+/// phase 2 decodes it into [`ArtistRecord::similar`].
+///
+/// `image` stays [`crate::artwork_hydration::ItemImage::default()`]: Go's
+/// `PostScan` reads no artwork column at all; the embedded `ItemImage`
+/// (`model/artist.go:16`) is filled by the SECOND layer
+/// (`artwork_hydration.go:79-90`, ported as
+/// [`crate::artwork_hydration::hydrate_artist_artwork`]), so zero here means
+/// UNRESOLVED, not known-absent.
+///
+/// # Errors
+/// Propagates Go's NULL-into-non-pointer-string failure for a required TEXT
+/// column, and the int/bool narrowing failures.
+pub fn row_to_artist(row: &Row<'_>) -> SqliteResult<ArtistRow> {
+    Ok(ArtistRow {
+        library_stats_json: join_text(row, "library_stats_json")?,
+        record: ArtistRecord {
+            // The row's own primary key (`Artist.ID` scans `id` by field name).
+            id: row.get_text("id")?,
+            name: row.get_text("name")?,
+            sort_artist_name: row.get_text("sort_artist_name")?,
+            order_artist_name: row.get_text("order_artist_name")?,
+            mbz_artist_id: row.get_text("mbz_artist_id")?,
+            biography: row.get_text("biography")?,
+            small_image_url: row.get_text("small_image_url")?,
+            medium_image_url: row.get_text("medium_image_url")?,
+            large_image_url: row.get_text("large_image_url")?,
+            external_url: row.get_text("external_url")?,
+            // The raw column text; phase 2 decodes it into `similar`.
+            similar_artists: join_text(row, "similar_artists")?,
+            // Go's `*time.Time`: NULL is a nil pointer, so this one column is
+            // optional (`artist.go:39`, DDL `external_info_updated_at datetime`).
+            external_info_updated_at: row.get_opt_dt("external_info_updated_at")?,
+            missing: row.get_bool("missing")?,
+            uploaded_image: row.get_text("uploaded_image")?,
+            // Go's `*time.Time` (`artist.go:45-46`) — a nil pointer, NOT Go's
+            // zero time — so SQL NULL is `None` and `get_opt_dt` is the right
+            // accessor. Unlike the album/mediafile/folder/playlist reads, which
+            // embed a NON-pointer `time.Time` and take [`go_zero_or_none`].
+            created_at: row.get_opt_dt("created_at")?,
+            updated_at: row.get_opt_dt("updated_at")?,
+            // ---- hydration-only state, all filled by phase 2 / layer 3 ----
+            // Go creates the map unconditionally at `:44`; the fold below fills it.
+            stats: BTreeMap::new(),
+            size: 0,
+            album_count: 0,
+            song_count: 0,
+            // The promoted `Annotations` embed, read by field name despite
+            // `structs:"-"` (`dbx@v1.12.0/struct.go:189-206` descends into
+            // anonymous embeds). Reused, not reimplemented.
+            annotation: row_to_annotation(row)?,
+            image: crate::artwork_hydration::ItemImage::default(),
+            similar: Vec::new(),
+        },
+    })
+}
+
+/// The `map<library_id, map<role, map<stat_key, int64>>>` shape Go decodes
+/// into (`var rawLibStats map[string]map[string]map[string]int64`,
+/// `artist_repository.go:47`). Every level is an `Option`, because Go's
+/// decoder accepts a `null` at any nesting level and leaves that level's
+/// Go value zero (`err == nil`) while serde's derive rejects it as a type
+/// mismatch. Same established style as
+/// [`crate::sql_tags::decode_tags`] and
+/// [`crate::sql_participations::decode_participants`] — value-level decoding
+/// over [`JsonValue`], with Go's `cannot unmarshal …` wording for a
+/// value-level rejection and serde's own text for a parse failure.
+/// The shape Go decodes the alias into: `map[string]map[string]map[string]int64`
+/// — library id → role key → stat key (`m`/`a`/`s`) → count.
+type RawLibraryStats = BTreeMap<String, BTreeMap<String, BTreeMap<String, i64>>>;
+
+fn decode_library_stats(json: &str) -> Result<RawLibraryStats, String> {
+    let root: JsonValue = match from_str::<JsonValue>(json) {
+        Ok(value) => value,
+        Err(err) => return Err(err.to_string()),
+    };
+    match &root {
+        // Go: `null` into a map leaves it nil and returns no error, so the
+        // `for … range` over a nil map simply does nothing.
+        JsonValue::Null => return Ok(BTreeMap::new()),
+        JsonValue::Object(_) => {}
+        other => {
+            return Err(format!(
+                "json: cannot unmarshal {} into Go value of type map[string]map[string]map[string]int64",
+                json_type_name(other)
+            ));
+        }
+    }
+    let mut libs: RawLibraryStats = BTreeMap::new();
+    for (library_id, roles) in root.as_object().expect("matched above") {
+        let role_map: BTreeMap<String, BTreeMap<String, i64>> = match roles {
+            JsonValue::Null => BTreeMap::new(),
+            JsonValue::Object(entries) => {
+                let mut role_map = BTreeMap::new();
+                for (role, stats) in entries {
+                    let stat_map: BTreeMap<String, i64> = match stats {
+                        JsonValue::Null => BTreeMap::new(),
+                        JsonValue::Object(stat_entries) => {
+                            let mut stat_map = BTreeMap::new();
+                            for (key, value) in stat_entries {
+                                // The path Go would report for this value, built once
+                                // per entry and shared by both rejection arms —
+                                // [`go_into_what`] reads its LAST token.
+                                let stat_path = format!(".{library_id}.{role}.{key}");
+                                match value {
+                                    // Go zero-fills a null int64 with no error.
+                                    JsonValue::Null => {
+                                        stat_map.insert(key.clone(), 0);
+                                    }
+                                    JsonValue::Number(number) => {
+                                        // Go decodes an integer JSON number into
+                                        // int64 and REJECTS a non-integer spelling
+                                        // (`1.0`, `1e3`, `1.5`) with an
+                                        // UnmarshalTypeError carrying the value.
+                                        match number.as_i64() {
+                                            Some(v) => {
+                                                stat_map.insert(key.clone(), v);
+                                            }
+                                            None => {
+                                                // Go's `UnmarshalTypeError.Value`
+                                                // for a literal is `"number " + <the raw
+                                                // token>` (`encoding/json/v2_inject.go:128-135`),
+                                                // so the sentence reads
+                                                // `cannot unmarshal number 1.5 into …`.
+                                                // serde renders the NUMBER, not the raw
+                                                // literal, so an exponent spelling (`1e3`)
+                                                // and an integer wider than `u64` differ in
+                                                // inner text only — recorded residual. The
+                                                // sentence SHAPE, including the choice of
+                                                // the `Go struct field` phrase, is Go's: see
+                                                // [`go_into_what`].
+                                                return Err(go_type_error(
+                                                    "number",
+                                                    &format!("number {number}"),
+                                                    go_into_what(&stat_path),
+                                                    &stat_path,
+                                                    "int64",
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    other => {
+                                        return Err(go_type_error(
+                                            json_type_name(other),
+                                            "",
+                                            go_into_what(&stat_path),
+                                            &stat_path,
+                                            "int64",
+                                        ));
+                                    }
+                                }
+                            }
+                            stat_map
+                        }
+                        other => {
+                            return Err(go_type_error(
+                                json_type_name(other),
+                                "",
+                                go_into_what(&format!(".{library_id}.{role}")),
+                                &format!(".{library_id}.{role}"),
+                                "map[string]int64",
+                            ));
+                        }
+                    };
+                    role_map.insert(role.clone(), stat_map);
+                }
+                role_map
+            }
+            other => {
+                // Whether the phrase `Go struct field ` survives here is decided
+                // by Go's POSITIONAL heuristic on the path, NOT by the target
+                // type being a map: a digit-only library id drops the phrase
+                // (executed: `{"1":5}` → `json: cannot unmarshal number into .1
+                // of type map[string]map[string]int64`) while a non-digit one
+                // keeps it (executed: `{"alpha":5}` → `… into Go struct field
+                // .alpha of type map[string]map[string]int64`). See [`go_into_what`].
+                let field = format!(".{library_id}");
+                return Err(go_type_error(
+                    json_type_name(other),
+                    "",
+                    go_into_what(&field),
+                    &field,
+                    "map[string]map[string]int64",
+                ));
+            }
+        };
+        libs.insert(library_id.clone(), role_map);
+    }
+    Ok(libs)
+}
+
+/// Go's `encoding/json` `UnmarshalTypeError.Error()`
+/// (`encoding/json/v2_decode.go:132-152`):
+/// `json: cannot unmarshal <value|type> into <intoWhat> <Struct>.<Field> of type <Type>`,
+/// where `intoWhat` comes from [`go_into_what`]. The port keeps Go's sentence
+/// shape; see the residual note about serde's number-literal inner wording.
+fn go_type_error(value: &str, spelled: &str, into_what: &str, field: &str, ty: &str) -> String {
+    let shown = if spelled.is_empty() { value } else { spelled };
+    if into_what.is_empty() {
+        format!("json: cannot unmarshal {shown} into {field} of type {ty}")
+    } else {
+        format!("json: cannot unmarshal {shown} into {into_what} {field} of type {ty}")
+    }
+}
+
+/// Go's heuristic for the `intoWhat` phrase — `encoding/json/v2_decode.go:143-147`:
+///
+/// ```go
+/// intoWhat := "Go struct field "
+/// i := strings.LastIndexByte(e.Field, '.') + len(".")
+/// if len(e.Field[i:]) > 0 && strings.TrimRight(e.Field[i:], "0123456789") == "" {
+///     intoWhat = "" // likely a Go slice or array
+/// }
+/// ```
+///
+/// The decision is POSITIONAL, not type-driven: it looks only at the last path
+/// token, i.e. what follows the final `.` (and at the whole field when it holds
+/// no `.` at all). A token that is non-empty and made entirely of ASCII digits
+/// is taken for an array index and the phrase is dropped; everything else keeps
+/// it — including an empty token, and including a spelling such as `01`, which
+/// counts as all-digits because `TrimRight` strips a cutset rather than parses
+/// a number.
+///
+/// Executed against Go 1.27.4, both sides of the rule at every level:
+/// * `{"alpha":5}` → `json: cannot unmarshal number into Go struct field .alpha
+///   of type map[string]map[string]int64`;
+/// * `{"1":5}` → `json: cannot unmarshal number into .1 of type
+///   map[string]map[string]int64`;
+/// * `{"1":{"alpha":5}}` keeps the phrase, `{"1":{"2":5}}` →
+///   `json: cannot unmarshal number into .1.2 of type map[string]int64`;
+/// * `{"1":{"albumartist":{"5":true}}}` → `json: cannot unmarshal bool into
+///   .1.albumartist.5 of type int64`, while `{"1":{"albumartist":{"m2":true}}}`
+///   → `json: cannot unmarshal bool into Go struct field .1.albumartist.m2 of
+///   type int64`.
+///
+/// `decode_library_stats` applies this to all four of its arms. The similar-
+/// artists decoder needs no call here: Go IGNORES an unrecognized key, so a
+/// digit-only key can never be the LAST token of one of its field sentences
+/// (executed: `[{"5":3}]` → `err == nil`, and a numeric key cannot case-fold to
+/// `id`/`name`), while its element-level arm's path IS the bare digit index `.0`
+/// — for which Go drops the phrase (executed: `[5]` → `json: cannot unmarshal
+/// number into .0 of type main.sa`) and that arm already passes an empty
+/// `into_what`. Its field arms end in the raw key (`.0.id`, `.0.ID`), which is
+/// non-digit, so Go keeps the phrase and that arm keeps it (executed:
+/// `[{"id":3}]` → `… into Go struct field .0.id of type string`).
+fn go_into_what(field: &str) -> &'static str {
+    let token = match field.rfind('.') {
+        Some(i) => &field[i + 1..],
+        None => field,
+    };
+    if !token.is_empty() && token.bytes().all(|b| b.is_ascii_digit()) {
+        ""
+    } else {
+        "Go struct field"
+    }
+}
+
+/// `dbArtist.PostScan` (phase 2, `persistence/artist_repository.go:43-98`),
+/// statement by statement with Go's order and guards:
+///
+/// 1. `:44` — `Stats` is created UNCONDITIONALLY, so an empty shim yields an
+///    EMPTY (not defaulted, not absent) map.
+/// 2. `:46-50` — the stats decode is guarded ONLY by `!= ""`; a failure carries
+///    [`ARTIST_STATS_PREFIX`].
+/// 3. `:52-79` — for every library, for every role key: build
+///    `ArtistStats{m, a, s}` with ZERO defaults for a missing key or a JSON
+///    null, then, ONLY when `key == "total"`, ACCUMULATE onto the artist's own
+///    `size`/`song_count`/`album_count` (`:63-67`) with Go's WRAPPING `+=` — see
+///    `hydrate.rs::wrapping_int64` / `hydrate.rs::narrow_i32_go` (both private,
+///    so named in text, not as intra-doc links) — then parse the role with
+///    [`Role::from_str`] (Go's `model.RoleFromString`, `model/participants.go:71-76`)
+///    and `continue` on an invalid role — discarding the `invalid role:` text
+///    exactly as Go's bare `continue` discards it (`:69-72`) — then accumulate
+///    onto that role's entry the same way (`:73-78`).
+///    Consequences pinned by `tests/runtime_hydrate_artist.rs`:
+///    * `"total"` is added to the totals and NEVER inserted into `stats`,
+///      because the `continue` at `:69-72` drops it AFTER the addition.
+///    * an unknown role contributes NOTHING — neither to `stats` nor to the
+///      totals, since the `+=` block is gated by `key == "total"`.
+///    * pre-seeded totals ACCUMULATE, they are not overwritten, and an overflow
+///      WRAPS rather than panicking (executed: `runtime_hydrate_artist.rs`
+///      `::total_arm_accumulation_wraps_instead_of_panicking`).
+/// 4. `:83-96` — `SimilarArtists` is reset to empty first, the decode is
+///    guarded by `== ""` returning early, and a failure carries
+///    [`ARTIST_SIMILAR_PREFIX`]. The stats loop has ALREADY run at that point,
+///    so a similar-artists failure leaves `stats` populated.
+///
+/// First-error-wins and the row is discarded, so Go's partially-mutated map on
+/// a decode failure is not reproduced (the row never reaches the caller).
+///
+/// # Errors
+/// [`HydrateError::Decoded`] carrying [`ARTIST_STATS_PREFIX`] or
+/// [`ARTIST_SIMILAR_PREFIX`], verbatim INCLUDING the trailing space.
+pub fn artist_post_scan(row: ArtistRow) -> Result<ArtistRecord, HydrateError> {
+    let mut record = row.record;
+
+    // 1. `a.Artist.Stats = make(map[model.Role]model.ArtistStats)` (`:44`).
+    record.stats = BTreeMap::new();
+
+    // 2. guarded ONLY by `!= ""` (`:46`).
+    if !row.library_stats_json.is_empty() {
+        let raw = decode_library_stats(&row.library_stats_json)
+            .map_err(|err| HydrateError::Decoded(format!("{ARTIST_STATS_PREFIX}{err}")))?;
+        for stats in raw.values() {
+            // 3. `:54-78`, over Go's (unordered) map iteration. Order cannot
+            // matter here: every arm is a wrapping add and the role keys are unique.
+            for (key, stat) in stats {
+                // `:56-60` — zero defaults for a missing key.
+                let song_count = stat.get("m").copied().unwrap_or(0);
+                let album_count = stat.get("a").copied().unwrap_or(0);
+                let size = stat.get("s").copied().unwrap_or(0);
+
+                // `:63-67` — the literal "total" only, accumulating onto the
+                // artist's own fields with Go's WRAPPING `+=`. A plain `+=` would
+                // panic here: overflow checks are on in dev/test (see
+                // [`wrapping_int64`]).
+                if key == TOTAL_ROLE {
+                    record.size = wrapping_int64(record.size, size);
+                    record.song_count = narrow_i32_go(record.song_count, song_count);
+                    record.album_count = narrow_i32_go(record.album_count, album_count);
+                }
+
+                // `:69-72` — invalid role: continue, discarding the text.
+                let Ok(role) = Role::from_str(key) else {
+                    continue;
+                };
+
+                // `:73-78` — per-role accumulate, the same wrapping adds.
+                let current = record.stats.entry(role).or_default();
+                current.song_count = narrow_i32_go(current.song_count, song_count);
+                current.album_count = narrow_i32_go(current.album_count, album_count);
+                current.size = wrapping_int64(current.size, size);
+            }
+        }
+    }
+
+    // 4. `:83` — reset before the guard, so a skipped decode still clears it.
+    record.similar = Vec::new();
+    if record.similar_artists.is_empty() {
+        return Ok(record);
+    }
+    let root: JsonValue = match from_str::<JsonValue>(&record.similar_artists) {
+        Ok(value) => value,
+        Err(err) => {
+            return Err(HydrateError::Decoded(format!(
+                "{ARTIST_SIMILAR_PREFIX}{}",
+                err
+            )));
+        }
+    };
+    match &root {
+        // Go: `null` into a slice leaves it nil, and the `range` adds nothing.
+        JsonValue::Null => {}
+        JsonValue::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    // `[null]` yields a zero-valued entry, not a skip.
+                    JsonValue::Null => record.similar.push(SimilarArtist::default()),
+                    JsonValue::Object(entries) => {
+                        // Field by field. Go's decoder walks the JSON object it
+                        // reads and reports the FIRST field whose value has the
+                        // wrong type; `serde_json::Value`'s map is a `BTreeMap`
+                        // (`preserve_order` is NOT enabled in this workspace —
+                        // executed probe on the resolved serde_json 1.0.154:
+                        // `{"name":3,"id":4,"zzz":5,"Name":6}` iterates as
+                        // `["Name","id","name","zzz"]`), so when BOTH fields are
+                        // wrong the port names `.id` where Go names whichever key
+                        // comes first in the source text. Recorded as a residual;
+                        // a single wrong field reports identically on both sides.
+                        // A missing key or a JSON `null` zero-fills with no error,
+                        // an unknown field is ignored, and a key that matches only
+                        // case-insensitively still fills the field — and its error
+                        // names the RAW JSON key, not the struct field name
+                        // (`decode.go`'s `object`/`fieldMatch` + `struct`'s
+                        // `UnmarshalTypeError.Field = key`): executed
+                        // `[{"ID":3}]` → `.0.ID`.
+                        let mut pair = SimilarArtist::default();
+                        for (key, value) in entries.iter() {
+                            let slot = if key.eq_ignore_ascii_case("id") {
+                                Some(&mut pair.id)
+                            } else if key.eq_ignore_ascii_case("name") {
+                                Some(&mut pair.name)
+                            } else {
+                                None
+                            };
+                            match (slot, value) {
+                                (None, _) => continue,
+                                // Go's `literalStore` assigns the zero value for a
+                                // JSON null into a non-pointer string field.
+                                (Some(_), JsonValue::Null) => {}
+                                (Some(slot), JsonValue::String(text)) => {
+                                    *slot = text.clone();
+                                }
+                                (Some(_), JsonValue::Number(_)) => {
+                                    // Go's number arm reports a bare `number`
+                                    // when the destination is a string
+                                    // (`decode.go`: the `v.Kind() == String` case
+                                    // saves the error WITHOUT `Value`), so the
+                                    // literal never appears here — unlike the
+                                    // int64 stats arm, which does spell
+                                    // `number 1.5` (executed: `[{"id":1.5}]`,
+                                    // `[{"id":1e3}]` and
+                                    // `[{"id":-9223372036854775808}]` all read
+                                    // `cannot unmarshal number into …`).
+                                    return Err(HydrateError::Decoded(format!(
+                                        "{ARTIST_SIMILAR_PREFIX}{}",
+                                        go_type_error(
+                                            "number",
+                                            "",
+                                            "Go struct field",
+                                            &format!(".{i}.{key}"),
+                                            "string",
+                                        )
+                                    )));
+                                }
+                                (Some(_), other) => {
+                                    return Err(HydrateError::Decoded(format!(
+                                        "{ARTIST_SIMILAR_PREFIX}{}",
+                                        go_type_error(
+                                            json_type_name(other),
+                                            "",
+                                            "Go struct field",
+                                            &format!(".{i}.{key}"),
+                                            "string",
+                                        )
+                                    )));
+                                }
+                            }
+                        }
+                        record.similar.push(pair);
+                    }
+                    other => {
+                        return Err(HydrateError::Decoded(format!(
+                            "{ARTIST_SIMILAR_PREFIX}{}",
+                            go_type_error(
+                                json_type_name(other),
+                                "",
+                                "",
+                                &format!(".{i}"),
+                                "nd_db::artist_repo::SimilarArtist",
+                            )
+                        )));
+                    }
+                }
+            }
+        }
+        other => {
+            return Err(HydrateError::Decoded(format!(
+                "{ARTIST_SIMILAR_PREFIX}json: cannot unmarshal {} into Go value of type []nd_db::artist_repo::SimilarArtist",
+                json_type_name(other)
+            )));
+        }
+    }
+    Ok(record)
+}
+
+/// Go's `int64` `+=` at `artist_repository.go:64` and `:74` has no overflow
+/// check: a wrapped sum is simply what the field holds afterwards (executed:
+/// `2147483647 += 2147483647` → `4294967294`, `int64MAX += 1` → `int64MIN`).
+/// Rust's overflow checks are ON in this workspace — `rust/Cargo.toml`'s
+/// `[profile.dev]`/`[profile.test]` set only `debug`/`incremental`, so nothing
+/// disables them — and a plain `+=` at `i64::MAX` panics with
+/// `attempt to add with overflow` (executed against a probe built with those
+/// exact profiles). Spell Go's wrap out instead, the same way
+/// `nd-model/src/criteria.rs:119`'s `wrapping_mul` does for `EffectiveLimit`.
+fn wrapping_int64(current: i64, added: i64) -> i64 {
+    current.wrapping_add(added)
+}
+
+/// Accumulate a Go `int64` stat onto the port's `i32` count field, the way
+/// `artist_repository.go:65-66` and `:75-76` do — with two differences, both
+/// deliberate and recorded in `docs/rust-port/hydrate-contract.md`:
+///
+/// 1. Go's `int` is 64-bit (executed: `int bits=64`, and
+///    `int(int64(3_000_000_000))` is `3_000_000_000`, so `int(stat["m"])` at
+///    `:57-58` narrows NOTHING). The port's fields are `i32`, so this narrowing
+///    is a port-wide model choice Go does not make; the value is clamped rather
+///    than truncated away.
+/// 2. The add WRAPS like Go's unchecked `+=` instead of panicking. The clamp is
+///    applied to each step's SUM (never to an individual addend), so a sum that
+///    still fits `i32` is kept exactly — `i32::MAX + i32::MAX` widens to
+///    `4294967294` without wrapping and saturates at `i32::MAX`. What it cannot
+///    do is carry Go's 64-bit intermediate: once a step clamps to `i32::MAX`, the
+///    next add sees that clamped value, so two `i64::MAX` totals leave Go's field
+///    at `-2` (`MAX + MAX` wrapped) and this one at `i32::MIN`
+///    (both executed; pinned by `runtime_hydrate_artist.rs
+///    ::total_arm_accumulation_wraps_instead_of_panicking`). That gap is the `i32`
+///    field, not the accumulation.
+///
+/// The sibling [`narrow_i32`] used by the scan accessors ERRORS with
+/// `IntegralValueOutOfRange` on the same input; the two helpers diverge by
+/// design and must not be conflated.
+#[must_use]
+fn narrow_i32_go(current: i32, added: i64) -> i32 {
+    let sum = (current as i64).wrapping_add(added);
+    i32::try_from(sum).unwrap_or(if sum < 0 { i32::MIN } else { i32::MAX })
+}
+
+/// Go's `encoding/json` names JSON types in its error text (`json: cannot
+/// unmarshal string into …`); the same vocabulary `sql_tags::json_type_name`
+/// and `sql_participations::json_type_name` use, kept crate-local here because
+/// both of those are private to their own modules.
+fn json_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
 }
 
 #[cfg(test)]
