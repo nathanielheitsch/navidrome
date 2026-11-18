@@ -129,14 +129,17 @@ write subset + DB-11/typed folder query) → `SC-04` → `SC-06` complete phase 
 `API-04` (#15 stream handshake) → `BOOT-01` (after DB-05 seam) → `BOOT-03` HTTP shell →
 `BOOT-04` minimal CLI/service graph → `API-01` principal/key middleware — where the retained
 `D-PLAYER26` player-session service gets its canonical placement (resolve/touch the player and its
-transcoding row into the request context) → `API-02` scoped lookup (DB-11) → `API-03` key/revoke
-(DB-13, plus the restricted player-provisioning service: `PlayerRepo::save` requires a client-supplied
-key, so registration must use a validated `put`, not `save` unchanged) → `API-05` stream route + Axum
-body bridge → **`API-06` = #27A gate**, which stays BLOCKED until `SC-05`/`EXT-SC-REAL-SCAN` and real
-ffmpeg disconnect evidence exist. `API-F1…F7`, `BOOT-F1` are later full-service expansion. The full
-player-session contract (expiry/limiter rules, default transcoding, owner rules, persisted `MaxBitRate`
-reaching the stream decision and scrobbler gate) is `FRONT-26` + `player-service-contract.md`; no
-mpv/socket/process-reap scope belongs in any lane.
+transcoding row into the request context; provisioning a new row must use a validated
+`PlayerRepo::put`, not `save` unchanged, since `save` at `player_repo.rs:1253` requires a
+client-supplied key and returns `ApiKeyValidation` without one) → `API-02` scoped lookup (DB-11) →
+`API-03` key/revoke (DB-13; issuance/revocation use the already-landed `set_api_key` `:1305`, not
+`Register`/`Touch`) → `API-05` stream route + Axum body bridge → **`API-06` = #27A gate**, which
+stays BLOCKED until `SC-05`/`EXT-SC-REAL-SCAN` and real ffmpeg disconnect evidence exist.
+`API-F1…F7`, `BOOT-F1` are later full-service expansion. The full player-session contract
+(write-throttle/`LastSeen` rules, default transcoding, owner rules, persisted `MaxBitRate` reaching
+the stream decision and scrobbler gate, and the canonical meaning of the retained `report_real_path`
+column) is `FRONT-26` plus a `player-service-contract.md` **to be authored there** — it does not exist
+yet. No mpv/socket/process-reap scope belongs in any lane.
 
 ### Step 4 — evidence & operations
 
@@ -165,34 +168,60 @@ at a time in the existing workspace, each with its own fresh review and parent v
 
 #26 bundles two unrelated things. Verifying against the Go source splits them cleanly:
 
-**1. Player-session service — genuinely used, port it.** `core/players.go` (`Get`/
-`Register`/`Touch`) plus `model/player.go` record fields. Registered and touched by every
-authenticated API client, not just the legacy wire, and its fields feed surviving services:
+**1. Player-session service — worth building canonically, so port it.** `core/players.go` (`Get`/
+`Register`/`Touch`) plus `model/player.go` record fields. Important: this lifecycle does **not**
+exist on the canonical surface today — Go registers/touches players only on the cancelled
+Subsonic/Jellyfin surfaces (see below) — so this is a capability to **choose and build**, not
+behavior inherited from a live path. Its fields feed services that survive the port:
 
-- `MaxBitRate` / `TranscodingId` → the transcode decision. Already ported and tested in
+- `MaxBitRate` → the transcode decision, already ported and tested in
   `nd-stream/src/legacy_client.rs` (`player_max_bit_rate` forces downsampling,
-  `decider.go:159-161` precedence), but **nothing registers or persists the player row**, so
-  the cap is dead in practice — an integration gap, not a missing feature.
+  `decider.go:159-161` precedence). The full chain is
+  `PlayerRepo::get`/`find_match`/`put` → the `Players` service resolves the player and its
+  transcoding row → request context (`request.PlayerFrom`) → `decider.go:159-161` →
+  `nd-stream` `DecisionOptions::player_max_bit_rate` (`types.rs:265`; `legacy_client.rs:38,55-59,110-112`).
+  **Nothing registers or persists the player row and no production caller sets that field**, so the
+  cap is dead in practice — an integration gap, not a missing feature.
 - `ScrobbleEnabled` → the scrobbler (#20) gates Now Playing and scrobbles on it
   (`core/scrobbler/play_tracker.go:366,436,473`).
-- `ReportRealPath` → reported playback path semantics.
 - `TranscodingId` → Go's `refresh` also loads the transcoding row alongside the player
-  (`core/players.go:86-90`). This is a real second dependency: `nd-db/src/transcoding_repo.rs`
+  (`core/players.go:87-91`). This is a real second dependency: `nd-db/src/transcoding_repo.rs`
   currently **only renders SQL** (no executing `get`/`find_by_format`), and `nd-dbschema/src/schema_ddl.rs:56`
   creates the `transcoding` table without seeding Go's default profiles (Go adds them in
   `db/migrations/20200706231659_add_default_transcodings.go` and `20260309203355_ensure_default_transcodings.go`).
   Both belong to #05 / BOOT-01 scope, not to this decision — but the retained player service cannot resolve a
   transcoding profile until they land.
-- The `player` table, `PlayerRepo` CRUD, `find_match`, API-key hash/`find_by_api_key` are
-  already DONE in `nd-db/src/player_repo.rs`; only the service lifecycle above it is missing.
+- `ReportRealPath` is a retained DB/preferences **column**, not an inherited consumer: its only
+  non-test reader is the cancelled Subsonic wire (`server/subsonic/helpers.go:227`, absolute path
+  vs fake path) and its seeding key `Subsonic.DefaultReportRealPath` is itself dropped
+  (`config-contract.md:220`, sole reader `core/players.go:56`). Its canonical meaning must be
+  re-specified in FRONT-26/API-01 rather than assumed to keep this half load-bearing.
+- Key issuance/revocation consumes the **repository** (`PlayerRepo::set_api_key` `player_repo.rs:1305`,
+  `save` `:1253`) plus a player row — it does **not** need `Players::Register`/`Touch` and does not
+  depend on #15. It needs the service only if provisioning a row without a client-supplied key is
+  folded into it.
+- The `player` table, `PlayerRepo` CRUD (`get` :1119, `find_match` :1140, `find_by_api_key` :1156,
+  `put` :1215, `save` :1253, `set_api_key` :1305, `delete` :1384) and unsalted-sha256
+  `hash_api_key` :378 already execute in `nd-db/src/player_repo.rs`; only the service lifecycle
+  above them is missing. Go's lifecycle has **no expiry mechanism**: `refresh` stamps
+  `LastSeen = time.Now()` (`players.go:78`) and throttles writes with
+  `utils.Limiter{Interval: consts.UpdatePlayerFrequency}` (`players.go:26`, `consts/consts.go:89` =
+  1 minute). Nothing ages or deletes player rows; the only `last_seen` filter is
+  `core/metrics/insights.go:306` (7 days, #32 deferred).
 
-It also has **no mpv dependency**. Note where registration happens today: Go registers/touches players only in
-the Subsonic and Jellyfin middlewares (`server/subsonic/api.go:107-222` mounts `getPlayer`, `middlewares.go:291-313`;
-`server/jellyfin/middlewares.go:209`) — both cancelled surfaces — while the native API merely exposed `/player` CRUD
-(`server/nativeapi/native_api.go:75`) and API-key auth attached the key's player (`middlewares.go:182`). So the canonical
-surface must **deliberately choose** where register/touch runs (recommend: the API-01 principal/API-key middleware,
-resolving the player plus its transcoding row into the request context). That placement is API-01 design work, not
-something inherited from the dropped wire; without it the stream `MaxBitRate` cap and scrobbler gate stay dead.
+There is **no mpv dependency**. Where registration happens today: Go registers/touches players only
+in the Subsonic middleware (`server/subsonic/middlewares.go:291-316`, `Touch` :305 / `Register` :307,
+`WithPlayer`/`WithTranscoding` :312-314), mounted on 13 of the 14 protected groups in
+`server/subsonic/api.go` at 107, 113, 133, 143, 151, 159, 169, 174, 179, 184, 199, 210, 222; the outer authenticated
+group also serves routes with no player resolution — the throttled `getCoverArt` group :193-197 and the `h501`/`h410`
+stubs from :230), plus Jellyfin's `withPlayer` (`server/jellyfin/middlewares.go:193-224`, `Register` :209, mounted at
+`server/jellyfin/api.go:110`). Both surfaces are cancelled. The native API never registers or touches: it exposed
+plain rest-CRUD `rx(r, "/player", api.ds.Player(), true)` (`server/nativeapi/native_api.go:75`), and
+API-key auth only attached the key's player (`server/subsonic/middlewares.go:182`). So the canonical
+surface must **deliberately choose** where register/touch runs (recommend: the API-01 principal/API-key
+middleware, resolving the player plus its transcoding row into the request context). That placement is
+API-01 design work, not behavior inherited from a live path; without it the stream `MaxBitRate` cap and
+scrobbler gate stay dead.
 
 **2. mpv / server-side playback device — a genuinely optional niche feature, DROPPED by
 `D-PLAYER26`.** `core/playback/**` (`playbackserver`, `device`, `queue`, mpv IPC) spawns a real
@@ -205,19 +234,29 @@ something inherited from the dropped wire; without it the stream `MaxBitRate` ca
   `conf/configuration.go:1058-1061`), and `cmd/root.go:372-380` no-ops when disabled.
 - The settled config contract already drops `Jukebox.*`, `MPVPath`, `MPVCmdTemplate`
   (`config-contract.md:223`; `nd-conf` `keys.rs`/`config.rs` mark them absent).
-- The bundled JS UI — the main way anyone reached it — is DROPPED (C25/C32).
+- The bundled JS UI — the main way anyone reached it — is DROPPED (C25; the ~47k-LOC `ui/src` tree.
+  C32 is backgrounds, a separate drop. The only surviving JS mention is a `[Jukebox]` config-dump
+  label in `ui/src/dialogs/aboutUtils.test.js:368,379`, not a playback path).
 - It spawns processes on the host and needs OS-specific socket handling plus process reap;
-  `playbackserver.go:18-53` leaves subprocess termination as a TODO, so even upstream it is
+  `playbackserver.go:54` leaves subprocess termination as an unfinished TODO, so even upstream it is
   incomplete. It also needs an external `mpv` binary nobody else in the port requires.
 
-Nothing else consumes `core/playback/**`; `GetDeviceForUser` is only "the default device" and
-is called solely from `jukebox.go`. So dropping it removes no capability any surviving
-service needs.
+No **surviving** code consumes `core/playback/**`. The complete consumer set, for the record, so a
+later sweep does not read these as contradictions: the Subsonic entry point
+(`server/subsonic/api.go:19,52,61`, `jukebox.go:8,47`), DI/boot plumbing
+(`core/wire_providers.go:35`, `cmd/wire_injectors.go:150`, `cmd/wire_gen.go:22,112,227-230`,
+`cmd/root.go:90,372-382`), and three cancelled-surface e2e suites that pass
+`playback.PlaybackServer(nil)` (`server/subsonic/e2e/e2e_suite_test.go:429`,
+`subsonic_artwork_test.go:260`, `subsonic_sonic_similarity_test.go:50`). `GetDeviceForUser` is only
+"the default device" (`playbackserver.go:117-127`) and is called solely from `jukebox.go:47`.
+`Jukebox.Enabled` has two further readers, both on non-surviving scopes:
+`server/subsonic/users.go:29-30` (`jukeboxRole`, cancelled #25) and `core/metrics/insights.go:218`
+(#32, deferred). So dropping it removes no capability any surviving service needs.
 
 **Decision (`D-PLAYER26`, user-approved 2026-11-18)**: split #26 — retain the player-session
-service as scoped work (register/touch/get + persistence, feeding the stream decision, API-key
-issuance and the scrobbler), with its canonical placement chosen in API-01; mark the mpv/jukebox
-device service **DROPPED**, as justified above. Neither half gates #27A, and the retained half is
-API/BOOT-adjacent work rather than a monolithic `nd-players` crate. Reopening jukebox would
-require a dedicated platform/socket/process-reap contract and a canonical (non-Subsonic) route
-surface; it is not scheduled.
+service as scoped work (register/touch/get + write-throttled persistence, whose resolved player and
+transcoding row feed the stream decision and the scrobbler gate), with its canonical placement chosen
+in API-01; mark the mpv/jukebox device service **DROPPED**, as justified above. Neither half gates
+#27A, and the retained half is API/BOOT-adjacent work rather than a monolithic `nd-players` crate.
+Reopening jukebox would require a dedicated platform/socket/process-reap contract and a canonical
+(non-Subsonic) route surface; it is not scheduled.

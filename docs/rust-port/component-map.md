@@ -13,11 +13,15 @@ relationships are not a launchable cycle. Minimal CLI/bootstrap and #27A do not 
 Those decompositions belong to the current task subplans, not guessed whole-crate DONE labels. Full service tails
 remain specification-blocked until scoped. Do not revive cancelled services to satisfy historical edges.
 
-**C15 scope split (2026-11-18, `D-PLAYER26`, user-approved):** the player-session service (`Get`/`Register`/`Touch`
-over the landed `nd-db` `PlayerRepo`) is retained and placed canonically by API-01; the mpv/jukebox playback-device
-scope (`core/playback/**`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) is **DROPPED** unported. `nd-players` remains the
-owning crate, so the live-crate count is unchanged; only C15's playback exposes and its C07 edge retire. Evidence in
-`subplans/README.md` "#26 scope analysis".
+**C15 scope split (2026-11-18, `D-PLAYER26`, user-approved):** the player-session service is retained and
+placed canonically by API-01 — `Get`/`Register`/`Touch` over the landed `nd-db` `PlayerRepo`, whose resolved
+player **plus its transcoding row** reach the request context and then `decider.go:159-161` /
+`nd-stream` `DecisionOptions::player_max_bit_rate` (`types.rs:265`, `legacy_client.rs:38,55-59,110-112`);
+the mpv/jukebox playback-device scope (`core/playback/**`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) is
+**DROPPED** unported. `nd-players` remains the owning crate, so the live-crate count is unchanged; C15's
+retained edges are C02 (player repo) and C13 (transcode decision), and only its mpv-IPC half and C07 edge
+retire — marked inline at the satellite graph and lane I below. Evidence in `subplans/README.md`
+"#26 scope analysis".
 
 ---
 
@@ -113,7 +117,7 @@ Wire fan-in:
 
 Satellites:
   C16 scrobbler ──> { C02, C17 }        C17 agents ──> { C02, C05, C07 }
-  C15 players     ──> { C02, C13, C07 } C19 playlists ──> { C02, C06, C10 }
+  C15 players     ──> { C02, C13 }  (C07 edge retired with mpv/jukebox, D-PLAYER26)  C19 playlists ──> { C02, C06, C10 }
   C28 plugin-host — CANCELLED: absent from the graph, the WASM host plane is not ported at all
   C30 cli         ──> everything (DI scaffold; stub until lanes settle)
 ```
@@ -140,7 +144,7 @@ Ownership rule: **one lane owns one crate boundary**; a lane consumes another cr
 | **E — media decision + serving** | C12 → C13 `nd-stream` → C24 `nd-public` (strict order inside the lane) | F | needs C11 + C07 |
 | **F — scan pipeline** | C09 `nd-mapping` → C10 `nd-scanner` → C14 `nd-artwork` | E | needs A(C02) + C(C08) |
 | **G — wire surfaces** | C22 `nd-api` (**TRUNK**), C25 `nd-ui-contract` | I | needs D + E + F. Sublane allowed early: DTO/serialization of the **canonical** surface, tested against response-shape goldens captured from the Go binary (the `.snapshots/` goldens gate nothing — C20 is CANCELLED; they are reference data only) |
-| **I — satellites (last, concurrent)** | C16 scrobbler, C17 external-metadata + matcher, C19 playlists, C15 players, C21 `nd-http`, C31 diagnostics, C30 `nd-cli` (stub first) | — | needs D; C16 additionally needs C17 |
+| **I — satellites (last, concurrent)** | C16 scrobbler, C17 external-metadata + matcher, C19 playlists, C15 players (player-session half only; mpv-IPC half dropped with `D-PLAYER26`), C21 `nd-http`, C31 diagnostics, C30 `nd-cli` (stub first) | — | needs D; C16 additionally needs C17 |
 
 Sequenced milestones: **P0** L0 → **P1** A ∥ B ∥ C → **P2** D → **P3** E ∥ F ∥ G(DTO sublane only) → **P4** G(handlers) ∥ I (no deferred tail: C23 CANCELLED).
 

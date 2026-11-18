@@ -36,11 +36,13 @@ are in `current-status.md`; these are dated results, not proof for a later diff.
 - Tagreader/mapping and auth/stream components work at crate level. Scanner/HTTP/API are scaffolds; CLI main is empty.
   Login/native-audience and HTTP key integration, plus stream prepare/header/Send/body ownership, need bounded packages.
 - #26 is split (`D-PLAYER26`, 2026-11-18): retain the player-session service (`Get`/`Register`/`Touch` over the landed
-  `nd-db` `PlayerRepo`, canonical placement chosen by API-01, feeding the stream `MaxBitRate` cap and scrobbler gate);
-  the mpv/jukebox playback-device scope is **DROPPED** unported. Do not add mpv/socket/process-reap work or revive
-  `jukeboxControl`, and do not treat #26 as DONE — its retained half is not yet implemented.
-  Note that Go registered/touched players only in the now-dropped Subsonic/Jellyfin middlewares, so placement on the
-  canonical surface is a deliberate API-01 decision rather than inherited behavior.
+  `nd-db` `PlayerRepo`, canonical placement chosen by API-01 — the resolved player plus its transcoding row reach the
+  request context and then the stream `MaxBitRate` cap and scrobbler gate); the mpv/jukebox playback-device scope is
+  **DROPPED** unported. Do not add mpv/socket/process-reap work or revive `jukeboxControl`, and do not treat #26 as DONE —
+  its retained half is not yet implemented. Go registered/touched players only in the now-dropped Subsonic/Jellyfin
+  middlewares and the native API never did, so placement on the canonical surface is a deliberate API-01 decision, not
+  inherited behavior. Go has no player expiry — only `LastSeen` stamping and a 1-minute write limiter; key issuance needs
+  `PlayerRepo::set_api_key`, not this service.
 - First runnable slice is fresh DB -> configured library -> real track scan -> canonical authenticated lookup ->
   direct Range/forced transcode/disconnect cleanup. Phase-1-only ingest is not complete #17. Repair, full maintenance,
   metrics and every full-API service are not automatic prerequisites for this deliberately limited slice.

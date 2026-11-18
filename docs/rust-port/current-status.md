@@ -150,12 +150,16 @@ not automatic first-track/first-boot prerequisites. Cancelled Subsonic/Jellyfin/
 first playback uses the canonical API, not resurrected `/rest` routes. Full service tails require their own contracts.
 
 Player scope (decided 2026-11-18, `D-PLAYER26`, user-approved): #26 is split. The player-session service is retained —
-`Get`/`Register`/`Touch` over the landed `nd-db` `PlayerRepo`, with canonical placement chosen by API-01 — because its
-`MaxBitRate`/`TranscodingId` feed the already-ported stream decision (`nd-stream/src/legacy_client.rs`, currently dead
-because nothing persists the row) and `ScrobbleEnabled` gates the scrobbler. The mpv/jukebox server-side playback-device
-scope (`core/playback/**`, mpv IPC, `server/subsonic/jukebox.go`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) is **DROPPED**
-unported: Subsonic-only entry point, default-off, config keys already absent, JS UI dropped, unfinished subprocess reap
-upstream, and no other consumer. Neither half gates #27A; #26 is not DONE.
+`Get`/`Register`/`Touch` over the landed `nd-db` `PlayerRepo`, with canonical placement chosen by API-01 — because the
+resolved player **plus its transcoding row** feed the already-ported stream decision (`PlayerRepo` → `Players` service →
+request context → `core/stream/decider.go:159-161` → `nd-stream` `DecisionOptions::player_max_bit_rate`,
+`legacy_client.rs:38,55-59,110-112`; currently dead because nothing persists the row and no production caller sets that
+field) and `ScrobbleEnabled` gates the scrobbler. Go's lifecycle has no expiry mechanism — only `LastSeen` stamping and a
+1-minute write limiter (`core/players.go:26,78`, `consts/consts.go:89`). The mpv/jukebox server-side playback-device scope
+(`core/playback/**`, mpv IPC, `server/subsonic/jukebox.go`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) is **DROPPED**
+unported: Subsonic-only entry point, default-off, config keys already absent, the JS UI (C25) dropped, unfinished
+subprocess reap upstream (`playbackserver.go:54`), and no **surviving non-test** consumer (full consumer set and the two
+non-surviving `Jukebox.Enabled` readers are enumerated in `subplans/README.md`). Neither half gates #27A; #26 is not DONE.
 
 ## Audit provenance
 
