@@ -1,6 +1,68 @@
 # Plan of record for the next body of work
 
-## Current state (2026-11-11, at `12e270f7`) — supersedes the boundary below
+## Current execution plan (audited 2026-11-18 at `60cdd184`)
+
+**Current evidence:** [`current-status.md`](current-status.md). The parent freshly measured **1816 passed / 0 failed /
+1 ignored** workspace tests, **737 / 0 / 0** DB tests, clean fmt/build/clippy/diff checks, and a successful doc build
+with **22 warnings**. This is a green regression suite, **not** scanner or server readiness. S-D3g1 (`f210431f`),
+S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks exist; playlist rules decoding is wired.
+
+### Authority and launch rules
+
+- This current section sets milestone order; `current-status.md` records measured capabilities/evidence; the
+  [`subplans/`](subplans/) assignment contracts refine method-level scope. Scoped contracts below retain source
+  history but their current amendments supersede old missing/remaining labels. Do not schedule from historical tables.
+- **State axes:** rendered SQL / decoded records / executed reads / executed writes / mounted routes / real end-to-end
+  behavior. Never infer one axis from another or from test counts.
+- Today's work is **planning/documentation only**. A subplan is not implementation authorization. Resolve its decisions,
+  exact prerequisites and file ownership before assigning one bounded task. No commit/push authorization is implied.
+- Discover current Paseo profiles; inherit the verified parent workspace. One writer for the entire shared checkout,
+  not one writer per file. No new workspace/worktree or destructive cleanup without user approval. Fresh read-only
+  review after writing stops, then selected fixes and parent CLI gates. Scratch only in `/tmp`; no automatic formatting.
+
+### Revised milestones and dependencies
+
+1. **DB safety and configuration gates, before enabling writes:** repair media-file missing-update bind order; unify
+   scanner TEXT timestamps/idle sentinels across writers, comparisons and hydration; measure intended path/PRAGMAs
+   on every pooled connection; settle typed repository-error/transaction composition. Add executed regressions, not
+   more renderer-only assertions. Existing helpers have latent defects and must not be connected unchanged.
+2. **Bounded DB runtime packages:** executed property/library/tag/folder writes; artist/album/media-file Put/PutByMatch
+   with base/FTS/junction/link atomicity; typed filtered scanner reads; artwork invalidation/queue enqueue subset.
+   Library bootstrap policy belongs to the bootstrap caller; DB supplies typed executed operations. Test rollback,
+   retry, immutable fields, non-target rows, empty/chunk boundaries, and actual read-back through production methods.
+3. **Honest scanner phase-1 vertical slice:** storage/stat/symlink/ignore and metadata-to-record adapters, actual
+   library/folder IDs, pure album aggregation/change detection, and one fixture-tree ingest over those DB APIs.
+   Prove unchanged second-pass behavior and failure-safe missing marking. Call it phase 1, not complete #17.
+   The old '8 repos + 1 mapper' is a core-read inventory, not a full scanner completion gate.
+4. **Bootstrap/HTTP/canonical route contracts:** capture the precise scoped API manifest and native/derived stream
+   fixtures before handlers. Build minimal configuration -> schema/pool -> configured library/admin -> router/listener
+   wiring. Close login-session/native-audience and API-key HTTP integration, and prepare/header/Send/body-lifecycle
+   seams in the stream adapter. Do not weaken auth or buffer an entire transcode merely to adapt existing APIs.
+   Contract capture and non-writing investigations can proceed before ingest; implementation still has one writer.
+5. **First runnable slice (#27A):** fresh DB -> scan a real track -> login -> authorized canonical lookup -> direct Range
+   and forced transcode -> real socket disconnect with zero live children and recovered concurrency slots. Require
+   ffmpeg/codecs and exercise the paths, rather than accepting skip-as-success. Full scanner/watchers, full #27,
+   repair/full maintenance and deferrable metrics are not automatic gates for this deliberately limited slice.
+6. **Complete scanner and DB consumers:** phase-2 move/missing identity and annotation/reference preservation;
+   phase-3 aggregates/stats; phase-4 playlist service; scoped eleven-operation GC/finalize; controller/progress,
+   restart/selective/cancellation/resource behavior; then watcher/process protocol parity. Go gob carries scanner
+   `ProgressInfo`, not tag-reader results. Initial in-process ingest does not require mixed Go/Rust IPC.
+7. **Consumer-gated residuals and later services:** durable g1/g2 Go evidence; sibling first-error reproductions;
+   genre/options/participant/cursor/smart-playlist/track query issues; schema-golden verification; FTS repair and
+   maintenance/logging; full artwork/share/scrobble/external/lyrics/playlists/players/API/share-HTML expansion.
+   Keep accepted differences, known bugs and unverified behavior separate. Complex service tails remain
+   specification-blocked until their own contracts are ready; cancelled product surfaces stay cancelled.
+
+Milestones 3-5 form the minimal vertical path; milestone 6 is needed for a complete #17 claim, not every first-playback
+test. The subplan index resolves exact task IDs, cross-plan prerequisite aliases, decision gates, file collisions, and
+READY/BLOCKED status before launch. Do not revive the old dependency cycles or make metrics a first-boot prerequisite.
+
+---
+
+## Historical state (2026-11-11, at `12e270f7`) — superseded by the audited plan above
+
+The remainder is a dated implementation/review record, not an active scheduler or orchestration permission. Its
+old models, workspace paths, lane status, test counts and 'remaining' assertions must not override the current plan.
 
 Measured gate (parent, integrated): fmt clean; workspace build clean; clippy `-D warnings` clean;
 `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` = **1514 passed / 0 failed** across

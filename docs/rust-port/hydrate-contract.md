@@ -1,5 +1,35 @@
 # Hydration / marshal contract for slice S-D (from lane S-C, 2026-11-11)
 
+## Current amendments (2026-11-18, `60cdd184`)
+
+Read [`current-status.md`](current-status.md) and the current section of [`next-work.md`](next-work.md) first.
+This document combines an historical scout contract with later evidence. Historical proposals, missing labels and
+UNVERIFIED tallies are not current implementation instructions. In particular, these corrections override contrary
+sentences in the original hook/field/seam tables below:
+
+- All eight PostScan-equivalent hooks, playlist criteria decoding, genre derivation and annotation/bookmark readers
+  are implemented. S-D3g1/g2 and follow-up are landed; current gates are **737 DB / 1816 workspace passed**, one
+  workspace ignored, and **22 rustdoc warnings**. The final g2 gate below is its earlier 733/1812 boundary.
+- `unmarshalParticipants("")` is unguarded and **fails**, not succeeds (`persistence/sql_participations.go:61-66`).
+  Do not copy the original empty-string-acceptance sentences into a new decoder.
+- Folder `library_path` is hydrated: `model/folder.go:21` declares `LibraryPath`; current `row_to_folder` reads it.
+  The old field-map claim that the alias is discarded is false. `UpdateAt` vs `updated_at` scan behavior remains
+  its separate documented dbx naming issue; a write tag is not automatically a read tag.
+- PostScan hooks stay pure row decoding. Participant artist re-fetch (`getParticipants`/`GetWithParticipants`)
+  is a separate repository layer, not permission for DB queries inside a hook. Input-only artist sort names for
+  future writes come from the scanner/domain adapter or an explicit re-fetching API, not persisted participant JSON.
+- Folder per-row hook/scan error ordering is fixed by `60cdd184`. Similar two-pass sibling patterns remain a
+  **source-inferred reproduction obligation**, not a measured failed gate or a reason to deny successful read coverage.
+- Full drains are not lazy cursor completion. Reads/count/purge do not imply executed Put/enqueue/transaction/GC.
+  Known genre JOIN and smart-playlist/track grouping/alias defects remain consumer-gated bugs; the queue source
+  grouping issue is closed by g2.
+- g1/g2 `/tmp` traces/harnesses exist locally but are not tracked clean-clone regeneration evidence. The evidence
+  subplan must promote minimal fixtures/recipes with explicit authorization for any new Go harness source.
+
+These amendments do not change production code or silently accept unresolved timestamp/mutation defects.
+
+---
+
 Produced read-only by Paseo agent `5c478af0-9a4e-4c66-85aa-8971c3977838` on
 `pi/bifrost/openrouter/coding`, and spot-checked by the parent against the tree:
 hook counts (8 `PostScan` / 5 `PostMapArgs`), the value-vs-pointer embed

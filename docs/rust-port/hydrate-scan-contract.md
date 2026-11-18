@@ -1,5 +1,24 @@
 # S-D3 hydration brief — row → entity records and PostScan hooks
 
+## Current amendments (2026-11-18, `60cdd184`)
+
+This is an **historical scout specification**, not the current scheduler. See [`current-status.md`](current-status.md),
+the current [`next-work.md`](next-work.md) section and `subplans/` before assigning work. Its historical slice aliases
+differ from implementation commit labels; the current snapshot maps them. All eight hook equivalents, stats/similar
+decoders, playlist rules, `tags_to_genres`, annotations and bookmark readers have landed. The final 'Remaining
+blockers' and 'Recommended order' sections are **closed historical instructions**, not new work to repeat.
+
+The artwork `hydrateItems` layer is separate from PostScan and covers album/media-file/artist/playlist/radio wrappers
+at current consumers; do not infer a folder wrapper from this scout's old list. Participant re-fetch remains separate.
+Folder full-drain APIs do not complete general lazy cursors. Timestamp mutations, executed scanner writes and phase
+queries/GC remain genuine gaps even though hook decoding is complete.
+
+Parallel implementation based on disjoint repo files is **not authorized**: one writer per shared checkout, same
+verified parent workspace, fresh read-only review after writing stops, then parent gates. Current subplans supersede
+the old per-file ownership/lane recommendation. No `nd-model` refactor or other source change is implied by this note.
+
+---
+
 Produced read-only by Paseo scout `4cc1a1dc-ccfb-4781-ba4a-20ac9cc00064` on
 `pi/bifrost/openrouter/coding`, tree-verified at HEAD `60198cec`; the parent
 independently confirmed the two corrections below in `album_repository.go:230`,

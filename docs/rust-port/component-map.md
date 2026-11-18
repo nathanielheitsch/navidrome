@@ -1,5 +1,20 @@
 # Component map — Rust port of this navidrome fork
 
+## Current scheduling amendment (2026-11-18, `60cdd184`)
+
+Ownership/product mapping below remains useful; **its component arrows and old parallel lanes are not an executable
+task DAG**. Current status is [`current-status.md`](current-status.md); milestone order is the current section of
+[`next-work.md`](next-work.md); exact prerequisites/decisions/ownership are in `subplans/`. One writer per shared
+checkout and verified inherited workspace supersede any historical per-file/worktree parallelism.
+
+In particular: C10's cancelled C29 edge must not gate scanner work; C10/C19 scanner/playlist relationships must be
+split into phase-1 ingest, playlist import service, and later phase-4 integration; C22/C30 construction/service
+relationships are not a launchable cycle. Minimal CLI/bootstrap and #27A do not require full #33 or deferrable metrics.
+Those decompositions belong to the current task subplans, not guessed whole-crate DONE labels. Full service tails
+remain specification-blocked until scoped. Do not revive cancelled services to satisfy historical edges.
+
+---
+
 This fork (Go server, `go 1.27`, GPL-3.0) decomposes into **33 component rows — 27 live components, 4 CANCELLED (C20 the Subsonic wire layer, C23 the Jellyfin API, C28 the WASM plugin host, C29 sonic similarity) and C32 backgrounds DROPPED post-UI-drop**, each owning a disjoint set of Go paths. This file is the port's build map: what each component is, which Go files it owns, what it must expose to the rest of the system, what it depends on, and in what order lanes can run. (C33 is repo/CI tooling, marked do-not-port in the table below; the live crate count in `issues.md` #S1 is 26: 27 live components − the C12/C13 pair both living in `nd-stream` = 26.)
 
 **Revision (post-milestone-0) — settled decisions** (mirrors `docs/rust-port/issues.md` §Revision; the reasoning lives there):

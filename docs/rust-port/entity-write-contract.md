@@ -1,5 +1,33 @@
 # Entity write contract (S-D2b source of truth)
 
+## Current amendments (2026-11-18, `60cdd184`)
+
+This is the historical S-D2b **marshal/record** contract, not proof of executed entity Put methods. Read
+[`current-status.md`](current-status.md), current [`next-work.md`](next-work.md), and the selected technical subplan.
+Records/builders and their manually executed tests landed; production scanner entity-write/transaction lifecycles
+still require bounded packages and rollback/read-back evidence.
+
+The following supersede contrary executable instructions in the original brief:
+
+- S-D3 hydration must **not** query artists inside PostScan to recover sort names. Plain persisted participants
+  cannot carry those input-only fields. The future scanner/domain mapping adapter supplies named participants to
+  write records; `getParticipants`/`GetWithParticipants` is an explicit separate repository read layer.
+- Therefore the late paragraph saying S-D3 'must populate both fields ... via the artist lookup' is obsolete as
+  a hydration instruction. The FTS requirement itself remains: names plus input sort names, never substitute subRole,
+  and never serialize input-only sort names into participant JSON.
+- Folder Go Put passes caller `UpdateAt`; current Rust `put_sql` intentionally re-stamps `updated_at` (see its
+  function documentation). This is an unresolved caller/write-policy decision for the timestamp/scanner package,
+  not permission to call the existing behavior faithful or silently change it in a read-only lane.
+- Shared TEXT timestamp storage does not mean all mutation/bound helpers were converted. Library lifecycle/idle,
+  touch/missing and recent-match bounds must change together and prove fresh/begin/end/reload/second-scan behavior.
+- S-D2b's no-`nd-model` scope remains historical ownership guidance; a future domain aggregation/equality change
+  must receive its own explicit owner/decision. One writer owns the entire shared checkout, not merely each file.
+
+The current package's scope/decisions and these amendments take precedence over 'follow literally' language about
+old missing functions or hydration architecture. No production code is changed by this amendment.
+
+---
+
 Scoping brief for slice **S-D2b** (complete entity -> `(columns, values)` records that remove caller-supplied
 column arrays). Produced by a read-only scout lane and tree-verified against HEAD `4988df71`; the four
 `structs.Map` column sets were **executed** against the vendored `fatih/structs v1.1.0`, and the DDL column sets

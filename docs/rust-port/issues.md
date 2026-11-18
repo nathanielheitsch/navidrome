@@ -32,7 +32,34 @@ Global rules:
 
 ---
 
-## Progress ledger (updated 2026-11-10 — this is the port's live state, not the plan)
+## Current progress authority (audited 2026-11-18 at `60cdd184`)
+
+Use [`current-status.md`](current-status.md) for measured capability axes and [`next-work.md`](next-work.md) for the
+current milestone order; [`subplans/`](subplans/) contains bounded technical assignments. The issue descriptions below
+retain ownership/product scope, **not** current implementation readiness or permission to launch all dependencies.
+
+- Fresh parent gates: workspace **1816 passed / 0 failed / 1 ignored**, DB **737 / 0 / 0**; fmt/build/clippy/diff
+  checks pass; docs build succeeds with **22 warnings**. A green suite is not scanner/server readiness.
+- S-D3g1 (`f210431f`), S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight hooks and substantial
+  reads execute; the scanner's transactional writes, typed specialized reads and GC are not complete.
+- Real tag parsing and mapping, auth components, and #15 handler/cache/limiter/archiver exist at crate level.
+  Scanner/HTTP/API remain scaffolds and CLI main is empty. Auth audience/API-key and stream HTTP commitment/Send
+  integration need explicit packages; do not call the components absent or assume they mount unchanged.
+- Pre-scanner safety gates: missing-update bind repair, timestamp/idle lifecycle, every-pool-handle effective
+  configuration, and transaction/error contracts. Full #17 also requires moves/stats/playlists/GC/lifecycle.
+- #27A is a deliberately scoped first runnable slice. Repair, full maintenance, metrics and all full-API services
+  do not automatically gate it. Cancelled routes/services stay cancelled. The old build-order list is historical.
+- Decision 6 (fresh service/no upgrade path) supersedes decision 4's historical `migrate-credentials` wording.
+
+### Explicit deviation register entry: AUTH-ATOMIC-ADMIN
+
+**Retained intentional divergence, not an open implementation task.** First-admin creation is atomic in a retryable
+transaction (`nd-auth/src/login.rs:197-249,279`), unlike Go's non-atomic count/insert (`server/auth.go:122-160`).
+Do not restore the Go race for parity. Existing auth tests cover concurrent creation; the future bootstrap/API plan
+must preserve the same transaction and separately prove its mounted setup flow. Audit confidence: source/test-body
+inspection plus the parent workspace gate above; no new isolated concurrency run is claimed here.
+
+## Historical progress ledger (2026-11-10 onward; superseded, not the live state)
 
 Re-validate with: `cd rust && cargo fmt --all -- --check && cargo clippy --locked --all-targets --all-features -- -D warnings && cargo test --locked --all-targets --all-features --no-fail-fast`
 
