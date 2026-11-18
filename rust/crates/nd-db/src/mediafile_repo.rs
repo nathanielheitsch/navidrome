@@ -1577,12 +1577,22 @@ pub fn delete_missing_sql(ids: &[String]) -> Sql {
     )
 }
 
-/// `MarkMissing` (`mediafile_repository.go:433-455`): one 200-row chunk per
-/// UPDATE (`slice.CollectChunks(ids, 200)`), `.Set` call order.
+/// `MarkMissing` (`mediafile_repository.go:455-469`): one 200-row chunk per
+/// UPDATE (`slice.CollectChunks(ids, 200)`, `:457`), `.Set` call order.
+/// Go's loop aborts on `err != nil || c == 0` (`:463-466`) — a chunk that
+/// touches zero rows stops the whole scan — whereas `MarkMissingByFolder`
+/// only checks `err != nil` (`:482`) and tolerates a zero-row chunk. That
+/// difference is execution-side and deliberately NOT modeled here: these
+/// helpers render statements, they do not run them. The 200 is the literal
+/// Go passes to the chunker at `:457` (and `:473`).
 pub const CHUNK_SIZE: usize = 200;
 
 /// See [`CHUNK_SIZE`]; `missing` flips and `updated_at` is Go's `time.Now()`
-/// — both bind.
+/// — both bind, and in `.Set`/`Where` CALL ORDER (`Set("missing", …)` `:459`,
+/// `Set("updated_at", …)` `:460`, `Where(Eq{"id": chunk})` `:461`), so the two
+/// SET values come FIRST and the chunk's ids fill `WHERE id IN (…)` last.
+/// Binding the ids first would put a media-file id in the `missing` slot and
+/// the timestamp in the `id` slot, making the UPDATE a silent no-op.
 #[must_use]
 pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<Sql> {
     ids.chunks(CHUNK_SIZE)
@@ -1592,23 +1602,28 @@ pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<S
                 format!(
                     "UPDATE {TABLE} SET missing = ?, updated_at = ? WHERE id IN ({placeholders})"
                 ),
-                chunk
-                    .iter()
-                    .map(|id| crate::sqlrepo::Value::from(id.clone()))
-                    .chain([
-                        crate::sqlrepo::Value::Bool(missing),
-                        crate::sqlrepo::Value::Integer(updated_at),
-                    ])
-                    .collect(),
+                [
+                    crate::sqlrepo::Value::Bool(missing),
+                    crate::sqlrepo::Value::Integer(updated_at),
+                ]
+                .into_iter()
+                .chain(
+                    chunk
+                        .iter()
+                        .map(|id| crate::sqlrepo::Value::from(id.clone())),
+                )
+                .collect(),
             )
         })
         .collect()
 }
 
-/// `MarkMissingByFolder` (`mediafile_repository.go:457-483`): one 200-row
-/// chunk per UPDATE, gated on the folders' current flag flipping
-/// (`Eq{"missing": !missing}`); `.Set` call order, the `And` renders its Eq
-/// map keys alphabetically (`folder_id` < `missing`).
+/// `MarkMissingByFolder` (`mediafile_repository.go:472-487`): one 200-row
+/// chunk per UPDATE (`slices.Chunk(folderIDs, 200)`, `:473`), gated on the
+/// folders' current flag flipping (`Eq{"missing": !missing}`, `:479`); `.Set`
+/// call order — `missing`, `updated_at`, then the chunk's folder ids and the
+/// gate last — and the `And` renders its Eq map keys alphabetically
+/// (`folder_id` `:478` < `missing` `:479`).
 #[must_use]
 pub fn mark_missing_by_folder_sql(
     missing: bool,
@@ -2375,7 +2390,7 @@ mod tests {
 
     #[test]
     fn mark_missing_chunks_at_200_and_binds_the_flip() {
-        // Arrange: MarkMissing (:433-455) — slice.CollectChunks(ids, 200).
+        // Arrange: MarkMissing (:455-469) — slice.CollectChunks(ids, 200) at :457.
         let ids: Vec<String> = (0..201).map(|i| format!("mf-{i}")).collect();
         // Act:
         let chunks = mark_missing_sql(true, &ids, 99);
@@ -2386,7 +2401,32 @@ mod tests {
             "UPDATE media_file SET missing = ?, updated_at = ? WHERE id IN (?, ?, ?)"
                 .replace("(?, ?, ?)", &format!("({})", vec!["?"; 200].join(", ")))
         );
-        assert_eq!(chunks[0].1.last(), Some(&Value::Integer(99)));
+        // Assert: the FULL arg vector, positionally. `missing`/`updated_at`
+        // bind first (Go's `.Set` calls at :459-460) and the chunk's ids fill
+        // `WHERE id IN (…)` (:461), so arg 0 is the flip, arg 1 the stamp and
+        // args 2.. are the ids in input order. The old ids-first order made
+        // `last() == Integer(99)` true by accident, so only a positional
+        // check can catch it.
+        assert_eq!(chunks[0].1.len(), CHUNK_SIZE + 2);
+        assert_eq!(chunks[0].1[0], Value::Bool(true));
+        assert_eq!(chunks[0].1[1], Value::Integer(99));
+        assert_eq!(
+            chunks[0].1[2..],
+            ids[..CHUNK_SIZE]
+                .iter()
+                .map(|id| Value::Text(id.clone()))
+                .collect::<Vec<Value>>()
+        );
+        // Assert: the second chunk (1 id) has the same shape, and the flip
+        // appears exactly once in it.
+        assert_eq!(
+            chunks[1].1,
+            vec![
+                Value::Bool(true),
+                Value::Integer(99),
+                Value::Text(format!("mf-{CHUNK_SIZE}")),
+            ]
+        );
         assert_eq!(
             chunks[1]
                 .1
@@ -2399,7 +2439,7 @@ mod tests {
 
     #[test]
     fn mark_missing_by_folder_gates_on_the_current_flag() {
-        // Arrange: MarkMissingByFolder (:457-483) — Eq{"missing": !missing}.
+        // Arrange: MarkMissingByFolder (:472-487) — Eq{"missing": !missing} at :479.
         // Act:
         let chunks = mark_missing_by_folder_sql(true, &["f-1".to_string()], 5);
         // Assert:
