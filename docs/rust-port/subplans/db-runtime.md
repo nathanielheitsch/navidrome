@@ -413,7 +413,15 @@ Measured per renderer (`file:line` = renderer, `g` = committed golden):
 | plugin | `plugin_repo.rs:83` | no | none | GAP |
 | scrobble | `scrobble_repo.rs:109` | no | `:173` | GAP |
 
-Do **not** bulk-edit these renderers to green: each golden is a committed contract, so
+- **Also found (2026-11-18 review):** `rust/crates/nd-db/src/library_repo.rs:84` and `:410` claim
+  `conf.Server.DevOffsetOptimize` has a Go default of `0`, making the rowid pagination rewrite
+  unreachable. It does not: the field is `conf/configuration.go:145` with viper default `50000`
+  (`:1129`, and `docs/rust-port/config-contract.md:196` records it), and the Rust config already
+  carries `dev_offset_optimize: 50000` (`nd-conf/src/config.rs:746`, key at `keys.rs:535`).
+  `mediafile_repo.rs:58` states the correct default. So `optimizePagination`’s rewrite is live in Go
+  for offsets above 50000 and is unported in the read lanes — fix the two library comments and decide
+  whether to port the rewrite, in a bounded package with its own executed test.
+- Do **not** bulk-edit these renderers to green: each golden is a committed contract, so
 every change needs its own package with the expectation updated and the Go method cited
 (`persistence/<repo>_repository.go` -> `count`). The shared fix belongs in
 `Repository::count` (or a documented `count_reset_order` helper) plus all goldens in one
