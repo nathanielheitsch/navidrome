@@ -298,8 +298,9 @@ pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -
 /// `hash` is a `TEXT NOT NULL DEFAULT ''` column and `last_failure` a
 /// `jsonb NOT NULL DEFAULT '[]'` one (`schema_ddl.rs:51`), so Go's `<> ''`
 /// comparison runs against JSON text — `'[]'` (resolved) is unequal to `''` and
-/// `'["boom"]'` is also unequal, which is why Go's arm reads the STORED
-/// emptiness of `hash` plus a non-empty failure list.
+/// comparison runs against JSON text: `'[]'` (Go's empty JSON array) and
+/// `'["boom"]'` both differ from `''`. This arm checks stored hash emptiness plus
+/// last_failure's non-empty SQL text, NOT whether its decoded JSON list has items.
 #[must_use]
 pub fn source_filter_sql(kind: &str, sources: &[String]) -> Sql {
     if sources.is_empty() {
@@ -558,12 +559,11 @@ pub struct ArtworkQueueStat {
 #[derive(Debug, thiserror::Error)]
 pub enum ArtworkQueueError {
     /// The statement failed or a row could not be scanned. `artwork_queue` has no
-    /// `PostScan` hook (`grep -n "PostScan" persistence/artwork_queue_repository.go`
-    /// is empty), so this is a pure statement/scan failure. The reachable scan
-    /// failures are Go's non-pointer fields rejecting NULL: `priority`, `attempts`,
-    /// `retry_at`, `enqueued_at`, `trace` and `item_kind`/`item_id`/`image_type` are
-    /// all `NOT NULL` in the fresh DDL (`schema_ddl.rs:50`), so a plain
-    /// `INSERT … VALUES (NULL, …)` is the only way to reach one.
+    /// `PostScan` hook, so this is a statement/scan failure. Go accepts non-TEXT
+    /// storage classes for string destinations (`RowGet::get_text` converts INTEGER,
+    /// REAL and BLOB); NULL still fails for non-pointer fields. The schema normally
+    /// marks these columns NOT NULL, but malformed/custom SQLite rows and driver
+    /// conversion failures can still exercise this arm.
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 
@@ -619,9 +619,9 @@ impl<'a> ArtworkQueueRepo<'a> {
         use crate::hydrate::RowGet;
         let row = crate::execution::query_optional(self.conn, &statement, |row| {
             Ok(ArtworkQueueItem {
-                item_kind: row.get::<_, String>("item_kind")?,
-                item_id: row.get::<_, String>("item_id")?,
-                image_type: row.get::<_, String>("image_type")?,
+                item_kind: row.get_text("item_kind")?,
+                item_id: row.get_text("item_id")?,
+                image_type: row.get_text("image_type")?,
                 priority: row.get_i64("priority")?,
                 attempts: row.get_i64("attempts")?,
                 // Go's non-pointer `time.Time` (`model/artwork.go:104-105`): a
@@ -629,7 +629,7 @@ impl<'a> ArtworkQueueRepo<'a> {
                 // propagates and the Option only encodes "present".
                 retry_at: Some(row.get_dt("retry_at")?),
                 enqueued_at: Some(row.get_dt("enqueued_at")?),
-                trace: row.get::<_, String>("trace")?,
+                trace: row.get_text("trace")?,
             })
         })?;
         row.ok_or(ArtworkQueueError::NotFound)
@@ -670,7 +670,7 @@ impl<'a> ArtworkQueueRepo<'a> {
     pub fn sources_in_use(&self, kind: &str) -> Result<Vec<String>, ArtworkQueueError> {
         let statement = sources_in_use_sql(kind);
         Ok(crate::execution::query_all(self.conn, &statement, |row| {
-            row.get::<_, String>("source")
+            crate::hydrate::RowGet::get_text(row, "source")
         })?)
     }
 
@@ -696,7 +696,7 @@ impl<'a> ArtworkQueueRepo<'a> {
         let statement = count_queued_sql(kinds, priorities);
         Ok(crate::execution::query_all(self.conn, &statement, |row| {
             Ok(ArtworkQueueStat {
-                item_kind: row.get::<_, String>("item_kind")?,
+                item_kind: row.get_text("item_kind")?,
                 priority: row.get_i64("priority")?,
                 count: row.get_i64("count")?,
             })

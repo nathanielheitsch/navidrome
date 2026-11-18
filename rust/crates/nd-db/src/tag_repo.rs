@@ -214,7 +214,8 @@ pub fn sort_mapping(sort: &str) -> Option<&'static str> {
 /// its snake-cased alias (`ORDER BY album_count desc LIMIT 2`).
 #[must_use]
 pub fn mapped_sort(sort: &str) -> String {
-    sort.split(',')
+    crate::sql_restful::split_sort_fields(sort, ',')
+        .iter()
         .map(|part| {
             let part = part.trim();
             match sort_mapping(part) {
@@ -238,12 +239,12 @@ pub fn build_sort_order(sort: &str, order: &str) -> String {
     } else {
         ("asc".to_string(), "desc".to_string())
     };
-    mapped_sort(sort)
-        .split(", ")
+    crate::sql_restful::split_sort_fields(&mapped_sort(sort), ',')
+        .iter()
         .map(|part| {
-            let mut fields = part.split_whitespace();
-            let field = fields.next().unwrap_or("");
-            let direction = match fields.next() {
+            let fields = crate::sql_restful::split_sort_fields(part, ' ');
+            let field = fields.first().map(String::as_str).unwrap_or("");
+            let direction = match fields.get(1).map(String::as_str) {
                 None | Some("asc") => order.clone(),
                 Some(_) => reverse.clone(),
             };

@@ -27,8 +27,10 @@
 //! FULL-DRAIN observable as [`CursorDrain`]: the rows scanned before the first
 //! failure plus that failure, which is what a drained Go cursor yields (executed,
 //! `tests/runtime_hydrate_folder_artwork_queue.rs`). The lazy half — a caller that
-//! stops mid-cursor, and Go's zero-valued `Folder` yielded BESIDE the error
-//! (`wrapCursor`, `:397-406`) — is NOT ported.
+//! stops mid-cursor and Go's failed-row value yielded BESIDE a scan/PostScan error
+//! (`wrapCursor`, `:392-406`) — is NOT ported. A raw Scan error may leave a zero
+//! `dbFolder`, but a PostScan error returns the already-scanned row (for example
+//! ID `broken`); do not describe both failure kinds as yielding a zero `Folder`.
 //!
 //! `GetFolderUpdateInfo` (`:105-132`) batches target paths at
 //! [`BATCH_SIZE`] (`slices.Chunk` at `:120-123`; the comment at `:118-119` says
@@ -128,14 +130,32 @@ fn clean_path(p: &str) -> String {
 }
 
 /// `FolderID` (`model/folder.go:46-52`, reached via `model.NewFolder` at
-/// `folder_repository.go:88` (`GetByPath`)): strip the library root prefix and a leading
-/// separator, clean, then hash `"<libID>:<path>"`.
+/// `folder_repository.go:88` (`GetByPath`) and directly at `:159`, `:219`): strip the
+/// library root prefix and a leading separator, clean, then hash the SINGLE key
+/// `"<libID>:<cleanPath>"` (`key := fmt.Sprintf("%d:%s", lib.ID, path)`, `:50-51`).
+///
+/// The single-argument form is load-bearing and was a defect until S-D3g2:
+/// `id.NewHash` appends the U+200B separator after EVERY argument
+/// (`model/id/id.go:39-42`), so hashing the two arguments `libID` and `path`
+/// produces `"7" + U+200B + "music" + U+200B` while Go hashes
+/// `"7:music" + U+200B` — a different MD5 input, therefore a different id for
+/// EVERY folder. Executed against the pinned Go repository (`go run -tags
+/// "netgo sqlite_fts5" .`, `/tmp/sd3g2_review/go-final.out`): Go
+/// `FolderID({ID:1,Path:"/music-A"}, "/music-A/rock")` is
+/// `15ABnojgvDJ2bhfDjr0Ixl` and the two-argument form is
+/// `7fv8RsKXA9IsKcrbFnXCjv`, i.e. exactly Go's `NewHash("1", "rock")`. A port
+/// id can never match a Go-written row, so `GetByPath` reports NotFound on a real
+/// database and `get_folder_update_info` omits the exact target. Fixed by using
+/// [`nd_id::new_hash1`] on the colon-joined key; the constants are pinned in
+/// `tests/runtime_hydrate_folder_artwork_queue.rs` rather than re-derived from this
+/// helper, which previously hid the defect by seeding and asserting the same
+/// wrong value.
 #[must_use]
 pub fn folder_id(lib_id: i64, lib_path: &str, path: &str) -> String {
     let rel = path.strip_prefix(lib_path).unwrap_or(path);
     let rel = rel.strip_prefix('/').unwrap_or(rel);
     let cleaned = clean_path(rel);
-    nd_id::new_hash(&[&lib_id.to_string(), &cleaned])
+    nd_id::new_hash1(&format!("{lib_id}:{cleaned}"))
 }
 
 /// `selectFolder` (`folder_repository.go:74-78`): the base select —
@@ -215,11 +235,13 @@ pub fn sort_mapping(sort: &str) -> Option<&'static str> {
         .map(|(_, value)| *value)
 }
 
-/// `sortMapping` (`sql_base_repository.go:165-172`): resolve each comma-separated
-/// part through [`sort_mapping`], snake-casing the parts it does not know.
+/// `sortMapping` (`sql_base_repository.go:165-182`): resolve each comma-separated
+/// part through [`sort_mapping`], snake-casing the parts it does not know. Commas
+/// inside parentheses are not separators (`splitFunc`, `:230-245`).
 #[must_use]
 pub fn mapped_sort(sort: &str) -> String {
-    sort.split(',')
+    crate::sql_restful::split_sort_fields(sort, ',')
+        .iter()
         .map(|part| {
             let part = part.trim();
             match sort_mapping(part) {
@@ -239,18 +261,18 @@ pub fn mapped_sort(sort: &str) -> String {
 pub fn build_sort_order(sort: &str, order: &str) -> String {
     let order = order.trim().to_lowercase();
     let (order, reverse) = if order == "desc" {
-        ("desc".to_string(), "asc".to_string())
+        ("desc", "asc")
     } else {
-        ("asc".to_string(), "desc".to_string())
+        ("asc", "desc")
     };
-    mapped_sort(sort)
-        .split(", ")
+    crate::sql_restful::split_sort_fields(&mapped_sort(sort), ',')
+        .iter()
         .map(|part| {
-            let mut fields = part.split_whitespace();
-            let field = fields.next().unwrap_or("");
-            let direction = match fields.next() {
-                None | Some("asc") => order.clone(),
-                Some(_) => reverse.clone(),
+            let fields = crate::sql_restful::split_sort_fields(part, ' ');
+            let field = fields.first().map(String::as_str).unwrap_or("");
+            let direction = match fields.get(1).map(String::as_str) {
+                None | Some("asc") => order,
+                Some(_) => reverse,
             };
             format!("{field} {direction}")
         })
@@ -532,8 +554,9 @@ pub fn folder_subtree_filter(lib_id: i64, paths: &[String]) -> Sql {
 /// files. `parent_path` is Go's
 /// `TrimPrefix(path.Join(parent.Path, parent.Name), "/")` (`:236`); the
 /// `parent.NumAudioFiles > 0` fast path (`:233-235`) is a caller-side check and
-/// produces no SQL. Go's `Eq{"library_id": …, "missing": false}` map iterates
-/// randomly; the port pins `library_id` first for a stable shape.
+/// produces no SQL. Squirrel sorts `Eq` map keys before rendering
+/// (`squirrel@v1.5.4/expr.go:161`), so this shape is deterministic: `library_id`
+/// precedes `missing`. The port pins that same order explicitly.
 ///
 /// The statement is `exists()`'s shape (`sql_base_repository.go:488-493`):
 /// `SELECT count(*) as exist FROM folder WHERE (…)`, the executed trace in oracle
@@ -994,9 +1017,10 @@ pub struct CursorDrain {
     /// first error, so this prefix is exactly what a caller that drains to
     /// completion receives.
     pub folders: Vec<FolderRecord>,
-    /// The first failure, if any: a scan/`PostScan` failure (Go yields it beside a
-    /// zero `Folder`) or a driver/statement failure (Go yields only the error,
-    /// `sql_base_repository.go:434-437`).
+    /// The first failure, if any: a scan/`PostScan` error. Go yields it beside the
+    /// failed row (`sql_base_repository.go:392-406`); a PostScan error may carry
+    /// an already-populated `Folder` (the pinned probe's ID was `broken`). A
+    /// driver/statement failure yields only its error (`:434-437`).
     pub error: Option<crate::hydrate::HydrateError>,
 }
 
@@ -1211,10 +1235,10 @@ impl<'a> FolderRepo<'a> {
         use crate::hydrate::RowGet;
         let rows = crate::execution::query_all(self.conn, statement, |row| {
             Ok((
-                row.get::<_, String>("id")?,
+                row.get_text("id")?,
                 row.get_dt("updated_at")?,
-                row.get::<_, String>("hash")?,
-                row.get::<_, String>("image_files")?,
+                row.get_text("hash")?,
+                row.get_text("image_files")?,
                 row.get_dt("images_updated_at")?,
             ))
         })?;
@@ -1275,11 +1299,10 @@ impl<'a> FolderRepo<'a> {
 
     /// Drain one cursor statement: hydrate rows until one fails.
     ///
-    /// Go's loop stops at the FIRST scan failure and yields it beside a zero
-    /// `Folder` (`sql_base_repository.go:427-433`), so the prefix is the
-    /// drain's whole useful output; a mid-drain failure means the remaining rows
-    /// are never even read. The port matches that: it stops at the first failing
-    /// row rather than collecting the rest.
+    /// Go stops at the first row scan/PostScan failure and returns its populated
+    /// `Folder` beside the error (`sql_base_repository.go:402,427-433`); it does NOT
+    /// necessarily return a zero value. This drain retains successfully hydrated
+    /// prefix rows and the first error, but cannot represent Go's failed-row value.
     fn drain(&self, statement: &Sql) -> Result<CursorDrain, FolderError> {
         let mut prepared = self
             .conn
@@ -1329,15 +1352,16 @@ impl<'a> FolderRepo<'a> {
         row.ok_or(FolderError::NotFound)
     }
 
-    /// `queryAll` over a folder statement, hydrating both phases.
+    /// `queryAll` over a folder statement. Hydrate each row (including PostScan)
+    /// inside the callback, matching Go's per-row `ScanStruct` order: a failure on
+    /// an earlier row wins over a scan failure on a later row.
     fn read_page(&self, statement: &Sql) -> Result<Vec<FolderRecord>, FolderError> {
-        let rows =
-            crate::execution::query_all(self.conn, statement, crate::hydrate::row_to_folder)?;
-        Ok(rows
-            .into_iter()
-            .map(FolderRow::into_record)
-            .collect::<Result<Vec<FolderRecord>, crate::hydrate::HydrateError>>()
-            .map_err(crate::hydrate::HydrateError::into_sqlite)?)
+        Ok(crate::execution::query_all(self.conn, statement, |row| {
+            crate::hydrate::row_to_folder(row)
+                .map_err(crate::hydrate::HydrateError::Sqlite)
+                .and_then(FolderRow::into_record)
+                .map_err(crate::hydrate::HydrateError::into_sqlite)
+        })?)
     }
 }
 
@@ -1384,7 +1408,8 @@ mod tests {
         // Assert:
         assert_eq!(from_lib_root, already_rel);
         assert_eq!(already_rel, cleaned);
-        assert_eq!(from_lib_root, nd_id::new_hash(&["7", "music"]));
+        assert_eq!(from_lib_root, "3UmURwgxb31J8ABTHgCR9q");
+        assert_eq!(from_lib_root, nd_id::new_hash1("7:music"));
     }
 
     #[test]
@@ -1479,12 +1504,18 @@ mod tests {
         let camel = build_sort_order("numAudioFiles", "desc");
         let mixed = build_sort_order("name", "ASC");
         let multi = build_sort_order("name, numAudioFiles", "desc");
+        let empty_fields = build_sort_order("name,,id", "asc");
+        let trailing_comma = build_sort_order("name,", "asc");
+        let function_expr = build_sort_order("coalesce(folder.name,folder.path)", "asc");
         // Assert: the executed Go leg for Sort:"numAudioFiles"/Order:"desc" is
         // `ORDER BY num_audio_files desc` (oracle /tmp/sd3g2_oracle9, saved trace
         // /tmp/g2_folder_queue_trace.txt).
         assert_eq!(camel, "num_audio_files desc");
         assert_eq!(mixed, "name asc");
         assert_eq!(multi, "name desc, num_audio_files desc");
+        assert_eq!(empty_fields, "name asc, id asc");
+        assert_eq!(trailing_comma, "name asc");
+        assert_eq!(function_expr, "coalesce(folder.name,folder.path) asc");
         assert!(sort_mapping("name").is_none(), "the map is empty");
     }
 

@@ -169,6 +169,33 @@ pub fn to_snake_case(s: &str) -> String {
     out
 }
 
+/// Go's `splitFunc` (`sql_base_repository.go:230-245`): split on `delimiter` only
+/// outside parentheses, dropping empty fields like `strings.FieldsFunc`. Delimiter
+/// handling is exact: non-delimiter whitespace inside a field is preserved.
+#[must_use]
+pub fn split_sort_fields(input: &str, delimiter: char) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' if depth > 0 => depth -= 1,
+            _ => {}
+        }
+        if ch == delimiter && depth == 0 {
+            if start < index {
+                fields.push(input[start..index].to_string());
+            }
+            start = index + ch.len_utf8();
+        }
+    }
+    if start < input.len() {
+        fields.push(input[start..].to_string());
+    }
+    fields
+}
+
 /// `registerModelWhiteList`/`registerFieldWhiteList` (`sql_restful.go:121-135`)
 /// minus the global registry: snake_case every instance field name and merge
 /// [`ANNOTATION_FIELDS`] in.
@@ -426,6 +453,75 @@ pub fn invalid_filter(field: &str, value: &str) -> Filter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_sort_fields_matches_go_parenthesis_empty_and_whitespace_rules() {
+        assert_eq!(
+            split_sort_fields("coalesce(folder.name,folder.path)", ','),
+            ["coalesce(folder.name,folder.path)"]
+        );
+        assert_eq!(split_sort_fields("name,,id", ','), ["name", "id"]);
+        assert_eq!(split_sort_fields("name,", ','), ["name"]);
+        assert_eq!(split_sort_fields("name desc", ' '), ["name", "desc"]);
+        assert_eq!(split_sort_fields("name \tasc", ' '), ["name", "\tasc"]);
+        assert_eq!(split_sort_fields("name \nasc", ' '), ["name", "\nasc"]);
+        assert_eq!(split_sort_fields("name\t asc", ' '), ["name\t", "asc"]);
+    }
+
+    #[test]
+    fn all_repository_sort_builders_preserve_non_delimiter_whitespace() {
+        let expected = "name desc";
+        assert_eq!(
+            crate::folder_repo::build_sort_order("name \tasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::library_repo::build_sort_order("name \tasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::player_repo::build_sort_order("name \tasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::tag_repo::build_sort_order("name \tasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::folder_repo::build_sort_order("name \nasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::library_repo::build_sort_order("name \nasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::player_repo::build_sort_order("name \nasc", "asc"),
+            expected
+        );
+        assert_eq!(
+            crate::tag_repo::build_sort_order("name \nasc", "asc"),
+            expected
+        );
+
+        let tab_field = "name\t asc";
+        assert_eq!(
+            crate::folder_repo::build_sort_order(tab_field, "asc"),
+            tab_field
+        );
+        assert_eq!(
+            crate::library_repo::build_sort_order(tab_field, "asc"),
+            tab_field
+        );
+        assert_eq!(
+            crate::player_repo::build_sort_order(tab_field, "asc"),
+            tab_field
+        );
+        assert_eq!(
+            crate::tag_repo::build_sort_order(tab_field, "asc"),
+            tab_field
+        );
+    }
 
     #[test]
     fn to_snake_case_matches_helpers_go_shapes() {

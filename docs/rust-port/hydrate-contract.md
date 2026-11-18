@@ -437,21 +437,18 @@ existing `hydrate::row_to_folder` + `FolderRow::into_record` pair was already co
 `get_by_path_sql` is new (the brief's note that no `GetByPath` builder existed at `6a201f4a` is still true at
 `f210431f`: the baseline's `pub fn` list has no `get_by_path`). No public fn was removed from either file
 (`comm -23` over the baseline vs current `pub fn` lists is empty). Pinned by
-`tests/runtime_hydrate_folder_artwork_queue.rs` (10 executed tests, 1037L, every test ending
-`std::fs::remove_file(&path).ok();`), plus one new lib test per file (`sort_leg_snake_cases_the_caller_field`,
-`source_filter_wraps_the_whole_conjunction_like_go`) and stale pins corrected to Go's rendered text in both files
-(lib total 451 → 453).
+`tests/runtime_hydrate_folder_artwork_queue.rs` (12 executed tests after the review fixes; each removes its temp DB),
+plus one new lib test per repo (`sort_leg_snake_cases_the_caller_field`,
+`source_filter_wraps_the_whole_conjunction_like_go`) and stale pins corrected to Go text. The Go probes were
+run as `/tmp/g2_folder_queue_*` and `/tmp/sd3g2_review/go-final.*`; individual files below state what they prove.
 
-Go ground truth was captured by running the pinned Go repository itself, at `log.LevelTrace`, with the tag the
-brief and the parent both confirmed is mandatory — `go run -tags "netgo sqlite_fts5" .` (without it, migrations
-fail with `no such module: fts5`). Saved evidence, all present on disk and all cited by the doc comments:
-`/tmp/g2_folder_queue_trace.txt` (26 SQL traces for both repos), `/tmp/g2_folder_queue_out.txt` (returned values),
-`/tmp/g2_source_filter_render.txt` (standalone squirrel render, `/tmp/sd3g2_render`), `/tmp/g2_paren_proof.txt`
-(`/tmp/sd3g2_paren`: Go `CountBySource` + both SQL forms over one fixture), `/tmp/g2_folderid_proof.txt`
-(`/tmp/sd3g2_oracle11`: Go `model.NewFolder(...).ID`), and the earlier `/tmp/g2_mytrace2.txt`,
-`/tmp/g2_mytrace8.txt`, `/tmp/sd3g2_oracle7/out.txt` for the update-info/subtree/`exists` shapes. Doc comments cite
-that command and file for every "executed" claim; the stale `/tmp/g2_folder_traces.txt` citation (a 0-byte file) was
-replaced with `/tmp/g2_folder_queue_trace.txt`, which actually contains the traced SQL.
+Go ground truth was gathered with `go run -tags "netgo sqlite_fts5" .` (the tag is required or migrations fail
+with `no such module: fts5`). Evidence is not interchangeable: `/tmp/g2_folder_queue_trace.txt` has 26 SQL
+traces but no successful queue Get, update-info, or HasAudio statement; `/tmp/g2_folder_queue_out.txt` has returned
+values but queue Gets are misses and Count() is zero. `/tmp/g2_source_filter_render.txt` has standalone SQL/args;
+`/tmp/g2_paren_proof.txt` has Go combined-source counts and raw flat/wrapped row sets; `/tmp/g2_folderid_proof.txt`
+has Go constants only. `/tmp/g2_mytrace2.txt` and `g2_mytrace8.txt` contain update-info and HasAudio SQL; the later
+independent reviewer traces/probes are in `/tmp/sd3g2_review/`. Cite each file only for the evidence it actually contains.
 
 - **`source_filter_sql`'s missing conjunction group — the S-D3f residual at `hydrate-contract.md:183` is FIXED, and
   the row-set delta is executed.** Go's `artworkSourceFilter` returns `append(And{Eq{"item_kind": …}}, match)`
@@ -487,11 +484,12 @@ replaced with `/tmp/g2_folder_queue_trace.txt`, which actually contains the trac
   only its descendants (executed). A duplicate folder id across CHUNKS makes the later chunk win
   (`maps.Copy`, `:127` → `BTreeMap::extend`), which is INFERRED here: reaching it needs >100 target paths, and the
   merge leg itself is exercised only with single-chunk batches.
-- **`getFolderUpdateInfoBatch` had two row-set defects, both fixed, both executed before/after.** (1) The id list and
-  the per-path OR were ANDed (`… AND (id IN (…)) AND (path = ? OR …)`) where Go nests them with OR
-  (`Or{Eq{"id": folderIDs}, pathConditions}`, `:169`): executed over a fixture folder whose id IS the target's
-  `FolderID` while its stored `path` is unrelated, nested → `[target-id-only]` (1 row, = Go) and flat-AND → `[]`
-  (0 rows) (`/tmp/sd3g2_oracle7/out.txt`). (2) The descendant arm rendered `path LIKE ? ESCAPE '\'` over
+- **`getFolderUpdateInfoBatch` had two row-set defects, both fixed.** (1) The id list and per-path OR were
+  ANDed (`… AND (id IN (…)) AND (path = ? OR …)`) where Go nests them with OR
+  (`Or{Eq{"id": folderIDs}, pathConditions}`, `:169`). The older `/tmp/sd3g2_oracle7/out.txt` is only
+  predicate-isolation evidence: it manually seeded the literal `target-id-only`, not `FolderID(target)`, and
+  compared flat vs nested SQL. FolderID constants are independently proven by `/tmp/g2_folderid_proof.txt`; Rust's
+  exact-target update-info test now seeds that Go constant. (2) The descendant arm rendered `path LIKE ? ESCAPE '\'` over
   `escape_like_prefix(clean) + "/%"` where Go emits a plain `LIKE` with the UNescaped pattern
   (`Like{"path": cleanPath + "/%"}`, `:164`; squirrel `Like.toSql` appends no escape, `expr.go:214-247`): executed in
   SQLite, `LIKE 'a%b/%'` → `[deep-child]` and `LIKE 'a\%b/%' ESCAPE '\'` → `[]`, and identically for a literal `_`
@@ -520,15 +518,13 @@ replaced with `/tmp/g2_folder_queue_trace.txt`, which actually contains the trac
   Bind order follows Go's `newSelect` (`:141-145`: LIMIT, OFFSET, sort leg) then `applyFilters` (`:247-252`) then
   `applyLibraryFilter` LAST (`:78`) — executed args `[false, lim]`.
 - **Cursor methods are ported as a full drain, not a cursor.** `queryWithStableResults`/`wrapCursor` yield
-  `(Folder, error)` per row and stop at the first scan failure (`sql_base_repository.go:397-406`, `:427-437`); nd-db
-  has no streaming seam. `CursorDrain::{folders, error}` is the drained observable: executed
-  `drain_all_with_playlists` yielded `{lib2, stale, touched}` (sorted; Go adds no ORDER BY, so order is not
-  contractual) and `drain_touched_with_playlists` yielded `{lib2, touched}` — the last_scan_at arm drops `stale`.
-  A bad `image_files` cell ends the drain: the failing row is never yielded and `error` carries
-  `hydrate::FOLDER_IMAGE_FILES_PREFIX` (`parsing folder image files from db:`), matching `dbFolder.PostScan`. NOT
-  ported, explicitly: a caller that stops mid-cursor, and Go's zero-valued `Folder` yielded BESIDE the error.
-  `optimizePagination` (`:412-414`) is deliberately unported — both cursor callers pass no options
-  (`scanner/phase_4_playlists.go:70-74`), so its `Offset > 0` leg is unreachable.
+  `(Folder, error)` per row and stop at the first scan/PostScan failure (`sql_base_repository.go:392-406,427-437`);
+  nd-db has no streaming seam. `CursorDrain::{folders, error}` retains the successfully hydrated prefix and the first
+  error; it does not represent the failed-row value. A raw Scan failure can yield a zero-value `dbFolder`, but a
+  PostScan error yields the already-scanned row (reviewer's Go run returned ID `broken`,
+  `/tmp/sd3g2_review/go-final.out`). The test now asserts prefix preservation and excludes both the failing and later
+  rows. The lazy half — a caller stopping mid-cursor — remains unported. `optimizePagination` (`:412-414`) is
+  deliberately unported — both cursor callers pass no options (`scanner/phase_4_playlists.go:70-74`).
 - **The two playlist-cursor WHEREs were text-wrong and are corrected.** squirrel renders both `Eq{"missing"` /
   `Gt{"num_playlists"}` keys UNQUALIFIED and wraps the conjunction (`expr.go:200-203`, `:371-386`), and the touched
   arm's `ConcatExpr` is a MEMBER of that same `And` (`folder_repository.go:278-281`) rather than a separate clause.
@@ -538,11 +534,11 @@ replaced with `/tmp/g2_folder_queue_trace.txt`, which actually contains the trac
   group; row sets are identical (no other joined table has `missing`/`num_playlists`), so this is text-only, and the
   stale lib pins were updated to Go's text.
 - **`HasAudioOutsideFolders` = `exists`'s `count(*) as exist` + `Exist > 0`** (`sql_base_repository.go:488-493`),
-  executed five ways against the Go oracle (`/tmp/sd3g2_oracle8/out.txt`: true / false / false / false / false) and
-  re-executed in the Rust test (`true` with a nil exclusion list — squirrel's empty-slice `NotEq` renders the
-  `sqlTrue` `(1=1)` arm, `expr.go:14`, whose extra `)` the parent had already removed — `false` when the only audio
-  row is excluded, `true` when only the parent is excluded, `false` for an empty library). The `(1=1)` arm was also
-  row-set-proven: `(1=1)` returns 2 rows vs the old `1=0` arm's 0.
+  with threshold 0 (`folder_repository.go:239`) and squirrel's empty `NotEq` arm `(1=1)` (`expr.go:14,158,188`).
+  Go's `/tmp/g2_mytrace8.txt` shows the SQL arm for nil exclusions, but its result is false for that fixture; the
+  true in `/tmp/g2_folder_queue_out.txt` is the caller-side `parent.NumAudioFiles > 0` fast path (no SQL). The Rust
+  test separately executes the SQL arm and proves `(1=1)` returns 2 fixture rows versus the old `1 = 0` arm's 0.
+  Parent-side fast-path parity is inferred only: this Rust API takes a parent path, not a Folder record.
 - **TEXT divergence recorded, not changed:** `artwork_queue_repo::get_sql` emits
   `WHERE item_kind = ? AND item_id = ? AND image_type = ?` where Go's executed trace is
   `WHERE image_type = ? AND item_id = ? AND item_kind = ?` (`/tmp/g2_folder_queue_trace.txt`) — squirrel sorts an
@@ -562,11 +558,13 @@ replaced with `/tmp/g2_folder_queue_trace.txt`, which actually contains the trac
   zero model (`dbx` allocates the embedded struct in `indirect`, `dbx@v1.12.0/struct.go:251-259`); the port's `Err`
   carries the same information minus a pointer no caller may legitimately read. Multi-row reads never report it:
   `dbx`'s `All` yields an empty non-nil slice (`dbx@v1.12.0/query.go:278-291`).
-- **Go's folder-id hash parity, executed** (`/tmp/g2_folderid_proof.txt`): `NewFolder(lib, "/music-A/rock")` and
-  `"/music-A/rock/"` both give `15ABnojgvDJ2bhfDjr0Ixl` (Clean drops the trailing slash), `"/"` and `""` both give
-  `73jnvCiQ3rmpLZirIsn9Zs`, and the UN-prefixed `"music-A/rock"` gives a DIFFERENT hash (`6OVmIcc60oxbHUjwZE3MVM`)
-  because `TrimPrefix` does not match — a test that assumed the un-prefixed form cleaned to the same id was wrong
-  and was corrected, not the port.
+- **Folder-ID hash mismatch fixed after review (P1).** Go hashes ONE string, `"<libID>:<cleanPath>"`
+  (`model/folder.go:50-51`); Rust previously hashed two `nd_id::new_hash` arguments, which inserts U+200B between
+  them (`model/id/id.go:39-42`). For lib 1 `/music-A/rock`, Go's constant is `15ABnojgvDJ2bhfDjr0Ixl`, while the
+  old Rust helper returned `7fv8RsKXA9IsKcrbFnXCjv`; `get_by_path` therefore missed Go-written rows and batch
+  update-info omitted the exact target. `folder_id` now hashes `format!("{lib_id}:{cleaned}")` with `new_hash1`;
+  tests assert independent Go constants for both GetByPath and update-info instead of deriving fixture IDs from
+  the helper.
 - **Process note (same failure mode as S-D3g1):** this lane also stopped mid-task twice with the tree unbuildable
   (a missing `let mut args = vec![` and one extra closing paren on the `ESCAPE '\'` group — squirrel's `sqlTrue` is
   already `(1=1)`, so a third `)` makes SQLite reject the statement). The parent repaired both, re-ran the oracles

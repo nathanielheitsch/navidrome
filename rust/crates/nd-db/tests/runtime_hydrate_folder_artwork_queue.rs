@@ -5,12 +5,10 @@
 //! Go truth under test: `folderRepository`
 //! (`persistence/folder_repository.go:80-132`, `:231-247`, `:276-299`) and
 //! `artworkQueueRepository` (`persistence/artwork_queue_repository.go:35-45`,
-//! `:108-127`, `:198-231`). Go ground truth for every expectation here was
-//! captured by running the pinned Go repository itself
-//! (`go run -tags "netgo sqlite_fts5" .` in `/tmp/sd3g2_oracle9`, saved output
-//! `/tmp/g2_folder_queue_out.txt`, saved trace
-//! `/tmp/g2_folder_queue_trace.txt`; the parenthesization proof is
-//! `/tmp/sd3g2_paren` → `/tmp/g2_paren_proof.txt`).
+//! `:108-127`, `:198-231`). The Go artifacts have different coverage: `/tmp/g2_folder_queue_out.txt`
+//! contains return values (queue Gets are misses; ArtworkQueueRepo::Count() is zero), while `/tmp/g2_folder_queue_trace.txt`
+//! contains 26 SQL traces but no successful queue Get or update-info. The parenthesization
+//! proof is `/tmp/sd3g2_paren` → `/tmp/g2_paren_proof.txt`; focused evidence paths are cited at each test.
 //!
 //! Three things this file is really about, each asserted against live rows
 //! rather than a rendered string: (1) the `applyLibraryFilter` leg actually
@@ -244,9 +242,14 @@ fn get_by_path_hashes_the_id_like_go() {
     let (store, path) = fresh_store();
     seed_libraries(&store);
     seed_users(&store);
-    // Go: NewFolder(lib, "/music-A/rock").ID = FolderID(lib, "music-A/rock"),
-    // i.e. the path is library-relative after the lib path is trimmed.
-    let id = folder_repo::folder_id(1, "/music-A", "/music-A/rock");
+    // A rooted path is trimmed to the library-relative `rock` before hashing.
+    // The unprefixed `music-A/rock` does NOT share this ID: Go's TrimPrefix does not match.
+    let id = "15ABnojgvDJ2bhfDjr0Ixl".to_string();
+    assert_eq!(
+        folder_repo::folder_id(1, "/music-A", "/music-A/rock"),
+        id,
+        "Go constant from FolderID(lib, path), not a value derived for the seed"
+    );
     seed_folder(&store, &id, 1, "music-A", "rock", present(3, 0), T1, "[]");
 
     let record = lease(&store, |conn| {
@@ -257,12 +260,11 @@ fn get_by_path_hashes_the_id_like_go() {
     assert_eq!(record.path, "music-A");
     assert_eq!(record.name, "rock");
 
-    // A trailing slash on the library-rooted form cleans to the same id. Go's
-    // executed FolderID (oracle /tmp/sd3g2_oracle11, saved
-    // /tmp/g2_folderid_proof.txt): "/music-A/rock" and "/music-A/rock/" both give
-    // 15ABnojgvDJ2bhfDjr0Ixl, while the UN-prefixed "music-A/rock" gives a
-    // different hash (6OVmIcc60oxbHUjwZE3MVM) because TrimPrefix does not match —
-    // so only the rooted form is asserted here.
+    // A trailing slash on the library-rooted form cleans to the same ID. Go's
+    // FolderID constants, independently captured in `/tmp/g2_folderid_proof.txt`:
+    // `"/music-A/rock"` and `"/music-A/rock/"` = `15ABnojgvDJ2bhfDjr0Ixl`; the
+    // unprefixed `"music-A/rock"` = `6OVmIcc60oxbHUjwZE3MVM` because TrimPrefix
+    // differs from `"rock"`, which also trims to the same library-relative suffix.
     let same = lease(&store, |conn| {
         FolderRepo::new(conn).get_by_path(1, "/music-A", "/music-A/rock/", None)
     })
@@ -486,9 +488,10 @@ fn get_folder_update_info_keys_by_folder_id_and_skips_missing() {
     // descendants by `path = target` / `path LIKE target/%` — Folder.Path is the
     // PARENT directory, so the target itself (path "music-A", name "rock") is
     // only reachable through the id arm.
-    // The batch arm hashes the target's id; the key is Go's FolderID hash over
-    // "1:music-A/rock" (BTreeMap order puts the hash first).
-    let target = folder_repo::folder_id(1, "", "music-A/rock");
+    // The Go FolderID constant for key `1:music-A/rock` is captured independently
+    // in /tmp/g2_folderid_proof.txt; do not derive the expected id from folder_id.
+    let target = "6OVmIcc60oxbHUjwZE3MVM".to_string();
+    assert_eq!(folder_repo::folder_id(1, "", "music-A/rock"), target);
     seed_folder(
         &store,
         &target,
@@ -529,16 +532,25 @@ fn get_folder_update_info_keys_by_folder_id_and_skips_missing() {
         "id arm + descendant arm, missing row excluded"
     );
 
-    // A wildcard in a target path is NOT escaped by Go's batch arm (Like{"path":
-    // cleanPath + "/%"}, folder_repository.go:164), so `a%b` matches any subtree
-    // starting with `a`. That divergence from escape_like_prefix is pinned here
-    // with rows, and documented in hydrate-contract.md SS-D3g2.
+    // Go's unescaped `Like{"path": cleanPath + "/%"}` treats '%' and '_' in the
+    // pattern as wildcards (`folder_repository.go:164`). These rows are DEEPER and
+    // have paths that do not equal either target, so only the LIKE arm can match.
     seed_folder(
         &store,
-        "wild",
+        "wild-percent",
         1,
-        "music-A/a%b",
-        "sub",
+        "music-A/aXb/deeper",
+        "deeper",
+        present(1, 0),
+        T2,
+        "[]",
+    );
+    seed_folder(
+        &store,
+        "wild-underscore",
+        1,
+        "music-A/aXb/deepest",
+        "deepest",
         present(1, 0),
         T2,
         "[]",
@@ -547,7 +559,18 @@ fn get_folder_update_info_keys_by_folder_id_and_skips_missing() {
         FolderRepo::new(conn).get_folder_update_info(1, &["music-A/a%b".to_string()])
     })
     .expect("wildcard target");
-    assert!(wildcard.contains_key("wild"), "Go's unescaped LIKE matches");
+    assert!(
+        wildcard.contains_key("wild-percent"),
+        "% matches x when path = cannot match"
+    );
+    let wildcard = lease(&store, |conn| {
+        FolderRepo::new(conn).get_folder_update_info(1, &["music-A/a_b".to_string()])
+    })
+    .expect("underscore wildcard target");
+    assert!(
+        wildcard.contains_key("wild-underscore"),
+        "_ matches x when path = cannot match"
+    );
 
     std::fs::remove_file(&path).ok();
 }
@@ -712,9 +735,8 @@ fn cursor_drain_yields_rows_and_stops_at_the_first_failure() {
     seed_users(&store);
     seed_cursor(&store);
 
-    // GetAllWithPlaylists: non-missing AND num_playlists > 0. `stale` qualifies
-    // even though its update predates the scan (that leg belongs to the touched
-    // cursor only). Executed Go (oracle /tmp/sd3g2_oracle9) yielded the same set.
+    // GetAllWithPlaylists: non-missing AND num_playlists > 0. The local fixture
+    // pins the row-set behavior; Go source predicate is at folder_repository.go:276-285.
     let drain = lease(&store, |conn| {
         FolderRepo::new(conn).drain_all_with_playlists(None)
     })
@@ -755,6 +777,16 @@ fn cursor_drain_yields_rows_and_stops_at_the_first_failure() {
         T1,
         "{oops",
     );
+    seed_folder(
+        &store,
+        "after-broken",
+        1,
+        "music-A",
+        "later",
+        present(1, 1),
+        T1,
+        "[]",
+    );
     let drain = lease(&store, |conn| {
         FolderRepo::new(conn).drain_all_with_playlists(None)
     })
@@ -769,7 +801,63 @@ fn cursor_drain_yields_rows_and_stops_at_the_first_failure() {
         drain.folders.iter().all(|f| f.id != "broken"),
         "the failing row is never yielded"
     );
+    let prefix = sorted(drain.folders.iter().map(|f| f.id.clone()).collect());
+    assert_eq!(prefix, ["lib2", "stale", "touched"]);
+    assert!(!prefix.iter().any(|id| id == "after-broken"));
 
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn get_all_reports_the_first_rows_postscan_error_before_later_scan_errors() {
+    let (store, path) = fresh_store();
+    seed_libraries(&store);
+    seed_folder(
+        &store,
+        "a-json",
+        1,
+        "music-A",
+        "bad-json",
+        present(1, 1),
+        T1,
+        "{oops",
+    );
+    seed_folder(
+        &store,
+        "z-integer",
+        1,
+        "music-A",
+        "bad-number",
+        present(1, 1),
+        T1,
+        "[]",
+    );
+    insert(
+        &store,
+        "UPDATE folder SET num_audio_files = 'bad' WHERE id = 'z-integer'",
+        &[],
+    );
+
+    // Go queryAll runs ScanStruct/PostScan per row in SQL order. The first row's
+    // malformed image_files wins before the later row's integer conversion error.
+    let options = nd_db::sql_restful::QueryOptions {
+        sort: "id".to_string(),
+        order: "asc".to_string(),
+        ..nd_db::sql_restful::QueryOptions::default()
+    };
+    let err = lease(&store, |conn| {
+        FolderRepo::new(conn).get_all(None, Some(&options))
+    })
+    .expect_err("the first row's PostScan failure aborts GetAll");
+    let text = err.to_string();
+    assert!(
+        text.contains(nd_db::hydrate::FOLDER_IMAGE_FILES_PREFIX),
+        "{text}"
+    );
+    assert!(
+        !text.contains("num_audio_files"),
+        "later scan error must not win: {text}"
+    );
     std::fs::remove_file(&path).ok();
 }
 
@@ -1032,6 +1120,59 @@ fn sources_in_use_and_queue_reads_match_go() {
             .unwrap()
     });
     assert!(after.is_empty());
+
+    std::fs::remove_file(&path).ok();
+}
+
+#[test]
+fn string_destinations_convert_integer_and_blob_storage_like_go() {
+    let (store, path) = fresh_store();
+    seed_libraries(&store);
+    insert(
+        &store,
+        "INSERT INTO artwork_queue (item_kind, item_id, image_type, priority, attempts, retry_at, enqueued_at, trace) VALUES ('al', 'numeric-trace', 'primary', 0, 0, ?, ?, 7)",
+        &[v(T1), v(T1)],
+    );
+    insert(
+        &store,
+        "INSERT INTO artwork_queue (item_kind, item_id, image_type, priority, attempts, retry_at, enqueued_at, trace) VALUES ('al', 'blob-trace', 'primary', 0, 0, ?, ?, CAST('[]' AS BLOB))",
+        &[v(T1), v(T1)],
+    );
+    insert(
+        &store,
+        "INSERT INTO item_artwork (item_kind, item_id, image_type, source) VALUES ('al', 'blob-source', 'primary', CAST('cover' AS BLOB))",
+        &[],
+    );
+    insert(
+        &store,
+        "INSERT INTO folder (id, library_id, path, name, missing, num_audio_files, num_playlists, image_files, images_updated_at, updated_at, created_at, hash) VALUES ('blob-folder', 1, 'music-A', 'blob', 0, 1, 0, CAST('[\"cover.jpg\"]' AS BLOB), ?, ?, ?, CAST('H' AS BLOB))",
+        &[v(T1), v(T1), v(T1)],
+    );
+
+    let queue = lease(&store, |conn| {
+        artwork_queue_repo::ArtworkQueueRepo::new(conn).get("al", "numeric-trace", "primary")
+    })
+    .expect("integer storage converts to Go string \"7\"");
+    assert_eq!(queue.trace, "7");
+    let queue = lease(&store, |conn| {
+        artwork_queue_repo::ArtworkQueueRepo::new(conn).get("al", "blob-trace", "primary")
+    })
+    .expect("blob storage converts to Go string \"[]\"");
+    assert_eq!(queue.trace, "[]");
+    let sources = lease(&store, |conn| {
+        artwork_queue_repo::ArtworkQueueRepo::new(conn).sources_in_use("al")
+    })
+    .expect("BLOB source converts to a string");
+    assert_eq!(sources, ["cover"]);
+    let updates = lease(&store, |conn| {
+        FolderRepo::new(conn).get_folder_update_info(1, &[])
+    })
+    .expect("BLOB hash/image_files convert like Go");
+    assert_eq!(updates["blob-folder"].hash, "H");
+    assert_eq!(
+        updates["blob-folder"].image_files,
+        Some(vec!["cover.jpg".to_string()])
+    );
 
     std::fs::remove_file(&path).ok();
 }
