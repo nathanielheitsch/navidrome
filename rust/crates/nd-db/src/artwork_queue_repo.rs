@@ -15,9 +15,11 @@
 //! `ORDER BY enqueued_at ASC` (see `time.rs`).
 //!
 //! The source-filter semantics of `artworkSourceFilter` (`:107-121`) are
-//! reproduced verbatim: dropping `ArtworkSourceFailed` from the requested
-//! sources decides between `source IN (…)`, the absent-state arm
-//! (`hash = '' AND last_failure != ''`), or an OR of both.
+//! reproduced: dropping `ArtworkSourceFailed` from the requested sources
+//! decides between `source IN (…)`, the absent-state arm, or an OR of both.
+//! Squirrel renders that arm as `(hash = ? AND last_failure <> ?)` with both
+//! values bound (`equalOpr = "<>"`, `squirrel@v1.5.4/expr.go:155`) — not as a
+//! literal `!=`.
 //!
 //! Kind spelling (S-D3c): every `item_kind` value in this table is Go's
 //! `Kind.Prefix()` — `Get` binds it (`:38`), `EnqueueAllMissing` binds it twice
@@ -255,11 +257,57 @@ pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -
 /// `artworkSourceFilter` (`:107-121`): kind Eq plus, when sources were given,
 /// the OR of the stored-source IN and the absent/gave-up arm. Returned as
 /// `(sql, args)` fragments for the count/queue paths below.
+///
+/// **Fixed in S-D3g2 — a row-set defect, not a text one.** Go builds
+/// `append(f, match)` over `And{Eq{item_kind}}` (`:108`, `:120`), so squirrel's
+/// `conj.join` wraps the whole conjunction in one group and the `Or` member in a
+/// second (`squirrel@v1.5.4/expr.go:366-386`; `conj.join` wraps even a
+/// ONE-element conjunction, which is why the empty-sources arm is also
+/// parenthesized in Go). Executed squirrel render (standalone program
+/// `/tmp/sd3g2_render`, saved `/tmp/g2_source_filter_render.txt`):
+/// ```text
+/// sources=[]                     (item_kind = ?)
+/// sources=[cover]                (item_kind = ? AND (source IN (?)))
+/// sources=[!failed]              (item_kind = ? AND ((hash = ? AND last_failure <> ?)))
+/// sources=[cover,!failed]        (item_kind = ? AND (source IN (?) OR (hash = ? AND last_failure <> ?)))
+/// sources=[embedded,cover]       (item_kind = ? AND (source IN (?,?)))
+/// ```
+/// Args are `[kind, <stored…>, "", ""]`: `Eq{"hash": ""}` and
+/// `NotEq{"last_failure": ""}` both BIND the empty string instead of inlining it.
+/// The previous form emitted `item_kind = ? AND <or-body>`, and the seam joins
+/// clauses with a bare `" AND "`, so SQL precedence gave
+/// `(item_kind = ? AND source IN (…)) OR (hash = '' AND last_failure <> '')` — the
+/// kind stopped restricting the absent/gave-up arm.
+///
+/// Executed before/after over ONE identical `item_artwork` fixture (5 rows across
+/// kinds `al`/`mf`/`ra`: `al/a1` source=cover + failure, `al/a2` source=cover +
+/// hash, `mf/m1` absent source + failure, `mf/m2` embedded + hash, `ra/r1` absent
+/// source + failure); oracle `/tmp/sd3g2_paren`, saved
+/// `/tmp/g2_paren_proof.txt`:
+///
+/// | predicate                             | al | mf | ra |
+/// |---------------------------------------|----|----|----|
+/// | Go's `CountBySource(kind,[cover,!failed])` | **2** | **1** | **1** |
+/// | flat `kind AND (IN) OR (hash…)`       | 4  | 3  | 3  |
+/// | wrapped `(kind AND ((IN) OR (hash…)))` | 2  | 1  | 1  |
+///
+/// The flat form returned `al: [a1 a2 m1 r1]`, `mf: [a1 m1 r1]`, `ra: [a1 m1 r1]`
+/// — rows of OTHER kinds counted. With no sources there is no OR arm, so both
+/// forms agree (`al: [a1 a2]`); only the multi-arm case changes.
+///
+/// `hash` is a `TEXT NOT NULL DEFAULT ''` column and `last_failure` a
+/// `jsonb NOT NULL DEFAULT '[]'` one (`schema_ddl.rs:51`), so Go's `<> ''`
+/// comparison runs against JSON text — `'[]'` (resolved) is unequal to `''` and
+/// `'["boom"]'` is also unequal, which is why Go's arm reads the STORED
+/// emptiness of `hash` plus a non-empty failure list.
 #[must_use]
 pub fn source_filter_sql(kind: &str, sources: &[String]) -> Sql {
     if sources.is_empty() {
+        // Go returns the one-element And, whose conj.join STILL wraps it:
+        // `(item_kind = ?)` (executed render, /tmp/g2_source_filter_render.txt;
+        // executed repository trace in /tmp/g2_folder_queue_trace.txt).
         return (
-            "item_kind = ?".to_string(),
+            "(item_kind = ?)".to_string(),
             vec![Value::Text(kind.to_string())],
         );
     }
@@ -272,24 +320,39 @@ pub fn source_filter_sql(kind: &str, sources: &[String]) -> Sql {
     let mut args = Vec::new();
     if !stored.is_empty() {
         let placeholders = stored.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        // squirrel Eq with a slice renders the bare `source IN (?, ?)` part; the
+        // wrapping group comes from the Or's conj.join below.
         arms.push(format!("source IN ({placeholders})"));
         args.extend(stored.iter().map(|s| Value::Text(s.clone())));
     }
     if stored.len() != sources.len() {
-        arms.push("(hash = '' AND last_failure != '')".to_string());
+        // Go's `And{Eq{"hash": ""}, NotEq{"last_failure": ""}}` inside the Or:
+        // Eq renders `hash = ?` with a bound empty string, NotEq `last_failure
+        // <> ''`, and the conjunction is wrapped.
+        arms.push("(hash = ? AND last_failure <> ?)".to_string());
+        args.push(Value::Text(String::new()));
+        args.push(Value::Text(String::new()));
     }
-    let or_body = if arms.len() == 1 {
-        arms[0].to_string()
-    } else {
-        format!("({}) OR ({})", arms[0], arms[1])
-    };
     args.insert(0, Value::Text(kind.to_string()));
-    (format!("item_kind = ? AND {or_body}"), args)
+    // The And's conj.join wraps the whole conjunction once; its Or member is
+    // itself a conj, so conj.join wraps it too (arms.len() > 1 renders
+    // `(a OR b)` from the inner join; len == 1 renders `(a)` — Go's single-arm
+    // Or is still a conj and still gets its group, which the
+    // `[cover]`/`[!failed]` renders above confirm).
+    let or_group = format!("({})", arms.join(" OR "));
+    (format!("(item_kind = ? AND {or_group})"), args)
 }
 
 /// `CountBySource` (`:123-128`): `Select("count(*) as count")` over
-/// `item_artwork` with the source filter.
-#[must_use]
+/// `item_artwork` with the source filter, read through Go's `count` alias
+/// (`:124-127`). Go returns `(res.Count, err)` and its caller reads the number
+/// beside the error (`core/artwork/queue.go`); the port reports `0` beside `Err`,
+/// which is Go's zero `res.Count`.
+///
+/// Executed Go (oracle `/tmp/sd3g2_paren`, `/tmp/g2_paren_proof.txt`): with
+/// `[cover]` and `[cover, !failed]` both asking kind `al` it returned **2**, for
+/// kind `mf` **1**, and for `[!failed]` alone **1**. See [`source_filter_sql`]
+/// for the parenthesization proof that makes those numbers reachable.
 pub fn count_by_source_sql(kind: &str, sources: &[String]) -> Sql {
     let (where_sql, args) = source_filter_sql(kind, sources);
     (
@@ -479,6 +542,202 @@ pub fn purge_dangling_sql(kind: &str, entity_table: &str) -> Sql {
     )
 }
 
+/// One row of `CountQueued` (`:214-218`): Go's `model.ArtworkQueueStat`
+/// (`model/artwork.go:178-182`), read by field name through `ScanStruct`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtworkQueueStat {
+    /// `item_kind` — the stored `Kind.Prefix()`.
+    pub item_kind: String,
+    /// `priority` (Go `int`).
+    pub priority: i64,
+    /// `count(*) as count` (Go `int64`).
+    pub count: i64,
+}
+
+/// Errors of the executed [`ArtworkQueueRepo`] reads.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtworkQueueError {
+    /// The statement failed or a row could not be scanned. `artwork_queue` has no
+    /// `PostScan` hook (`grep -n "PostScan" persistence/artwork_queue_repository.go`
+    /// is empty), so this is a pure statement/scan failure. The reachable scan
+    /// failures are Go's non-pointer fields rejecting NULL: `priority`, `attempts`,
+    /// `retry_at`, `enqueued_at`, `trace` and `item_kind`/`item_id`/`image_type` are
+    /// all `NOT NULL` in the fresh DDL (`schema_ddl.rs:50`), so a plain
+    /// `INSERT … VALUES (NULL, …)` is the only way to reach one.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10` →
+    /// `rest.ErrNotFound`, `data not found`, `deluan/rest@v1.0.1/errors.go:14`),
+    /// which `queryOne` maps from `sql.ErrNoRows`
+    /// (`sql_base_repository.go:375-388`, `dbx@v1.12.0/rows.go:237-244`).
+    ///
+    /// Only [`ArtworkQueueRepo::get`] reports it. Executed (oracle
+    /// `/tmp/sd3g2_oracle9`, saved `/tmp/g2_folder_queue_out.txt`):
+    /// `Get(al, "a2", primary)` on a row that exists only in `item_artwork` and
+    /// `Get(al, "zzz", primary)` both returned `err="data not found"`.
+    #[error("data not found")]
+    NotFound,
+}
+
+/// `artworkQueueRepository`'s executed read side
+/// (`persistence/artwork_queue_repository.go:35-45`, `:123-138`, `:210-231`):
+/// statements from the builders above, run through [`crate::execution`].
+///
+/// Go's repository has no ctx-derived SQL clause here (no `applyLibraryFilter`,
+/// no logged user), so no context-shaped argument appears: the kind is the
+/// caller's `Kind.Prefix()` (`model/artwork_id.go:23-25`) and the priorities are
+/// plain ints.
+pub struct ArtworkQueueRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> ArtworkQueueRepo<'a> {
+    /// `newArtworkQueueRepository` (`:29-33`): bind to `conn` (the pooled lease).
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get` (`:35-43`): `Select("*")` over the three-part primary key.
+    ///
+    /// Go returns `nil, err` on a miss and `&res` on a hit (`:39-43`), so the
+    /// port's `Err(NotFound)`/`Ok(item)` split matches. `retry_at`/`enqueued_at`
+    /// are `NOT NULL` in the DDL, and Go reads them as non-pointer `time.Time`, so
+    /// they hydrate through [`crate::hydrate::RowGet::get_dt`].
+    ///
+    /// # Errors
+    /// [`ArtworkQueueError::NotFound`] when the triple matches nothing;
+    /// [`ArtworkQueueError::Sqlite`] on a statement or scan failure.
+    pub fn get(
+        &self,
+        kind: &str,
+        id: &str,
+        image_type: &str,
+    ) -> Result<ArtworkQueueItem, ArtworkQueueError> {
+        let statement = get_sql(kind, id, image_type);
+        use crate::hydrate::RowGet;
+        let row = crate::execution::query_optional(self.conn, &statement, |row| {
+            Ok(ArtworkQueueItem {
+                item_kind: row.get::<_, String>("item_kind")?,
+                item_id: row.get::<_, String>("item_id")?,
+                image_type: row.get::<_, String>("image_type")?,
+                priority: row.get_i64("priority")?,
+                attempts: row.get_i64("attempts")?,
+                // Go's non-pointer `time.Time` (`model/artwork.go:104-105`): a
+                // NULL cell is a SCAN failure, not an absent value, so the `?`
+                // propagates and the Option only encodes "present".
+                retry_at: Some(row.get_dt("retry_at")?),
+                enqueued_at: Some(row.get_dt("enqueued_at")?),
+                trace: row.get::<_, String>("trace")?,
+            })
+        })?;
+        row.ok_or(ArtworkQueueError::NotFound)
+    }
+
+    /// `CountBySource` (`:123-128`): `count(*) as count` over `item_artwork` with
+    /// the source filter, read by Go's `count` alias.
+    ///
+    /// Go returns `(res.Count, err)` — a caller may read the number beside the
+    /// error (`cmd/artwork.go:191-198`); the port reports `0` beside `Err`, which
+    /// is Go's zero `res.Count`. Executed Go values for the fixture in
+    /// `tests/runtime_hydrate_folder_artwork_queue.rs`: `al` nil-sources 2,
+    /// `al [cover]` 2, `al [!failed]` 1, `al [cover,!failed]` 2,
+    /// `mf [cover,!failed]` 1, `al [embedded,cover]` 2
+    /// (`/tmp/g2_paren_proof.txt`).
+    ///
+    /// # Errors
+    /// [`ArtworkQueueError::Sqlite`] on a statement failure.
+    pub fn count_by_source(
+        &self,
+        kind: &str,
+        sources: &[String],
+    ) -> Result<i64, ArtworkQueueError> {
+        let statement = count_by_source_sql(kind, sources);
+        Ok(
+            crate::execution::query_optional(self.conn, &statement, |row| {
+                row.get::<_, i64>("count")
+            })?
+            .unwrap_or_default(),
+        )
+    }
+
+    /// `SourcesInUse` (`:130-138`): `distinct source` for the kind, in SQLite's
+    /// returned order (Go adds no ORDER BY, so the order is not contractual).
+    ///
+    /// # Errors
+    /// [`ArtworkQueueError::Sqlite`] on a statement or scan failure.
+    pub fn sources_in_use(&self, kind: &str) -> Result<Vec<String>, ArtworkQueueError> {
+        let statement = sources_in_use_sql(kind);
+        Ok(crate::execution::query_all(self.conn, &statement, |row| {
+            row.get::<_, String>("source")
+        })?)
+    }
+
+    /// `CountQueued` (`:210-219`): grouped counts under [`artwork_queue_filter_sql`],
+    /// ordered `item_kind, priority desc`. The filter is deliberately SHARED with
+    /// [`Self::purge_queued`] (Go's comment `:209`), so a preview cannot count rows
+    /// the delete misses.
+    ///
+    /// Go's `queryAll` leaves a mid-page scan failure as `(partial, err)`
+    /// (`:217-218` returns `res, err`); the port drops the prefix on `Err`, the
+    /// same decision as `folder_repo::FolderRepo::get_all`.
+    ///
+    /// # Errors
+    /// [`ArtworkQueueError::Sqlite`] on a statement or scan failure. A zero-row
+    /// result is an empty `Vec`, never `NotFound` (`dbx`'s `All` makes an empty
+    /// non-nil slice, `dbx@v1.12.0/query.go:278-291`).
+    pub fn count_queued(
+        &self,
+        kinds: &[String],
+        priorities: &[i64],
+    ) -> Result<Vec<ArtworkQueueStat>, ArtworkQueueError> {
+        use crate::hydrate::RowGet;
+        let statement = count_queued_sql(kinds, priorities);
+        Ok(crate::execution::query_all(self.conn, &statement, |row| {
+            Ok(ArtworkQueueStat {
+                item_kind: row.get::<_, String>("item_kind")?,
+                priority: row.get_i64("priority")?,
+                count: row.get_i64("count")?,
+            })
+        })?)
+    }
+
+    /// `Count` (`:229-233`): `count(*) as count` over the whole queue.
+    ///
+    /// # Errors
+    /// [`ArtworkQueueError::Sqlite`] on a statement failure.
+    pub fn count(&self) -> Result<i64, ArtworkQueueError> {
+        let statement = (format!("SELECT count(*) as count FROM {TABLE}"), Vec::new());
+        Ok(
+            crate::execution::query_optional(self.conn, &statement, |row| {
+                row.get::<_, i64>("count")
+            })?
+            .unwrap_or_default(),
+        )
+    }
+
+    /// `PurgeQueued` (`:221-227`): the DELETE sharing [`artwork_queue_filter_sql`],
+    /// returning `executeSQL`'s `RowsAffected` (`sql_base_repository.go:336-354`).
+    ///
+    /// Included because `CountQueued`'s contract is the shared filter: the
+    /// executed pair (count, then purge, then re-count) is the only way to prove
+    /// a preview cannot over- or under-report the delete. An empty filter deletes
+    /// everything, which is Go's intent (`:196-197`), and is asserted rather than
+    /// assumed.
+    ///
+    /// # Errors
+    /// [`ArtworkQueueError::Sqlite`] on a statement failure.
+    pub fn purge_queued(
+        &self,
+        kinds: &[String],
+        priorities: &[i64],
+    ) -> Result<i64, ArtworkQueueError> {
+        let statement = purge_queued_sql(kinds, priorities);
+        Ok(crate::execution::execute(self.conn, &statement)? as i64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,8 +849,59 @@ mod tests {
         let (sql, args) = source_filter_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, &sources);
         // Assert: stored list is empty so no IN arm, absent arm present, and
         // asking absent+failed collapses to one arm.
-        assert_eq!(sql, "item_kind = ? AND (hash = '' AND last_failure != '')");
-        assert_eq!(args, vec![Value::Text("al".to_string())]);
+        // Go's render for the pseudo-source-only arm (executed squirrel,
+        // /tmp/g2_source_filter_render.txt): both empty strings are BOUND.
+        assert_eq!(
+            sql,
+            "(item_kind = ? AND ((hash = ? AND last_failure <> ?)))"
+        );
+        assert_eq!(
+            args,
+            vec![
+                Value::Text("al".to_string()),
+                Value::Text(String::new()),
+                Value::Text(String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn source_filter_wraps_the_whole_conjunction_like_go() {
+        // Arrange: every arm Go's artworkSourceFilter can produce (:108-120).
+        // The expected texts are the executed squirrel render (standalone
+        // program /tmp/sd3g2_render, saved /tmp/g2_source_filter_render.txt) and
+        // the executed repository trace (/tmp/g2_folder_queue_trace.txt).
+        let cases: &[(&[&str], &str)] = &[
+            (&[], "(item_kind = ?)"),
+            (&["cover"], "(item_kind = ? AND (source IN (?)))"),
+            (
+                &["!failed"],
+                "(item_kind = ? AND ((hash = ? AND last_failure <> ?)))",
+            ),
+            (
+                &["cover", "!failed"],
+                "(item_kind = ? AND (source IN (?) OR (hash = ? AND last_failure <> ?)))",
+            ),
+            (
+                &["embedded", "cover"],
+                "(item_kind = ? AND (source IN (?, ?)))",
+            ),
+        ];
+        for (sources, expected) in cases {
+            let owned: Vec<String> = sources.iter().map(|s| (*s).to_string()).collect();
+            // Act:
+            let (sql, args) = source_filter_sql("al", &owned);
+            // Assert: the And group is present, so OR cannot escape the kind.
+            assert_eq!(sql, *expected, "sources {sources:?}");
+            assert!(sql.starts_with("(item_kind"), "sources {sources:?}");
+            // Empty strings are BOUND, never inlined (Go's Eq/NotEq both take ?).
+            let inlined = args
+                .iter()
+                .filter(|v| matches!(v, Value::Text(t) if t.is_empty()))
+                .count();
+            let want = if sources.contains(&"!failed") { 2 } else { 0 };
+            assert_eq!(inlined, want, "sources {sources:?}");
+        }
     }
 
     #[test]

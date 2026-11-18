@@ -6,8 +6,9 @@
 //! always has its library). Every method builds a squirrel statement and
 //! hands it to `queryOne`/`queryAll`/`count`/`exists`/`executeSQL`, which
 //! materialize through `toSQL()` (`sql_base_repository.go:358-372`) as
-//! `(sql, args)`; execution stays with the caller (`store.rs` seam), so this
-//! port stops at the same [`Sql`] pairs and pins their shapes.
+//! `(sql, args)`. S-D3g2 wires the READ side onto that pair through
+//! [`crate::execution`] ([`FolderRepo`]): the builders below stay pinned AND the
+//! reads execute against SQLite.
 //!
 //! `PostScan`/`PostMapArgs` (`:25-58`) marshal the `image_files` JSON column
 //! (TEXT in the table, `json.Unmarshal` into `model.Folder.ImageFiles`,
@@ -17,25 +18,43 @@
 //! [`crate::marshal::MarshalledRow`] seam — no caller-supplied column
 //! arrays for the write path.
 //!
-//! `GetTouchedWithPlaylists`/`GetAllWithPlaylists` (`:276-299`) wrap Go's
-//! `queryWithStableResults` cursor machinery, which is the streaming slice's
-//! to port; their WHERE shapes pin here so the caller can hand the pair to
-//! its own cursor seam.
+//! `GetTouchedWithPlaylists`/`GetAllWithPlaylists` (`:276-299`) return a Go
+//! `FolderCursor` over `queryWithStableResults`
+//! (`sql_base_repository.go:411-439`), which yields `(Folder, error)` per row and
+//! STOPS at the first scan failure. nd-db has no streaming seam — `execution` is
+//! `query_optional`/`query_all` only, and the album, mediafile and playlist-track
+//! lanes each leave their cursor to a later slice — so [`FolderRepo`] ports the
+//! FULL-DRAIN observable as [`CursorDrain`]: the rows scanned before the first
+//! failure plus that failure, which is what a drained Go cursor yields (executed,
+//! `tests/runtime_hydrate_folder_artwork_queue.rs`). The lazy half — a caller that
+//! stops mid-cursor, and Go's zero-valued `Folder` yielded BESIDE the error
+//! (`wrapCursor`, `:397-406`) — is NOT ported.
 //!
 //! `GetFolderUpdateInfo` (`:105-132`) batches target paths at
 //! [`BATCH_SIZE`] (`slices.Chunk` at `:120-123`; the comment at `:118-119` says
 //! each path adds ~3 conditions and SQLite rejects expression trees deeper
 //! than 1000); a path of `""`/`"."` selects the whole library (`:111-116` →
-//! [`get_folder_update_info_all_sql`]).
+//! [`get_folder_update_info_all_sql`]). The map is keyed by FOLDER ID
+//! (`m[f.ID]`, `:199`), not by path.
+//!
+//! Two `getFolderUpdateInfoBatch` divergences from squirrel were FIXED in
+//! S-D3g2, each backed by an executed SQLite before/after row set (recorded in
+//! `docs/rust-port/hydrate-contract.md` §S-D3g2): the id list and the per-path OR
+//! were ANDed where Go nests them (`Or{Eq{"id": folderIDs}, pathConditions}`,
+//! `:169`), and the descendant arm was rendered as an `ESCAPE '\'` pattern where
+//! Go emits a plain `LIKE` (`Like{"path": cleanPath + "/%"}`, `:164`).
+//! [`has_audio_outside_folders_sql`] gained the same two classes of fix (see it).
 //!
 //! Safety rule (`sqlrepo.rs`): identifiers are caller-supplied names only;
 //! every value — paths, ids, LIKE patterns — is bound to a `?` parameter.
-//! [`escape_like_prefix`] keeps a LIKE prefix literal even when the path
-//! contains `%`/`_`/`\`.
+//! [`escape_like_prefix`] stays load-bearing for the two call sites that spell
+//! `ESCAPE '\'` themselves — `folder_subtree_filter` (`:222`) and
+//! `HasAudioOutsideFolders` (`:244`) — and is deliberately NOT used by
+//! [`get_folder_update_info_batch_sql`], whose arm is Go's unescaped `LIKE`.
 //!
 use std::collections::BTreeMap;
 
-use crate::sqlrepo::{Repository, Value};
+use crate::sqlrepo::{Repository, SqlError, Value};
 use chrono::{DateTime, Utc};
 
 /// `r.tableName` (`newFolderRepository`, `folder_repository.go:67-72`).
@@ -175,18 +194,204 @@ pub fn get_all_sql(
     .unwrap_or_default()
 }
 
-/// `CountAll` (`folder_repository.go:99-103`): `newSelect` + `count(*)` +
-/// `applyLibraryFilter`. Go's folder repository counts `count(*)` (not the
-/// base `count(distinct id)` shape), because every folder row is one id.
+/// `setSortMappings` for this repository: NONE. `folderRepository` never calls it
+/// (`grep -n setSortMappings persistence/folder_repository.go` is empty), so
+/// `sortMapping` falls back to `toSnakeCase` for every field
+/// (`sql_base_repository.go:165-172`, `:187-197`). Kept as an explicit constant so
+/// the empty map is a pinned fact rather than an accident: it is why a caller sort
+/// of `numAudioFiles` reaches SQLite as `num_audio_files` (executed, oracle
+/// `/tmp/sd3g2_oracle9`, captured with `go run -tags "netgo sqlite_fts5" .` at
+/// `log.LevelTrace` into `/tmp/g2_folder_queue_trace.txt`; the tag is required or
+/// migrations fail with `no such module: fts5`).
+pub const SORT_MAPPINGS: [(&str, &str); 0] = [];
+
+/// `lookupSortMapping` over this repository's (empty) map
+/// (`sql_base_repository.go:187-197`).
+#[must_use]
+pub fn sort_mapping(sort: &str) -> Option<&'static str> {
+    SORT_MAPPINGS
+        .iter()
+        .find(|(key, _)| *key == sort || *key == crate::sql_restful::to_snake_case(sort))
+        .map(|(_, value)| *value)
+}
+
+/// `sortMapping` (`sql_base_repository.go:165-172`): resolve each comma-separated
+/// part through [`sort_mapping`], snake-casing the parts it does not know.
+#[must_use]
+pub fn mapped_sort(sort: &str) -> String {
+    sort.split(',')
+        .map(|part| {
+            let part = part.trim();
+            match sort_mapping(part) {
+                Some(mapping) => mapping.to_string(),
+                None => crate::sql_restful::to_snake_case(part),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `buildSortOrder` (`sql_base_repository.go:199-228`) over THIS repository's
+/// mappings. Local rather than reused from another lane's copy, which resolves
+/// THAT repository's map — Go's splitter is per-repository for exactly that reason
+/// (the same decision is recorded in `library_repo::build_sort_order`).
+#[must_use]
+pub fn build_sort_order(sort: &str, order: &str) -> String {
+    let order = order.trim().to_lowercase();
+    let (order, reverse) = if order == "desc" {
+        ("desc".to_string(), "asc".to_string())
+    } else {
+        ("asc".to_string(), "desc".to_string())
+    };
+    mapped_sort(sort)
+        .split(", ")
+        .map(|part| {
+            let mut fields = part.split_whitespace();
+            let field = fields.next().unwrap_or("");
+            let direction = match fields.next() {
+                None | Some("asc") => order.clone(),
+                Some(_) => reverse.clone(),
+            };
+            format!("{field} {direction}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `applyLibraryFilter` (`sql_base_repository.go:261-283`) for this repository:
+/// `None` is the skip arm (admin, no logged user, or a non-admin granted every
+/// library — `userSeesAllLibraries`, `:287-295`), `Some(user_id)` the subquery.
+///
+/// Alias contract (`playlist_track_repo.rs:177-191`, the hazard the brief names):
+/// Go passes NO table name here (`applyLibraryFilter(ctx, sql)`,
+/// `folder_repository.go:78`, `:101`), so it uses `r.tableName` = `folder` and the
+/// executed clause names `folder.library_id`. `selectFolder` joins `library`
+/// unaliased (`Join("library on library.id = folder.library_id")`, `:76`) and the
+/// folder table is never aliased, so this fragment parses against every read below.
+/// Executed (oracle `/tmp/sd3g2_oracle9`, saved trace `/tmp/g2_folder_queue_trace.txt`):
+/// `… WHERE missing = ? AND folder.library_id IN (SELECT ul.library_id FROM
+/// user_library ul WHERE ul.user_id = ?)`.
+///
+/// Join KIND: the library leg is squirrel's `.Join`, which renders `INNER JOIN`
+/// (`squirrel@v1.5.4/select.go:297-299`); the port emits the same KIND and only the
+/// bare-`JOIN` text differs (already recorded for [`select_folder`]). `user_library`
+/// is a SUBQUERY here, not a join, so the `genre_repo.rs:82` LEFT-vs-INNER residual
+/// does not reach any folder read.
+#[must_use]
+pub fn library_filter(user_id: Option<&str>) -> Option<Sql> {
+    user_id.map(|uid| {
+        (
+            format!(
+                "{FOLDER_TABLE}.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)"
+            ),
+            vec![Value::Text(uid.to_string())],
+        )
+    })
+}
+
+/// `GetAll` (`folder_repository.go:92-97`) under the caller's parsed options.
+///
+/// Go's `selectFolder(ctx, opt...)` order is `newSelect` — `applyOptions`
+/// (`sql_base_repository.go:149-162`: LIMIT, OFFSET, then the `buildSortOrder` leg)
+/// then `applyFilters` (`:247-252`) — with `applyLibraryFilter` LAST (`:78`), so the
+/// caller's filter args bind BEFORE the library filter's user id. Executed arg order
+/// `p0:false p1:lim` (oracle `/tmp/sd3g2_oracle9`, saved trace
+/// `/tmp/g2_folder_queue_trace.txt`).
+///
+/// # Errors
+/// [`SqlError`] if the builder fails to materialize.
+pub fn get_all_query_sql(
+    library_filter: Option<Sql>,
+    options: Option<&crate::sql_restful::QueryOptions>,
+) -> Result<Sql, SqlError> {
+    let mut sq = select_folder(None);
+    if let Some(options) = options {
+        sq = crate::sql_search::apply_pagination(sq, options);
+        if !options.sort.is_empty() {
+            sq = sq.order_by([build_sort_order(&options.sort, &options.order)]);
+        }
+        sq = crate::sql_search::apply_filters(sq, options);
+    }
+    if let Some((sql, args)) = library_filter {
+        sq = sq.where_raw(sql, args);
+    }
+    sq.to_sql()
+}
+
+/// `CountAll` (`folder_repository.go:99-103`) with NO options: `newSelect(ctx)`,
+/// the `count(*)` column, `applyLibraryFilter`, then `count`'s rewrite.
+///
+/// The projection is `count`'s REWRITE rather than the `count(*)` handed to the
+/// builder at `:100` — see [`count_all_query_sql`] for the full shape and its
+/// executed traces. Executed (oracle `/tmp/sd3g2_oracle9`, saved trace
+/// `/tmp/g2_folder_queue_trace.txt`): admin `SELECT count(distinct folder.id) as
+/// count FROM folder ORDER BY folder.id` with no args; non-admin the same plus
+/// `WHERE folder.library_id IN (…)`.
 #[must_use]
 pub fn count_all_sql(library_filter: Option<Sql>) -> Sql {
-    let sq = Repository::new(FOLDER_TABLE).select(["count(*)"]);
-    match library_filter {
+    let sq = Repository::new(FOLDER_TABLE);
+    let sq = match library_filter {
         Some((sql, args)) => sq.where_raw(sql, args),
         None => sq,
+    };
+    sq.count(FOLDER_TABLE)
+        .order_by([format!("{FOLDER_TABLE}.id")])
+        .to_sql()
+        .unwrap_or_default()
+}
+
+/// `CountAll` (`folder_repository.go:99-103`) under the caller's parsed options.
+///
+/// The projection is `count`'s REWRITE, not the `count(*)` the builder is handed at
+/// `:100`: `count` applies `RemoveColumns().Columns("count(distinct folder.id) as
+/// count").RemoveOffset().RemoveLimit().OrderBy("folder.id").From("folder")`
+/// (`sql_base_repository.go:565-570`), so the caller's page is dropped and its sort
+/// leg survives with `folder.id` appended after it (squirrel `OrderBy` appends,
+/// `select.go:362-373`). `applyFilters` at `:571` gets no options here — `CountAll`
+/// calls `r.count(ctx, query)` with an empty list — so the WHERE is not duplicated.
+///
+/// Executed (oracle `/tmp/sd3g2_oracle9`, saved trace `/tmp/g2_folder_queue_trace.txt`):
+/// `CountAll(lim, Filters: Eq{missing:false}, Max:1, Offset:2, Sort:"name",
+/// Order:"desc")` traces `SELECT count(distinct folder.id) as count FROM folder WHERE
+/// missing = ? AND folder.library_id IN (…) ORDER BY name desc, folder.id`, and
+/// plain `CountAll(adm)` traces `… FROM folder ORDER BY folder.id` with no args.
+///
+/// **Fixed in S-D3g2:** this leg previously rendered the `count(*)` arm Go discards.
+/// That is a projection defect, not a text one — Go's `count` scans the `count`
+/// alias, which `SELECT count(*) FROM folder` does not emit. The COUNT itself agrees
+/// with Go on a folder table (one row per id, Go's own comment at `:100`), so the
+/// executed row sets are identical; what changed is the readable projection and the
+/// reset ORDER BY leg.
+///
+/// # Errors
+/// [`SqlError`] if the builder fails to materialize.
+pub fn count_all_query_sql(
+    library_filter: Option<Sql>,
+    options: Option<&crate::sql_restful::QueryOptions>,
+) -> Result<Sql, SqlError> {
+    let caller_leg = options
+        .filter(|o| !o.sort.is_empty())
+        .map(|o| build_sort_order(&o.sort, &o.order));
+    let mut sq = Repository::new(FOLDER_TABLE);
+    if let Some(options) = options {
+        // Go's newSelect applies LIMIT/OFFSET and the sort leg before filters
+        // (`:141-145`); count then discards the page legs (`:566-567`).
+        sq = crate::sql_search::apply_pagination(sq, options);
+        if !options.sort.is_empty() {
+            sq = sq.order_by([build_sort_order(&options.sort, &options.order)]);
+        }
+        sq = crate::sql_search::apply_filters(sq, options);
     }
-    .to_sql()
-    .unwrap_or_default()
+    if let Some((sql, args)) = library_filter {
+        sq = sq.where_raw(sql, args);
+    }
+    sq = sq.count(FOLDER_TABLE);
+    let mut legs = Vec::new();
+    if let Some(leg) = caller_leg {
+        legs.push(leg);
+    }
+    legs.push(format!("{FOLDER_TABLE}.id"));
+    sq.order_by(legs).to_sql()
 }
 
 /// `queryFolderUpdateInfo`'s select (`folder_repository.go:179`), shared
@@ -199,27 +404,63 @@ const UPDATE_INFO_COLUMNS: &str = "id, updated_at, hash, image_files, images_upd
 /// `image_files` is TEXT; its JSON decode (`:194-198`) is the caller's, and
 /// that lane wraps failures as `parsing folder image_files:` (`:196`) — NOT
 /// [`crate::hydrate::FOLDER_IMAGE_FILES_PREFIX`], which belongs to
-/// `dbFolder.PostScan` (`:38-46`).
+/// `dbFolder.PostScan` (`:38-46`). Executed: a bad cell aborts the WHOLE map
+/// (`return nil, err`, `:196-197`) rather than only its own row — see
+/// [`FolderRepo::get_folder_update_info`].
+///
+/// The predicate carries squirrel's conjunction parentheses (`And` is
+/// `conj.join`, `squirrel@v1.5.4/expr.go:371-386`), matching Go's executed trace
+/// `… WHERE (library_id = ? AND missing = ?)` (oracle `/tmp/sd3g2_oracle2`). No
+/// library-access clause is added: `queryFolderUpdateInfo` (`:179`) never calls
+/// `applyLibraryFilter`, so a non-admin still gets rows of a library it cannot
+/// see (executed, oracle `/tmp/sd3g2_oracle8`).
 #[must_use]
 pub fn get_folder_update_info_all_sql(lib_id: i64) -> Sql {
     (
         format!(
             "SELECT {UPDATE_INFO_COLUMNS} FROM {FOLDER_TABLE} \
-             WHERE library_id = ? AND missing = ?"
+            WHERE (library_id = ? AND missing = ?)"
         ),
         vec![Value::Integer(lib_id), Value::Bool(false)],
     )
 }
 
-/// `getFolderUpdateInfoBatch` (`folder_repository.go:144-175`) for one batch
-/// of paths (`GetFolderUpdateInfo` chunks at [`BATCH_SIZE`], `:120-123`):
-/// non-missing folders of the library whose id is one of the target folder
-/// ids OR whose path equals / starts with a target path. Go's `And`/`Or`
-/// render parenthesized, so the `id IN` group and the per-path OR group wrap;
-/// args bind in fragment order (library_id, missing, ids, then per path:
-/// equality, LIKE prefix). `clean_path` mirrors `path.Clean(TrimPrefix(p,
-/// "/"))` (`:154-156`) and the ids come from [`folder_id`]
-/// (`model.FolderID`, called at `:159`).
+/// `getFolderUpdateInfoBatch` (`folder_repository.go:144-175`) for one batch of
+/// paths (`GetFolderUpdateInfo` chunks at [`BATCH_SIZE`], `:120-123`):
+/// non-missing folders of the library whose id is one of the target folder ids
+/// OR whose `path` equals or starts with a target path.
+///
+/// The shape is squirrel's, executed against the pinned library: Go builds
+/// `And{Eq{library_id}, Eq{missing}, Or{Eq{"id": folderIDs}, pathConditions}}`
+/// (`:145-172`), and `conj.join` wraps EVERY conjunction
+/// (`squirrel@v1.5.4/expr.go:371-386`), so the id list and the per-path OR are
+/// **nested by OR inside one group** — the executed trace is
+/// `… WHERE (library_id = ? AND missing = ? AND (id IN (?, ?) OR (path = ? OR path LIKE ? …)))`
+/// (oracle `/tmp/sd3g2_oracle2`).
+///
+/// **Fixed in S-D3g2 (row-set defect, not text):** the previous form ANDed the
+/// two groups (`… AND (id IN (…)) AND (path = ? OR …)`), so a folder whose id IS
+/// the target's `FolderID` but whose stored `path` is unrelated dropped out.
+/// Executed in SQLite over a fixture folder `target-id-only` (id = the target
+/// path's `FolderID`, `path = '/music-A'`): the nested form returns 1 row
+/// (`[target-id-only]`, = Go's result) and the flat-AND form returns 0
+/// (`[]`) (oracle `/tmp/sd3g2_oracle7`).
+///
+/// **Also fixed in S-D3g2:** the descendant arm is Go's plain `LIKE` with NO
+/// `ESCAPE` clause and the UNescaped pattern (`Like{"path": cleanPath + "/%"}`,
+/// `:164`; squirrel's `Like.toSql` renders `%s LIKE ?` with no escape and appends
+/// the raw value, `expr.go:214-247`). The previous arm was
+/// `path LIKE ? ESCAPE '\'` over `escape_like_prefix(clean) + "/%"`, which is a
+/// second row-set defect: executed in SQLite against a stored path containing a
+/// literal `%`, Go's `LIKE 'a%b/%'` matches the descendant (`[deep-child]`) while
+/// the escaped form matches nothing (`[]`); identically for a literal `_`
+/// (`LIKE 'a_b/%'` → `[deep-child]`, `LIKE 'a\_b/%' ESCAPE '\'` → `[]`). The
+/// pattern now binds raw, which is also Go's arg order and text (`p4:a%b/%`).
+///
+/// Args bind in fragment order (library_id, missing, ids, then per path:
+/// equality, LIKE prefix). `clean_path` mirrors `path.Clean(TrimPrefix(p, "/"))`
+/// (`:154-156`) and the ids come from [`folder_id`] (`model.FolderID`, called at
+/// `:159`).
 #[must_use]
 pub fn get_folder_update_info_batch_sql(lib_id: i64, target_paths: &[String]) -> Sql {
     let mut id_args: Vec<Value> = Vec::with_capacity(target_paths.len());
@@ -230,8 +471,9 @@ pub fn get_folder_update_info_batch_sql(lib_id: i64, target_paths: &[String]) ->
         id_args.push(Value::from(folder_id(lib_id, "", &clean)));
         or_clauses.push("path = ?".to_string());
         or_args.push(Value::from(clean.as_str()));
-        or_clauses.push("path LIKE ? ESCAPE '\\'".to_string());
-        or_args.push(Value::from(escape_like_prefix(&clean) + "/%"));
+        // Go's `Like` arm (`:164`): plain LIKE, no ESCAPE, pattern NOT escaped.
+        or_clauses.push("path LIKE ?".to_string());
+        or_args.push(Value::from(format!("{clean}/%")));
     }
     let ids_placeholders = vec!["?"; id_args.len()].join(", ");
     let mut args = vec![Value::Integer(lib_id), Value::Bool(false)];
@@ -240,8 +482,8 @@ pub fn get_folder_update_info_batch_sql(lib_id: i64, target_paths: &[String]) ->
     (
         format!(
             "SELECT {UPDATE_INFO_COLUMNS} FROM {FOLDER_TABLE} \
-             WHERE library_id = ? AND missing = ? AND (id IN ({ids_placeholders})) \
-             AND ({})",
+            WHERE (library_id = ? AND missing = ? AND \
+            (id IN ({ids_placeholders}) OR ({})))",
             or_clauses.join(" OR ")
         ),
         args,
@@ -285,13 +527,35 @@ pub fn folder_subtree_filter(lib_id: i64, paths: &[String]) -> Sql {
     )
 }
 
-/// `HasAudioOutsideFolders` (`folder_repository.go:236-247`): any non-missing
-/// folder in `parent`'s subtree, other than the excluded ids, that holds
-/// audio files. `parent_path` is Go's
+/// `HasAudioOutsideFolders` (`folder_repository.go:232-247`): any non-missing
+/// folder in `parent`'s subtree, other than the excluded ids, that holds audio
+/// files. `parent_path` is Go's
 /// `TrimPrefix(path.Join(parent.Path, parent.Name), "/")` (`:236`); the
-/// `parent.NumAudioFiles > 0` fast path (`:233-235`) is a caller-side check
-/// and produces no SQL. Go's `Eq{"library_id": …, "missing": false}` map
-/// iterates randomly; the port pins `library_id` first for a stable shape.
+/// `parent.NumAudioFiles > 0` fast path (`:233-235`) is a caller-side check and
+/// produces no SQL. Go's `Eq{"library_id": …, "missing": false}` map iterates
+/// randomly; the port pins `library_id` first for a stable shape.
+///
+/// The statement is `exists()`'s shape (`sql_base_repository.go:488-493`):
+/// `SELECT count(*) as exist FROM folder WHERE (…)`, the executed trace in oracle
+/// `/tmp/sd3g2_oracle8`. The earlier `SELECT 1 … LIMIT 1` form agreed on truthiness
+/// but not on the projection Go's `exists` reads.
+///
+/// Two squirrel defects FIXED in S-D3g2, both row-set-affecting and both executed
+/// (oracle `/tmp/sd3g2_oracle8`, folders `l1-a`/`l1-b` holding audio, `l1-m`
+/// missing, `l2-a`/`l2-b` in library 2):
+/// * `NotEq{"id": excludeFolderIDs}` with an EMPTY list takes squirrel's negated
+///   `inEmptyExpr`, which is `sqlTrue` = `(1=1)` (`squirrel@v1.5.4/expr.go:156-158`),
+///   NOT a match-nothing arm. The port emitted `1 = 0`, so Go's nil exclusion slice
+///   got `false` where Go gets `true` (see the empty-arm comment below).
+/// * `Gt{"num_audio_files": 0}` (`:239`) binds the map's value, 0
+///   (`squirrel@v1.5.4/expr.go:228-262`). The port bound `1`, so a subtree whose
+///   only audio-bearing folder holds exactly 1 file read `false` here and `true`
+///   in Go. Executed against `num_audio_files = 1`: bound to 0 the row matches
+///   (Go's answer); bound to 1 it does not. Fixed to bind 0.
+///
+/// The subtree arm IS Go's explicit `Expr(… ESCAPE '\')` (`:244`), so
+/// [`escape_like_prefix`] stays correct on this path — unlike the update-info
+/// batch, which emits Go's unescaped `LIKE`.
 #[must_use]
 pub fn has_audio_outside_folders_sql(
     library_id: i64,
@@ -299,26 +563,46 @@ pub fn has_audio_outside_folders_sql(
     exclude_folder_ids: &[String],
 ) -> Sql {
     let mut sql = format!(
-        "SELECT 1 FROM {FOLDER_TABLE} WHERE library_id = ? AND missing = ? \
-         AND num_audio_files > ? AND "
+        "SELECT count(*) as exist FROM {FOLDER_TABLE} \
+        WHERE (library_id = ? AND missing = ? AND num_audio_files > ? AND "
     );
     let mut args = vec![
         Value::Integer(library_id),
         Value::Bool(false),
-        Value::Integer(1),
+        Value::Integer(0),
     ];
     if exclude_folder_ids.is_empty() {
-        // Squirrel's empty-Eq renders 1 = 0 (matches nothing).
-        sql.push_str("1 = 0");
+        // Squirrel's empty NotEq renders the negated form's `inEmptyExpr`, which
+        // is sqlTrue (`squirrel@v1.5.4/expr.go:156-158`): an empty exclusion list
+        // excludes nothing. The previous `1 = 0` made Go's nil-slice caller —
+        // `core/artwork/folders_album.go:94` — read false where Go reads true.
+        sql.push_str("(1=1)");
     } else {
         let placeholders = vec!["?"; exclude_folder_ids.len()].join(", ");
         sql.push_str(&format!("id NOT IN ({placeholders})"));
         args.extend(exclude_folder_ids.iter().map(|id| Value::from(id.as_str())));
     }
-    sql.push_str(" AND (path = ? OR path LIKE ? ESCAPE '\\') LIMIT 1");
+    sql.push_str(" AND (path = ? OR path LIKE ? ESCAPE '\\'))");
     args.push(Value::from(parent_path));
     args.push(Value::from(escape_like_prefix(parent_path) + "/%"));
     (sql, args)
+}
+
+/// `GetByPath` (`folder_repository.go:87-90`): `model.NewFolder(lib, path).ID`
+/// fed to [`get_sql`]. Go builds a whole `Folder` only to read its `ID`
+/// (`model/folder.go:54-73` → `FolderID`, `:46-52`): strip the library root prefix
+/// and a leading separator, clean, then hash `"<libID>:<cleanPath>"` — the same
+/// rule [`folder_id`] implements, so the ids agree exactly. `NewFolder`'s other
+/// output (`Path`/`Name`/`ParentID`) is discarded on this path, so the port does
+/// not duplicate the split/parent step.
+#[must_use]
+pub fn get_by_path_sql(
+    lib_id: i64,
+    lib_path: &str,
+    path: &str,
+    library_filter: Option<Sql>,
+) -> Sql {
+    get_sql(&folder_id(lib_id, lib_path, path), library_filter)
 }
 
 /// `model.Folder`'s persisted row (`model/folder.go:18-33`) — the 12
@@ -603,27 +887,59 @@ pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<S
         .collect()
 }
 
+/// The `And{Eq{missing}, Gt{num_playlists}}` arm shared by the two playlist
+/// cursors (`folder_repository.go:277-281`, `:290-293`). squirrel renders BOTH
+/// columns UNQUALIFIED (`Eq.toSql` emits the map key verbatim,
+/// `squirrel@v1.5.4/expr.go:200-203`) and wraps the conjunction in parentheses
+/// (`conj.join`, `:371-386`), so the group is `(missing = ? AND num_playlists > ?)`.
+/// The library filter is a separate clause and comes FIRST, which is why the
+/// executed form is `WHERE folder.library_id IN (…) AND (missing = ? AND …)`
+/// (oracle `/tmp/sd3g2_oracle9`, saved trace `/tmp/g2_folder_queue_trace.txt`).
+/// The touched arm's `ConcatExpr` joins that SAME group rather than becoming a
+/// separate clause, so the executed text is
+/// `WHERE (missing = ? AND num_playlists > ? AND folder.updated_at >
+/// library.last_scan_at)` (oracle `/tmp/sd3g2_oracle9`, saved trace
+/// `/tmp/g2_folder_queue_trace.txt`). The library filter is a clause of
+/// `selectFolder` (`:74-78`) and is ANDed BEFORE the group, giving the non-admin
+/// `WHERE folder.library_id IN (…) AND (missing = ? AND num_playlists > ?)`.
+/// The S-D3g1 rendering qualified both columns and emitted no group at all; that
+/// was a text-only divergence — the row set is identical, since no other joined
+/// table has `missing` or `num_playlists` — now corrected to Go's text.
+fn playlists_where(touched: bool) -> Sql {
+    let sql = if touched {
+        "(missing = ? AND num_playlists > ? AND folder.updated_at > library.last_scan_at)"
+    } else {
+        "(missing = ? AND num_playlists > ?)"
+    };
+    (sql.to_string(), vec![Value::Bool(false), Value::Integer(0)])
+}
+
 /// `GetTouchedWithPlaylists` (`folder_repository.go:276-287`): non-missing
-/// folders with playlists touched since the library's last scan. Go wraps the
-/// select in `queryWithStableResults` (the streaming slice's port); this pins
-/// the select pair it wraps.
+/// folders with playlists touched since the library's last scan. The third arm is
+/// Go's `ConcatExpr("folder.updated_at > library.last_scan_at")` (`:280`), a raw
+/// fragment with no bound value.
+///
+/// Executed trace (oracle `/tmp/sd3g2_oracle9`, `/tmp/g2_folder_queue_trace.txt`):
+/// `… WHERE (missing = ? AND num_playlists > ? AND folder.updated_at >
+/// library.last_scan_at)`, and for a non-admin
+/// `… WHERE folder.library_id IN (…) AND (missing = ? AND num_playlists > ? AND …)`.
 #[must_use]
 pub fn get_touched_with_playlists_sql(library_filter: Option<Sql>) -> Sql {
+    let (sql, args) = playlists_where(true);
     select_folder(library_filter)
-        .where_eq("folder.missing", false)
-        .where_raw("folder.num_playlists > ?", vec![Value::Integer(0)])
-        .where_raw("folder.updated_at > library.last_scan_at", Vec::new())
+        .where_raw(sql, args)
         .to_sql()
         .unwrap_or_default()
 }
 
-/// `GetAllWithPlaylists` (`folder_repository.go:289-299`): non-missing
-/// folders with playlists.
+/// `GetAllWithPlaylists` (`folder_repository.go:289-299`): non-missing folders
+/// with playlists. See [`get_touched_with_playlists_sql`] for the group's shape;
+/// the executed trace is `… WHERE (missing = ? AND num_playlists > ?)`.
 #[must_use]
 pub fn get_all_with_playlists_sql(library_filter: Option<Sql>) -> Sql {
+    let (sql, args) = playlists_where(false);
     select_folder(library_filter)
-        .where_eq("folder.missing", false)
-        .where_raw("folder.num_playlists > ?", vec![Value::Integer(0)])
+        .where_raw(sql, args)
         .to_sql()
         .unwrap_or_default()
 }
@@ -647,6 +963,382 @@ pub fn purge_empty_sql(library_ids: &[i64]) -> Sql {
         args.extend(library_ids.iter().map(|id| Value::Integer(*id)));
     }
     (sql, args)
+}
+
+/// One row of `queryFolderUpdateInfo` (`folder_repository.go:180-186`): the
+/// anonymous struct Go's `ScanStruct` fills for the five update-info columns.
+///
+/// `image_files` is the raw TEXT shim, decoded AFTER the whole page is read
+/// (`:193-198`), so a bad cell is not a scan failure — see
+/// [`FolderRepo::get_folder_update_info`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct FolderUpdateInfo {
+    /// `updated_at` (Go `UpdatedAt`, a non-pointer `time.Time`).
+    pub updated_at: DateTime<Utc>,
+    /// `hash` (Go `Hash`).
+    pub hash: String,
+    /// `image_files` decoded: `None` is Go's nil slice, which the empty shim
+    /// leaves untouched (`:193` skips the `json.Unmarshal` entirely).
+    pub image_files: Option<Vec<String>>,
+    /// `images_updated_at` (Go `ImagesUpdatedAt`).
+    pub images_updated_at: DateTime<Utc>,
+}
+
+/// What a **drained** folder cursor yields: the rows scanned before the first
+/// failure, and that failure if there was one. See the module header for why the
+/// port drains instead of streaming.
+#[derive(Debug)]
+pub struct CursorDrain {
+    /// Rows successfully hydrated, in SQLite's returned order. Go's `wrapCursor`
+    /// yields each of these (`sql_base_repository.go:397-405`) and stops at the
+    /// first error, so this prefix is exactly what a caller that drains to
+    /// completion receives.
+    pub folders: Vec<FolderRecord>,
+    /// The first failure, if any: a scan/`PostScan` failure (Go yields it beside a
+    /// zero `Folder`) or a driver/statement failure (Go yields only the error,
+    /// `sql_base_repository.go:434-437`).
+    pub error: Option<crate::hydrate::HydrateError>,
+}
+
+/// Errors of the executed [`FolderRepo`] reads.
+#[derive(Debug, thiserror::Error)]
+pub enum FolderError {
+    /// The statement failed, or a row could not be scanned/hydrated. A
+    /// `dbFolder.PostScan` JSON failure arrives here too, wrapped as Go's
+    /// column-conversion error by [`crate::hydrate::HydrateError::into_sqlite`]
+    /// (Go's dbx slice loop aborts on the hook error,
+    /// `dbx@v1.12.0/rows.go:177-190`), carrying
+    /// [`crate::hydrate::FOLDER_IMAGE_FILES_PREFIX`].
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// The statement could not be materialized — Go's `toSQL` failure
+    /// (`sql_base_repository.go:358-372`).
+    #[error(transparent)]
+    Builder(#[from] SqlError),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10` →
+    /// `rest.ErrNotFound`, `data not found`, `deluan/rest@v1.0.1/errors.go:14`),
+    /// which `queryOne` maps from `sql.ErrNoRows`
+    /// (`sql_base_repository.go:375-388`, `dbx@v1.12.0/rows.go:237-244`).
+    ///
+    /// Only [`FolderRepo::get`] and [`FolderRepo::get_by_path`] report it: they are
+    /// the two `queryOne` reads. Executed (oracle `/tmp/sd3g2_oracle9`, saved output
+    /// `/tmp/g2_folder_queue_out.txt`): `Get("nope")` and
+    /// `GetByPath(lib1, "/music-A/rock")` (no such folder) both returned
+    /// `err="data not found"`. Go returns that error beside a non-nil pointer to a
+    /// zero `Folder` (`dbx` allocates the embedded model in `indirect`,
+    /// `dbx@v1.12.0/struct.go:251-259`); the port's `Err` carries the same
+    /// information minus a pointer no Go caller can legitimately read.
+    #[error("data not found")]
+    NotFound,
+}
+
+/// `folderRepository`'s executed read side (`folder_repository.go:20-24,
+/// 80-132`): statements from the builders above, run through
+/// [`crate::execution`] on a leased connection, rows hydrated through
+/// [`crate::hydrate::row_to_folder`] + [`FolderRow::into_record`] (Go's
+/// `ScanStruct` → `PostScan` pair).
+///
+/// Go's reads take `ctx` for the logged user and the seeded-random reset;
+/// `applyLibraryFilter` (`sql_base_repository.go:261-283`) is the ctx-derived part
+/// that changes SQL, so the port takes it as an explicit
+/// [`library_filter`] argument instead of a context. The seed leg needs nothing
+/// here: `resetSeededRandom` (`:297-311`) only rewrites a `Sort` containing
+/// `"seed"`, and folder has no sort mapping registered ([`SORT_MAPPINGS`]), so no
+/// folder read can produce the `SEEDEDRAND` expression.
+pub struct FolderRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> FolderRepo<'a> {
+    /// `newFolderRepository` (`folder_repository.go:65-72`): bind to `conn` (the
+    /// pooled lease). Go's `tableName`/`db` fields are the builders' constants here.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get` (`folder_repository.go:80-85`): the base select narrowed to one id,
+    /// plus the caller's library filter.
+    ///
+    /// # Errors
+    /// [`FolderError::NotFound`] when nothing matches — including when the library
+    /// filter excludes the row for a restricted user (executed: the traced
+    /// statement for a non-admin is `… WHERE folder.library_id IN (…) AND
+    /// folder.id = ?`). [`FolderError::Sqlite`] on a statement or hydration failure.
+    pub fn get(&self, id: &str, library_filter: Option<Sql>) -> Result<FolderRecord, FolderError> {
+        let statement = get_sql(id, library_filter);
+        self.read_one(&statement)
+    }
+
+    /// `GetByPath` (`folder_repository.go:87-90`): `Get` by
+    /// `model.NewFolder(lib, path).ID`. Go builds the id through `NewFolder`
+    /// (`model/folder.go:55-73`), whose ID step is `FolderID`
+    /// (`:44-50` = [`folder_id`]); the extra `dir`/`name`/`ParentID` fields it
+    /// computes are discarded by `Get`, which only ever reads the id.
+    ///
+    /// # Errors
+    /// Same as [`FolderRepo::get`].
+    pub fn get_by_path(
+        &self,
+        lib_id: i64,
+        lib_path: &str,
+        path: &str,
+        library_filter: Option<Sql>,
+    ) -> Result<FolderRecord, FolderError> {
+        let statement = get_by_path_sql(lib_id, lib_path, path, library_filter);
+        self.read_one(&statement)
+    }
+
+    /// `GetAll` (`folder_repository.go:92-97`) under the caller's parsed options.
+    ///
+    /// Go returns `res.toModels(), err` (`:96`), i.e. the rows scanned BEFORE a
+    /// mid-page failure are handed back beside it. `Result` has no
+    /// value-beside-error, so a failure here drops the prefix — the same decision
+    /// already recorded for `library_repo::LibraryRepo::get_all`.
+    ///
+    /// # Errors
+    /// [`FolderError::Sqlite`] on a statement or hydration failure; a zero-row
+    /// result is an empty `Vec`, never [`FolderError::NotFound`] (Go's `queryAll`
+    /// makes an empty non-nil slice, `dbx@v1.12.0/query.go:278-291`).
+    /// [`FolderError::Builder`] if the statement fails to materialize.
+    pub fn get_all(
+        &self,
+        library_filter: Option<Sql>,
+        options: Option<&crate::sql_restful::QueryOptions>,
+    ) -> Result<Vec<FolderRecord>, FolderError> {
+        self.read_page(&get_all_query_sql(library_filter, options)?)
+    }
+
+    /// `CountAll` (`folder_repository.go:99-103`): `count`'s rewrite of the
+    /// builder's `count(*)` (see [`count_all_query_sql`]).
+    ///
+    /// Go's `count` reads the `count` alias out of one row (`:572-574`); a
+    /// `SELECT count(distinct …)` always emits one row, so `unwrap_or_default`
+    /// mirrors Go's zero `res.Count` when the row is missing (unreachable in
+    /// SQLite, but it keeps the port from inventing a `NotFound`).
+    ///
+    /// # Errors
+    /// [`FolderError::Sqlite`] / [`FolderError::Builder`].
+    pub fn count_all(
+        &self,
+        library_filter: Option<Sql>,
+        options: Option<&crate::sql_restful::QueryOptions>,
+    ) -> Result<i64, FolderError> {
+        let statement = count_all_query_sql(library_filter, options)?;
+        Ok(
+            crate::execution::query_optional(self.conn, &statement, |row| {
+                row.get::<_, i64>("count")
+            })?
+            .unwrap_or_default(),
+        )
+    }
+
+    /// `HasAudioOutsideFolders` (`folder_repository.go:231-247`) via
+    /// [`has_audio_outside_folders_sql`] — `exists`'s `count(*) as exist`
+    /// projection and `Exist > 0` test (`sql_base_repository.go:488-493`).
+    ///
+    /// Go returns `(exists, err)` and its caller reads the bool beside the error
+    /// (`scanner/phase_2_folders.go:250-254`); the port reports `false` beside
+    /// `Err`, which is the value Go's zero `res.Exist` would give.
+    ///
+    /// # Errors
+    /// [`FolderError::Sqlite`] on a statement failure.
+    pub fn has_audio_outside_folders(
+        &self,
+        lib_id: i64,
+        parent_path: &str,
+        exclude_folder_ids: &[String],
+    ) -> Result<bool, FolderError> {
+        let statement = has_audio_outside_folders_sql(lib_id, parent_path, exclude_folder_ids);
+        let exist = crate::execution::query_optional(self.conn, &statement, |row| {
+            row.get::<_, i64>("exist")
+        })?
+        .unwrap_or_default();
+        Ok(exist > 0)
+    }
+
+    /// `GetFolderUpdateInfo` (`folder_repository.go:105-132`): the whole-library
+    /// read when `target_paths` is empty or contains `""`/`"."`, otherwise one
+    /// [`get_folder_update_info_batch_sql`] statement per [`BATCH_SIZE`] chunk
+    /// (`slices.Chunk`, `:120-123`), merged in order.
+    ///
+    /// **Key semantics (correcting the brief):** the map is keyed by FOLDER ID,
+    /// not by path — `m[f.ID] = info` (`folder_repository.go:199`), over the
+    /// selected `id` column. A later row therefore OVERWRITES an earlier one with
+    /// the same folder id; two chunks returning the same id means the later chunk
+    /// wins, which `BTreeMap::extend` reproduces. Keys arrive as
+    /// [`folder_id`] hashes (`model/folder.go:44-50`), never as paths.
+    ///
+    /// A bad `image_files` cell aborts the ENTIRE map: `return nil, err` inside
+    /// the loop (`:194-197`), so Go hands back a NIL map, not the partial one
+    /// built so far. The port matches that by returning `Err` (its `BTreeMap` has
+    /// no partial). The wrapper is Go's `parsing folder image_files: …` (`:196`) —
+    /// NOT `dbFolder.PostScan`'s `parsing folder image files from db:` prefix,
+    /// which belongs to the bulk folder reads ([`crate::hydrate::FOLDER_IMAGE_FILES_PREFIX`]).
+    ///
+    /// # Errors
+    /// [`FolderError::Sqlite`] on a statement failure or on the decode failure
+    /// above; [`FolderError::Builder`] if a batch statement fails to materialize.
+    pub fn get_folder_update_info(
+        &self,
+        lib_id: i64,
+        target_paths: &[String],
+    ) -> Result<BTreeMap<String, FolderUpdateInfo>, FolderError> {
+        if target_paths.is_empty()
+            || target_paths
+                .iter()
+                .any(|path| path.is_empty() || path == ".")
+        {
+            return self.query_folder_update_info(&get_folder_update_info_all_sql(lib_id));
+        }
+        let mut result = BTreeMap::new();
+        for chunk in target_paths.chunks(BATCH_SIZE) {
+            let batch =
+                self.query_folder_update_info(&get_folder_update_info_batch_sql(lib_id, chunk))?;
+            result.extend(batch);
+        }
+        Ok(result)
+    }
+
+    /// `queryFolderUpdateInfo` (`folder_repository.go:178-202`): run one
+    /// update-info statement and build the id-keyed map.
+    fn query_folder_update_info(
+        &self,
+        statement: &Sql,
+    ) -> Result<BTreeMap<String, FolderUpdateInfo>, FolderError> {
+        use crate::hydrate::RowGet;
+        let rows = crate::execution::query_all(self.conn, statement, |row| {
+            Ok((
+                row.get::<_, String>("id")?,
+                row.get_dt("updated_at")?,
+                row.get::<_, String>("hash")?,
+                row.get::<_, String>("image_files")?,
+                row.get_dt("images_updated_at")?,
+            ))
+        })?;
+        let mut map = BTreeMap::new();
+        for (id, updated_at, hash, image_files, images_updated_at) in rows {
+            // Go decodes AFTER the whole page is scanned (`:192-199`), and the
+            // empty shim skips the decode entirely (`:193`).
+            let image_files =
+                crate::hydrate::parse_folder_image_files(&image_files).map_err(|err| {
+                    FolderError::Sqlite(
+                        crate::hydrate::HydrateError::Decoded(format!(
+                            "parsing folder image_files: {err}"
+                        ))
+                        .into_sqlite(),
+                    )
+                })?;
+            map.insert(
+                id,
+                FolderUpdateInfo {
+                    updated_at,
+                    hash,
+                    image_files,
+                    images_updated_at,
+                },
+            );
+        }
+        Ok(map)
+    }
+
+    /// `GetTouchedWithPlaylists` (`folder_repository.go:276-287`), drained.
+    ///
+    /// Go's `queryWithStableResults` also runs `optimizePagination` when
+    /// `options[0].Offset > 0` (`sql_base_repository.go:412-414`); this cursor is
+    /// called with NO options by both callers
+    /// (`scanner/phase_4_playlists.go:70-74`, `:72`), so that leg is unreachable
+    /// here and deliberately not ported.
+    ///
+    /// # Errors
+    /// The first failure is reported inside [`CursorDrain::error`] rather than as
+    /// `Err`, because Go yields it as a cursor item. `Err` only covers a statement
+    /// that cannot be prepared at all, which Go reports as the cursor constructor's
+    /// own error (`:417-418`).
+    pub fn drain_touched_with_playlists(
+        &self,
+        library_filter: Option<Sql>,
+    ) -> Result<CursorDrain, FolderError> {
+        self.drain(&get_touched_with_playlists_sql(library_filter))
+    }
+
+    /// `GetAllWithPlaylists` (`folder_repository.go:289-299`), drained. Same
+    /// cursor caveats as [`Self::drain_touched_with_playlists`].
+    pub fn drain_all_with_playlists(
+        &self,
+        library_filter: Option<Sql>,
+    ) -> Result<CursorDrain, FolderError> {
+        self.drain(&get_all_with_playlists_sql(library_filter))
+    }
+
+    /// Drain one cursor statement: hydrate rows until one fails.
+    ///
+    /// Go's loop stops at the FIRST scan failure and yields it beside a zero
+    /// `Folder` (`sql_base_repository.go:427-433`), so the prefix is the
+    /// drain's whole useful output; a mid-drain failure means the remaining rows
+    /// are never even read. The port matches that: it stops at the first failing
+    /// row rather than collecting the rest.
+    fn drain(&self, statement: &Sql) -> Result<CursorDrain, FolderError> {
+        let mut prepared = self
+            .conn
+            .prepare(&statement.0)
+            .map_err(FolderError::Sqlite)?;
+        let mut rows = prepared
+            .query(rusqlite::params_from_iter(statement.1.iter()))
+            .map_err(FolderError::Sqlite)?;
+        let mut folders = Vec::new();
+        let mut error = None;
+        loop {
+            match rows.next() {
+                Ok(None) => break,
+                Err(err) => {
+                    // Go's `rows.Err()` arm yields the error alone
+                    // (`sql_base_repository.go:434-437`); a driver failure is
+                    // indistinguishable from a scan failure at this seam.
+                    error = Some(crate::hydrate::HydrateError::Sqlite(err));
+                    break;
+                }
+                Ok(Some(row)) => {
+                    match crate::hydrate::row_to_folder(row)
+                        .map_err(crate::hydrate::HydrateError::Sqlite)
+                        .and_then(FolderRow::into_record)
+                    {
+                        Ok(record) => folders.push(record),
+                        Err(err) => {
+                            error = Some(err);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(CursorDrain { folders, error })
+    }
+
+    /// `queryOne` over a folder statement: at most one row, `NotFound` when
+    /// there is none.
+    fn read_one(&self, statement: &Sql) -> Result<FolderRecord, FolderError> {
+        let row = crate::execution::query_optional(self.conn, statement, |row| {
+            crate::hydrate::row_to_folder(row)
+                .map_err(crate::hydrate::HydrateError::Sqlite)
+                .and_then(FolderRow::into_record)
+                .map_err(crate::hydrate::HydrateError::into_sqlite)
+        })?;
+        row.ok_or(FolderError::NotFound)
+    }
+
+    /// `queryAll` over a folder statement, hydrating both phases.
+    fn read_page(&self, statement: &Sql) -> Result<Vec<FolderRecord>, FolderError> {
+        let rows =
+            crate::execution::query_all(self.conn, statement, crate::hydrate::row_to_folder)?;
+        Ok(rows
+            .into_iter()
+            .map(FolderRow::into_record)
+            .collect::<Result<Vec<FolderRecord>, crate::hydrate::HydrateError>>()
+            .map_err(crate::hydrate::HydrateError::into_sqlite)?)
+    }
 }
 
 #[cfg(test)]
@@ -755,13 +1447,45 @@ mod tests {
     }
 
     #[test]
-    fn count_all_uses_plain_count_star() {
-        // Arrange: CountAll (:99-103) keeps count(*), not count(distinct id).
+    fn count_all_rewrites_to_count_distinct_id_and_resets_order() {
+        // Arrange: CountAll (:99-103) hands the builder count(*), but base
+        // `count` (:565-570) removes those columns, replaces them with
+        // count(distinct folder.id) as count, drops LIMIT/OFFSET and appends
+        // ORDER BY folder.id. Executed against the real repository.
         // Act:
         let (sql, args) = count_all_sql(None);
+        let (scoped, scoped_args) = count_all_sql(library_filter(Some("lim")));
         // Assert:
-        assert_eq!(sql, "SELECT count(*) FROM folder");
+        assert_eq!(
+            sql,
+            "SELECT count(distinct folder.id) as count FROM folder ORDER BY folder.id"
+        );
         assert!(args.is_empty());
+        assert_eq!(
+            scoped,
+            "SELECT count(distinct folder.id) as count FROM folder \
+             WHERE folder.library_id IN (SELECT ul.library_id FROM user_library ul \
+             WHERE ul.user_id = ?) ORDER BY folder.id"
+        );
+        assert_eq!(scoped_args, vec![Value::Text("lim".to_string())]);
+    }
+
+    #[test]
+    fn sort_leg_snake_cases_the_caller_field() {
+        // Arrange: no sort mappings are registered (:65-72 never calls
+        // setSortMappings), so buildSortOrder falls back to toSnakeCase for every
+        // part (sql_base_repository.go:165-172, :199-228).
+        // Act:
+        let camel = build_sort_order("numAudioFiles", "desc");
+        let mixed = build_sort_order("name", "ASC");
+        let multi = build_sort_order("name, numAudioFiles", "desc");
+        // Assert: the executed Go leg for Sort:"numAudioFiles"/Order:"desc" is
+        // `ORDER BY num_audio_files desc` (oracle /tmp/sd3g2_oracle9, saved trace
+        // /tmp/g2_folder_queue_trace.txt).
+        assert_eq!(camel, "num_audio_files desc");
+        assert_eq!(mixed, "name asc");
+        assert_eq!(multi, "name desc, num_audio_files desc");
+        assert!(sort_mapping("name").is_none(), "the map is empty");
     }
 
     #[test]
@@ -773,7 +1497,7 @@ mod tests {
         assert_eq!(
             sql,
             "SELECT id, updated_at, hash, image_files, images_updated_at FROM folder \
-             WHERE library_id = ? AND missing = ?"
+             WHERE (library_id = ? AND missing = ?)"
         );
         assert_eq!(args, vec![Value::Integer(7), Value::Bool(false)]);
     }
@@ -791,8 +1515,8 @@ mod tests {
         assert_eq!(
             sql,
             "SELECT id, updated_at, hash, image_files, images_updated_at FROM folder \
-             WHERE library_id = ? AND missing = ? AND (id IN (?, ?)) \
-             AND (path = ? OR path LIKE ? ESCAPE '\\' OR path = ? OR path LIKE ? ESCAPE '\\')"
+             WHERE (library_id = ? AND missing = ? AND \
+             (id IN (?, ?) OR (path = ? OR path LIKE ? OR path = ? OR path LIKE ?)))"
         );
         assert_eq!(args[..2], [Value::Integer(7), Value::Bool(false)]);
         // Both batch folder ids are FolderID(7, path) hashes.
@@ -858,24 +1582,26 @@ mod tests {
         // Assert:
         assert_eq!(
             sql,
-            "SELECT 1 FROM folder WHERE library_id = ? AND missing = ? \
-             AND num_audio_files > ? AND id NOT IN (?, ?) \
-             AND (path = ? OR path LIKE ? ESCAPE '\\') LIMIT 1"
+            "SELECT count(*) as exist FROM folder \
+             WHERE (library_id = ? AND missing = ? AND num_audio_files > ? \
+             AND id NOT IN (?, ?) AND (path = ? OR path LIKE ? ESCAPE '\\'))"
         );
         assert_eq!(
             args,
             vec![
                 Value::Integer(7),
                 Value::Bool(false),
-                Value::Integer(1),
+                Value::Integer(0),
                 Value::Text("f-1".to_string()),
                 Value::Text("f-2".to_string()),
                 Value::Text("music".to_string()),
                 Value::Text("music/%".to_string()),
             ]
         );
-        // An empty exclusion list matches nothing instead of every folder.
-        assert!(bare_sql.contains("AND 1 = 0 AND"));
+        // Go's NotEq with an empty slice takes squirrel's negated inEmptyExpr,
+        // sqlTrue = (1=1) (squirrel@v1.5.4/expr.go:156-158,188): the exclusion
+        // excludes NOTHING, so a nil-slice caller sees Go's true, not false.
+        assert!(bare_sql.contains("AND (1=1) AND"));
         assert_eq!(bare_args[..3], args[..3]);
     }
 
@@ -1063,21 +1789,41 @@ mod tests {
         let touched = get_touched_with_playlists_sql(None);
         let all = get_all_with_playlists_sql(None);
         // Assert:
+        // Go's And wraps the whole group, and the ConcatExpr is a member of it
+        // rather than a separate clause (see the builders' executed traces).
         assert_eq!(
             touched.0,
             "SELECT folder.*, library.path as library_path FROM folder \
              INNER JOIN library ON library.id = folder.library_id \
-             WHERE folder.missing = ? AND folder.num_playlists > ? \
-             AND folder.updated_at > library.last_scan_at"
+             WHERE (missing = ? AND num_playlists > ? \
+             AND folder.updated_at > library.last_scan_at)"
         );
         assert_eq!(touched.1, vec![Value::Bool(false), Value::Integer(0)]);
         assert_eq!(
             all.0,
             "SELECT folder.*, library.path as library_path FROM folder \
              INNER JOIN library ON library.id = folder.library_id \
-             WHERE folder.missing = ? AND folder.num_playlists > ?"
+             WHERE (missing = ? AND num_playlists > ?)"
         );
         assert_eq!(all.1, vec![Value::Bool(false), Value::Integer(0)]);
+        // The library filter is ANDed BEFORE the group (selectFolder applies it
+        // first, folder_repository.go:74-78).
+        let scoped = get_all_with_playlists_sql(library_filter(Some("lim")));
+        assert_eq!(
+            scoped.0,
+            "SELECT folder.*, library.path as library_path FROM folder \
+             INNER JOIN library ON library.id = folder.library_id \
+             WHERE folder.library_id IN (SELECT ul.library_id FROM user_library ul \
+             WHERE ul.user_id = ?) AND (missing = ? AND num_playlists > ?)"
+        );
+        assert_eq!(
+            scoped.1,
+            vec![
+                Value::Text("lim".to_string()),
+                Value::Bool(false),
+                Value::Integer(0)
+            ]
+        );
     }
 
     #[test]

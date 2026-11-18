@@ -422,3 +422,162 @@ Gate after these fixes: fmt 0; clippy `-D warnings` 0; `-p nd-db --all-targets` 
 across 25 binaries**; `--workspace` **1800 passed / 0 failed / 1 ignored across 68 binaries**; `cargo doc`
 0 with 22 warnings (8 unresolved + 14 private, unchanged); `git diff --check` 0; a full workspace run now
 leaves no `nd-db-hydrate-lib-prop-tag-*` files behind.
+## §S-D3g2 (2026-11-18) — executed read sides for `folder_repo`, `artwork_queue_repo`
+
+Both repos were render-only at `f210431f` (measured: 0 `crate::execution::` references in either file). Each now
+executes through `crate::execution` on a conn-bound struct, on the `radio_repo`/S-D3g1 precedent. New API surface:
+`folder_repo::{SORT_MAPPINGS, sort_mapping, mapped_sort, build_sort_order, library_filter, get_all_query_sql,`
+`count_all_query_sql, get_by_path_sql, FolderUpdateInfo, CursorDrain, FolderError,`
+`FolderRepo::{new, get, get_by_path, get_all, count_all, has_audio_outside_folders, get_folder_update_info,`
+`drain_touched_with_playlists, drain_all_with_playlists}}` and
+`artwork_queue_repo::{ArtworkQueueStat, ArtworkQueueError, ArtworkQueueRepo::{new, get, count_by_source,`
+`sources_in_use, count_queued, count, purge_queued}}`. `hydrate.rs` and `lib.rs` are untouched (0 diff lines): the
+existing `hydrate::row_to_folder` + `FolderRow::into_record` pair was already complete, and
+`model.FolderUpdateInfo`-shaped row mapping lives in `folder_repo` next to its own statement, not in `hydrate.rs`.
+`get_by_path_sql` is new (the brief's note that no `GetByPath` builder existed at `6a201f4a` is still true at
+`f210431f`: the baseline's `pub fn` list has no `get_by_path`). No public fn was removed from either file
+(`comm -23` over the baseline vs current `pub fn` lists is empty). Pinned by
+`tests/runtime_hydrate_folder_artwork_queue.rs` (10 executed tests, 1037L, every test ending
+`std::fs::remove_file(&path).ok();`), plus one new lib test per file (`sort_leg_snake_cases_the_caller_field`,
+`source_filter_wraps_the_whole_conjunction_like_go`) and stale pins corrected to Go's rendered text in both files
+(lib total 451 → 453).
+
+Go ground truth was captured by running the pinned Go repository itself, at `log.LevelTrace`, with the tag the
+brief and the parent both confirmed is mandatory — `go run -tags "netgo sqlite_fts5" .` (without it, migrations
+fail with `no such module: fts5`). Saved evidence, all present on disk and all cited by the doc comments:
+`/tmp/g2_folder_queue_trace.txt` (26 SQL traces for both repos), `/tmp/g2_folder_queue_out.txt` (returned values),
+`/tmp/g2_source_filter_render.txt` (standalone squirrel render, `/tmp/sd3g2_render`), `/tmp/g2_paren_proof.txt`
+(`/tmp/sd3g2_paren`: Go `CountBySource` + both SQL forms over one fixture), `/tmp/g2_folderid_proof.txt`
+(`/tmp/sd3g2_oracle11`: Go `model.NewFolder(...).ID`), and the earlier `/tmp/g2_mytrace2.txt`,
+`/tmp/g2_mytrace8.txt`, `/tmp/sd3g2_oracle7/out.txt` for the update-info/subtree/`exists` shapes. Doc comments cite
+that command and file for every "executed" claim; the stale `/tmp/g2_folder_traces.txt` citation (a 0-byte file) was
+replaced with `/tmp/g2_folder_queue_trace.txt`, which actually contains the traced SQL.
+
+- **`source_filter_sql`'s missing conjunction group — the S-D3f residual at `hydrate-contract.md:183` is FIXED, and
+  the row-set delta is executed.** Go's `artworkSourceFilter` returns `append(And{Eq{"item_kind": …}}, match)`
+  (`artwork_queue_repository.go:108`, `:120`), so squirrel's `conj.join` wraps the whole predicate
+  (`squirrel@v1.5.4/expr.go:366-386`). Executed render (`/tmp/g2_source_filter_render.txt`) for the five arms Go can
+  build: `(item_kind = ?)`, `(item_kind = ? AND (source IN (?)))`,
+  `(item_kind = ? AND ((hash = ? AND last_failure <> ?)))`,
+  `(item_kind = ? AND (source IN (?) OR (hash = ? AND last_failure <> ?)))`,
+  `(item_kind = ? AND (source IN (?, ?)))`. Two details the earlier wording got wrong: the empty-sources arm is ALSO
+  parenthesized (`conj.join` wraps even a one-element conjunction), and `Eq{"hash": ""}` / `NotEq{"last_failure": ""}`
+  both BIND the empty string (`… = ?` / `<> ?` with `args [al "" ""]`) rather than inlining `''`. Over ONE identical
+  5-row `item_artwork` fixture (kinds `al`/`mf`/`ra`, sources split so precedence decides the answer), executed
+  before/after (`/tmp/g2_paren_proof.txt`):
+
+  | predicate                                     | al                | mf         | ra         |
+  |-----------------------------------------------|-------------------|------------|------------|
+  | Go `CountBySource(kind, [cover, !failed])`    | **2** `[a1 a2]`   | **1** `[m1]` | **1** `[r1]` |
+  | port's flat `kind AND (IN) OR (hash …)`       | 4 `[a1 a2 m1 r1]` | 3 `[a1 m1 r1]` | 3 `[a1 m1 r1]` |
+  | wrapped `(kind AND (IN OR (hash …)))`         | 2 `[a1 a2]`       | 1 `[m1]`   | 1 `[r1]`   |
+
+  With no sources there is no OR arm, so both forms agree (`al` → `[a1 a2]`) — only the multi-arm case changes, which
+  is why the old `sources.is_empty()` path was never observed wrong. Pinned twice: `count_by_source_counts_only_the_requested_kind`
+  executes all seven Go-verified counts `[2,2,1,2,1,1,2]` AND re-runs the pre-fix flat text over the same rows to
+  assert `4`; `artwork_queue_repo::tests::source_filter_wraps_the_whole_conjunction_like_go` pins all five rendered
+  texts and that empty strings are bound, never inlined. `enqueue_by_source_sql` shares the fragment, so the
+  INSERT…SELECT leg inherits the fix — not separately executed here (no Rust caller wires it), recorded as INFERRED.
+- **BRIEF CLAIM WRONG, corrected: `GetFolderUpdateInfo`'s map is keyed by FOLDER ID, not by path.**
+  `m[f.ID] = info` (`persistence/folder_repository.go:199`) over the selected `id` column
+  (`UPDATE_INFO_COLUMNS` starts with `id`, `:180`). Executed (`get_folder_update_info_keys_by_folder_id_and_skips_missing`):
+  the keys are `folder_id` hashes — `{deep, <FolderID("1:music-A/rock")>}` for a two-path batch, `{l1-a, l1-b}` for the
+  whole library — never paths. Consequences: the batch arm's id leg is what makes the target
+  folder itself reachable at all, because `Folder.Path` is the PARENT directory, so `path = "music-A/rock"` matches
+  only its descendants (executed). A duplicate folder id across CHUNKS makes the later chunk win
+  (`maps.Copy`, `:127` → `BTreeMap::extend`), which is INFERRED here: reaching it needs >100 target paths, and the
+  merge leg itself is exercised only with single-chunk batches.
+- **`getFolderUpdateInfoBatch` had two row-set defects, both fixed, both executed before/after.** (1) The id list and
+  the per-path OR were ANDed (`… AND (id IN (…)) AND (path = ? OR …)`) where Go nests them with OR
+  (`Or{Eq{"id": folderIDs}, pathConditions}`, `:169`): executed over a fixture folder whose id IS the target's
+  `FolderID` while its stored `path` is unrelated, nested → `[target-id-only]` (1 row, = Go) and flat-AND → `[]`
+  (0 rows) (`/tmp/sd3g2_oracle7/out.txt`). (2) The descendant arm rendered `path LIKE ? ESCAPE '\'` over
+  `escape_like_prefix(clean) + "/%"` where Go emits a plain `LIKE` with the UNescaped pattern
+  (`Like{"path": cleanPath + "/%"}`, `:164`; squirrel `Like.toSql` appends no escape, `expr.go:214-247`): executed in
+  SQLite, `LIKE 'a%b/%'` → `[deep-child]` and `LIKE 'a\%b/%' ESCAPE '\'` → `[]`, and identically for a literal `_`
+  (`/tmp/sd3g2_oracle7/out.txt`). So a target path containing a LIKE metacharacter matched nothing before the fix.
+  `escape_like_prefix` remains load-bearing for the two arms that DO spell `ESCAPE '\'` — `folder_subtree_filter`
+  (`folder_repository.go:222`) and `HasAudioOutsideFolders` (`:244`) — and is asserted absent from the batch arm.
+- **`count_all_sql` was rewritten by `count`, not by the caller — projection defect fixed.** `CountAll` hands the
+  builder `count(*)` (`folder_repository.go:100`) but base `count` replaces the columns with
+  `count(distinct folder.id) as count`, drops LIMIT/OFFSET and APPENDS `ORDER BY folder.id`
+  (`sql_base_repository.go:565-570`; squirrel `OrderBy` is `builder.Append`, `select.go:362-373`). Executed traces
+  (`/tmp/g2_folder_queue_trace.txt`): `SELECT count(distinct folder.id) as count FROM folder ORDER BY folder.id`
+  (no args) and, with a filter + `Max:1, Offset:2, Sort:"name", Order:"desc"`,
+  `… WHERE missing = ? AND folder.library_id IN (…) ORDER BY name desc, folder.id`. The COUNT agreed with Go before
+  the fix (one row per folder id, Go's own comment at `:100`), so this is a readable-projection fix: Go's `count`
+  scans the `count` ALIAS, which `SELECT count(*) FROM folder` does not emit. Pinned by
+  `count_all_rewrites_projection_and_counts_rows` (4 admin / 3 restricted / 2 filtered-with-page) and
+  `count_all_rewrites_to_count_distinct_id_and_resets_order`.
+- **`applyLibraryFilter` is executed, and its alias contract holds for every folder read.** Go calls it inside
+  `selectFolder` with NO table argument (`folder_repository.go:78`, `:101`), so it uses `r.tableName` = `folder` and
+  renders `folder.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?)` — executed, and it
+  parses because the folder table is never aliased and `selectFolder` joins `library` unaliased (`:76`). Executed row
+  sets: `Get`/`GetByPath` of a lib-2 folder → `NotFound` for `lim` but a hit unfiltered; `GetAll` 4 unfiltered vs 3
+  filtered; `CountAll` 4 vs 3; cursor drain 3 vs 2. `user_library` is a SUBQUERY here, not a join, so the
+  `genre_repo.rs:82` LEFT-vs-INNER residual cannot reach a folder read (folder SQL joins only `library`, INNER via
+  squirrel `.Join` → `select.go:297-299`; the port emits the same KIND and only the bare-`JOIN` text differs).
+  Bind order follows Go's `newSelect` (`:141-145`: LIMIT, OFFSET, sort leg) then `applyFilters` (`:247-252`) then
+  `applyLibraryFilter` LAST (`:78`) — executed args `[false, lim]`.
+- **Cursor methods are ported as a full drain, not a cursor.** `queryWithStableResults`/`wrapCursor` yield
+  `(Folder, error)` per row and stop at the first scan failure (`sql_base_repository.go:397-406`, `:427-437`); nd-db
+  has no streaming seam. `CursorDrain::{folders, error}` is the drained observable: executed
+  `drain_all_with_playlists` yielded `{lib2, stale, touched}` (sorted; Go adds no ORDER BY, so order is not
+  contractual) and `drain_touched_with_playlists` yielded `{lib2, touched}` — the last_scan_at arm drops `stale`.
+  A bad `image_files` cell ends the drain: the failing row is never yielded and `error` carries
+  `hydrate::FOLDER_IMAGE_FILES_PREFIX` (`parsing folder image files from db:`), matching `dbFolder.PostScan`. NOT
+  ported, explicitly: a caller that stops mid-cursor, and Go's zero-valued `Folder` yielded BESIDE the error.
+  `optimizePagination` (`:412-414`) is deliberately unported — both cursor callers pass no options
+  (`scanner/phase_4_playlists.go:70-74`), so its `Offset > 0` leg is unreachable.
+- **The two playlist-cursor WHEREs were text-wrong and are corrected.** squirrel renders both `Eq{"missing"` /
+  `Gt{"num_playlists"}` keys UNQUALIFIED and wraps the conjunction (`expr.go:200-203`, `:371-386`), and the touched
+  arm's `ConcatExpr` is a MEMBER of that same `And` (`folder_repository.go:278-281`) rather than a separate clause.
+  Executed: `WHERE (missing = ? AND num_playlists > ? AND folder.updated_at > library.last_scan_at)` and, for a
+  non-admin, `WHERE folder.library_id IN (…) AND (missing = ? AND num_playlists > ?)` — the library filter first,
+  because `selectFolder` applies it before the caller's `.Where`. The baseline qualified both columns and emitted no
+  group; row sets are identical (no other joined table has `missing`/`num_playlists`), so this is text-only, and the
+  stale lib pins were updated to Go's text.
+- **`HasAudioOutsideFolders` = `exists`'s `count(*) as exist` + `Exist > 0`** (`sql_base_repository.go:488-493`),
+  executed five ways against the Go oracle (`/tmp/sd3g2_oracle8/out.txt`: true / false / false / false / false) and
+  re-executed in the Rust test (`true` with a nil exclusion list — squirrel's empty-slice `NotEq` renders the
+  `sqlTrue` `(1=1)` arm, `expr.go:14`, whose extra `)` the parent had already removed — `false` when the only audio
+  row is excluded, `true` when only the parent is excluded, `false` for an empty library). The `(1=1)` arm was also
+  row-set-proven: `(1=1)` returns 2 rows vs the old `1=0` arm's 0.
+- **TEXT divergence recorded, not changed:** `artwork_queue_repo::get_sql` emits
+  `WHERE item_kind = ? AND item_id = ? AND image_type = ?` where Go's executed trace is
+  `WHERE image_type = ? AND item_id = ? AND item_kind = ?` (`/tmp/g2_folder_queue_trace.txt`) — squirrel sorts an
+  `Eq` map's keys, the port keeps declaration order. A WHERE conjunction is order-independent and the executed `Get`
+  returns Go's row either way; aligning it would reorder a pre-existing builder's args for no behavioral gain.
+  `artwork_queue_repo::get` also has no PostScan hook to run (`grep -n PostScan persistence/artwork_queue_repository.go`
+  is empty), and `retry_at`/`enqueued_at` are `NOT NULL` (`schema_ddl.rs:50`) read as Go's non-pointer `time.Time`,
+  so a NULL cell is a scan failure rather than an absent value.
+- **One write leg is included on purpose: `ArtworkQueueRepo::purge_queued`.** `CountQueued`'s whole contract is that
+  it shares `artworkQueueFilter` with `PurgeQueued` (Go's comment at `artwork_queue_repository.go:209` — "a preview
+  cannot count rows the delete misses"), and that claim is only checkable by executing the pair: the test asserts
+  the preview sum equals the DELETE's `RowsAffected` and that the re-count is empty. It is the only statement in
+  this slice's tests that mutates, and it runs against the same throwaway temp DB.
+- **`Get`/`GetByPath` report `FolderError::NotFound` (= Go's `data not found`) and nothing else does.** Executed Go:
+  `Get("nope")` and `GetByPath(lib1, "/music-A/rock")` both `err=data not found`
+  (`/tmp/g2_folder_queue_out.txt`), as are the two queue misses. Go returns that error beside a non-nil pointer to a
+  zero model (`dbx` allocates the embedded struct in `indirect`, `dbx@v1.12.0/struct.go:251-259`); the port's `Err`
+  carries the same information minus a pointer no caller may legitimately read. Multi-row reads never report it:
+  `dbx`'s `All` yields an empty non-nil slice (`dbx@v1.12.0/query.go:278-291`).
+- **Go's folder-id hash parity, executed** (`/tmp/g2_folderid_proof.txt`): `NewFolder(lib, "/music-A/rock")` and
+  `"/music-A/rock/"` both give `15ABnojgvDJ2bhfDjr0Ixl` (Clean drops the trailing slash), `"/"` and `""` both give
+  `73jnvCiQ3rmpLZirIsn9Zs`, and the UN-prefixed `"music-A/rock"` gives a DIFFERENT hash (`6OVmIcc60oxbHUjwZE3MVM`)
+  because `TrimPrefix` does not match — a test that assumed the un-prefixed form cleaned to the same id was wrong
+  and was corrected, not the port.
+- **Process note (same failure mode as S-D3g1):** this lane also stopped mid-task twice with the tree unbuildable
+  (a missing `let mut args = vec![` and one extra closing paren on the `ESCAPE '\'` group — squirrel's `sqlTrue` is
+  already `(1=1)`, so a third `)` makes SQLite reject the statement). The parent repaired both, re-ran the oracles
+  independently, and the remaining work then proceeded in chunks of 2-5 tests with a `cargo test --test <file>` run
+  between each, which is what finally completed the 10-test file. Two scratch artifacts (`oracle.bin` 57 MB,
+  `out.txt`, `trace.txt`) had been written INSIDE the checkout and were moved to `/tmp/sd3g2_stray/` by the parent;
+  scratch belongs in `/tmp`, and this lane wrote nothing inside the checkout.
+- Gate after this slice (measured from `rust/`): `cargo fmt --all -- --check` 0; `cargo clippy -p nd-db --all-targets`
+  `--all-features -- -D warnings` 0 and `cargo clippy --all-targets --all-features -- -D warnings` (workspace) 0;
+  `cargo test -p nd-db --all-targets --all-features --no-fail-fast` **733 passed / 0 failed / 0 ignored across 26
+  binaries** (baseline 721/25: +12 = 10 executed + 2 lib); `cargo test --workspace --all-targets --all-features
+  --no-fail-fast` **1812 / 0 / 1 across 69 binaries** (baseline 1800/68); `cargo doc -p nd-db --all-features --no-deps`
+  22 warnings, still 8 unresolved + 14 private — unchanged; `git diff --check` 0. A full run leaves no
+  `nd-db-folder-queue-*` temp files in `/tmp`.
