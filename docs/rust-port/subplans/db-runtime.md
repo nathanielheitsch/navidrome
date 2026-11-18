@@ -384,3 +384,39 @@ Recommended **serial** writer order: approve error/time/open decisions; DB-01 ->
 ## Planner validation/report
 
 Actually performed: full template read; current source/test-body inspection, pinned dependency inspection from prior audit, targeted git/source inventories and parent-log inspection already attributed above. No tests, SQL probes, code changes, formatting, delegation or commits. Newly found average-rating and orphan-NULL defects are V source facts with I runtime consequences, not E executed Rust tests. Parent's mark-missing decoy reproduction is E SQL-only, not E Rust function invocation. Parent documentation edits were observed and not touched. No assertion that checkout is currently clean because parent is integrating docs. This plan is ready for parent decision normalization and bounded assignments, not implementation execution.
+
+## Count-renderer ORDER BY parity (audit 2026-11-18)
+
+Go's `count` (`persistence/sql_base_repository.go:565-576`) always rewrites the
+projection to `count(distinct <table>.id) as count`, drops offset/limit, **appends**
+`ORDER BY <table>.id` ("to remove any ORDER BY clause that could slow down the query"),
+then applies filters. The shared port `sqlrepo::Repository::count`
+(`rust/crates/nd-db/src/sqlrepo.rs:294`) drops order/limit/offset but never reinstalls
+that reset leg, so every caller depending on it is a text-level gap. Value impact is
+nil (an ORDER BY cannot change a single aggregate row); treat it as wire-shape parity,
+not a correctness bug.
+
+Measured per renderer (`file:line` = renderer, `g` = committed golden):
+
+| repo | count renderer | reset `ORDER BY t.id`? | golden | verdict |
+|---|---|---|---|---|
+| transcoding | `transcoding_repo.rs:130` | **yes (fixed 2026-11-18)** | `:648` | MATCH after fix |
+| radio | `radio_repo.rs:238` | yes (`:248`) | `:741` | MATCH |
+| library | `library_repo.rs:240,:440,:699` | yes | `:1127+` | MATCH |
+| player | `player_repo.rs:817` | yes (`:825`) | `:1587+` | MATCH |
+| folder | `folder_repo.rs:353,:390` | yes | `:1475+` | MATCH |
+| playlist | `playlist_repo.rs:300` | yes | `:1390` | MATCH (filters/options gap tracked separately) |
+| artist | `artist_repo.rs:504` | no | `:1820` | GAP (renderer asserts the no-ORDER-BY shape) |
+| album | `album_repo.rs:338` | no | `:1658` | GAP |
+| mediafile | `mediafile_repo.rs:318` | no | `:1901` | GAP |
+| playlist_tracks | `playlist_track_repo.rs:234,:247` | no | `:801` | GAP |
+| plugin | `plugin_repo.rs:83` | no | none | GAP |
+| scrobble | `scrobble_repo.rs:109` | no | `:173` | GAP |
+
+Do **not** bulk-edit these renderers to green: each golden is a committed contract, so
+every change needs its own package with the expectation updated and the Go method cited
+(`persistence/<repo>_repository.go` -> `count`). The shared fix belongs in
+`Repository::count` (or a documented `count_reset_order` helper) plus all goldens in one
+reviewed package, not in twelve separate edits. `mediafile_repo.rs:344` (`CountBySuffix`)
+and `player_repo.rs:793` (`CountByClient`) are N-A — Go builds those with `newSelect`,
+not `count`.
