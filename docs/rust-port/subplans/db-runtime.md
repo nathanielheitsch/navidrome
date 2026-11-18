@@ -428,3 +428,59 @@ every change needs its own package with the expectation updated and the Go metho
 reviewed package, not in twelve separate edits. `mediafile_repo.rs:344` (`CountBySuffix`)
 and `player_repo.rs:793` (`CountByClient`) are N-A — Go builds those with `newSelect`,
 not `count`.
+
+## Executed-read sort gate audit (2026-11-18, at `f8ceeb8f`)
+
+Go parses rest options **inside** every REST read — `grep -l parseRestOptions
+persistence/*.go` hits album, artist, genre, library, mediafile, player, playlist,
+playlist_track, plugin, radio, scrobble, share, sql_restful, sql_tags, transcoding,
+user. So `sanitizeSort` (`sql_restful.go:69-86`) always runs before an ORDER BY is
+rendered. The Rust executed reads do not all mirror that:
+
+| repo | executed read | options type | gate |
+|---|---|---|---|
+| transcoding | `read_all` `transcoding_repo.rs:566` | `RestQueryOptions` | **gated inside (fixed this round)** |
+| player | `read_all` `player_repo.rs:1167` | `Options` (sanitized form) | `Options::from_rest` exists (`:166`) but is not called inside `read_all` — convention-only |
+| library | `get_all` `library_repo.rs:987` | `QueryOptions` | unsanitized; Go `library_repository.go` calls `parseRestOptions` |
+| tag | `get_all` `tag_repo.rs:620` | `QueryOptions` | unsanitized; Go's `sql_tags.go` parses |
+| radio | `get_all` `radio_repo.rs:606` | `QueryOptions` | unsanitized; Go `radio_repository.go` parses |
+
+Impact: an unsanitized `QueryOptions` handed to an executed read puts the caller's sort
+string straight into `ORDER BY`. On `transcoding` that was a measured information leak
+(masked `command` readable through row order); the other tables expose ORDER BY
+expressions over their own columns instead, so the severity is lower but the shape is
+the same. Fix per repo, one bounded package each, mirroring the transcoding change:
+take `RestQueryOptions` and parse internally, keep the raw renderer public with a
+warning that options must already come from the parser, and add a hostile-sort test
+that asserts no ORDER BY leg. Do not fix library/tag/radio/player by tightening the
+renderer — Go's renderer accepts whatever it is given.
+
+## Read-lane inventory and remaining gaps (2026-11-18)
+
+Executed-query count per repo (`grep -c execution::query`): library 7, folder 5,
+player 5, artwork_queue 5, tag 4, user 5, transcoding 3, mediafile 2, playlist_track 2,
+radio 2, scrobble_buffer 2, album 1, artist 1, property 1. **Zero executed reads:**
+artwork, genre, playqueue, plugin, scrobble, share, smart_playlist, user_props.
+Note `annotation_repo.rs` does not exist while `persistence/` has no annotation file
+either — annotations ride album/mediafile (`DB-15`), so no gap there.
+
+Near-term order after this commit, all DB-owned:
+1. **Sort-gate parity** for player, library, tag, radio (above). Cheap, security-shaped,
+   each independently verifiable. Launch serially (shared `sql_restful.rs` docs only).
+2. **DB-01** missing-state bind repair — already READY, no prerequisites, and G0 gates
+   DB-07/14. Unrelated to the gates, so it can run in a separate lane only if the
+   checkout is free; otherwise keep it serial after the gate work.
+3. **DB-03 / D-OPEN** — DECISION REQUIRED. This is where the reproduced
+   DB-path/pragma divergence (`docs/rust-port/subplans/db-runtime.md` above the DAG and
+   `current-status.md`) gets resolved: a `DbOpenOptions` typed open plus effective-state
+   read-back per handle. Needs the user's call on defaults (WAL for file DBs, FK on,
+   busy_timeout 15000) before launch, and it is a `nd-dbschema`+`nd-db` change.
+4. **Count-renderer ORDER BY parity** — renderer-only cleanup across
+   artist/album/mediafile/playlist_tracks/plugin/scrobble; one reviewed package with the
+   goldens, not twelve edits. Low priority: nil value impact.
+5. **Then mutations** (DB-04..DB-10), which is the real critical path into #17.
+6. **Cross-cutting follow-up (not DB-owned):** `nd-stream` lib test
+   `the_poller_exits_on_teardown_even_when_the_client_never_hangs_up` occasionally takes
+   ~30s against a 3s deadline under full-workspace load. Reproduced as a single failing
+   binary in one run, clean in the other three runs and isolated. Needs its own
+   investigation in `nd-stream`, not a DB change.
