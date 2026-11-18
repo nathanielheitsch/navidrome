@@ -20,8 +20,28 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
   not one writer per file. No new workspace/worktree or destructive cleanup without user approval. Fresh read-only
   review after writing stops, then selected fixes and parent CLI gates. Scratch only in `/tmp`; no automatic formatting.
 
-### Revised milestones and dependencies
+### Immediate next steps (2026-11-18, after `f8ceeb8f`)
 
+1. **W7 (running, `c5b51adf`): internal rest-option gates for the four remaining executed REST reads** —
+   `player_repo.rs:1167`, `library_repo.rs:987`, `tag_repo.rs:620`, `radio_repo.rs:606`. Go parses rest options inside
+   every REST read, so `sanitizeSort` always precedes `ORDER BY`; only transcoding mirrors that today. Parent
+   re-measures gates and reviews before commit. Audit: `subplans/db-runtime.md` “Executed-read sort gate audit”.
+2. **DB-01 (READY, no prerequisites): missing-state bind repair** — `mediafile_repo.rs` bind order plus an executed
+   real-schema regression. G0 gates DB-07/14, so it unblocks mutation work.
+3. **DB-03 / D-OPEN (DECISION REQUIRED)** — resolve the reproduced DB-path/pragma divergence: Go opens
+   `navidrome.db` with `SQLITE_OPEN_URI` so the config DSN's pragmas apply, while a non-`file:` Rust path creates a
+   file literally named `navidrome.db?cache=shared&…` and silently keeps rusqlite defaults (journal DELETE,
+   synchronous FULL, busy_timeout 5000). Needs the user's call on defaults before launch. Also fix the
+   `db.rs::NewSqliteDb` self-comparison before any DB-backed Go oracle fixture is trusted.
+4. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
+   goldens (artist/album/mediafile/playlist_tracks/plugin/scrobble). Lowest priority.
+5. **Then the mutation packages DB-04…DB-10** — the real critical path into the scanner slice.
+
+Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin`, `scrobble`, `share`, `smart_playlist`,
+`user_props`; `annotation_repo.rs` does not exist because annotations ride album/media-file (DB-15), so that is not a
+gap. Non-DB follow-up: the `nd-stream` teardown flake (see the gate table).
+
+### Revised milestones and dependencies
 1. **DB safety and configuration gates, before enabling writes:** repair media-file missing-update bind order; unify
    scanner TEXT timestamps/idle sentinels across writers, comparisons and hydration; measure intended path/PRAGMAs
    on every pooled connection; settle typed repository-error/transaction composition. Add executed regressions, not
@@ -53,9 +73,10 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    The player-session service is retained (API-01-placed register/touch over the landed `PlayerRepo`); the mpv/jukebox
    playback-device scope is dropped unported (`D-PLAYER26`). Per-device preference editing is retained (`D-PLAYER-EDIT`): owner-scoped
    `GET`/`PUT /api/player/{id}` (ownership-restricted `read`/`update_owned`, immutable `user_id`, whitelist enforced) plus
-   a **read-only** `GET /api/transcoding` profile list, which needs #05's executing `transcoding_repo` read and a BOOT-owned
-   seed from `nd-conf` `DEFAULT_TRANSCODINGS` (`consts.rs:242`, 4 entries) — a picker with no rows cannot set
-   `transcoding_id`, and no player route is mounted yet. Profile **editing** stays dropped; status parity is read 404 / write 403. Keep accepted differences, known bugs and unverified behavior
+   a **read-only** `GET /api/transcoding` profile list — #05's executing `transcoding_repo` read LANDED at `f8ceeb8f`
+   (`read_all`/`count_all` execute and mask `command` for a non-admin), so only the BOOT-owned seed from `nd-conf`
+   `DEFAULT_TRANSCODINGS` (`consts.rs:242`, 4 entries) and the route remain — a picker with no rows cannot set
+   `transcoding_id`, and no player route is mounted yet.
    separate. Complex service tails remain specification-blocked until their own contracts are ready; cancelled product
    surfaces stay cancelled.
 

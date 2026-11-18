@@ -1,6 +1,7 @@
 # Rust port — audited capability snapshot
 
-**Baseline:** `master` at `60cdd18402c0fd4b09b65e0b64ca494330501c02`, audited 2026-11-18.
+**Baseline for the superseding gate table:** `master` at `f8ceeb8f`, audited 2026-11-18. The previous audit was
+`60cdd18402c0fd4b09b65e0b64ca494330501c02`.
 This document records evidence, not implementation authorization. The current execution order lives in
 [`next-work.md`](next-work.md); technical assignments live in `subplans/`. Older dated status blocks are history,
 not current readiness. Resolve contradictions against the pinned source and current amendments, not a larger test total.
@@ -14,6 +15,28 @@ The next critical work is safe executed DB mutations and phase-specific queries,
 A scaffold test asserting an issue number is not runtime coverage.
 
 ## Fresh parent-measured gates
+
+**Superseding measurement: `master` at `f8ceeb8f` (2026-11-18, after S-D3f/S-D3g2/S-D-W4+W6).** Measured by the
+parent on a clean tree from `rust/` with `CARGO_TARGET_DIR=/tmp/ndtarget`; every command below exited **0** except
+none. W7 (`c5b51adf`) is editing player/library/tag/radio on top of this, so these numbers describe `f8ceeb8f`, not
+the working tree.
+
+| Command | Actual result |
+|---|---|
+| `cargo fmt --all -- --check` | Pass |
+| `cargo test --locked -p nd-db --all-targets --all-features --no-fail-fast` | **765 passed / 0 failed / 0 ignored**; `-- --list` lists exactly 765 |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Pass (exit 0) |
+| `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` | **1844 passed / 0 failed / 1 ignored**, 70 result groups |
+| `cargo doc --locked -p nd-db --all-features --no-deps` | Pass, **22 warnings** — set byte-identical to the earlier `/tmp/doc_baseline.txt` after sorting (the summary line is the 23rd line, which caused a transient 23-warning report) |
+| `git diff --check` | Pass |
+
+The ignored test remains `dump_divergences` (`nd-mapping/tests/go_oracle.rs`). Non-DB follow-up observed here:
+`nd-stream` lib test `the_poller_exits_on_teardown_even_when_the_client_never_hangs_up` took ~30s against its 3s
+deadline in one full-workspace run (1837 passed / 1 failed); three later runs and four isolated binary runs were
+clean, so it is flaky under load rather than a regression. Tracked as a non-DB follow-up in
+`subplans/db-runtime.md`.
+
+### Previous measurement (`60cdd184`, 2026-11-18T14:28:28Z)
 
 Measured starting **2026-11-18T14:28:28Z**, from `rust/`, at the baseline above. Every listed command exited **0**.
 The checkout was clean before and after; no formatter, auto-fix, oracle regeneration, commit, or push was run.
