@@ -23,6 +23,16 @@ retained edges are C02 (player repo) and C13 (transcode decision), and only its 
 retire — marked inline at the satellite graph and lane I below. Evidence in `subplans/README.md`
 "#26 scope analysis".
 
+**C15 editing scope (2026-11-18, `D-PLAYER-EDIT`, user-approved):** per-device preference editing is retained
+product scope. Owner-scoped `GET`/`PUT /api/player/{id}` is canonical, with immutable ownership
+(`nd-db` `PlayerRepo::read(id,user)` `player_repo.rs:1129` for reads, `update_owned` :1345/:961 for writes —
+`user_id`/`created_at` never in the SET, mirroring `persistence/sql_base_repository.go:506-514`) and the field
+whitelist at `:538-549`. That makes C15 depend on C02's **executing** transcoding read (`transcoding_repo.rs`
+renders SQL only) and on BOOT's default-profile seed (`nd-conf` `DEFAULT_TRANSCODINGS`, `consts.rs:241+`), because
+a device picker with no rows cannot set `transcoding_id`; the read-only `GET /api/transcoding` profile list is now
+required surface, while transcoding profile **editing** stays dropped. Evidence in
+`subplans/README.md` "Per-device editing".
+
 ---
 
 This fork (Go server, `go 1.27`, GPL-3.0) decomposes into **33 component rows — 27 live components, 4 CANCELLED (C20 the Subsonic wire layer, C23 the Jellyfin API, C28 the WASM plugin host, C29 sonic similarity) and C32 backgrounds DROPPED post-UI-drop**, each owning a disjoint set of Go paths. This file is the port's build map: what each component is, which Go files it owns, what it must expose to the rest of the system, what it depends on, and in what order lanes can run. (C33 is repo/CI tooling, marked do-not-port in the table below; the live crate count in `issues.md` #S1 is 26: 27 live components − the C12/C13 pair both living in `nd-stream` = 26.)

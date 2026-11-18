@@ -39,7 +39,10 @@ are in `current-status.md`; these are dated results, not proof for a later diff.
   `nd-db` `PlayerRepo`, canonical placement chosen by API-01 — the resolved player plus its transcoding row reach the
   request context and then the stream `MaxBitRate` cap and scrobbler gate); the mpv/jukebox playback-device scope is
   **DROPPED** unported. Do not add mpv/socket/process-reap work or revive `jukeboxControl`, and do not treat #26 as DONE —
-  its retained half is not yet implemented. Go registered/touched players only in the now-dropped Subsonic/Jellyfin
+  its retained half is not yet implemented. Per-device preference editing is **retained scope**
+  (`D-PLAYER-EDIT`, 2026-11-18): owner-scoped `GET`/`PUT /api/player/{id}` over maxBitRate/transcodingId/
+  scrobbleEnabled with immutable `user_id`, plus a **read-only** `GET /api/transcoding` profile list that needs
+  #05's executing transcoding read and BOOT's `DEFAULT_TRANSCODINGS` seed; profile editing stays dropped. Go registered/touched players only in the now-dropped Subsonic/Jellyfin
   middlewares and the native API never did, so placement on the canonical surface is a deliberate API-01 decision, not
   inherited behavior. Go has no player expiry — only `LastSeen` stamping and a 1-minute write limiter; key issuance needs
   `PlayerRepo::set_api_key`, not this service.

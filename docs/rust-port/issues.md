@@ -634,6 +634,17 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 ca
   (`playbackserver.go:54` "Should confirm all subprocess are terminated"). `Jukebox.Enabled`'s only other readers are
   non-surviving scopes: `server/subsonic/users.go:29-30` (`jukeboxRole`, cancelled) and `core/metrics/insights.go:218`
   (#32, deferred). Nothing else loses capability.
+- **Per-device editing (DECIDED 2026-11-18, user-approved `D-PLAYER-EDIT`)**: owner-scoped `GET`/`PUT /api/player/{id}` is
+  retained canonical scope, not an accident of Go rest-CRUD. The repository already enforces the safety shape:
+  `PlayerRepo::read(id,user)` (`player_repo.rs:1129`) is the ownership-restricted read (vs unrestricted `get` :1119), and
+  `update_owned` (:1345, `OwnerOrAdmin`) builds a SET that drops `user_id`/`created_at` (`:961`), mirroring Go
+  `updateOwned` (`persistence/sql_base_repository.go:506-514`, which deletes `user_id` because ownership is immutable on
+  update) with `ownedRow` (`:97-102`) restricting the write; the field whitelist is `:538-549`. `MaxBitRate` is already
+  consumed by the ported decision, so bitrate editing is functional once a row persists. What is **missing** is the picker:
+  a read-only `GET /api/transcoding` (masked `command`, `transcoding_repo.rs:60,69`), plus #05 executing the transcoding
+  read and a BOOT-owned default seed (`nd-conf` `DEFAULT_TRANSCODINGS`, `consts.rs:241+`; fresh DDL seeds nothing,
+  `schema_ddl.rs:56`). Profile **editing** stays dropped (Part C item 1), `EnableTranscodingConfig` stays absent from the
+  fresh TOML, `report_real_path` is not exposed as a knob until re-specified, and `apiKey`/hash is never serialized.
 - **Build**: player register/touch/get lifecycle + write-throttled persistence over the existing `PlayerRepo` — Go has no
   expiry mechanism, only `LastSeen = time.Now()` stamping (`core/players.go:78`) and a write limiter at
   `consts.UpdatePlayerFrequency` = 1 minute (`core/players.go:26`, `consts/consts.go:89`) — plus the `model/player.go`
@@ -646,7 +657,8 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 ca
 - **Risk**: LOW–MED (was MED with mpv). The retained half is small and mostly sits on already-landed player-repo work,
   but it inherits the pending transcoding-read/seed dependency above.
 - **dependsOn**: #05 (player repo — landed `c8c71f8d`, 2127 lines; **plus** the still-pending executed `transcoding_repo`
-  get and seeded default transcodings, since Go's `refresh` loads the transcoding row — `core/players.go:87-91`), #13 ·
+  get and seeded default transcodings, since Go's `refresh` loads the transcoding row — `core/players.go:87-91`, and now a
+  hard prerequisite of `D-PLAYER-EDIT`'s profile picker), #13 ·
   **Owns**: `nd-players/**` · **Replaces**: `core/players.go`, `model/player.go` (mpv/playback paths retire unported)
 
 ### #27 — Canonical API surface (`nd-api`) (TRUNK)
@@ -742,3 +754,6 @@ These are the open contract questions the revision did not settle. Each names th
 15. **Jellyfin drop — DECIDED: drop** (user decision). `server/jellyfin/**` is not ported (#30 CANCELLED); the `jellyfin` JWT audience is removed (mint/accept `native` only, item 10). Quick-Connect is NOT Jellyfin-specific: `core/quickconnect/**` is re-owned by #27 (`nd-api`) and kept, backing `/api/quickconnect` (`server/nativeapi/quickconnect.go:24-33`).
 16. **DB migration strategy — DECIDED: regenerate** (no-upgrade-path decision). One fresh Rust migration is the basis, edited in place as the schema evolves; the 138-file Go migration history is never replayed. Blocks nothing.
 17. **Zero-consumer crates — DECIDED**: `nd-backgrounds` (#34) and `nd-sonic` (#31) are out of the workspace; re-open individually if a Flutter need appears.
+18. **Player scope — DECIDED 2026-11-18 (`D-PLAYER26` + `D-PLAYER-EDIT`, user-approved in-session)**: two decisions, both recorded with evidence in `subplans/README.md`.
+    (a) **#26 splits.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `nd-db` `PlayerRepo`); **drop** the server-side mpv/jukebox playback device (`core/playback/**`, mpv IPC, `server/subsonic/jukebox.go`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) — Subsonic-only entry point, default-off, config keys already absent, JS UI dropped, unfinished subprocess reap upstream, no surviving non-test consumer.
+    (b) **Per-device preference editing is retained product scope.** `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`updateOwned` drops `user_id` — `persistence/sql_base_repository.go:506-514` — and `ownedRow` (`:97-102`) restricts the write; whitelist per `registerModelWhiteList`), and a **read-only** `GET /api/transcoding` profile list is required so a device can pick `transcoding_id`. Transcoding profile **editing** stays dropped (item 1), `EnableTranscodingConfig` stays absent from the fresh TOML, `report_real_path` must not be exposed as an editable knob until its canonical meaning is defined, and no key/hash is ever serialized. Requires #05's executing `transcoding_repo` read and a BOOT-owned default seed from `nd-conf` `DEFAULT_TRANSCODINGS`. Blocks #27, #26, #05.

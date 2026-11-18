@@ -51,7 +51,10 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    genre/options/participant/cursor/smart-playlist/track query issues; schema-golden verification; FTS repair and
    maintenance/logging; full artwork/share/scrobbler/external/lyrics/playlists/player-session/API/share-HTML expansion.
    The player-session service is retained (API-01-placed register/touch over the landed `PlayerRepo`); the mpv/jukebox
-   playback-device scope is dropped unported (`D-PLAYER26`). Keep accepted differences, known bugs and unverified behavior
+   playback-device scope is dropped unported (`D-PLAYER26`). Per-device preference editing is retained (`D-PLAYER-EDIT`): owner-scoped
+   `GET`/`PUT /api/player/{id}` (ownership-restricted `read`/`update_owned`, immutable `user_id`, whitelist enforced) plus
+   a **read-only** `GET /api/transcoding` profile list, which needs #05's executing `transcoding_repo` read and a BOOT-owned
+   seed from `nd-conf` `DEFAULT_TRANSCODINGS` — a picker with no rows cannot set `transcoding_id`. Profile **editing** stays dropped. Keep accepted differences, known bugs and unverified behavior
    separate. Complex service tails remain specification-blocked until their own contracts are ready; cancelled product
    surfaces stay cancelled.
 

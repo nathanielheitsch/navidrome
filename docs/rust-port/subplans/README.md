@@ -86,7 +86,8 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 | `SC-01` | Scanner manifest/dependency/cancellation/domain-equality placement | SC-02..14 | SC |
 | `SC-06/07` | Inaccessible-vs-deleted destructive-finalization policy; selective purge/GC scope; deterministic tie order | SC-06/SC-07 | SC + parent |
 | `SC-12/13` | Watcher backend + external progress-IPC mode (deferred, not first-slice gates) | SC-12/13/SC-14 mode ledger | SC + parent |
-| `D-PLAYER26` | **DECIDED 2026-11-18 (user-approved): split #26.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `PlayerRepo`); **drop** the mpv/jukebox device service. Canonical register/touch placement belongs to API-01. See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F1/F5, player wiring — resolved | parent/user |
+| `D-PLAYER26` | **DECIDED 2026-11-18 — user-approved in-session (explicit): split #26.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `PlayerRepo`); **drop** the mpv/jukebox device service. Canonical register/touch placement belongs to API-01. See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F1/F5, player wiring — resolved | parent/user |
+| `D-PLAYER-EDIT` | **DECIDED 2026-11-18 — user-approved in-session (explicit): per-device preference editing is retained product scope.** A device profile is editable by its owner: `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`user_id` immutable, field whitelist enforced), and the profile list a client picks `transcoding_id` from needs a **read-only** `GET /api/transcoding` (profile *creation/editing* stays dropped, Part C item 1). See "Per-device editing (D-PLAYER-EDIT)" below. | API-00 registry capture, API-01, API-03, API-F1/F5, `FRONT-26`, #05 transcoding read/seed | parent/user |
 | Oracle harness | Approve new tracked Go harness under `testdata` (no Go-source edits) or an approved alternative; toolchain availability | EVID-02/03, SC-00 durable captures | parent |
 | Fixture/toolchain | Durable fixture location/recipe, synthetic-only credentials, `ffmpeg`/`ffprobe` provenance, native path disclosure/redaction | EVID-03, SC-00, API-06 | parent |
 
@@ -185,12 +186,20 @@ behavior inherited from a live path. Its fields feed services that survive the p
 - `ScrobbleEnabled` → the scrobbler (#20) gates Now Playing and scrobbles on it
   (`core/scrobbler/play_tracker.go:366,436,473`).
 - `TranscodingId` → Go's `refresh` also loads the transcoding row alongside the player
-  (`core/players.go:87-91`). This is a real second dependency: `nd-db/src/transcoding_repo.rs`
-  currently **only renders SQL** (no executing `get`/`find_by_format`), and `nd-dbschema/src/schema_ddl.rs:56`
-  creates the `transcoding` table without seeding Go's default profiles (Go adds them in
-  `db/migrations/20200706231659_add_default_transcodings.go` and `20260309203355_ensure_default_transcodings.go`).
-  Both belong to #05 / BOOT-01 scope, not to this decision — but the retained player service cannot resolve a
-  transcoding profile until they land.
+  (`core/players.go:87-91`). This is a real second dependency, and with `D-PLAYER-EDIT` it is a
+  **first-class** one — a device cannot choose a profile it cannot list:
+  * `nd-db/src/transcoding_repo.rs` **only renders SQL** (`get_sql` :77, `find_by_format_sql` :87,
+    `read_all_sql` :114, `put_sql` :147, `delete_sql` :202) and never executes — #05 work.
+  * `nd-dbschema/src/schema_ddl.rs:56` creates the `transcoding` table but inserts nothing, so a fresh
+    Rust DB has **zero profiles**. Go seeds them (`db/migrations/20200706231659_add_default_transcodings.go`,
+    `20260309203355_ensure_default_transcodings.go`). The definitions are already carried in Rust as
+    `nd-conf` `DEFAULT_TRANSCODINGS` (`rust/crates/nd-conf/src/consts.rs:241+`, mp3/opus/aac/flac/…
+    matching `consts/consts.go:176+`), so the seeding gap is a wiring decision, not missing data —
+    but seeding belongs to BOOT/#05 policy, never to static DDL (`OPS-01` keeps DDL and data seeding
+    separate). `player.transcoding_id` has no foreign key (`schema_ddl.rs:65`), so an unknown id is a
+    silent no-profile rather than an error — worth an explicit validation choice at the API edge.
+  Neither the read nor the seed is provided by `D-PLAYER26`; the player service cannot resolve or offer
+  a profile until they land.
 - `ReportRealPath` is a retained DB/preferences **column**, not an inherited consumer: its only
   non-test reader is the cancelled Subsonic wire (`server/subsonic/helpers.go:227`, absolute path
   vs fake path) and its seeding key `Subsonic.DefaultReportRealPath` is itself dropped
@@ -253,10 +262,71 @@ later sweep does not read these as contradictions: the Subsonic entry point
 `server/subsonic/users.go:29-30` (`jukeboxRole`, cancelled #25) and `core/metrics/insights.go:218`
 (#32, deferred). So dropping it removes no capability any surviving service needs.
 
-**Decision (`D-PLAYER26`, user-approved 2026-11-18)**: split #26 — retain the player-session
+**Decision (`D-PLAYER26`, user-approved in-session 2026-11-18)**: split #26 — retain the player-session
 service as scoped work (register/touch/get + write-throttled persistence, whose resolved player and
 transcoding row feed the stream decision and the scrobbler gate), with its canonical placement chosen
 in API-01; mark the mpv/jukebox device service **DROPPED**, as justified above. Neither half gates
 #27A, and the retained half is API/BOOT-adjacent work rather than a monolithic `nd-players` crate.
 Reopening jukebox would require a dedicated platform/socket/process-reap contract and a canonical
 (non-Subsonic) route surface; it is not scheduled.
+
+---
+
+## Per-device editing (D-PLAYER-EDIT, user-approved in-session 2026-11-18)
+
+**The storage half already exists.** `GET`/`PUT`/`DELETE /api/player` are real native Go routes today
+(`server/nativeapi/native_api.go:75`, `rx(r, "/player", api.ds.Player(), true)` — the third argument is
+what enables POST/PUT/DELETE), and the Rust repository already executes the ownership-safe legs:
+
+- `update_owned_sql` (`player_repo.rs:961`) drops `user_id`/`created_at` from the SET, keeps `id`, and
+  restricts via `owned_row` — mirroring `updateOwned` (`persistence/sql_base_repository.go:506-514`,
+  which does `delete(updateValues, "user_id") // ownership is immutable on update`) and `ownedRow`
+  (`:97-102`): `ownerOnly` pins `user_id = loggedUser`, `ownerOrAdmin` falls back to `addRestriction`.
+- Both legs exist: `update_owned` uses `WriteAccess::OwnerOrAdmin` (:1345), while `set_api_key` keeps
+  the split — revoke is `ownerOrAdmin`, **mint is `ownerOnly`** (:1305), so an admin cannot hand someone
+  else a login. The field whitelist is enforced (`:538-549`: ID, Name, UserAgent, UserId, Client, IP,
+  LastSeen, TranscodingId, MaxBitRate, ReportRealPath, ScrobbleEnabled).
+- `PlayerRepo::read(id, user)` (:1129) is the ownership-**restricted** read and `get(id)` (:1119) is
+  unrestricted. Which one a route calls is the entire authorization decision for `GET`.
+
+**Editable by owner today, essentially for free.** `TranscodingId`, `MaxBitRate` and `ScrobbleEnabled`
+can be set through that ownership-restricted path. `MaxBitRate` is precisely the field the stream
+decision already honors (`core/stream/decider.go:159-161` → `nd-stream`
+`DecisionOptions::player_max_bit_rate`), so "lower the bitrate on my phone" works the moment a player
+row exists and is persisted.
+
+**Two gaps to close, plus one carve-out:**
+
+1. **No profile list to pick from.** `transcoding_id` is meaningless to a client without a read. Go's
+   `GET /api/transcoding` existed but its write access was gated on `EnableTranscodingConfig`
+   (default false, `native_api.go:76`), and Part C item 1 drops the **config editor**. With this
+   decision, a **read-only** `GET /api/transcoding` returning id/name/target_format/default_bit_rate
+   becomes required API scope — non-admin-safe, since `mask_command`/`mask_commands`
+   (`transcoding_repo.rs:60,69`) already hide the ffmpeg command from non-admins. Profile
+   creation/editing stays dropped, and `EnableTranscodingConfig` stays absent from the fresh TOML
+   (`config-contract.md:60` records the Go inventory, not a port decision).
+2. **No executing transcoding read, and no seeded profiles** — see the `TranscodingId` bullet above.
+   Without rows a picker renders empty. `DEFAULT_TRANSCODINGS` already exists in
+   `nd-conf/src/consts.rs:241+` (mp3/opus/aac/flac/…, matching `consts/consts.go:176+`), so this is
+   wiring, not missing data. Seeding belongs to BOOT/#05 policy; static DDL stays data-free (`OPS-01`).
+   `player.transcoding_id` carries no foreign key (`schema_ddl.rs:65`), so an unknown id is silently
+   "no profile" rather than an error — pick explicit validation at the API edge.
+3. **Carve-out:** `ReportRealPath` remains editable-but-meaningless until its canonical semantics are
+   re-specified (its only reader was the cancelled wire, `server/subsonic/helpers.go:227`). Do not put
+   it in a client-facing picker as though it does something: either define canonical path reporting in
+   FRONT-26 or hide it. Keep `user_id` immutable, never accept an owner/admin field from the request
+   body, and treat the route shape as a **new** contract captured in API-00 — Go's rest-CRUD shape is
+   reference data, not the frozen native contract.
+
+**Where it lands:** API-00 captures the player/transcoding wire contracts before any handler; API-01
+owns principal resolution and ownership enforcement; API-03 owns key issuance and the player PATCH
+surface; API-F1/F5 carry the read-only transcoding list and device-profile endpoints; FRONT-26 owns the
+service semantics and `player-service-contract.md` (to be authored). #05 owns the executing
+`transcoding_repo` read and #04/#05 the seed policy. None of this gates #27A, which needs only one
+persisted player to prove its stream cap end to end.
+
+**Decision (`D-PLAYER-EDIT`, user-approved in-session 2026-11-18):** retain per-device preference
+editing as canonical scope — owner-scoped player `GET`/`PUT` with immutable ownership and an enforced
+field whitelist, a read-only transcoding profile list, an executing `transcoding_repo` read, and a
+BOOT-owned default-profile seed. Transcoding profile **editing**, `ReportRealPath` semantics, and any
+jukebox surface stay out of scope.
