@@ -61,6 +61,27 @@ Flags are a proposed harness interface. Require exit0, expected case IDs/count, 
 
 ## DB-01 — Missing-state bind repair and executed regression gate (G0)
 
+**Parent reproduction (2026-11-18, /tmp/db01 probe, migrated schema, real call):**
+`mediafile_repo::mark_missing_sql` renders `UPDATE media_file SET missing = ?, updated_at = ?
+WHERE id IN (?)` but binds `[Text(id), Bool(missing), Integer(updated_at)]`, so the IDs
+occupy the SET placeholders:
+
+```
+args               : [Text("mf-target"), Bool(true), Integer(1234)]
+rows affected      : 0        -> the call is a silent no-op; nothing is marked
+same SQL, Go order : rows affected 1, that row becomes missing=1 updated_at=1234
+```
+
+`folder_repo::mark_missing_sql` (`folder_repo.rs:896`) and
+`mediafile_repo::mark_missing_by_folder_sql` (`:1613`) already bind in SQL order, which is
+why the sibling confidence check matters. The existing lib test passes on the wrong order
+because it only asserts SQL text and `args.last() == Integer(99)`; it must assert the whole
+positional vector. Correct Go citations: `mediafile_repository.go` MarkMissing **:455-469**,
+MarkMissingByFolder **:472-487** (the file's `:433-455`/`:457-483` are wrong); note Go's
+MarkMissing aborts on `err != nil || c == 0` (`:463-466`) while MarkMissingByFolder only
+checks `err` (`:482`) — a documented difference, not implemented here.
+
+
 1. **Status: READY.** No package prerequisites. Goal: repair `mark_missing_sql` and prove real Rust-generated statements target only intended rows. Non-goals: timestamps/signature conversion, scanner, production missing-file operations.
 2. **V:** `B/mediafile_repo.rs:1587-1605` renders SET/WHERE but binds IDs before SET values; sibling folder `B/folder_repo.rs:896-910` and media mark-by-folder `:1613-1642` differ. Existing lib test `mark_missing_chunks_at_200_and_binds_the_flip` (`mediafile_repo.rs:2377-2398`) explicitly pins timestamp LAST. Go `persistence/mediafile_repository.go:456-483` sets missing/time before Where. **E (parent, not this planner):** a SQL-only reproduction using source-derived SQL/args changed decoy `id=99` instead of `mf-1`; no Rust function execution yet. That is NOT an executed regression test of `mark_missing_sql`.
 3. **Ownership:** `src/mediafile_repo.rs` narrow renderer/lib test; NEW `tests/runtime_missing_state.rs`; oracle O directory. Read-only sibling renderers until a failing executed test justifies a concrete scoped correction; parent approval before unrelated fixes. Collisions: media file with DB-02/07/10/11/16; oracle shared.
