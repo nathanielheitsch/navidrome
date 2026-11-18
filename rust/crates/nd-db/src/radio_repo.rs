@@ -48,8 +48,8 @@ use crate::sqlrepo::Value;
 use crate::time;
 use nd_id::new_random;
 
-/// `r.tableName` (`radio_repository.go:16` via `registerModel(&model.Radio{})`,
-/// `sql_base_repository.go:104-110`).
+/// `r.tableName` (`radio_repository.go:22` via `registerModel(&model.Radio{})`,
+/// `sql_base_repository.go:104-111`).
 pub const TABLE: &str = "radio";
 
 /// The artwork queue `Put` enqueues into (`:107-113`,
@@ -171,13 +171,13 @@ pub fn put_cols(radio: &RadioRecord) -> Vec<Col> {
 }
 
 /// The columns `selectUpdateColumns` always drops on update
-/// (`sql_base_repository.go:601-604`); `birth_time` does not exist on radio.
+/// (`sql_base_repository.go:605-608`); `birth_time` does not exist on radio.
 pub const NEVER_UPDATE_COLS: [&str; 1] = ["created_at"];
 
 /// `registerModel`'s rest-facing half (`:16-22`): the `radio` table with its
 /// one filter mapping (`containsFilter("name")`) and the field whitelist
 /// (`registerModelWhiteList(&model.Radio{})` + annotation fields,
-/// `sql_restful.go:151-154`).
+/// `sql_restful.go:142-163`).
 #[must_use]
 pub fn rest_repo() -> RestRepository {
     RestRepository::new(TABLE)
@@ -193,7 +193,79 @@ pub fn rest_repo() -> RestRepository {
         ])
 }
 
-/// `Get`/`Read` (`:58-66,125-127`): `SELECT * … WHERE id = ?` — radios are
+/// `sanitizeSort` for this repository (`sql_restful.go:69-86` via
+/// [`RestRepository::sanitize_sort`] plus the per-repository `lookupSortMapping` arm
+/// Go validates against at `:74`). The mapping arm is vacuous here — `radioRepository`
+/// never calls `setSortMappings` (`grep -n setSortMappings
+/// persistence/radio_repository.go` is empty), so `sortMapping` falls through to its
+/// snake_case fallback (`sql_base_repository.go:194-196`) and a sort field survives only
+/// when it is a whitelisted field name of `model.Radio`.
+///
+/// Kept as an explicit function even though this repository's renderer has no ORDER BY
+/// leg (see [`get_all_sql`]'s note): it is the whitelist check Go runs in
+/// `sanitizeSort`, and it is what [`parse_rest_options`] hands to the count and read
+/// renderers, so a hostile sort is provably dropped rather than merely unrendered.
+#[must_use]
+pub fn sanitize_sort(sort: &str, order: &str) -> (String, String) {
+    let (whitelisted, order) = rest_repo().sanitize_sort(sort, order);
+    if sort.is_empty() {
+        return (String::new(), order);
+    }
+    let snake = crate::sql_restful::to_snake_case(sort);
+    let kept = if sort_mapping(&snake).is_some() || !whitelisted.is_empty() {
+        snake
+    } else {
+        String::new()
+    };
+    (kept, order)
+}
+
+/// `parseRestOptions` for this repository (`sql_restful.go:54-67`): the parsed
+/// [`crate::sql_restful::QueryOptions`] that [`get_all_sql`] and [`count_all_sql`]
+/// consume — Go's `ReadAll` (`radio_repository.go:121`) and `Count` (`:113`) option
+/// parsing in full, including `sanitizeSort` (`:57`) and the `"seed"` lift-out
+/// (`:60-63`).
+///
+/// This is the ONLY sanctioned way to build the options handed to [`get_all_sql`] and
+/// [`count_all_sql`]: it is what makes the sort whitelist-checked and every filter
+/// either mapped (`name` → `containsFilter("name")`, `:22-24`) or whitelist-enforced
+/// before it reaches the statement.
+#[must_use]
+pub fn parse_rest_options(
+    options: Option<&crate::sql_restful::RestQueryOptions>,
+) -> crate::sql_restful::QueryOptions {
+    let Some(options) = options else {
+        return crate::sql_restful::QueryOptions::default();
+    };
+    let (sort, order) = sanitize_sort(&options.sort, &options.order);
+    crate::sql_restful::QueryOptions {
+        sort,
+        order,
+        max: options.max,
+        offset: options.offset,
+        seed: options.filters.get("seed").cloned(),
+        filters: rest_repo().parse_rest_filters(options),
+    }
+}
+
+/// `sort_mapping` (`lookupSortMapping`, `sql_base_repository.go:187-197`) over this
+/// repository's map, which is EMPTY (`radioRepository` calls no `setSortMappings`,
+/// `radio_repository.go:19-26`), so every lookup misses and Go's `sortMapping`
+/// fallback (`:194-196`) snake-cases the field. Recorded as a constant so the empty map
+/// is a pinned fact rather than an accident, matching `library_repo::SORT_MAPPINGS`.
+pub const SORT_MAPPINGS: [(&str, &str); 0] = [];
+
+/// [`SORT_MAPPINGS`] lookup, mirroring `library_repo::sort_mapping` and
+/// `tag_repo::sort_mapping`.
+#[must_use]
+pub fn sort_mapping(sort: &str) -> Option<&'static str> {
+    SORT_MAPPINGS
+        .iter()
+        .find(|(key, _)| *key == sort)
+        .map(|(_, value)| *value)
+}
+
+/// `Get`/`Read` (`:56-66,116-118`): `SELECT * … WHERE id = ?` — radios are
 /// visible to every user: `radioRepository` defines no `userFilter` and `newSelect`
 /// adds no clause (`sql_base_repository.go:139-147`).
 #[must_use]
@@ -204,8 +276,31 @@ pub fn get_sql(id: &str) -> Sql {
     )
 }
 
-/// `GetAll`/`ReadAll` (`:68-71,129-133`): `newSelect(ctx, options...).Columns("*")`
-/// — the caller's filters (already parsed, `rest_repo`) and pagination applied.
+/// `GetAll`/`ReadAll` (`:68-71,120-122`): `newSelect(ctx, options...).Columns("*")`
+/// — the caller's filters and pagination applied.
+///
+/// WARNING: `options` here must ALREADY be the output of [`parse_rest_options`]
+/// (`sql_restful.go:54-67`) — this renderer is a pure statement builder and does NOT
+/// sanitize `options.sort` or its filter clauses itself, so a hand-built
+/// [`crate::sql_restful::QueryOptions`] reaches the statement verbatim (injection
+/// through the sort field or a `Filter::Raw` clause, exactly as in
+/// `transcoding_repo.rs:161-167`). Go has no such gap because `ReadAll` calls
+/// `parseRestOptions` itself (`radio_repository.go:121`) and `sanitizeSort`
+/// (`sql_restful.go:69-86`) plus the `parseRestFilters` whitelist arm (`:39-42`)
+/// therefore always run first; [`RadioRepo::get_all`] mirrors that by parsing its own
+/// rest options, which is why the executed path is safe. The residual risk is confined
+/// to callers of this public renderer: the checks live in [`sanitize_sort`] and
+/// [`rest_repo`], not here. Go's renderer likewise accepts whatever `applyOptions` and
+/// `applyFilters` are handed (`sql_base_repository.go:157-158`, `:247-252`), so this
+/// renderer is deliberately NOT tightened.
+///
+/// NOTE (unchanged residual): this renderer emits no ORDER BY leg at all —
+/// [`crate::sql_search::apply_pagination`] carries only LIMIT/OFFSET — so
+/// `options.sort`/`options.order` affect nothing here. That divergence from Go's
+/// `applyOptions` (`sql_base_repository.go:157-158`) is documented in
+/// `docs/rust-port/hydrate-contract.md` §S-D3f and stays out of this slice's scope;
+/// [`RadioRepo::get_all`] parses its options regardless, so the gate is in place for
+/// whichever lane eventually renders the leg.
 ///
 /// # Errors
 /// [`crate::sqlrepo::SqlError`] when the builder cannot materialize (it
@@ -221,7 +316,7 @@ pub fn get_all_sql(
     sq.to_sql()
 }
 
-/// `CountAll`/`Count` (`:43-45,118-120` via `count`,
+/// `CountAll`/`Count` (`:33-36,112-114` via `count`,
 /// `sql_base_repository.go:565-575`): `count(distinct radio.id) as count` with the
 /// caller's filters kept.
 ///
@@ -232,6 +327,16 @@ pub fn get_all_sql(
 /// oracle `sql_shapes.txt`). The leg contributes no argument and cannot change a
 /// count, but `playlist_repo::count_all_sql` emits its equivalent and the two files
 /// in this lane should not disagree, so it is rendered here too.
+///
+/// WARNING: `options` here must ALREADY be the output of [`parse_rest_options`]
+/// (`sql_restful.go:54-67`), for the same filter-channel reason as [`get_all_sql`]:
+/// [`crate::sql_search::apply_filters`] takes the parsed clauses, so a hand-built
+/// [`crate::sql_restful::QueryOptions`] with a raw clause reaches WHERE verbatim. A
+/// caller sort cannot reach this statement — `count` installs `radio.id`
+/// (`sql_base_repository.go:569`) — so the count is invariant under
+/// `options.sort`/`options.order` and there is no ordering channel here. Go's REST
+/// `Count` parses rest options itself (`radio_repository.go:113`), mirrored by
+/// [`RadioRepo::count`]. This renderer is deliberately NOT tightened.
 ///
 /// # Errors
 /// [`crate::sqlrepo::SqlError`] when the builder cannot materialize.
@@ -525,8 +630,8 @@ impl<'a> RadioRepo<'a> {
     /// missing id issues no `item_artwork` lookup at all. Executed: `Get` of an
     /// unknown id traced only `SELECT * FROM radio WHERE id = ?`.
     ///
-    /// An artwork-lookup failure is NOT an error here: Go's `hydrateItems` logs and
-    /// returns an EMPTY map (`artwork_hydration.go:58-68`), leaving the radio with a
+    /// An artwork-lookup failure is NOT an error here: Go's `hydrateItemImages` logs and
+    /// returns an EMPTY map (`artwork_hydration.go:56-68`), leaving the radio with a
     /// zero (unresolved) [`crate::artwork_hydration::ItemImage`]. Executed with
     /// `item_artwork` dropped: `Get` returned `err=""` with
     /// `ItemImage{Hash:"", Absent:false, …}`. That failure is deliberately dropped,
@@ -561,10 +666,18 @@ impl<'a> RadioRepo<'a> {
     }
 
     /// `GetAll`/`ReadAll` (`:68-77`, `:120-122`): [`get_all_sql`] under the caller's
-    /// parsed options, then artwork hydration.
+    /// REST options — which this method PARSES ITSELF, exactly as Go's `ReadAll` calls
+    /// `parseRestOptions` inside the method (`radio_repository.go:121`) so that
+    /// `sanitizeSort` (`sql_restful.go:69-86`) and the `parseRestFilters` whitelist arm
+    /// (`:38-42`) always run before the statement is built. Here that is
+    /// [`parse_rest_options`] feeding [`get_all_sql`]: a sort outside [`SORT_MAPPINGS`]
+    /// or [`rest_repo`]'s whitelist is dropped, and a filter that is neither a
+    /// registered mapping nor a whitelisted `model.Radio` field is dropped outright
+    /// rather than reaching WHERE — which also closes the `Filter::Raw` channel a
+    /// hand-built [`crate::sql_restful::QueryOptions`] used to reach this method
+    /// verbatim. Then artwork hydration.
     ///
-    /// `options` is the parsed rest shape (`rest_repo`'s `name` contains-filter plus
-    /// the pagination legs). Executed against the real repository,
+    /// Executed against the real repository,
     /// `Sort: "name", Order: "desc", Max: 2, Offset: 1` traces
     /// `SELECT * FROM radio ORDER BY name desc LIMIT 2 OFFSET 1`, and an
     /// `Offset`-only option (`Max == 0`) traces `SELECT * FROM radio OFFSET 1` —
@@ -589,7 +702,7 @@ impl<'a> RadioRepo<'a> {
     ///
     /// An empty table is an empty `Vec` with `artwork_error == None`, never
     /// [`RadioError::NotFound`] (see that variant's dbx proof). An empty slice also
-    /// issues no artwork query at all — `hydrate_item_images` returns early on no ids
+    /// issues no artwork query at all — `hydrateItemImages` returns early on no ids
     /// (`artwork_hydration.go:59-61`).
     ///
     /// `artwork_error` carries Go's swallowed `log.Error`
@@ -597,17 +710,21 @@ impl<'a> RadioRepo<'a> {
     /// zero (unresolved) image — executed with `item_artwork` dropped, where
     /// `GetAll` returned all 4 rows with zero images.
     ///
+    /// `options == None` is Go's empty variadic list: `parseRestOptions` returns the
+    /// zero `model.QueryOptions` (`sql_restful.go:55-56,66`), which is
+    /// [`crate::sql_restful::QueryOptions::default`] — no filter, no page, so the
+    /// statement is `SELECT * FROM radio` and row order is SQLite's.
+    ///
     /// # Errors
     /// [`RadioError::Sqlite`] when the statement fails or a row will not scan
     /// (including a NULL timestamp — NOT an OFFSET-without-LIMIT failure, which the
-    /// builder's `LIMIT -1` deviation makes executable here; see [`RadioRepo::get_all`]);
-    /// [`RadioError::Builder`] if the builder fails to materialize. Never
-    /// [`RadioError::NotFound`].
+    /// builder's `LIMIT -1` deviation makes executable here); [`RadioError::Builder`]
+    /// if the builder fails to materialize. Never [`RadioError::NotFound`].
     pub fn get_all(
         &self,
-        options: Option<&crate::sql_restful::QueryOptions>,
+        options: Option<&crate::sql_restful::RestQueryOptions>,
     ) -> Result<crate::artwork_hydration::ReadOutcome<RadioRecord>, RadioError> {
-        let statement = get_all_sql(options)?;
+        let statement = get_all_sql(Some(&parse_rest_options(options)))?;
         let mut items =
             crate::execution::query_all(self.conn, &statement, crate::hydrate::row_to_radio)?;
         let mut artwork_error = None;
@@ -616,6 +733,49 @@ impl<'a> RadioRepo<'a> {
             items,
             artwork_error,
         })
+    }
+
+    /// `CountAll` (`:33-36`) under the caller's already-built
+    /// [`crate::sql_restful::QueryOptions`]: the DISTINCT aggregate.
+    ///
+    /// It deliberately KEEPS the raw option type that [`Self::get_all`] abandoned. Go's
+    /// `CountAll` builds its select with `newSelect(ctx)` and NO options
+    /// (`radio_repository.go:34`), so a caller sort never even reaches the builder, and
+    /// `count` additionally drops the page (`sql_base_repository.go:568`) and installs
+    /// `ORDER BY radio.id` (`:569`). It is not an ordering channel and carries no
+    /// [`sanitize_sort`]-style leak — the same justification as
+    /// [`crate::transcoding_repo::TranscodingRepo::count_all`]. Filters DO apply
+    /// (`:571`), which is why they stay in the signature.
+    ///
+    /// # Errors
+    /// [`RadioError::Sqlite`] when the statement fails; [`RadioError::Builder`] if the
+    /// builder fails to materialize. Go's `count` returns `res.Count` BESIDE a
+    /// `queryOne` error (`sql_base_repository.go:572-574`); the port reports the error
+    /// alone and the count then defaults to 0.
+    pub fn count_all(
+        &self,
+        options: Option<&crate::sql_restful::QueryOptions>,
+    ) -> Result<i64, RadioError> {
+        let statement = count_all_sql(options)?;
+        Ok(
+            crate::execution::query_optional(self.conn, &statement, |row| row.get::<_, i64>(0))?
+                .unwrap_or_default(),
+        )
+    }
+
+    /// `Count` (`:112-114`): [`Self::count_all`] driven by rest options through
+    /// [`parse_rest_options`] — Go's `CountAll(ctx, parseRestOptions(…))` (`:113`) in
+    /// full. The whitelist check happens here even though the aggregate cannot be
+    /// reordered by a caller sort; what this entry point really transports is the
+    /// `name` contains-filter (`:22-24`).
+    ///
+    /// # Errors
+    /// Same as [`Self::count_all`].
+    pub fn count(
+        &self,
+        options: Option<&crate::sql_restful::RestQueryOptions>,
+    ) -> Result<i64, RadioError> {
+        self.count_all(Some(&parse_rest_options(options)))
     }
 }
 
@@ -627,7 +787,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// Deterministic clock: the caller-owned `time.Now()` of
-    /// `radio_repository.go:97`, and an earlier stamp for `created_at`.
+    /// `radio_repository.go:90`, and an earlier stamp for `created_at` (`:92`).
     fn at(year: u32, month: u32, day: u32, h: u32, mi: u32, s: u32) -> DateTime<Utc> {
         Utc.from_utc_datetime(
             &NaiveDate::from_ymd_opt(i32::try_from(year).unwrap(), month, day)
@@ -880,7 +1040,7 @@ mod tests {
 
     #[test]
     fn rest_repo_whitelists_radio_fields_plus_annotations() {
-        // Arrange: registerModel's whitelist (:16-22, sql_restful.go:151-154).
+        // Arrange: registerModel's whitelist (:22, sql_restful.go:142-163).
         let repo = rest_repo();
         // Act:
         let (kept, _) = repo.sanitize_sort("Name", "asc");

@@ -130,7 +130,7 @@ impl LoggedUser {
 }
 
 /// `model.QueryOptions` for this repository, i.e. the output of
-/// `parseRestOptions` (`sql_restful.go:55-67`) narrowed to what the player
+/// `parseRestOptions` (`sql_restful.go:54-67`) narrowed to what the player
 /// queries consume.
 ///
 /// Go's `QueryOptions.Filters` is a `squirrel.Gt`/`Eq`/`And` Sqlizer built by
@@ -158,7 +158,7 @@ pub struct Options {
 }
 
 impl Options {
-    /// `parseRestOptions` (`sql_restful.go:55-67`) for this repository: sanitize
+    /// `parseRestOptions` (`sql_restful.go:54-67`) for this repository: sanitize
     /// sort/order through [`sanitize_sort`], copy `Max`/`Offset`, drop `"seed"`
     /// (`:38-40`, nothing here uses it), and parse the remaining filters through
     /// [`rest_repo`], keeping their bound values.
@@ -168,9 +168,10 @@ impl Options {
             return Self::default();
         };
         let (sort, order) = sanitize_sort(&options.sort, &options.order);
-        // `QueryOptions::where_clause` renders the parsed filters and their
-        // bound values together (sql_restful.go:133-145), so the values survive
-        // the trip into this repository's Options.
+        // `QueryOptions::where_clause` renders the parsed filters and their bound
+        // values together, which is what Go's `applyFilters` hands to
+        // `sq.Where` (`sql_base_repository.go:247-252`), so the values survive the
+        // trip into this repository's Options.
         let parsed = rest_repo().parse_rest_options(Some(options));
         let (filters, filter_args) = match parsed.where_clause() {
             Some((sql, args)) => (Some(sql), args),
@@ -813,6 +814,15 @@ pub fn count_by_client_sql(options: Option<&Options>) -> Sql {
 /// appended AFTER the restriction — `count` applies them through `applyFilters`
 /// (`:572`) after the builder was handed over, unlike `ReadAll` (`:114`) where
 /// they arrive before `newRestSelect` adds the restriction.
+///
+/// WARNING: `options` here must ALREADY be the output of [`Options::from_rest`]
+/// (`sql_restful.go:54-67`) — the only values this renderer accepts are the parsed
+/// filter clauses and their bound args, so a hand-built [`Options`] carrying a raw
+/// filter clause reaches WHERE verbatim. `options.sort` cannot reach this statement:
+/// `count` installs `player.id` (`sql_base_repository.go:569`) and `newRestSelect`
+/// carries no order leg, so the count is invariant under a caller sort. Go's REST
+/// `Count` parses rest options itself (`player_repository.go:102-103`), mirrored by
+/// [`PlayerRepo::count`]. This renderer is deliberately NOT tightened.
 #[must_use]
 pub fn count_all_sql(options: Option<&Options>, user: &LoggedUser) -> Sql {
     // count() (`sql_base_repository.go:565-576`): RemoveColumns + the count
@@ -834,6 +844,19 @@ pub fn count_all_sql(options: Option<&Options>, user: &LoggedUser) -> Sql {
 /// `ReadAll` (`player_repository.go:113-118`): the restricted select under the
 /// caller's options — pagination and filters from `newSelect`, the restriction
 /// from `newRestSelect`, then the resolved sort from `applyOptions`.
+///
+/// WARNING: `options` here must ALREADY be the output of [`Options::from_rest`]
+/// (`sql_restful.go:54-67`) — this renderer is a pure statement builder and does NOT
+/// sanitize `options.sort` itself, so a hand-built [`Options`] carrying an arbitrary
+/// sort string reaches `ORDER BY` verbatim through [`build_sort_order`] (injection
+/// through the sort field, exactly as in `transcoding_repo.rs:161-167`). Go has no
+/// such gap because `ReadAll` calls `parseRestOptions` itself
+/// (`player_repository.go:114`) and `sanitizeSort` (`sql_restful.go:69-86`) therefore
+/// always runs first; [`PlayerRepo::read_all`] mirrors that by parsing its own rest
+/// options, which is why the executed path is safe. The residual risk is confined to
+/// callers of this public renderer: the whitelist check lives in [`sanitize_sort`],
+/// not here. Go's own renderer accepts whatever `applyOptions` is handed
+/// (`sql_base_repository.go:157-158`), so this renderer is deliberately NOT tightened.
 #[must_use]
 pub fn read_all_sql(options: Option<&Options>, user: &LoggedUser) -> Sql {
     let mut sq = player_select_builder(options, Some(user));
@@ -912,7 +935,7 @@ pub struct PutSql {
 
 /// `Put` (`player_repository.go:42-45`) through `put`: UPDATE against the row id
 /// with the full column set (`filterUpdateValues` forces `id` into the SET list,
-/// `:611-614`), then the INSERT when the UPDATE matched no row or the id came in
+/// `:612-616`), then the INSERT when the UPDATE matched no row or the id came in
 /// empty.
 ///
 /// Unlike [`update_owned_sql`], `put` neither drops `user_id` nor applies an
@@ -947,8 +970,8 @@ pub fn put_sql(record: &PlayerRecord) -> PutSql {
 }
 
 /// `Update`'s column leg (`player_repository.go:169,176`) through `updateOwned`
-/// (`sql_base_repository.go:506-515`): `selectUpdateColumns` keeps the requested
-/// columns (all of them when none were requested, `:596-604`),
+/// (`sql_base_repository.go:506-514`): `selectUpdateColumns` keeps the requested
+/// columns (all of them when none were requested, `:599-603`),
 /// `filterUpdateValues` forces `id` afterwards (`:612-616`, so `id` is written
 /// even when the client did not ask for it), and `user_id` is deleted (`:512`) —
 /// ownership is immutable on update, so no caller (admin included) can reassign
@@ -1158,26 +1181,64 @@ impl<'a> PlayerRepo<'a> {
     }
 
     /// `ReadAll` (`player_repository.go:113-118`): the restricted page under the
-    /// caller's options. Go's `queryAll` yields an empty slice for no rows, not
-    /// `ErrNotFound` (`sql_base_repository.go:441-459`), so the empty `Vec` is
-    /// the faithful port.
+    /// caller's REST options, which this method PARSES ITSELF. Go's `ReadAll` calls
+    /// `parseRestOptions` inside the method (`player_repository.go:114`), so
+    /// `sanitizeSort` (`sql_restful.go:69-86`) always runs before `applyOptions`
+    /// renders an ORDER BY leg (`sql_base_repository.go:157-158`); here that is
+    /// [`Options::from_rest`] feeding [`read_all_sql`]. A caller-supplied sort that is
+    /// neither in [`SORT_MAPPINGS`] nor in [`rest_repo`]'s whitelist is therefore
+    /// dropped and contributes NO ORDER BY leg, `Max`/`Offset` ride unchanged, and the
+    /// `name`/`hasapikey` filter mappings resolve exactly as in Go
+    /// (`player_repository.go:26-28`).
+    ///
+    /// The drop is a whitelist property, not an ownership property: it happens for an
+    /// admin and for a non-admin alike, so row order cannot act as an oracle on a
+    /// column outside the whitelist. `api_key_hash` is not whitelisted, and neither is
+    /// `username` — the three `structs:"-"` fields (`model/player.go:11,24-25`) are
+    /// absent from `structs.Map`, so `username` reaches ORDER BY only through the
+    /// `user_name` mapping (`player_repository.go:29-31`).
+    ///
+    /// `options == None` is Go's empty variadic list: `parseRestOptions` returns the
+    /// zero `model.QueryOptions` (`sql_restful.go:55-56,66`), which is
+    /// [`Options::default`] — no filter, no page and no ORDER BY, so row order is
+    /// SQLite's (`applyOptions`/`applyFilters` only run for a non-empty option list,
+    /// `sql_base_repository.go:141-145`).
+    ///
+    /// Go's `queryAll` yields an empty slice for no rows, not `ErrNotFound`
+    /// (`sql_base_repository.go:441-457`), so the empty `Vec` is the faithful port.
+    ///
+    /// The offset-without-limit page EXECUTES (`LIMIT -1 OFFSET n`,
+    /// `sqlrepo.rs:313-319`) where Go's bare `OFFSET n` is a SQLite parse error — the
+    /// builder's own cited deviation, pinned rather than "fixed".
     ///
     /// # Errors
     /// [`PlayerError::Sqlite`] when the statement or a row mapping fails.
     pub fn read_all(
         &self,
-        options: Option<&Options>,
+        options: Option<&RestQueryOptions>,
         user: &LoggedUser,
     ) -> Result<Vec<PlayerRecord>, PlayerError> {
-        let statement = read_all_sql(options, user);
+        let statement = read_all_sql(Some(&Options::from_rest(options)), user);
         Ok(execution::query_all(self.conn, &statement, row_to_player)?)
     }
 
-    /// `CountAll` (`player_repository.go:98-100`) / `Count` (`:102-104`): the
-    /// restricted row count under the caller's options.
+    /// `CountAll` (`player_repository.go:98-100`) under the caller's already-built
+    /// [`Options`]: the restricted row count.
+    ///
+    /// It deliberately KEEPS the [`Options`] signature that [`Self::read_all`]
+    /// abandoned. Go's `CountAll` hands `count` a `newRestSelect(ctx)` built with NO
+    /// options (`player_repository.go:99`), so a caller sort never even reaches the
+    /// builder, and `count` in any case drops the page (`sql_base_repository.go:568`)
+    /// and installs `ORDER BY player.id` (`:569`) — this is not an ordering channel and
+    /// carries no [`sanitize_sort`]-style leak. Filters DO still apply (`:571` via
+    /// `applyFilters`), which is why they stay in the signature; see
+    /// [`crate::transcoding_repo::TranscodingRepo::count_all`] for the same
+    /// justification.
     ///
     /// # Errors
-    /// [`PlayerError::Sqlite`] when the statement fails.
+    /// [`PlayerError::Sqlite`] when the statement fails. Go's `count` returns
+    /// `res.Count` BESIDE a `queryOne` error (`sql_base_repository.go:572-574`); the
+    /// port reports the error alone and the count then defaults to 0.
     pub fn count_all(
         &self,
         options: Option<&Options>,
@@ -1188,6 +1249,25 @@ impl<'a> PlayerRepo<'a> {
             execution::query_optional(self.conn, &statement, |row| row.get::<_, i64>(0))?
                 .unwrap_or_default(),
         )
+    }
+
+    /// `Count` (`player_repository.go:102-104`): [`Self::count_all`] driven by rest
+    /// options through [`Options::from_rest`] — Go's `CountAll(ctx,
+    /// parseRestOptions(…))` (`:103`) in full. The whitelist check happens here even
+    /// though the count cannot be reordered by a caller sort; what this entry point
+    /// actually transports are the filters. Go's only non-test caller of the census
+    /// path passes hand-built `squirrel.Gt` filters (`core/metrics/insights.go:305-307`),
+    /// which no rest shape can express, so [`Self::count_all`] stays the reachable one
+    /// for that call.
+    ///
+    /// # Errors
+    /// Same as [`Self::count_all`].
+    pub fn count(
+        &self,
+        options: Option<&RestQueryOptions>,
+        user: &LoggedUser,
+    ) -> Result<i64, PlayerError> {
+        self.count_all(Some(&Options::from_rest(options)), user)
     }
 
     /// `CountByClient` (`player_repository.go:77-96`): the client census, keyed
@@ -1447,7 +1527,7 @@ pub fn update(
     })?
 }
 
-/// `parseRestOptions` for this repository (`sql_restful.go:55-67`), spelled out
+/// `parseRestOptions` for this repository (`sql_restful.go:54-67`), spelled out
 /// for callers that build [`Options`] directly from a client request.
 #[must_use]
 pub fn parse_player_rest_options(options: Option<&RestQueryOptions>) -> Options {

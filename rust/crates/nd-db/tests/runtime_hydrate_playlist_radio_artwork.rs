@@ -59,7 +59,7 @@ use nd_db::artwork_hydration::ItemImage;
 use nd_db::playlist_repo::{self, PlaylistError, PlaylistRecord, PlaylistRepo};
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::radio_repo::{self, RadioError, RadioRecord, RadioRepo};
-use nd_db::sql_restful::{Filter, QueryOptions};
+use nd_db::sql_restful::{Filter, RestQueryOptions};
 use nd_db::sqlrepo::Value;
 use nd_db::store::SQLStore;
 use nd_dbschema::schema::apply_fresh_schema;
@@ -561,23 +561,31 @@ fn radio_get_all_hydrates_every_row_and_applies_the_name_filter() {
         dangling_image("GHOST")
     );
 
-    // `Eq{"radio.name": "ra-1"}` → 1 row, hydrated (oracle-executed).
-    let filtered = QueryOptions {
-        sort: String::new(),
-        order: String::new(),
-        max: 0,
-        offset: 0,
-        seed: None,
-        filters: Some(vec![Filter::Eq {
-            column: "name".to_string(),
-            value: Value::Text("ra-1".to_string()),
-        }]),
+    // `Filters:{"name":"ra-1"}` → 1 row, hydrated (oracle-executed). `get_all` parses
+    // the REST shape itself (`radio_repository.go:121`), and the registered `name`
+    // mapping is `containsFilter("name")` (`radio_repository.go:22-24`), so this is a
+    // LIKE `%ra-1%` rather than the hand-built `Eq` the renderer used to be handed.
+    let filtered = RestQueryOptions {
+        filters: [("name".to_string(), "ra-1".to_string())]
+            .into_iter()
+            .collect(),
+        ..RestQueryOptions::default()
     };
     let one =
         lease(&store, |conn| RadioRepo::new(conn).get_all(Some(&filtered))).expect("filtered");
     assert_eq!(one.items.len(), 1);
     assert_eq!(one.items[0].id, "ra-1");
     assert_eq!(one.items[0].image, resolved_radio_image());
+    // The parsed clause shape, asserted separately.
+    let parsed = radio_repo::parse_rest_options(Some(&filtered));
+    assert_eq!(
+        parsed.filters,
+        Some(vec![Filter::Like {
+            column: "name".to_string(),
+            pattern: "%ra-1%".to_string(),
+        }]),
+        "the name mapping is a contains-match, not an Eq"
+    );
     std::fs::remove_file(path).ok();
 }
 
@@ -1270,15 +1278,14 @@ fn offset_without_limit_diverges_the_way_the_builder_documents() {
     for id in ["ra-1", "ra-2"] {
         seed_radio(&store, id);
     }
-    let offset_only = QueryOptions {
-        sort: String::new(),
-        order: String::new(),
+    let offset_only = RestQueryOptions {
         max: 0,
         offset: 1,
-        seed: None,
-        filters: None,
+        ..RestQueryOptions::default()
     };
-    let (sql, _) = radio_repo::get_all_sql(Some(&offset_only)).expect("materializes");
+    // The renderer takes the parser's output (see `get_all_sql`'s WARNING).
+    let parsed = radio_repo::parse_rest_options(Some(&offset_only));
+    let (sql, _) = radio_repo::get_all_sql(Some(&parsed)).expect("materializes");
     assert!(
         sql.contains("LIMIT -1 OFFSET 1"),
         "the builder's cited deviation: {sql}"

@@ -106,7 +106,8 @@ use crate::sqlrepo::{Repository, Value};
 use crate::user_repo::UserRecord;
 use chrono::{DateTime, Utc};
 
-/// The `library` table (`NewLibraryRepository`, `library_repository.go:26`).
+/// The `library` table (`NewLibraryRepository`'s `registerModel(&model.Library{},
+/// nil)`, `library_repository.go:31`, which derives the table name from the model type).
 pub const TABLE: &str = "library";
 
 /// The `user_library` join table (`Put`'s admin assignment, `:94-103`).
@@ -249,7 +250,7 @@ pub fn count_all_sql() -> Sql {
 }
 
 /// `registerModel(&model.Library{}, nil)`'s rest-facing half
-/// (`library_repository.go:30` → `sql_base_repository.go:101-106` plus
+/// (`library_repository.go:31` → `sql_base_repository.go:104-111` plus
 /// `registerModelWhiteList`/`registerFieldWhiteList` at `sql_restful.go:142-163`):
 /// the `library` table with NO filter mappings — Go's second `registerModel`
 /// argument is `nil`, so there is no `name`/`library_id` custom filter here and every
@@ -356,9 +357,9 @@ pub fn build_sort_order(sort: &str, order: &str) -> String {
         .join(", ")
 }
 
-/// `sanitizeSort` for the library REST path (`sql_restful.go:47-60` via
+/// `sanitizeSort` for the library REST path (`sql_restful.go:69-86` via
 /// `RestRepository::sanitize_sort`, plus the per-repository `lookupSortMapping` arm
-/// Go validates against at `:52-54`). The mapping arm is vacuous here because
+/// Go validates against at `:74`). The mapping arm is vacuous here because
 /// [`SORT_MAPPINGS`] is empty, so a sort field survives only when it is a whitelisted
 /// field name. Executed (oracle `/tmp/sd3g1_opt`): `Sort:"totalSongs"` survives and
 /// traces `ORDER BY total_songs desc`; `Sort:"bogus"` is dropped and traces no ORDER
@@ -378,7 +379,7 @@ pub fn sanitize_sort(sort: &str, order: &str) -> (String, String) {
     (kept, order)
 }
 
-/// `parseRestOptions` for this repository (`sql_restful.go:31-45`): the parsed
+/// `parseRestOptions` for this repository (`sql_restful.go:20-52`): the parsed
 /// `QueryOptions` that [`get_all_query_sql`] and [`count_all_query_sql`] consume — the
 /// port of `ReadAll`/`Count` (`:311-326`) minus `Read`'s `strconv.Atoi`.
 #[must_use]
@@ -403,6 +404,20 @@ pub fn parse_rest_options(
 /// builder path, so all three legs Go's `newSelect` applies are expressible —
 /// `applyOptions`' Max/Offset, the `buildSortOrder` leg, and `applyFilters`
 /// (`sql_base_repository.go:141-145`, `:149-162`, `:247-252`).
+///
+/// WARNING: `options` here must ALREADY be the output of [`parse_rest_options`]
+/// (`sql_restful.go:54-67`) — this renderer is a pure statement builder and does NOT
+/// sanitize `options.sort` itself, so a hand-built [`crate::sql_restful::QueryOptions`]
+/// carrying an arbitrary sort string reaches `ORDER BY` verbatim through
+/// [`build_sort_order`] (injection through the sort field, exactly as in
+/// `transcoding_repo.rs:161-167`). Go has no such gap because `ReadAll` calls
+/// `parseRestOptions` itself (`library_repository.go:325`) and `sanitizeSort`
+/// (`sql_restful.go:69-86`) therefore always runs first; [`LibraryRepo::get_all`]
+/// mirrors that by parsing its own rest options, which is why the executed path is
+/// safe. The residual risk is confined to callers of this public renderer: the
+/// whitelist check lives in [`sanitize_sort`], not here. Go's own renderer accepts
+/// whatever `applyOptions` is handed (`sql_base_repository.go:157-158`), so this
+/// renderer is deliberately NOT tightened.
 ///
 /// Clause order is squirrel's by-kind order, which is Go's executed order: filters
 /// render in WHERE ahead of the ORDER BY leg even though Go called `applyOptions`
@@ -443,6 +458,21 @@ pub fn get_all_query_sql(
 /// Sort:"name desc")` traces `… WHERE library.name = ? ORDER BY name desc, library.id`,
 /// and `CountAll(Sort:"totalSongs", Order:"desc")` traces `… ORDER BY total_songs desc,
 /// library.id`.
+///
+/// WARNING: `options` here must ALREADY be the output of [`parse_rest_options`]
+/// (`sql_restful.go:54-67`). Unlike radio, player and transcoding — whose `CountAll`
+/// hand `count` a select with no caller sort leg — Go's `libraryRepository.CountAll`
+/// forwards `newSelect`'s already-parsed output (`library_repository.go:291-292`), so a
+/// caller sort really renders here BEFORE the reset `library.id` leg
+/// (`ORDER BY <sort> asc|desc, library.id`). It cannot change the aggregate — `count`
+/// drops the page (`sql_base_repository.go:568`) and an order leg contributes no
+/// argument — but the renderer still receives the parser's output, so an unsanitized
+/// sort string would appear in the statement text. [`LibraryRepo::count_all_query`]
+/// keeps that contract, and Go's REST `Count` parses rest options itself
+/// (`library_repository.go:312`), mirrored by [`LibraryRepo::count`]. Go's renderer
+/// likewise accepts whatever `applyOptions`/`applyFilters` are handed
+/// (`sql_base_repository.go:157-158`, `:247-252`), so this renderer is deliberately NOT
+/// tightened.
 pub fn count_all_query_sql(
     options: Option<&crate::sql_restful::QueryOptions>,
 ) -> Result<Sql, crate::sqlrepo::SqlError> {
@@ -464,9 +494,9 @@ pub fn count_all_query_sql(
     sq.order_by(legs).to_sql()
 }
 
-/// The `Put` update-map payload (`library_repository.go:76-82`): the six
+/// The `Put` update-map payload (`library_repository.go:91-99`): the six
 /// columns `selectUpdateColumns` filters plus the `updated_at` Go always
-/// appends (`:83`). `Put` also stamps `CreatedAt`/`UpdatedAt` and the
+/// writes (`:99`). `Put` also stamps `CreatedAt`/`UpdatedAt` and the
 /// ID-1 path validation (`:59-71`) — those are the caller's clock/policy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryUpdate<'a> {
@@ -883,13 +913,13 @@ pub enum LibraryError {
     /// variant: `queryAll`'s dbx `All` makes an empty non-nil slice for a zero-row
     /// result (`dbx@v1.12.0/query.go:278-291`), so its ErrNoRows arm is dead code on
     /// that path. [`LibraryRepo::get_path`] DOES report it — but only for an id the
-    /// full library list does not contain (`library_repository.go:65-66`), which is a
+    /// full library list does not contain (`library_repository.go:52-53`), which is a
     /// cache lookup miss rather than a `queryOne`.
     #[error("data not found")]
     NotFound,
 }
 
-/// `libraryRepository` (`library_repository.go:21-23`) bound to one pooled
+/// `libraryRepository` (`library_repository.go:19-21`) bound to one pooled
 /// connection — the executed READ side of the library repository.
 ///
 /// Go binds a `dbx.Builder` and reaches the DB through the ambient ctx; this crate has
@@ -967,14 +997,27 @@ impl<'a> LibraryRepo<'a> {
         )?)
     }
 
-    /// `GetAll` (`:283-287`) under the caller's parsed options: the filters, the
-    /// `buildSortOrder` leg and Max/Offset all reach the statement, as they do in Go's
-    /// `newSelect` (`sql_base_repository.go:141-145`).
+    /// `GetAll` (`:283-287`) — the REST read (`ReadAll`, `:324-326`): the filters, the
+    /// `buildSortOrder` leg and Max/Offset all reach the statement as they do in Go's
+    /// `newSelect` (`sql_base_repository.go:141-145`), and this method PARSES its own
+    /// rest options. Go's `ReadAll` calls `parseRestOptions` inside the method
+    /// (`library_repository.go:325`), so `sanitizeSort` (`sql_restful.go:69-86`) always
+    /// runs before `applyOptions` renders an ORDER BY leg
+    /// (`sql_base_repository.go:157-158`); here that is [`parse_rest_options`] feeding
+    /// [`get_all_query_sql`]. A caller-supplied sort that is neither in
+    /// [`SORT_MAPPINGS`] (empty for this repository) nor in [`rest_repo`]'s whitelist is
+    /// dropped and contributes NO ORDER BY leg, so row order cannot act as an oracle on
+    /// a column outside that whitelist.
     ///
     /// Executed row sets are pinned by the runtime tests; the ORDER BY leg is NOT
     /// silently dropped here (unlike the artist and radio lanes' hand-rendered tails,
     /// documented in `hydrate-contract.md` §S-D3d/§S-D3f), because this path goes
     /// through [`Repository`] with an explicit `order_by` leg.
+    ///
+    /// `options == None` is Go's empty variadic list: `parseRestOptions` returns the
+    /// zero `model.QueryOptions` (`sql_restful.go:55-56,66`), which is
+    /// [`crate::sql_restful::QueryOptions::default`] — no filter, no page, no ORDER BY,
+    /// which is the same statement [`Self::get_all_plain`] renders.
     ///
     /// The offset-without-limit page EXECUTES (`LIMIT -1 OFFSET n`) where Go's bare
     /// `OFFSET` is a SQLite syntax error — the builder's own cited deviation
@@ -986,9 +1029,9 @@ impl<'a> LibraryRepo<'a> {
     /// [`LibraryError::NotFound`].
     pub fn get_all(
         &self,
-        options: Option<&crate::sql_restful::QueryOptions>,
+        options: Option<&crate::sql_restful::RestQueryOptions>,
     ) -> Result<Libraries, LibraryError> {
-        let statement = get_all_query_sql(options)?;
+        let statement = get_all_query_sql(Some(&parse_rest_options(options)))?;
         Ok(crate::execution::query_all(
             self.conn,
             &statement,
@@ -1013,9 +1056,22 @@ impl<'a> LibraryRepo<'a> {
         )
     }
 
-    /// `CountAll` (`:290-292`) under the caller's parsed options: filters survive,
+    /// `CountAll` (`:290-292`) under the caller's options: filters survive,
     /// `Max`/`Offset` are dropped by `count`, and a caller sort leg is APPENDED before
     /// the reset `library.id` leg (see [`count_all_query_sql`] for the executed traces).
+    ///
+    /// It deliberately KEEPS the [`crate::sql_restful::QueryOptions`] signature that
+    /// [`Self::get_all`] abandoned. Unlike radio and player — whose `CountAll` builds
+    /// its select with NO options (`radio_repository.go:34`,
+    /// `player_repository.go:99`) — Go's `libraryRepository.CountAll` DOES pass the
+    /// options to `newSelect` (`:291`) and only then calls `count` (`:292`), so a
+    /// sanitized caller sort really appears in the statement
+    /// (`ORDER BY <sort> asc|desc, library.id`). That leg cannot change the number this
+    /// returns: `count` drops the page (`sql_base_repository.go:568`) and the aggregate
+    /// is order-independent, so this is not an ordering channel and carries no
+    /// [`sanitize_sort`]-style leak. Go's REST `Count` (`:311-313`) parses options
+    /// itself, which is where the whitelist check lives on that path; [`Self::count`]
+    /// mirrors it.
     ///
     /// # Errors
     /// [`LibraryError::Sqlite`] when the statement fails; [`LibraryError::Builder`] if
@@ -1029,6 +1085,21 @@ impl<'a> LibraryRepo<'a> {
             crate::execution::query_optional(self.conn, &statement, |row| row.get::<_, i64>(0))?
                 .unwrap_or_default(),
         )
+    }
+
+    /// `Count` (`:311-313`): [`Self::count_all_query`] driven by rest options through
+    /// [`parse_rest_options`] — Go's `CountAll(ctx, parseRestOptions(…))` (`:312`) in
+    /// full, so the sort reaching the count statement is whitelist-checked even though
+    /// it cannot change the value. Filters are what this entry point really transports
+    /// (`sql_base_repository.go:571` re-applies them after the aggregate rewrite).
+    ///
+    /// # Errors
+    /// Same as [`Self::count_all_query`].
+    pub fn count(
+        &self,
+        options: Option<&crate::sql_restful::RestQueryOptions>,
+    ) -> Result<i64, LibraryError> {
+        self.count_all_query(Some(&parse_rest_options(options)))
     }
 
     /// `ScanInProgress` (`:190-194`): `count > 0` over

@@ -18,6 +18,7 @@ use nd_db::player_repo::{
     PlayerRepo, PLAYER_TABLE,
 };
 use nd_db::pool::{Pool, PoolConfig};
+use nd_db::sql_restful::RestQueryOptions;
 use nd_db::sqlrepo::Value;
 use nd_db::store::SQLStore;
 use nd_dbschema::schema::apply_fresh_schema;
@@ -868,7 +869,9 @@ fn delete_removes_own_rows_only_and_classifies_a_miss() {
 }
 
 /// `ReadAll` (`:113-118`) honours the mapped sort, the page bound, and the
-/// `hasapikey` filter; `CountAll` (`:98-100`) counts under the same restriction.
+/// `hasapikey` filter — all arriving as the REST shape it parses itself (`:114`);
+/// `CountAll` (`:98-100`) counts under the same restriction, and `Count` (`:102-104`)
+/// is the REST-shaped entry point.
 #[test]
 fn read_all_pages_sorts_and_filters_and_count_all_agrees() {
     // Arrange:
@@ -878,17 +881,18 @@ fn read_all_pages_sorts_and_filters_and_count_all_agrees() {
     insert_player(&store, "p1", "u1", "NavidromeUI", "a", Some(KEY_A));
     insert_player(&store, "p2", "u1", "subsonic", "b", None);
     insert_player(&store, "p3", "u2", "dsub", "c", Some(KEY_B));
-    let options = Options {
-        sort: "user_name".to_string(),
+    let rest = RestQueryOptions {
+        sort: "userName".to_string(),
         order: "asc".to_string(),
         max: 1,
         offset: 0,
-        filters: Some("player.api_key_hash IS NOT NULL".to_string()),
-        filter_args: Vec::new(),
+        filters: [("hasapikey".to_string(), "true".to_string())]
+            .into_iter()
+            .collect(),
     };
     // Act: u1 sees only its own keyed player.
     let page = on(&store, |conn| {
-        PlayerRepo::new(conn).read_all(Some(&options), &owner("u1"))
+        PlayerRepo::new(conn).read_all(Some(&rest), &owner("u1"))
     })
     .unwrap();
     // Assert:
@@ -896,22 +900,50 @@ fn read_all_pages_sorts_and_filters_and_count_all_agrees() {
         page.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
         vec!["p1"]
     );
-    // Act: the count uses the same restriction and filter.
+    // The parsed shape `read_all` builds internally: the camelCase sort resolves
+    // through `toSnakeCase` + the `user_name` mapping arm (`player_repository.go:29-31`)
+    // and the `hasapikey` mapping renders the bare IS-NOT-NULL fragment with no args.
+    let parsed = Options::from_rest(Some(&rest));
+    assert_eq!(parsed.sort, "user_name");
+    assert_eq!(parsed.order, "asc");
+    assert_eq!(
+        parsed.filters.as_deref(),
+        Some("player.api_key_hash IS NOT NULL"),
+        "the hasapikey mapping is a raw fragment, no bound value"
+    );
+    assert!(parsed.filter_args.is_empty());
+    // Act: the count uses the same restriction and filter, via the REST entry point.
     let count = on(&store, |conn| {
-        PlayerRepo::new(conn).count_all(Some(&options), &owner("u1"))
+        PlayerRepo::new(conn).count(Some(&rest), &owner("u1"))
     })
     .unwrap();
     // Assert:
     assert_eq!(count, 1);
     // Act: an admin sees every keyed player.
     let admin_count = on(&store, |conn| {
-        PlayerRepo::new(conn).count_all(Some(&options), &admin())
+        PlayerRepo::new(conn).count(Some(&rest), &admin())
     })
     .unwrap();
     assert_eq!(admin_count, 2);
+    // Act: the raw Options entry point agrees with the REST one (filters ride the same
+    // clause), and `count_all` is the reachable form for Go's hand-built `squirrel.Gt`
+    // census filters (`core/metrics/insights.go:305-307`).
+    let raw = Options {
+        sort: "user_name".to_string(),
+        order: "asc".to_string(),
+        max: 1,
+        offset: 0,
+        filters: Some("player.api_key_hash IS NOT NULL".to_string()),
+        filter_args: Vec::new(),
+    };
+    let raw_count = on(&store, |conn| {
+        PlayerRepo::new(conn).count_all(Some(&raw), &owner("u1"))
+    })
+    .unwrap();
+    assert_eq!(raw_count, count);
     // Act: the page bound applies to the admin read too.
     let admin_page = on(&store, |conn| {
-        PlayerRepo::new(conn).read_all(Some(&options), &admin())
+        PlayerRepo::new(conn).read_all(Some(&rest), &admin())
     })
     .unwrap();
     assert_eq!(admin_page.len(), 1);
@@ -919,9 +951,11 @@ fn read_all_pages_sorts_and_filters_and_count_all_agrees() {
     // sql_base_repository.go:441-457).
     let none = on(&store, |conn| {
         PlayerRepo::new(conn).read_all(
-            Some(&Options {
-                filters: Some("player.api_key_hash IS NULL".to_string()),
-                ..Options::default()
+            Some(&RestQueryOptions {
+                filters: [("hasapikey".to_string(), "false".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..RestQueryOptions::default()
             }),
             &owner("u2"),
         )
@@ -932,10 +966,10 @@ fn read_all_pages_sorts_and_filters_and_count_all_agrees() {
     // column, so an admin's full page comes back in name order.
     let sorted = on(&store, |conn| {
         PlayerRepo::new(conn).read_all(
-            Some(&Options {
-                sort: "user_name".to_string(),
+            Some(&RestQueryOptions {
+                sort: "userName".to_string(),
                 order: "asc".to_string(),
-                ..Options::default()
+                ..RestQueryOptions::default()
             }),
             &admin(),
         )
@@ -943,6 +977,13 @@ fn read_all_pages_sorts_and_filters_and_count_all_agrees() {
     .unwrap();
     assert_eq!(sorted.len(), 3);
     assert!(sorted.iter().all(|p| !p.username.is_empty()));
+    // Assert: the mapping really produces name order, not an incidental rowid order —
+    // `jdoe` (u1's two players) precedes `other` (u2's) under `username asc`.
+    assert_eq!(
+        sorted.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        vec!["p1", "p2", "p3"],
+        "user_name maps to the joined username column and orders jdoe before other"
+    );
     cleanup(store, path);
 }
 

@@ -11,17 +11,19 @@
 //! Ported here: `Add`'s chunked `tag` + `library_tag` inserts (`:23-45`,
 //! `slices.Chunk(tags, 200)` → [`CHUNK_SIZE`]), `UpdateCounts`'s two templated
 //! upserts (`:48-69`), `GetAll`'s name-filtered aggregate select
-//! (`baseTagRepository.newSelect`, `sql_tags.go:180-199`) EXECUTED through
-//! [`TagRepo::get_all`], and the private `purgeUnused` delete (`:86-103`).
+//! (`baseTagRepository.newSelect`, `sql_tags.go:180-198`) EXECUTED through
+//! [`TagRepo::get_all`], and the private `purgeUnused` delete (`:85-103`).
 //!
 //! Not ported, with the reason: the base repository's REST surface
 //! (`Count`/`Read`/`ReadAll`, `sql_tags.go:202-231`) is NOT exposed here as its own
-//! methods — `Read`'s unqualified `Where(Eq{"id": id})` (`:213`) and `Count`'s
+//! methods — `Read`'s unqualified `Where(Eq{"id": id})` (`:217`) and `Count`'s
 //! `Select("COUNT(DISTINCT tag.id)")` shape (`:203-210`) are recorded below with
 //! their executed traces so a later lane can port them, and this slice's scope is
-//! `GetAll`. `ReadAll` (`:219-222`) needs no separate method: it is
+//! `GetAll`. `ReadAll` (`:223-228`) needs no separate method: it is
 //! `newSelect(ctx, parseRestOptions(…))`, i.e. exactly [`get_all_sql`] fed
-//! [`parse_rest_options`], which IS ported and executed.
+//! [`parse_rest_options`] — which IS ported and executed, and is now called INSIDE
+//! [`TagRepo::get_all`] just as Go calls `parseRestOptions` inside `ReadAll`
+//! (`sql_tags.go:224`), so the executed read cannot be handed an unsanitized sort.
 //!
 //! Clause order is a real parity question on this select, and the executed Go
 //! traces settle it. `sqlRepository.newSelect` calls `applyFilters` right after
@@ -42,7 +44,7 @@
 //!   identity and matches what [`crate::sql_restful`] already renders for it;
 //! * `ReadAll(Filters:{"name":"oc"})` → `WHERE (tag_value LIKE ?)` with `%oc%` —
 //!   the registered `name` filter is `containsFilter("tag_value")`
-//!   (`sql_tags.go:166-171`), NOT a `tag_name` clause.
+//!   (`sql_tags.go:155-158`), NOT a `tag_name` clause.
 //!
 //! Sort: this repository HAS a sort mapping — `setSortMappings({"name":
 //! "tag_value"})` (`sql_tags.go:173-175`) — so [`get_all_sql`] renders a real
@@ -57,14 +59,14 @@ use crate::sql_restful::RestRepository;
 use crate::sql_tags::{library_filter_joins, Sql};
 use crate::sqlrepo::{Repository, Value};
 
-/// `slices.Chunk(tags, 200)` (`tag_repository.go:25`): rows per multi-row
+/// `slices.Chunk(tags, 200)` (`tag_repository.go:27`): rows per multi-row
 /// INSERT statement pair.
 pub const CHUNK_SIZE: usize = 200;
 
-/// The `tag` dictionary table (`newBaseTagRepository`, `sql_tags.go:161`).
+/// The `tag` dictionary table (`newBaseTagRepository`, `sql_tags.go:154`).
 pub const TAG_TABLE: &str = "tag";
 
-/// The `library_tag` per-library statistics table (`tag_repository.go:33`).
+/// The `library_tag` per-library statistics table (`tag_repository.go:39`).
 pub const LIBRARY_TAG_TABLE: &str = "library_tag";
 
 /// `model.Tag` (`model/tag.go`): the dictionary row plus the aggregate counts
@@ -190,7 +192,7 @@ pub fn purge_unused_sql() -> Sql {
 }
 
 /// `setSortMappings(map[string]string{"name": "tag_value"})`
-/// (`sql_tags.go:173-175`, set by `newBaseTagRepository`, so it applies to the tag
+/// (`sql_tags.go:159-161`, set by `newBaseTagRepository`, so it applies to the tag
 /// dictionary AND to the genre repository). Kept as a constant so the one-entry map
 /// is a pinned fact rather than an accident.
 pub const SORT_MAPPINGS: [(&str, &str); 1] = [("name", "tag_value")];
@@ -255,7 +257,7 @@ pub fn build_sort_order(sort: &str, order: &str) -> String {
 }
 
 /// `tagLibraryIdFilter` (`sql_tags.go:135-137`) as a `FilterFn`: the clause the
-/// repository registers for its `library_id` key (`sql_tags.go:168`).
+/// repository registers for its `library_id` key (`sql_tags.go:157`).
 /// [`crate::sql_tags::where_tag_library_id`] is the same clause for a builder
 /// caller; the rest layer needs it as a filter function, so it is built here.
 pub fn tag_library_id_filter() -> crate::sql_restful::FilterFn {
@@ -268,16 +270,16 @@ pub fn tag_library_id_filter() -> crate::sql_restful::FilterFn {
 }
 
 /// `registerModel(&model.Tag{}, map[string]filterFunc{…})` plus
-/// `registerModelWhiteList` (`sql_tags.go:166-172`,
-/// `sql_base_repository.go:101-106`, `sql_restful.go:142-163`): the two filter
+/// `registerModelWhiteList` (`sql_tags.go:155-158`,
+/// `sql_base_repository.go:104-111`, `sql_restful.go:142-163`): the two filter
 /// mappings Go registers for the tag dictionary, and the whitelist of
 /// `model.Tag`'s field names plus the annotation fields.
 ///
 /// The mappings are the executed difference between the two filter spellings:
 /// `Filters:{"name":"oc"}` traces `WHERE (tag_value LIKE ?)` bound to `%oc%`
-/// (`containsFilter("tag_value")`, `sql_tags.go:167`, `sql_restful.go:104-109`) and
+/// (`containsFilter("tag_value")`, `sql_tags.go:156`, `sql_restful.go:98-102`) and
 /// `Filters:{"library_id":"2"}` traces `WHERE (library_tag.library_id = ?)` bound to
-/// `"2"` (`sql_tags.go:168`). Without the mappings both would fall through to the
+/// `"2"` (`sql_tags.go:157`). Without the mappings both would fall through to the
 /// whitelist arm and render `name LIKE ?` / `library_id = ?` against columns this
 /// projection does not emit. Executed (oracle `/tmp/sd3g1_oracle8`): the first
 /// returns `Rock/2/5`, the second returns nothing for a user with access only to
@@ -313,7 +315,7 @@ pub fn sanitize_sort(sort: &str, order: &str) -> (String, String) {
     (kept, order)
 }
 
-/// `parseRestOptions` for this repository (`sql_restful.go:31-45`): the
+/// `parseRestOptions` for this repository (`sql_restful.go:54-67`): the
 /// `QueryOptions` [`get_all_sql`] consumes. Go's `baseTagRepository.ReadAll`
 /// (`sql_tags.go:219-222`) is exactly `newSelect(ctx, parseRestOptions(…))`, so
 /// [`TagRepo::get_all`] under a [`parse_rest_options`] result IS the REST read — no
@@ -371,13 +373,13 @@ fn join_clause(join: &str) -> String {
 }
 
 /// `GetAll` (`tag_repository.go:78-83`) over the `baseTagRepository.newSelect`
-/// shape (`sql_tags.go:178-196`): the name-filtered aggregate select.
+/// shape (`sql_tags.go:180-198`): the name-filtered aggregate select.
 /// `COALESCE(SUM(…, 0)` keeps rows with no `library_tag` match at zero counts, the
 /// LEFT `library_tag` leg is why, and the authenticated user's INNER `user_library`
 /// join scopes the SUM to accessible libraries (`None` = no logged-in user, and then
 /// that join is not added at all — `sql_tags.go:170-175`).
 ///
-/// `id` is the `baseTagRepository.Read` arm (`sql_tags.go:212-216`); `None` is
+/// `id` is the `baseTagRepository.Read` arm (`sql_tags.go:216-221`); `None` is
 /// `GetAll`. See [`read_sql`] for why the tag-name clause is NOT added on that arm.
 ///
 /// Clause order follows squirrel's clause KIND order, matching Go's executed
@@ -389,6 +391,20 @@ fn join_clause(join: &str) -> String {
 /// position: the `user_library` user id first (squirrel binds JOIN args before WHERE
 /// args), then the filter values, then the tag name — `[adm, 2, genre]` for
 /// `Filters: Eq{"library_tag.library_id": 2}` (oracle `/tmp/sd3g1_oracle6`).
+///
+/// WARNING: `options` here must ALREADY be the output of [`parse_rest_options`]
+/// (`sql_restful.go:54-67`) — this renderer is a pure statement builder and does NOT
+/// sanitize `options.sort` itself, so a hand-built
+/// [`crate::sql_restful::QueryOptions`] carrying an arbitrary sort string reaches
+/// `ORDER BY` verbatim through [`build_sort_order`] (injection through the sort field,
+/// exactly as in `transcoding_repo.rs:161-167`). Go has no such gap because `ReadAll`
+/// calls `parseRestOptions` itself (`sql_tags.go:224`) and `sanitizeSort`
+/// (`sql_restful.go:69-86`) therefore always runs first; [`TagRepo::get_all`] mirrors
+/// that by parsing its own rest options, which is why the executed path is safe. The
+/// residual risk is confined to callers of this public renderer: the whitelist check
+/// lives in [`sanitize_sort`], not here. Go's own renderer accepts whatever
+/// `applyOptions` is handed (`sql_base_repository.go:157-158`), so this renderer is
+/// deliberately NOT tightened.
 ///
 /// A [`crate::sql_restful::Filter`] list renders unparenthesized and AND-joined
 /// here, whereas Go's `And{}` renders `(a AND b)` (`squirrel@v1.5.4/expr.go:369-388`)
@@ -427,7 +443,7 @@ pub fn get_all_sql(
         }
     }
     if let Some(id) = id {
-        // `Read` (`sql_tags.go:213`): `Where(Eq{"id": id})`, UNQUALIFIED, and this
+        // `Read` (`sql_tags.go:217`): `Where(Eq{"id": id})`, UNQUALIFIED, and this
         // is the tag dictionary instance whose `tagFilter` is nil
         // (`tag_repository.go:22`), so the executed trace has no tag-name clause:
         // `WHERE id = ?`.
@@ -463,7 +479,7 @@ pub fn get_all_plain_sql(
     get_all_sql(tag_name, user_id, None, None)
 }
 
-/// `baseTagRepository.Read` (`sql_tags.go:212-216`): the aggregate select with
+/// `baseTagRepository.Read` (`sql_tags.go:216-221`): the aggregate select with
 /// `Where(Eq{"id": id})` and NO options — so no filters, no page, no sort leg, and
 /// (for this dictionary instance, `tagFilter == nil`) no tag-name clause.
 /// Executed (oracle `/tmp/sd3g1_oracle8`): `WHERE id = ? GROUP BY …`, args
@@ -474,7 +490,7 @@ pub fn read_sql(user_id: Option<&str>, id: &str) -> Result<Sql, crate::sqlrepo::
     get_all_sql("", user_id, None, Some(id))
 }
 
-/// `baseTagRepository.Count` (`sql_tags.go:203-216`) through `sqlRepository.count`
+/// `baseTagRepository.Count` (`sql_tags.go:202-214`) through `sqlRepository.count`
 /// (`sql_base_repository.go:565-576`): the DISTINCT aggregate over the SAME join
 /// legs plus `count`'s reset `ORDER BY tag.id`. No GROUP BY — the aggregate is the
 /// whole select.
@@ -494,6 +510,16 @@ pub fn read_sql(user_id: Option<&str>, id: &str) -> Result<Sql, crate::sqlrepo::
 /// only → `3`; headless → `5`; `adm` with `Filters:{"name":"oc"}` → `1`; `adm` with
 /// `Filters:{"library_id":"2"}` → `0`. Note the INNER-vs-LEFT hazard in
 /// `join_clause`: a LEFT rendering would report `5` for the admin instead of `3`.
+///
+/// WARNING: `options` here must ALREADY be the output of [`parse_rest_options`]
+/// (`sql_restful.go:54-67`), the same contract as [`get_all_sql`]. The parsed filters
+/// are the only values this renderer accepts, and `count` resets every order leg to
+/// `tag.id` (`sql_base_repository.go:566-569`), so neither a raw filter clause nor
+/// `options.sort` can reach the statement text from a sanitized [`crate::sql_restful::QueryOptions`];
+/// [`TagRepo::count_all`] keeps that contract. Go's REST `Count` parses rest options
+/// itself (`sql_tags.go:213`), mirrored by [`TagRepo::count`]. Go's renderer
+/// likewise accepts whatever `applyFilters` is handed (`sql_base_repository.go:571`),
+/// so this renderer is deliberately NOT tightened.
 ///
 /// # Errors
 /// [`crate::sqlrepo::SqlError`] if the builder fails to materialize.
@@ -566,7 +592,7 @@ pub enum TagError {
 /// Go's `invalidUserId` headless context, which adds no `user_library` join
 /// (`sql_tags.go:170-175`) — and every statement runs through [`crate::execution`],
 /// the port of `queryOne`/`queryAll`/`count`
-/// (`sql_base_repository.go:336-355,375-388,441-457,565-576`), in the shape
+/// (`sql_base_repository.go:375-388,441-457,565-576`), in the shape
 /// `radio_repo::RadioRepo` establishes.
 ///
 /// The read is a single hydration phase ([`crate::hydrate::row_to_tag`]): no
@@ -604,10 +630,29 @@ impl<'a> TagRepo<'a> {
         )?)
     }
 
-    /// `GetAll` (`tag_repository.go:78-83`) under the caller's parsed options:
-    /// filters, the `buildSortOrder` leg over [`SORT_MAPPINGS`], and Max/Offset all
-    /// reach the statement as they do in Go's `newSelect`. Go's `ReadAll`
-    /// (`sql_tags.go:219-222`) is this method under [`parse_rest_options`].
+    /// `GetAll` (`tag_repository.go:78-83`) — the REST read (`baseTagRepository.
+    /// ReadAll`, `sql_tags.go:223-228`): filters, the `buildSortOrder` leg over
+    /// [`SORT_MAPPINGS`], and Max/Offset all reach the statement as they do in Go's
+    /// `newSelect`, and this method PARSES its own rest options. Go's `ReadAll` calls
+    /// `parseRestOptions` inside the method (`sql_tags.go:224`), so `sanitizeSort`
+    /// (`sql_restful.go:69-86`) always runs before `applyOptions` renders the ORDER BY
+    /// leg (`sql_base_repository.go:157-158`); here that is [`parse_rest_options`]
+    /// feeding [`get_all_sql`]. A caller-supplied sort that is neither in
+    /// [`SORT_MAPPINGS`] nor in [`rest_repo`]'s whitelist is dropped and contributes NO
+    /// ORDER BY leg, so row order cannot act as an oracle on a column outside that
+    /// whitelist — which matters here because the aggregate's `album_count` and
+    /// `song_count` SUMs ARE whitelisted (`model/tag.go`'s `AlbumCount`/`SongCount`
+    /// through `registerModelWhiteList` + `registerFieldWhiteList`,
+    /// `sql_restful.go:142-163`) while an expression smuggled around them is not.
+    ///
+    /// `user_id` is Go's `loggedUser(ctx).ID` on the aggregate's INNER `user_library`
+    /// leg (`sql_tags.go:171-174`); option parsing does not touch it, so the ownership
+    /// scope stays exactly as it was.
+    ///
+    /// `options == None` is Go's empty variadic list: `parseRestOptions` returns the
+    /// zero `model.QueryOptions` (`sql_restful.go:55-56,66`), i.e.
+    /// [`crate::sql_restful::QueryOptions::default`] — no filter, no page, no ORDER BY,
+    /// the same statement [`get_all_plain_sql`] renders.
     ///
     /// Deviation kept, not fixed: an `Offset` with no `Max` EXECUTES here
     /// (`LIMIT -1 OFFSET n`, `sqlrepo.rs:313-319`) where Go's bare `OFFSET n` is a
@@ -621,9 +666,9 @@ impl<'a> TagRepo<'a> {
         &self,
         tag_name: &str,
         user_id: Option<&str>,
-        options: Option<&crate::sql_restful::QueryOptions>,
+        options: Option<&crate::sql_restful::RestQueryOptions>,
     ) -> Result<TagList, TagError> {
-        let statement = get_all_sql(tag_name, user_id, options, None)?;
+        let statement = get_all_sql(tag_name, user_id, Some(&parse_rest_options(options)), None)?;
         Ok(crate::execution::query_all(
             self.conn,
             &statement,
@@ -631,7 +676,19 @@ impl<'a> TagRepo<'a> {
         )?)
     }
 
-    /// `baseTagRepository.Count` (`sql_tags.go:203-216`): the DISTINCT aggregate.
+    /// `baseTagRepository.Count` (`sql_tags.go:202-214`) under the caller's options:
+    /// the DISTINCT aggregate.
+    ///
+    /// It deliberately KEEPS the [`crate::sql_restful::QueryOptions`] signature that
+    /// [`Self::get_all`] abandoned. Go's `Count` builds its own
+    /// `Select("COUNT(DISTINCT tag.id)")` (`sql_tags.go:203`) and never calls
+    /// `applyOptions`, so a caller `Sort`/`Max`/`Offset` cannot reach this statement at
+    /// all; `count` additionally drops the page (`sql_base_repository.go:568`) and
+    /// installs `ORDER BY tag.id` (`:569`). It is not an ordering channel and carries no
+    /// [`sanitize_sort`]-style leak — executed: `Count(Sort:"name", Order:"desc")`
+    /// traced `… ORDER BY tag.id` alone (oracle `/tmp/sd3g1_oracle8`). Filters DO apply
+    /// (`:571`), which is why they stay in the signature; the REST-shaped [`Self::count`]
+    /// parses its options the way Go does at `sql_tags.go:213`.
     ///
     /// # Errors
     /// [`TagError::Sqlite`] when the statement fails; [`TagError::Builder`] if the
@@ -650,7 +707,23 @@ impl<'a> TagRepo<'a> {
         )
     }
 
-    /// `baseTagRepository.Read` (`sql_tags.go:212-216`): one aggregate row by id.
+    /// `baseTagRepository.Count` (`sql_tags.go:202-214`) driven by REST options: Go's
+    /// `count(ctx, sq, parseRestOptions(…))` (`:213`) in full. The whitelist check
+    /// happens here even though the aggregate cannot be reordered by a caller sort;
+    /// what this entry point really transports is the `name`/`library_id` filter
+    /// mapping set (`sql_tags.go:155-158`).
+    ///
+    /// # Errors
+    /// Same as [`Self::count_all`].
+    pub fn count(
+        &self,
+        user_id: Option<&str>,
+        options: Option<&crate::sql_restful::RestQueryOptions>,
+    ) -> Result<i64, TagError> {
+        self.count_all(user_id, Some(&parse_rest_options(options)))
+    }
+
+    /// `baseTagRepository.Read` (`sql_tags.go:216-221`): one aggregate row by id.
     ///
     /// # Errors
     /// [`TagError::NotFound`] when the aggregate has no row for the id (including a
@@ -717,7 +790,7 @@ mod tests {
 
     #[test]
     fn add_splits_at_the_200_row_chunk_boundary() {
-        // Arrange: slices.Chunk(tags, 200) (tag_repository.go:25).
+        // Arrange: slices.Chunk(tags, 200) (tag_repository.go:27).
         let tags = (0..201)
             .map(|i| tag(&format!("t{i}"), "genre", "Rock"))
             .collect::<Vec<_>>();
@@ -754,7 +827,7 @@ mod tests {
     #[test]
     fn get_all_binds_the_tag_name_and_scopes_the_sums_to_the_user() {
         // Arrange: GetAll + baseTagRepository.newSelect (tag_repository.go:78-83,
-        // sql_tags.go:178-196) with a logged-in user.
+        // sql_tags.go:180-198) with a logged-in user.
         // Act:
         let (sql, args) = get_all_sql("genre", Some("user1"), None, None)
             .expect("the aggregate select materializes");
@@ -790,7 +863,7 @@ mod tests {
 
     #[test]
     fn get_all_without_user_skips_the_user_library_join_and_honors_pagination() {
-        // Arrange: no logged-in user (sql_tags.go:206-210) with a page.
+        // Arrange: no logged-in user (sql_tags.go:210-211) with a page.
         let options = crate::sql_restful::QueryOptions {
             max: 10,
             offset: 20,

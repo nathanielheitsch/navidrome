@@ -22,7 +22,7 @@
 use nd_db::library_repo::{LibraryError, LibraryRepo};
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::property_repo::{PropertyError, PropertyRepo};
-use nd_db::sql_restful::{Filter, QueryOptions};
+use nd_db::sql_restful::{Filter, QueryOptions, RestQueryOptions};
 use nd_db::store::SQLStore;
 use nd_db::tag_repo::{Tag, TagError, TagRepo};
 use nd_dbschema::schema::apply_fresh_schema;
@@ -288,27 +288,35 @@ fn library_get_all_sorts_by_a_mapped_field_and_pages_with_literals() {
     // `library_count_all_query_executes_and_ignores_the_caller_page` and by
     // `library_repo.rs:69-81`. An earlier comment here mis-attributed that CountAll
     // trace to GetAll; corrected.
-    let options = QueryOptions {
-        sort: "total_songs".to_string(),
+    // `get_all` takes the REST shape and parses it itself (library_repository.go:325),
+    // so the sort arrives in the API's camelCase form and `sanitize_sort` snake-cases
+    // it on the way in.
+    let options = RestQueryOptions {
+        sort: "totalSongs".to_string(),
         order: "desc".to_string(),
-        ..QueryOptions::default()
+        ..RestQueryOptions::default()
     };
     let libs = lease(&store, |conn| {
         LibraryRepo::new(conn).get_all(Some(&options))
     })
     .expect("sorted read");
     assert_eq!(ids(&libs), vec![4, 1, 3, 2]);
+    // The parsed shape `get_all` builds internally, checked separately so a regression
+    // in `parse_rest_options` is visible rather than only implied by the row set.
+    let parsed = nd_db::library_repo::parse_rest_options(Some(&options));
+    assert_eq!(parsed.sort, "total_songs");
+    assert_eq!(parsed.order, "desc");
 
     // Max/Offset page: executed Go (/tmp/sd3g1_oracle7) `Sort:"Name", Order:"DESC",
     // Max:3` returned ids [3, 4, 2] — `name` is NOT a library sort mapping, so the
     // leg is the snake-cased column name and SQLite's BINARY collation puts
     // lowercase `gamma` (id 3) first.
-    let options = QueryOptions {
-        sort: "name".to_string(),
-        order: "desc".to_string(),
+    let options = RestQueryOptions {
+        sort: "Name".to_string(),
+        order: "DESC".to_string(),
         max: 3,
         offset: 0,
-        ..QueryOptions::default()
+        ..RestQueryOptions::default()
     };
     let libs = lease(&store, |conn| {
         LibraryRepo::new(conn).get_all(Some(&options))
@@ -316,7 +324,11 @@ fn library_get_all_sorts_by_a_mapped_field_and_pages_with_literals() {
     .expect("first page");
     assert_eq!(ids(&libs), vec![3, 4, 2]);
 
-    let (sql, args) = nd_db::library_repo::get_all_query_sql(Some(&options))
+    // The renderer takes the PARSER's output, not the raw camelCase/uppercase request
+    // (`get_all_query_sql`'s WARNING): `sanitize_sort` lowercases the order and
+    // `toSnakeCase` the field.
+    let parsed = nd_db::library_repo::parse_rest_options(Some(&options));
+    let (sql, args) = nd_db::library_repo::get_all_query_sql(Some(&parsed))
         .expect("the paged select materializes");
     assert_eq!(sql, "SELECT * FROM library ORDER BY name desc LIMIT 3");
     // squirrel renders LIMIT/OFFSET as decimal literals and binds nothing
@@ -335,9 +347,9 @@ fn library_get_all_offset_without_limit_executes_where_go_fails() {
     // renders a bare `OFFSET 2`, which SQLite rejects — executed Go returned
     // `near "2": syntax error` (/tmp/sd3g1_oracle2). The port emits
     // `LIMIT -1 OFFSET n` (`sqlrepo.rs:313-319`) and so SKIPS rows instead.
-    let options = QueryOptions {
+    let options = RestQueryOptions {
         offset: 2,
-        ..QueryOptions::default()
+        ..RestQueryOptions::default()
     };
     let libs = lease(&store, |conn| {
         LibraryRepo::new(conn).get_all(Some(&options))
@@ -345,7 +357,8 @@ fn library_get_all_offset_without_limit_executes_where_go_fails() {
     .expect("the port executes the offset-only page Go cannot");
     assert_eq!(ids(&libs), vec![3, 4]);
 
-    let (sql, args) = nd_db::library_repo::get_all_query_sql(Some(&options))
+    let parsed = nd_db::library_repo::parse_rest_options(Some(&options));
+    let (sql, args) = nd_db::library_repo::get_all_query_sql(Some(&parsed))
         .expect("the offset-only page materializes");
     assert_eq!(sql, "SELECT * FROM library LIMIT -1 OFFSET 2");
     assert!(args.is_empty());
@@ -396,11 +409,24 @@ fn library_get_all_filters_bind_before_the_order_leg() {
     // default starts-with clause `library.name LIKE 'a%'` (`sql_restful.go:43-44`,
     // port: `starts_with_filter`, `sql_restful.rs:348-355`), which matched only
     // Alpha (SQLite LIKE is ASCII-case-insensitive, so `a%` hits "Alpha" and not
-    // "gamma") — id 1. The Eq leg here pins the arg order, not a new row set.
-    let libs = lease(&store, |conn| {
-        LibraryRepo::new(conn).get_all(Some(&options))
-    })
-    .expect("filtered read runs");
+    // "gamma") — id 1. The Eq leg above pins the arg order, not a new row set; the
+    // executed read below goes through `get_all`, which parses this same pair out of
+    // the REST filter map (`id` ends in "id" so it takes the exact-match arm,
+    // `sql_restful.go:44-47`).
+    let rest = RestQueryOptions {
+        sort: "name".to_string(),
+        order: "desc".to_string(),
+        max: 3,
+        filters: [
+            ("name".to_string(), "a".to_string()),
+            ("id".to_string(), "1".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+        ..RestQueryOptions::default()
+    };
+    let libs = lease(&store, |conn| LibraryRepo::new(conn).get_all(Some(&rest)))
+        .expect("filtered read runs");
     assert_eq!(
         ids(&libs),
         vec![1],
@@ -955,21 +981,24 @@ fn tag_get_all_maps_the_name_sort_to_tag_value_and_pages() {
     // `… GROUP BY tag.id, tag.tag_name, tag.tag_value ORDER BY tag_value desc` and
     // returned Rock before Pop — the ORDER BY leg sits AFTER GROUP BY, which is
     // squirrel's clause kind order.
-    let options = QueryOptions {
+    // `get_all` takes the REST shape and parses it itself (`sql_tags.go:224`).
+    let options = RestQueryOptions {
         sort: "name".to_string(),
         order: "desc".to_string(),
-        ..QueryOptions::default()
+        ..RestQueryOptions::default()
     };
     let tags = lease(&store, |conn| {
         TagRepo::new(conn).get_all("genre", Some(ADM), Some(&options))
     })
     .expect("sorted aggregate read");
+    let parsed = nd_db::tag_repo::parse_rest_options(Some(&options));
     assert_eq!(
         tags.iter().map(|t| t.tag_value.clone()).collect::<Vec<_>>(),
         vec!["Rock", "Pop"]
     );
 
-    let (sql, args) = nd_db::tag_repo::get_all_sql("genre", Some(ADM), Some(&options), None)
+    // The renderer takes the parser's output (`get_all_sql`'s WARNING).
+    let (sql, args) = nd_db::tag_repo::get_all_sql("genre", Some(ADM), Some(&parsed), None)
         .expect("the sorted aggregate materializes");
     assert!(
         sql.ends_with("GROUP BY tag.id, tag.tag_name, tag.tag_value ORDER BY tag_value desc"),
@@ -980,11 +1009,11 @@ fn tag_get_all_maps_the_name_sort_to_tag_value_and_pages() {
     // The un-mapped `Sort:"album_count"` keeps its snake-cased alias — executed Go
     // traced `ORDER BY album_count desc LIMIT 2` (/tmp/sd3g1_oracle6). Executed row
     // set here: Rock (2 albums) then Pop (0), matching Go's desc order.
-    let options = QueryOptions {
-        sort: "album_count".to_string(),
+    let options = RestQueryOptions {
+        sort: "albumCount".to_string(),
         order: "desc".to_string(),
         max: 2,
-        ..QueryOptions::default()
+        ..RestQueryOptions::default()
     };
     let tags = lease(&store, |conn| {
         TagRepo::new(conn).get_all("genre", Some(ADM), Some(&options))
@@ -1017,6 +1046,14 @@ fn tag_get_all_renders_caller_filters_before_the_tag_name_clause() {
         }]),
         ..QueryOptions::default()
     };
+    // The REST spelling of the same key goes through the registered `library_id`
+    // mapping (`sql_tags.go:157`), which is what the executed read below receives.
+    let rest_filter = RestQueryOptions {
+        filters: [("library_id".to_string(), "2".to_string())]
+            .into_iter()
+            .collect(),
+        ..RestQueryOptions::default()
+    };
     let (sql, args) = nd_db::tag_repo::get_all_sql("genre", Some(ADM), Some(&options), None)
         .expect("the filtered aggregate materializes");
     assert!(
@@ -1039,7 +1076,7 @@ fn tag_get_all_renders_caller_filters_before_the_tag_name_clause() {
     // library 1 only): the `library_id = 2` clause matched nothing, because the only
     // tag in library 2 is removed by the INNER join before the WHERE is even reached.
     let tags = lease(&store, |conn| {
-        TagRepo::new(conn).get_all("genre", Some(ADM), Some(&options))
+        TagRepo::new(conn).get_all("genre", Some(ADM), Some(&rest_filter))
     })
     .expect("filtered aggregate read");
     assert!(tags.is_empty());
@@ -1058,8 +1095,8 @@ fn tag_get_all_renders_caller_filters_before_the_tag_name_clause() {
             .collect(),
         ..nd_db::sql_restful::RestQueryOptions::default()
     };
-    let options = nd_db::tag_repo::parse_rest_options(Some(&rest));
-    let (sql, args) = nd_db::tag_repo::get_all_sql("genre", Some(ADM), Some(&options), None)
+    let parsed = nd_db::tag_repo::parse_rest_options(Some(&rest));
+    let (sql, args) = nd_db::tag_repo::get_all_sql("genre", Some(ADM), Some(&parsed), None)
         .expect("the REST-shaped aggregate materializes");
     assert!(
         sql.contains("WHERE tag_value LIKE ? AND tag.tag_name = ?"),
@@ -1072,9 +1109,11 @@ fn tag_get_all_renders_caller_filters_before_the_tag_name_clause() {
     );
     assert_eq!(args[1], nd_db::sqlrepo::Value::Text("%oc%".to_string()));
 
-    // Executed row set (/tmp/sd3g1_oracle8): that read returned `Rock/2/5` alone.
+    // Executed row set (/tmp/sd3g1_oracle8): that read returned `Rock/2/5` alone. The
+    // executed read takes the REST shape and parses it internally, so the `rest` value
+    // above is what it is handed.
     let tags = lease(&store, |conn| {
-        TagRepo::new(conn).get_all("genre", Some(ADM), Some(&options))
+        TagRepo::new(conn).get_all("genre", Some(ADM), Some(&rest))
     })
     .expect("REST-shaped read");
     assert_eq!(tag_cells(&tags), vec!["Rock/2/5"]);
