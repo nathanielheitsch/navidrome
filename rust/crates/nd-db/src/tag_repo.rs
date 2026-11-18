@@ -11,17 +11,49 @@
 //! Ported here: `Add`'s chunked `tag` + `library_tag` inserts (`:23-45`,
 //! `slices.Chunk(tags, 200)` → [`CHUNK_SIZE`]), `UpdateCounts`'s two templated
 //! upserts (`:48-69`), `GetAll`'s name-filtered aggregate select
-//! (`baseTagRepository.newSelect`, `sql_tags.go:180-199`), and the private
-//! `purgeUnused` delete (`:86-103`).
+//! (`baseTagRepository.newSelect`, `sql_tags.go:180-199`) EXECUTED through
+//! [`TagRepo::get_all`], and the private `purgeUnused` delete (`:86-103`).
 //!
 //! Not ported, with the reason: the base repository's REST surface
-//! (`Count`/`Read`/`ReadAll`, `sql_tags.go:202-231`) depends on
-//! `parseRestOptions` over a live request context that this crate does not
-//! own — its filter/sort mapping (`registerModel` at `sql_tags.go:166-172`)
-//! is already pinned by `sql_restful.rs`'s registry, so the auth-aware slice
-//! attaches it. The `tags` JSON column aggregation Go scans in `purgeUnused`
-//! is spelled out literally, as in Go (`json_tree(tags, '$')`).
+//! (`Count`/`Read`/`ReadAll`, `sql_tags.go:202-231`) is NOT exposed here as its own
+//! methods — `Read`'s unqualified `Where(Eq{"id": id})` (`:213`) and `Count`'s
+//! `Select("COUNT(DISTINCT tag.id)")` shape (`:203-210`) are recorded below with
+//! their executed traces so a later lane can port them, and this slice's scope is
+//! `GetAll`. `ReadAll` (`:219-222`) needs no separate method: it is
+//! `newSelect(ctx, parseRestOptions(…))`, i.e. exactly [`get_all_sql`] fed
+//! [`parse_rest_options`], which IS ported and executed.
+//!
+//! Clause order is a real parity question on this select, and the executed Go
+//! traces settle it. `sqlRepository.newSelect` calls `applyFilters` right after
+//! `applyOptions` (`sql_base_repository.go:140-146`), and squirrel ANDs repeated
+//! `.Where()` calls in CALL order — so the caller's filters come BEFORE the tag
+//! name clause that `baseTagRepository.newSelect` (`sql_tags.go:183-186`) and
+//! `tagRepository.GetAll` (`tag_repository.go:79`) add later. Executed (oracle
+//! `/tmp/sd3g1_oracle6`, `/tmp/sd3g1_oracle8`):
+//! * `GetAll("genre", Filters: Eq{"library_tag.library_id": 2})` →
+//!   `WHERE library_tag.library_id = ? AND tag.tag_name = ?`, args
+//!   `[adm, 2, genre]` (user id first: squirrel binds JOIN args before WHERE args);
+//! * the same filter as `And{Eq{library_tag.library_id:1}, Eq{tag.tag_value:Rock}}`
+//!   → `WHERE (library_tag.library_id = ? AND tag.tag_value = ?) AND tag.tag_name = ?`
+//!   — the `And` renders parenthesized (squirrel `conj.join`,
+//!   `squirrel@v1.5.4/expr.go:369-388`), so the port's AND-joined
+//!   [`crate::sql_restful::Filter`] list needs no extra parentheses; an EMPTY `And`
+//!   renders `(1=1)` (`expr.go:14`, `:393-395`), which is Go's admin/user-filter
+//!   identity and matches what [`crate::sql_restful`] already renders for it;
+//! * `ReadAll(Filters:{"name":"oc"})` → `WHERE (tag_value LIKE ?)` with `%oc%` —
+//!   the registered `name` filter is `containsFilter("tag_value")`
+//!   (`sql_tags.go:166-171`), NOT a `tag_name` clause.
+//!
+//! Sort: this repository HAS a sort mapping — `setSortMappings({"name":
+//! "tag_value"})` (`sql_tags.go:173-175`) — so [`get_all_sql`] renders a real
+//! ORDER BY leg through [`build_sort_order`]. Executed: `GetAll("genre",
+//! Sort:"name", Order:"desc")` traces `… GROUP BY tag.id, tag.tag_name,
+//! tag.tag_value ORDER BY tag_value desc` and returns `Rock/2/5, Pop/0/0`; the
+//! un-mapped `Sort:"album_count"` traces `ORDER BY album_count desc LIMIT 2`.
+//! That leg sits AFTER GROUP BY, which is squirrel's clause kind order
+//! (`sqlrepo.rs:352-356`) and Go's trace order.
 
+use crate::sql_restful::RestRepository;
 use crate::sql_tags::{library_filter_joins, Sql};
 use crate::sqlrepo::{Repository, Value};
 
@@ -135,58 +167,6 @@ DO UPDATE SET {table}_count = excluded.{table}_count;"
         .collect()
 }
 
-/// `GetAll` (`tag_repository.go:71-74`) over the `baseTagRepository.newSelect`
-/// shape (`sql_tags.go:180-199`): the name-filtered aggregate select —
-/// `COALESCE(SUM(…), 0)` keeps tags with no `library_tag` rows at zero counts
-/// (LEFT is why untagged rows keep contributing, `sql_tags.rs`
-/// `library_filter_joins`), and the authenticated user's `user_library` join
-/// scopes the SUM to accessible libraries (`sql_tags.go:206-210` — `None`
-/// means no logged-in user).
-pub fn get_all_sql(
-    tag_name: &str,
-    user_id: Option<&str>,
-    options: Option<&crate::sql_restful::QueryOptions>,
-) -> Result<Sql, crate::sqlrepo::SqlError> {
-    let (joins, mut join_args) =
-        library_filter_joins(user_id.map(std::string::ToString::to_string));
-    let join_sql = joins
-        .iter()
-        .map(|join| format!(" LEFT JOIN {join}"))
-        .collect::<String>();
-    let mut sq = Repository::new(TAG_TABLE)
-        .select([
-            "tag.id",
-            "tag.tag_name",
-            "tag.tag_value",
-            "COALESCE(SUM(library_tag.album_count), 0) as album_count",
-            "COALESCE(SUM(library_tag.media_file_count), 0) as song_count",
-        ])
-        .where_eq("tag.tag_name", tag_name);
-    if let Some(options) = options {
-        sq = crate::sql_search::apply_pagination(sq, options);
-        sq = crate::sql_search::apply_filters(sq, options);
-    }
-    let (mut sql, mut args) = sq.to_sql()?;
-    // Splice the LEFT JOINs after FROM tag, before WHERE — squirrel's join
-    // position. `library_tag`/`user_library` join identifiers are fixed
-    // schema names (sql_tags.go:205-210), the only bound value is the user id.
-    let from = format!("FROM {TAG_TABLE}");
-    let Some(pos) = sql.find(&from) else {
-        return Err(crate::sqlrepo::SqlError::NoTable);
-    };
-    let at = pos + from.len();
-    sql.replace_range(at..at, &join_sql);
-    args.splice(..0, join_args.drain(..));
-    // GROUP BY sits before any LIMIT/OFFSET applyOptions appended
-    // (squirrel renders .GroupBy before pagination).
-    let group_by = " GROUP BY tag.id, tag.tag_name, tag.tag_value";
-    match sql.find(" LIMIT") {
-        Some(pos) => sql.replace_range(pos..pos, group_by),
-        None => sql.push_str(group_by),
-    }
-    Ok((sql, args))
-}
-
 /// The private `purgeUnused` (`tag_repository.go:86-103`): delete dictionary
 /// rows no `album`/`media_file` `tags` JSON references — the two `json_tree`
 /// scans UNION'd, exactly Go's fragment (`:88-98`).
@@ -207,6 +187,479 @@ pub fn purge_unused_sql() -> Sql {
         ),
         Vec::new(),
     )
+}
+
+/// `setSortMappings(map[string]string{"name": "tag_value"})`
+/// (`sql_tags.go:173-175`, set by `newBaseTagRepository`, so it applies to the tag
+/// dictionary AND to the genre repository). Kept as a constant so the one-entry map
+/// is a pinned fact rather than an accident.
+pub const SORT_MAPPINGS: [(&str, &str); 1] = [("name", "tag_value")];
+
+/// `lookupSortMapping` (`sql_base_repository.go:187-197`): direct hit, then the
+/// snake_cased hit. Go also probes `toCamelCase(sort)` between the two; with this
+/// one-key map that arm can only fire on the key itself, which the direct arm
+/// already catches, so it is not reproduced.
+#[must_use]
+pub fn sort_mapping(sort: &str) -> Option<&'static str> {
+    SORT_MAPPINGS
+        .iter()
+        .find(|(key, _)| *key == sort || *key == crate::sql_restful::to_snake_case(sort))
+        .map(|(_, value)| *value)
+}
+
+/// `sortMapping` (`sql_base_repository.go:165-183`): resolve each comma-separated
+/// part through [`sort_mapping`], snake-casing the parts it does not know.
+/// Executed (oracle `/tmp/sd3g1_oracle6`): `Sort:"name"` resolves to the `tag_value`
+/// mapping (`ORDER BY tag_value desc`), and the un-mapped `Sort:"album_count"` keeps
+/// its snake-cased alias (`ORDER BY album_count desc LIMIT 2`).
+#[must_use]
+pub fn mapped_sort(sort: &str) -> String {
+    sort.split(',')
+        .map(|part| {
+            let part = part.trim();
+            match sort_mapping(part) {
+                Some(mapping) => mapping.to_string(),
+                None => crate::sql_restful::to_snake_case(part),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `buildSortOrder` (`sql_base_repository.go:199-228`) over THIS repository's
+/// mappings. Local rather than [`crate::player_repo::build_sort_order`], which
+/// resolves the player's map — Go's splitter is per-repository for exactly that
+/// reason (the same decision is recorded in `library_repo::build_sort_order`).
+#[must_use]
+pub fn build_sort_order(sort: &str, order: &str) -> String {
+    let order = order.trim().to_lowercase();
+    let (order, reverse) = if order == "desc" {
+        ("desc".to_string(), "asc".to_string())
+    } else {
+        ("asc".to_string(), "desc".to_string())
+    };
+    mapped_sort(sort)
+        .split(", ")
+        .map(|part| {
+            let mut fields = part.split_whitespace();
+            let field = fields.next().unwrap_or("");
+            let direction = match fields.next() {
+                None | Some("asc") => order.clone(),
+                Some(_) => reverse.clone(),
+            };
+            format!("{field} {direction}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `tagLibraryIdFilter` (`sql_tags.go:135-137`) as a `FilterFn`: the clause the
+/// repository registers for its `library_id` key (`sql_tags.go:168`).
+/// [`crate::sql_tags::where_tag_library_id`] is the same clause for a builder
+/// caller; the rest layer needs it as a filter function, so it is built here.
+pub fn tag_library_id_filter() -> crate::sql_restful::FilterFn {
+    Box::new(|_field: &str, value: &str| {
+        Some(crate::sql_restful::Filter::Eq {
+            column: format!("{LIBRARY_TAG_TABLE}.library_id"),
+            value: Value::from(value),
+        })
+    })
+}
+
+/// `registerModel(&model.Tag{}, map[string]filterFunc{…})` plus
+/// `registerModelWhiteList` (`sql_tags.go:166-172`,
+/// `sql_base_repository.go:101-106`, `sql_restful.go:142-163`): the two filter
+/// mappings Go registers for the tag dictionary, and the whitelist of
+/// `model.Tag`'s field names plus the annotation fields.
+///
+/// The mappings are the executed difference between the two filter spellings:
+/// `Filters:{"name":"oc"}` traces `WHERE (tag_value LIKE ?)` bound to `%oc%`
+/// (`containsFilter("tag_value")`, `sql_tags.go:167`, `sql_restful.go:104-109`) and
+/// `Filters:{"library_id":"2"}` traces `WHERE (library_tag.library_id = ?)` bound to
+/// `"2"` (`sql_tags.go:168`). Without the mappings both would fall through to the
+/// whitelist arm and render `name LIKE ?` / `library_id = ?` against columns this
+/// projection does not emit. Executed (oracle `/tmp/sd3g1_oracle8`): the first
+/// returns `Rock/2/5`, the second returns nothing for a user with access only to
+/// library 1.
+#[must_use]
+pub fn rest_repo() -> RestRepository {
+    RestRepository::new(TAG_TABLE)
+        .with_filter_mappings([
+            ("name", crate::sql_restful::contains_filter("tag_value")),
+            ("library_id", tag_library_id_filter()),
+        ])
+        .with_field_white_list(["ID", "TagName", "TagValue", "AlbumCount", "SongCount"])
+}
+
+/// `sanitizeSort` for this repository (`sql_restful.go:64-82`, which validates
+/// against `lookupSortMapping` OR the field whitelist). The mapping arm is what
+/// keeps `Sort:"name"` — the whitelist has `tag_name`, not `name` — so the probe is
+/// not redundant here. Executed: `ReadAll(Sort:"bogus")` traces NO ORDER BY beside
+/// the `Ignoring sort not whitelisted` warning, while `ReadAll(Sort:"name",
+/// Order:"desc")` traces `ORDER BY tag_value desc` (oracle `/tmp/sd3g1_oracle8`).
+#[must_use]
+pub fn sanitize_sort(sort: &str, order: &str) -> (String, String) {
+    let (whitelisted, order) = rest_repo().sanitize_sort(sort, order);
+    if sort.is_empty() {
+        return (String::new(), order);
+    }
+    let snake = crate::sql_restful::to_snake_case(sort);
+    let kept = if sort_mapping(&snake).is_some() || !whitelisted.is_empty() {
+        snake
+    } else {
+        String::new()
+    };
+    (kept, order)
+}
+
+/// `parseRestOptions` for this repository (`sql_restful.go:31-45`): the
+/// `QueryOptions` [`get_all_sql`] consumes. Go's `baseTagRepository.ReadAll`
+/// (`sql_tags.go:219-222`) is exactly `newSelect(ctx, parseRestOptions(…))`, so
+/// [`TagRepo::get_all`] under a [`parse_rest_options`] result IS the REST read — no
+/// second statement builder.
+#[must_use]
+pub fn parse_rest_options(
+    options: Option<&crate::sql_restful::RestQueryOptions>,
+) -> crate::sql_restful::QueryOptions {
+    let Some(options) = options else {
+        return crate::sql_restful::QueryOptions::default();
+    };
+    let (sort, order) = sanitize_sort(&options.sort, &options.order);
+    crate::sql_restful::QueryOptions {
+        sort,
+        order,
+        max: options.max,
+        offset: options.offset,
+        seed: options.filters.get("seed").cloned(),
+        filters: rest_repo().parse_rest_filters(options),
+    }
+}
+
+/// Render [`crate::sql_tags::library_filter_joins`]'s fragments with Go's JOIN
+/// KINDS (`baseTagRepository.applyLibraryFiltering`, `sql_tags.go:167-175`):
+/// `library_tag` is `sq.LeftJoin` (`:168`) and `user_library` is a bare `sq.Join`
+/// (`:173`), which squirrel renders as plain `JOIN` = INNER
+/// (`squirrel@v1.5.4/select.go:297-299`).
+///
+/// Executed divergence, and the reason this fn exists (`/tmp/sd3g_leftjoin`, and
+/// oracle `/tmp/sd3g1_oracle6` with libraries 1+2, admin `adm` joined to library 1
+/// only, dictionary `Rock`/`Pop` in lib 1, `OnlyLib2` in lib 2, and `Lonely` with no
+/// `library_tag` row at all):
+/// * Go `GetAll("genre")` for `adm` returned **`Pop/0/0, Rock/2/5`** (len 2):
+///   `OnlyLib2` and `Lonely` are BOTH absent, because INNER drops any aggregate row
+///   whose only `library_tag` row is in an inaccessible library, and any dictionary
+///   row with no `library_tag` row at all.
+/// * The headless read, which never adds that join, returned all four rows.
+/// * The parent's independent SQLite measurement of the same rows: plain `JOIN`
+///   count = 1, `LEFT JOIN` count = 2 — i.e. rendering INNER as LEFT over-counts
+///   rows the user cannot access.
+///
+/// So the previous `LEFT JOIN` rendering on the `user_library` leg (pre-existing at
+/// HEAD, `tag_repo.rs` unit test asserted it) is provably wrong on this read and is
+/// corrected here. `library_filter_joins` itself is untouched — `genre_repo.rs:116`
+/// asserts the old shape and that lane is outside this slice's ownership, so the
+/// same divergence remains open there (recorded in
+/// `docs/rust-port/hydrate-contract.md` §S-D3g).
+#[must_use]
+fn join_clause(join: &str) -> String {
+    if join.starts_with("user_library") {
+        format!(" JOIN {join}")
+    } else {
+        format!(" LEFT JOIN {join}")
+    }
+}
+
+/// `GetAll` (`tag_repository.go:78-83`) over the `baseTagRepository.newSelect`
+/// shape (`sql_tags.go:178-196`): the name-filtered aggregate select.
+/// `COALESCE(SUM(…, 0)` keeps rows with no `library_tag` match at zero counts, the
+/// LEFT `library_tag` leg is why, and the authenticated user's INNER `user_library`
+/// join scopes the SUM to accessible libraries (`None` = no logged-in user, and then
+/// that join is not added at all — `sql_tags.go:170-175`).
+///
+/// `id` is the `baseTagRepository.Read` arm (`sql_tags.go:212-216`); `None` is
+/// `GetAll`. See [`read_sql`] for why the tag-name clause is NOT added on that arm.
+///
+/// Clause order follows squirrel's clause KIND order, matching Go's executed
+/// traces: WHERE (caller filters first, then the tag-name clause) → GROUP BY →
+/// ORDER BY → LIMIT → OFFSET. Filters come first because `sqlRepository.newSelect`
+/// runs `applyOptions`/`applyFilters` (`sql_base_repository.go:140-146`) before
+/// `GetAll` appends `Where(Eq{"tag.tag_name": name})` (`tag_repository.go:79`), and
+/// squirrel ANDs repeated `.Where()` calls in call order. Executed args bind in SQL
+/// position: the `user_library` user id first (squirrel binds JOIN args before WHERE
+/// args), then the filter values, then the tag name — `[adm, 2, genre]` for
+/// `Filters: Eq{"library_tag.library_id": 2}` (oracle `/tmp/sd3g1_oracle6`).
+///
+/// A [`crate::sql_restful::Filter`] list renders unparenthesized and AND-joined
+/// here, whereas Go's `And{}` renders `(a AND b)` (`squirrel@v1.5.4/expr.go:369-388`)
+/// and an EMPTY `And` renders `(1=1)`. Both are row-set identical against this
+/// select — executed: the `And{Eq{library_tag.library_id:1}, Eq{tag.tag_value:Rock}}`
+/// arm and the port's AND-joined pair both returned exactly `Rock/2/5` — so no
+/// parentheses are added (brief rule 4).
+///
+/// # Errors
+/// [`crate::sqlrepo::SqlError::NoTable`] if the FROM fragment is missing (fixed
+/// table ⇒ unreachable in practice), or `EmptyOrder` if a caller sets an explicitly
+/// empty order-by list.
+pub fn get_all_sql(
+    tag_name: &str,
+    user_id: Option<&str>,
+    options: Option<&crate::sql_restful::QueryOptions>,
+    id: Option<&str>,
+) -> Result<Sql, crate::sqlrepo::SqlError> {
+    let (joins, join_args) = library_filter_joins(user_id.map(std::string::ToString::to_string));
+    let join_sql = joins
+        .iter()
+        .map(|join| join_clause(join))
+        .collect::<String>();
+    let mut sq = Repository::new(TAG_TABLE).select([
+        "tag.id",
+        "tag.tag_name",
+        "tag.tag_value",
+        "COALESCE(SUM(library_tag.album_count), 0) as album_count",
+        "COALESCE(SUM(library_tag.media_file_count), 0) as song_count",
+    ]);
+    if let Some(options) = options {
+        sq = crate::sql_search::apply_pagination(sq, options);
+        sq = crate::sql_search::apply_filters(sq, options);
+        if !options.sort.is_empty() {
+            sq = sq.order_by([build_sort_order(&options.sort, &options.order)]);
+        }
+    }
+    if let Some(id) = id {
+        // `Read` (`sql_tags.go:213`): `Where(Eq{"id": id})`, UNQUALIFIED, and this
+        // is the tag dictionary instance whose `tagFilter` is nil
+        // (`tag_repository.go:22`), so the executed trace has no tag-name clause:
+        // `WHERE id = ?`.
+        sq = sq.where_eq("id", id);
+    } else {
+        sq = sq.where_eq("tag.tag_name", tag_name);
+    }
+    sq = sq.group_by(["tag.id", "tag.tag_name", "tag.tag_value"]);
+    let (mut sql, mut args) = sq.to_sql()?;
+    // Splice the join fragments after FROM tag, before WHERE — squirrel's join
+    // position; the join identifiers are fixed schema names (`sql_tags.go:168-174`)
+    // and the only bound value is the user id, which binds at the JOIN position and
+    // therefore ahead of every WHERE value.
+    let from = format!("FROM {TAG_TABLE}");
+    let Some(pos) = sql.find(&from) else {
+        return Err(crate::sqlrepo::SqlError::NoTable);
+    };
+    let at = pos + from.len();
+    sql.replace_range(at..at, &join_sql);
+    args.splice(..0, join_args.iter().cloned());
+    Ok((sql, args))
+}
+
+/// `GetAll` (`tag_repository.go:78-83`) with an empty option list: `newSelect(ctx)`
+/// applies no filter, no page and no ORDER BY at all
+/// (`sql_base_repository.go:142-145`), so rows come back in SQLite's order.
+/// Executed trace: the aggregate select with `WHERE tag.tag_name = ?` plus the
+/// GROUP BY, nothing after it.
+pub fn get_all_plain_sql(
+    tag_name: &str,
+    user_id: Option<&str>,
+) -> Result<Sql, crate::sqlrepo::SqlError> {
+    get_all_sql(tag_name, user_id, None, None)
+}
+
+/// `baseTagRepository.Read` (`sql_tags.go:212-216`): the aggregate select with
+/// `Where(Eq{"id": id})` and NO options — so no filters, no page, no sort leg, and
+/// (for this dictionary instance, `tagFilter == nil`) no tag-name clause.
+/// Executed (oracle `/tmp/sd3g1_oracle8`): `WHERE id = ? GROUP BY …`, args
+/// `[adm, <tag id>]`; the accessible tag came back with its counts, and a tag whose
+/// rows live only in an inaccessible library returned `data not found` — the INNER
+/// join removes the row rather than yielding a zero-count tag.
+pub fn read_sql(user_id: Option<&str>, id: &str) -> Result<Sql, crate::sqlrepo::SqlError> {
+    get_all_sql("", user_id, None, Some(id))
+}
+
+/// `baseTagRepository.Count` (`sql_tags.go:203-216`) through `sqlRepository.count`
+/// (`sql_base_repository.go:565-576`): the DISTINCT aggregate over the SAME join
+/// legs plus `count`'s reset `ORDER BY tag.id`. No GROUP BY — the aggregate is the
+/// whole select.
+///
+/// Differences from [`get_all_sql`], all from Go's own code and all executed:
+/// * the tag dictionary's `tagFilter` is nil (`tag_repository.go:22`), so `Count`
+///   adds NO tag-name clause — executed trace has none (`GetAll` does have it);
+/// * `count` drops the columns/bounds and APPENDS `ORDER BY tag.id`
+///   (`sql_base_repository.go:566-569`), and `Count` never calls `applyOptions`, so
+///   caller `Sort`/`Max`/`Offset` cannot reach this statement — executed
+///   `Count(Sort:"name", Order:"desc")` traces `… ORDER BY tag.id`, reset leg only;
+/// * `count` applies filters AFTER the clauses already on the builder
+///   (`sql_base_repository.go:571`), the reverse of `newSelect`'s order.
+///
+/// Executed values (oracle `/tmp/sd3g1_oracle8`; dictionary Rock/Pop/Chill in lib 1,
+/// OnlyLib2 in lib 2, `Lonely` with no `library_tag` row): `adm` joined to lib 1
+/// only → `3`; headless → `5`; `adm` with `Filters:{"name":"oc"}` → `1`; `adm` with
+/// `Filters:{"library_id":"2"}` → `0`. Note the INNER-vs-LEFT hazard in
+/// `join_clause`: a LEFT rendering would report `5` for the admin instead of `3`.
+///
+/// # Errors
+/// [`crate::sqlrepo::SqlError`] if the builder fails to materialize.
+pub fn count_all_sql(
+    user_id: Option<&str>,
+    options: Option<&crate::sql_restful::QueryOptions>,
+) -> Result<Sql, crate::sqlrepo::SqlError> {
+    let (joins, join_args) = library_filter_joins(user_id.map(std::string::ToString::to_string));
+    let join_sql = joins
+        .iter()
+        .map(|join| join_clause(join))
+        .collect::<String>();
+    let mut sq = Repository::new(TAG_TABLE);
+    if let Some(options) = options {
+        sq = crate::sql_search::apply_filters(sq, options);
+    }
+    // `count` replaces the columns and drops bounds/order
+    // (`sql_base_repository.go:565-568`); `Repository::count` reproduces that, and
+    // the reset leg is re-installed after it (:569).
+    sq = sq.count(TAG_TABLE).order_by([format!("{TAG_TABLE}.id")]);
+    let (mut sql, mut args) = sq.to_sql()?;
+    let from = format!("FROM {TAG_TABLE}");
+    let Some(pos) = sql.find(&from) else {
+        return Err(crate::sqlrepo::SqlError::NoTable);
+    };
+    let at = pos + from.len();
+    sql.replace_range(at..at, &join_sql);
+    args.splice(..0, join_args.iter().cloned());
+    Ok((sql, args))
+}
+
+/// Failures of the executed tag reads ([`TagRepo`]). The variant set follows the
+/// sibling `RadioRepo::RadioError` (`radio_repo.rs:425-460`).
+#[derive(Debug, thiserror::Error)]
+pub enum TagError {
+    /// The statement failed, or a row would not scan. There is no `PostScan` hook
+    /// on this read (`grep -n "dbTag\|PostScan" persistence/sql_tags.go
+    /// persistence/tag_repository.go` is empty), so this is a pure statement/scan
+    /// failure; see [`crate::hydrate::row_to_tag`] for the aggregate aliases' NULL
+    /// behavior.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// The statement could not be materialized — Go's `toSQL` failure
+    /// (`sql_base_repository.go:358-372`).
+    #[error(transparent)]
+    Builder(#[from] crate::sqlrepo::SqlError),
+
+    /// No row matched. Only [`TagRepo::read`] reports it: Go's `Read` runs
+    /// `queryOne`, which maps `sql.ErrNoRows` to `model.ErrNotFound`
+    /// (`sql_base_repository.go:375-388`, `dbx@v1.12.0/rows.go:237-244`). Executed
+    /// (oracle `/tmp/sd3g1_oracle8`): a dictionary tag whose `library_tag` rows live
+    /// only in an inaccessible library returns `data not found`, because the INNER
+    /// `user_library` join removes the aggregate row entirely.
+    ///
+    /// [`TagRepo::get_all`] and [`TagRepo::get_all_plain`] NEVER report this
+    /// variant: `queryAll`'s dbx `All` makes an empty non-nil slice for a zero-row
+    /// result (`dbx@v1.12.0/query.go:278-291`), so its ErrNoRows arm is dead on that
+    /// path. Executed: `GetAll("")` returned `len=0` with `err=<nil>`.
+    #[error("data not found")]
+    NotFound,
+}
+
+/// `tagRepository` (`persistence/tag_repository.go:20-24`) bound to one pooled
+/// connection — the executed READ side of the tag dictionary.
+///
+/// Go takes the logged user from the ambient ctx (`loggedUser(ctx)`,
+/// `sql_base_repository.go:49-58`); this crate has no ambient context (the
+/// `sqlrepo.rs` DI freeze), so the caller passes the user id explicitly — `None` is
+/// Go's `invalidUserId` headless context, which adds no `user_library` join
+/// (`sql_tags.go:170-175`) — and every statement runs through [`crate::execution`],
+/// the port of `queryOne`/`queryAll`/`count`
+/// (`sql_base_repository.go:336-355,375-388,441-457,565-576`), in the shape
+/// `radio_repo::RadioRepo` establishes.
+///
+/// The read is a single hydration phase ([`crate::hydrate::row_to_tag`]): no
+/// wrapper, no `PostScan`, no shim column.
+#[derive(Debug)]
+pub struct TagRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> TagRepo<'a> {
+    /// `NewTagRepository` (`tag_repository.go:20-24`): bind to `conn` (the pooled
+    /// lease). Go's `newBaseTagRepository(db, nil)` leaves the dictionary with no
+    /// tag-name filter, so the name is a per-call argument here exactly as in
+    /// `GetAll(ctx, name, …)`.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `GetAll` (`tag_repository.go:78-83`) with an empty option list.
+    ///
+    /// # Errors
+    /// [`TagError::Sqlite`] on a statement or scan failure; [`TagError::Builder`] if
+    /// the builder fails to materialize. Never [`TagError::NotFound`].
+    pub fn get_all_plain(
+        &self,
+        tag_name: &str,
+        user_id: Option<&str>,
+    ) -> Result<TagList, TagError> {
+        let statement = get_all_plain_sql(tag_name, user_id)?;
+        Ok(crate::execution::query_all(
+            self.conn,
+            &statement,
+            crate::hydrate::row_to_tag,
+        )?)
+    }
+
+    /// `GetAll` (`tag_repository.go:78-83`) under the caller's parsed options:
+    /// filters, the `buildSortOrder` leg over [`SORT_MAPPINGS`], and Max/Offset all
+    /// reach the statement as they do in Go's `newSelect`. Go's `ReadAll`
+    /// (`sql_tags.go:219-222`) is this method under [`parse_rest_options`].
+    ///
+    /// Deviation kept, not fixed: an `Offset` with no `Max` EXECUTES here
+    /// (`LIMIT -1 OFFSET n`, `sqlrepo.rs:313-319`) where Go's bare `OFFSET n` is a
+    /// SQLite parse error — executed Go returns `near "OFFSET": syntax error`
+    /// (oracle `/tmp/sd3g1_oracle6`). Pinned rather than "fixed".
+    ///
+    /// # Errors
+    /// [`TagError::Sqlite`] on a statement or scan failure; [`TagError::Builder`] if
+    /// the builder fails to materialize. Never [`TagError::NotFound`].
+    pub fn get_all(
+        &self,
+        tag_name: &str,
+        user_id: Option<&str>,
+        options: Option<&crate::sql_restful::QueryOptions>,
+    ) -> Result<TagList, TagError> {
+        let statement = get_all_sql(tag_name, user_id, options, None)?;
+        Ok(crate::execution::query_all(
+            self.conn,
+            &statement,
+            crate::hydrate::row_to_tag,
+        )?)
+    }
+
+    /// `baseTagRepository.Count` (`sql_tags.go:203-216`): the DISTINCT aggregate.
+    ///
+    /// # Errors
+    /// [`TagError::Sqlite`] when the statement fails; [`TagError::Builder`] if the
+    /// builder fails to materialize. Go's `count` returns `res.Count` BESIDE a
+    /// `queryOne` error (`sql_base_repository.go:572-574`); the port reports the
+    /// error alone and the count defaults to 0.
+    pub fn count_all(
+        &self,
+        user_id: Option<&str>,
+        options: Option<&crate::sql_restful::QueryOptions>,
+    ) -> Result<i64, TagError> {
+        let statement = count_all_sql(user_id, options)?;
+        Ok(
+            crate::execution::query_optional(self.conn, &statement, |row| row.get::<_, i64>(0))?
+                .unwrap_or_default(),
+        )
+    }
+
+    /// `baseTagRepository.Read` (`sql_tags.go:212-216`): one aggregate row by id.
+    ///
+    /// # Errors
+    /// [`TagError::NotFound`] when the aggregate has no row for the id (including a
+    /// tag the user's libraries cannot see); [`TagError::Sqlite`] on a statement or
+    /// scan failure; [`TagError::Builder`] if the builder fails to materialize.
+    pub fn read(&self, user_id: Option<&str>, id: &str) -> Result<Tag, TagError> {
+        let statement = read_sql(user_id, id)?;
+        crate::execution::query_optional(self.conn, &statement, crate::hydrate::row_to_tag)?
+            .ok_or(TagError::NotFound)
+    }
 }
 
 #[cfg(test)]
@@ -299,12 +752,19 @@ mod tests {
 
     #[test]
     fn get_all_binds_the_tag_name_and_scopes_the_sums_to_the_user() {
-        // Arrange: GetAll + baseTagRepository.newSelect (tag_repository.go:71-74,
-        // sql_tags.go:180-199) with a logged-in user.
+        // Arrange: GetAll + baseTagRepository.newSelect (tag_repository.go:78-83,
+        // sql_tags.go:178-196) with a logged-in user.
         // Act:
-        let (sql, args) =
-            get_all_sql("genre", Some("user1"), None).expect("the aggregate select materializes");
-        // Assert:
+        let (sql, args) = get_all_sql("genre", Some("user1"), None, None)
+            .expect("the aggregate select materializes");
+        // Assert: byte-identical to the executed Go trace (oracle
+        // /tmp/sd3g1_oracle6), which renders the `library_tag` leg as LEFT JOIN
+        // (`sq.LeftJoin`, sql_tags.go:168) and the `user_library` leg as a bare
+        // INNER JOIN (`sq.Join`, sql_tags.go:173, rendered by squirrel
+        // select.go:297-299). The earlier version of this test asserted LEFT JOIN
+        // on both legs; the executed trace and an executed SQLite row-count
+        // measurement (/tmp/sd3g_leftjoin: plain JOIN = 1, LEFT JOIN = 2) both
+        // contradict that.
         assert_eq!(
             sql,
             "SELECT tag.id, tag.tag_name, tag.tag_value, \
@@ -312,10 +772,12 @@ mod tests {
              COALESCE(SUM(library_tag.media_file_count), 0) as song_count \
              FROM tag \
              LEFT JOIN library_tag on library_tag.tag_id = tag.id \
-             LEFT JOIN user_library on user_library.library_id = library_tag.library_id AND user_library.user_id = ? \
+             JOIN user_library on user_library.library_id = library_tag.library_id AND user_library.user_id = ? \
              WHERE tag.tag_name = ? \
              GROUP BY tag.id, tag.tag_name, tag.tag_value"
         );
+        // Assert: the JOIN arg binds ahead of the WHERE arg (squirrel binds join
+        // parts before conditions), matching Go's args map p0=adm, p1=genre.
         assert_eq!(
             args,
             vec![
@@ -334,7 +796,7 @@ mod tests {
             ..crate::sql_restful::QueryOptions::default()
         };
         // Act:
-        let (sql, args) = get_all_sql("genre", None, Some(&options))
+        let (sql, args) = get_all_sql("genre", None, Some(&options), None)
             .expect("the unscoped aggregate select materializes");
         // Assert:
         assert!(!sql.contains("user_library"));

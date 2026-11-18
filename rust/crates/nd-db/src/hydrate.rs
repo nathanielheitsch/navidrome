@@ -3552,6 +3552,181 @@ fn json_type_name(value: &JsonValue) -> &'static str {
     }
 }
 
+// ---------------------------------------------------------------------------
+// S-D3g1: library + the `SELECT u.*` user projection.
+// ---------------------------------------------------------------------------
+
+/// `libraryRepository.Get`/`GetAll` row mapping (`library_repository.go:35-40`,
+/// `:283-287`): there is deliberately **one phase, not two**. Go has no
+/// `dbLibrary` wrapper, no `PostScan` hook and no shim column —
+/// `grep -n "dbLibrary\|PostScan" persistence/library_repository.go` and
+/// `grep -rn "dbLibrary" persistence/ model/` both come back empty — because
+/// `queryOne`/`queryAll` `ScanStruct` straight into `model.Library`
+/// (`dbx@v1.12.0/rows.go:60-85`). So this reader yields a
+/// [`crate::library_repo::LibraryRecord`] directly: no raw-row twin, no phase-2
+/// hook, and nothing normalises a column after the scan.
+///
+/// `SELECT *` emits the table's own columns, so every field is read by name.
+/// NULL parity follows Go's non-pointer fields exactly: the eight `string`/`bool`/
+/// numeric columns go through [`RowGet::get_text`]/[`RowGet::get_bool`]/
+/// [`RowGet::get_i64`]/[`RowGet::get_f64`] and a NULL cell FAILS the scan, which is
+/// executed Go behavior (`model/library.go:15-36` has no pointer field at all):
+/// over a row with `total_duration = NULL`, `Get` returns
+/// `sql: Scan error on column index 16, name "total_duration": converting NULL to
+/// float64 is unsupported` beside a NON-nil pointer, and `GetAll` aborts with the
+/// same error keeping only the rows scanned before it — executed over
+/// {id=1 NULL, id=2 ok} with `ORDER BY id asc`: `len == 1`, error set. With
+/// `remote_path = NULL` on the SECOND row the trace is
+/// `sql: Scan error on column index 3, name "remote_path": converting NULL to
+/// string is unsupported` (oracle `/tmp/sd3g1_oracle2`). The port reports the
+/// failure and drops the partial slice, since `Result` has no value-beside-error
+/// (the same decision as [`crate::radio_repo::RadioRepo::get_all`]).
+///
+/// All five stamps (`last_scan_at`, `last_scan_started_at`, `updated_at`,
+/// `created_at` — `model/library.go:19-23` — are non-pointer `time.Time`) go
+/// through [`RowGet::get_dt`]: NULL errors, and an unparseable cell scans as
+/// [`go_zero_time`] because the driver swallows every DATETIME parse failure
+/// (`go-sqlite3@v1.14.52/sqlite3.go:2831-2838`). Crucially, an INTEGER cell in a
+/// column DECLARED `datetime` is decoded as a timestamp rather than rejected
+/// (see [`driver_integer_dt`]), which is what makes the read side parity for
+/// BOTH storage spellings. Executed against the real Go repository over
+/// `last_scan_at = 1704067200` and `last_scan_started_at = 0`:
+/// `2024-01-01 00:00:00 +0000 UTC` and `1970-01-01 00:00:00 +0000 UTC`, and
+/// `IsZero()` on the latter is **false** — the epoch integer is NOT Go's zero
+/// time. That is the read-side half of the write-side epoch-integer divergence
+/// recorded in `library_repo`'s module header; [`crate::library_repo::ZERO_TIME`]
+/// and [`crate::library_repo::scan_in_progress_sql`] are where it changes a
+/// result.
+///
+/// `ID` is Go's `int` (`model/library.go:15`), read with [`RowGet::get_i64`] —
+/// Go's `int` is 64-bit, so the record's `i64` carries it without narrowing.
+/// The six `total_*` counters are Go `int` too, kept as `i64` for the same
+/// reason; `total_size` is Go `int64` and `total_duration` Go `float64`.
+///
+/// # Errors
+/// A NULL or unscannable *required* library column fails, per Go parity.
+pub fn row_to_library(row: &Row<'_>) -> SqliteResult<crate::library_repo::LibraryRecord> {
+    Ok(crate::library_repo::LibraryRecord {
+        id: row.get_i64("id")?,
+        name: row.get_text("name")?,
+        path: row.get_text("path")?,
+        remote_path: row.get_text("remote_path")?,
+        last_scan_at: row.get_dt("last_scan_at")?,
+        last_scan_started_at: row.get_dt("last_scan_started_at")?,
+        full_scan_in_progress: row.get_bool("full_scan_in_progress")?,
+        updated_at: row.get_dt("updated_at")?,
+        created_at: row.get_dt("created_at")?,
+        total_songs: row.get_i64("total_songs")?,
+        total_albums: row.get_i64("total_albums")?,
+        total_artists: row.get_i64("total_artists")?,
+        total_folders: row.get_i64("total_folders")?,
+        total_files: row.get_i64("total_files")?,
+        total_missing_files: row.get_i64("total_missing_files")?,
+        total_size: row.get_i64("total_size")?,
+        total_duration: row.get_f64("total_duration")?,
+        default_new_users: row.get_bool("default_new_users")?,
+        pid_album: row.get_text("pid_album")?,
+        pid_track: row.get_text("pid_track")?,
+        scanned_pid_album: row.get_text("scanned_pid_album")?,
+        scanned_pid_track: row.get_text("scanned_pid_track")?,
+    })
+}
+
+/// The `SELECT u.*` user projection (`library_repository.go:297-307`,
+/// `GetUsersWithLibraryAccess`): the SAME twelve columns and the SAME read order
+/// as [`row_to_user`], but with **no `libraries_json` alias**, so the second
+/// phase never runs.
+///
+/// Go scans into `dbUser` (`user_repository.go:30-34`), whose `LibrariesJSON`
+/// field only gets a scan target when the SELECT emits a column named
+/// `libraries_json` (`dbx@v1.12.0/rows.go:80-86` binds a reference per mapped
+/// column). `GetUsersWithLibraryAccess` builds a plain `Select("u.*")` with no
+/// such alias, so `LibrariesJSON` stays `""`, `dbUser.PostScan` takes its
+/// `!= ""` skip arm (`user_repository.go:37-41`), and `User.Libraries` stays
+/// NIL. Executed against the real repository: every returned user reported
+/// `libs=0`, `lastLoginNil` true wherever `last_login_at` is NULL, and the
+/// `structs:"-"` `Password`/`TokenEpoch` columns ARE scanned (`pwd="CIPHER"`,
+/// `epoch=7`) — the same field-name mapping rule [`row_to_user`] documents.
+///
+/// The record therefore carries `libraries: Vec::new()` — Go's nil slice and the
+/// empty slice agree for `HasLibraryAccess` (`model/user.go:42-50`, which loops
+/// zero times) and for JSON's `omitempty` (both omit the key). It is NOT the
+/// hydrated library list: a caller that needs it must use
+/// [`crate::user_repo::UserRepo::get`], whose select emits the alias.
+///
+/// The column reads are deliberately spelled out rather than shared with
+/// [`row_to_user`]: that fn reads `libraries_json` FIRST and would fail this
+/// projection, and S-D3g1 must not modify an existing row mapper's body. The
+/// two lists are field-for-field identical, so the drift risk is confined to
+/// this doc; `runtime_hydrate_library_property_tag.rs` pins the executed column
+/// set from the live schema.
+///
+/// # Errors
+/// A missing or NULL *required* user column fails, per Go parity.
+pub fn row_to_user_without_libraries(row: &Row<'_>) -> SqliteResult<UserRecord> {
+    Ok(UserRecord {
+        id: row.get_text("id")?,
+        user_name: row.get_text("user_name")?,
+        name: row.get_text("name")?,
+        email: row.get_text("email")?,
+        is_admin: row.get_bool("is_admin")?,
+        last_login_at: row.get_opt_text("last_login_at")?,
+        last_access_at: row.get_opt_text("last_access_at")?,
+        created_at: row.get_text("created_at")?,
+        updated_at: row.get_text("updated_at")?,
+        scrobble_filter: row.get_text("scrobble_filter")?,
+        password: row.get_text("password")?,
+        token_epoch: row.get_i64("token_epoch")?,
+        // No `libraries_json` column exists on this projection, so Go's
+        // PostScan never runs and the list stays nil/empty (see above).
+        libraries: Vec::new(),
+    })
+}
+
+/// `tagRepository.GetAll` row mapping (`persistence/tag_repository.go:78-83`):
+/// the five columns of `baseTagRepository.newSelect` (`persistence/sql_tags.go:
+/// 197-228`) read straight into `model.Tag` (`model/tag.go:17-23`).
+///
+/// This is deliberately a SINGLE-phase mapper, like [`row_to_library`]: the tag
+/// dictionary has no `dbTag` wrapper and no `PostScan` hook
+/// (`grep -n "dbTag\|PostScan" persistence/sql_tags.go persistence/tag_repository.go`
+/// is empty), so `queryAll`'s `ScanStruct` (`dbx@v1.12.0/rows.go:60-85`) assigns
+/// each column by `db`/field name and nothing runs afterwards. There is therefore
+/// no raw-row twin and no `…_post_scan` sibling for this read.
+///
+/// Reading by ALIAS name is what Go does: the two aggregate columns are aliased
+/// `as album_count` / `as song_count` (`sql_tags.go:192-193`) and `SongCount` is
+/// the Go field the second one fills. Executed row sets (oracle
+/// `/tmp/sd3g1_oracle6`, libraries 1 and 2, admin `adm` with access to library 1
+/// only):
+/// * `GetAll("genre")` → `Pop/0/0`, `Rock/2/5` — the dictionary row with no
+///   `library_tag` row at all and the one belonging to the inaccessible library
+///   are BOTH absent, because the `user_library` leg is an INNER join;
+/// * headless `GetAll("genre")` → `Lonely/0/0`, `OnlyLib2/9/99`, `Pop/0/0`,
+///   `Rock/2/5` — with no logged-in user that join is not added at all, so every
+///   dictionary row appears (`sql_tags.go:205-210`).
+///
+/// `COALESCE(…, 0)` makes both aliases non-NULL for any row the aggregate emits,
+/// so Go's non-pointer `int` fields never meet a NULL here. The port reads them
+/// with [`RowGet::get_i64`]: Go's `int` is 64-bit, so unlike the `i32` model
+/// fields elsewhere in this file there is no narrowing step and no
+/// `narrow_i32`-style divergence to record.
+///
+/// # Errors
+/// A missing or unscannable alias fails the read. A NULL in `album_count` or
+/// `song_count` — unreachable through the aggregate's own `COALESCE`, reachable
+/// only if a caller hands this mapper a different projection — fails as Go's
+/// scan error does rather than yielding a zero count.
+pub fn row_to_tag(row: &Row<'_>) -> SqliteResult<crate::tag_repo::Tag> {
+    Ok(crate::tag_repo::Tag {
+        id: row.get_text("id")?,
+        tag_name: row.get_text("tag_name")?,
+        tag_value: row.get_text("tag_value")?,
+        album_count: row.get_i64("album_count")?,
+        song_count: row.get_i64("song_count")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

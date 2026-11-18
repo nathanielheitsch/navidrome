@@ -321,4 +321,104 @@ Keep it as plain functions over `rusqlite::Row` in a new `nd-db/src/hydrate.rs` 
 
 **VERIFIED vs UNVERIFIED tally:**
 - VERIFIED: all 13 hook locations and bodies; dbx vendored source lines (rows.go:65-101, struct.go:48,152-206,222-257,69-71); DefaultFieldMapFunc behaviour (executed); `toSQLArgs` (helpers.go:20-42); squirrel SetMap (insert.go:271-283, executed-by-read); `put`/`selectUpdateColumns`/`filterUpdateValues` (sql_base_repository.go:587-641); convert.go NULL semantics (489-546); all model pointer-field line refs; shadowing/shim mechanisms (album/artist/mediafile/folder/playlist/playlist_track); all Rust put_sql/put_legs line refs and the `8c89aeb9` append-id invariant (incl. tests/runtime_insert_alignment.rs:127-227); `time::optional_col`/`optional_sentinel` (time.rs:118,132); DTO-local-to-nd-db precedent (all 8 structs); S-A/S-B not-yet-landed state at HEAD `336f69ba`; `format_full_text`/`search_normalized` at artist_repo.rs:419,425; §1b/1c consistency.
+
+## §S-D3g1 (2026-11-18) — executed read sides for `library_repo`, `property_repo`, `tag_repo`
+
+Three repos that were render-only at `6a201f4a` now execute through `crate::execution`, each with a
+conn-bound struct created on the `radio_repo` precedent (`radio_repo.rs:542-552`
+`execution::query_optional` + `hydrate::row_to_*`; `:600-620` `execution::query_all`). New API surface:
+`LibraryRepo::{get, get_path, get_all_plain, get_all, count_all, count_all_query, scan_in_progress,`
+`get_users_with_library_access}` (7 executed call sites), `PropertyRepo::{get, default_get}` (1),
+`TagRepo::{get_all_plain, get_all, count_all, read}` (4). New row mappers appended to `hydrate.rs`
+(`row_to_library`, `row_to_user_without_libraries`, `row_to_tag`) — the diff there is append-only,
+verified: 0 deleted lines, no existing `row_to_*` body touched. Pinned by
+`tests/runtime_hydrate_library_property_tag.rs` (21 executed tests, 1045L).
+
+- **`library_repo::count_all_sql` gained the `ORDER BY library.id` leg, and the old expectation was the bug.**
+  Go's `sqlRepository.count` (`sql_base_repository.go:565-570`) does
+  `RemoveColumns().Columns("count(distinct "+table+".id) as count").RemoveOffset().RemoveLimit()`
+  `.OrderBy(table+".id").From(table)`. Go's inline comment says the leg exists "to remove any ORDER BY
+  clause that could slow down the query", but the code does not do that: squirrel has no `RemoveOrderBy`
+  and `OrderBy` appends (`squirrel@v1.5.4/select.go:362-373`), so on a sorted `CountAll` the caller's leg
+  survives and `library.id` is APPENDED after it — executed traces show `ORDER BY name desc, library.id`.
+  Read the comment as intent, not behavior. The port emitted no order leg at `6a201f4a:107-112`, so
+  `library_repo::tests::get_and_count_pin_the_base_selects` was pinning the divergence; the emitted SQL
+  changed and the stale assertion was updated to match it. Same class as the `radio_repo::count_all_sql`
+  fix in §S-D3f.
+- **`tag_repo`'s `user_library` leg was `LEFT JOIN`; Go renders INNER.** `sql_tags.go:173` calls
+  `sq.Join("user_library …")`, and squirrel renders `.Join` as the literal `"JOIN "`
+  (`squirrel@v1.5.4/select.go:297-299`), i.e. INNER semantics, while `sql_tags.go:168` separately uses
+  `.LeftJoin` for `library_tag`. The port rendered `LEFT JOIN` for BOTH legs (baseline `tag_repo.rs:315`).
+  Executed divergence on the same rows: plain `JOIN` count = 1 vs `LEFT JOIN` count = 2
+  (`/tmp/sd3g1_leftjoin`), so an authenticated tag read/count over-counts tags whose only `library_tag`
+  row sits in an inaccessible library, and drops nothing for a dictionary row with no `library_tag` row.
+  Fixed in `tag_repo` and pinned twice: `tag_get_all_scopes_rows_to_accessible_libraries_with_an_inner_join`
+  (admin `Rock/2/5, Pop/0/0` = 2 rows vs headless = 4) and `tag_count_all_is_the_distinct_aggregate_over_the_same_joins`
+  (scoped 3, headless 5; a LEFT rendering would report 4).
+- **RESIDUAL, not fixed, outside this lane's ownership: `genre_repo.rs:82` has the same bug.** It maps
+  EVERY splice with `.map(|j| format!(" LEFT JOIN {j}"))`, including the `user_library` leg Go renders as
+  INNER via `sq.Join` (`sql_tags.go:173`); its own test at `genre_repo.rs:116` pins the LEFT text. Pre-existing
+  at `6a201f4a`, and `genre_repo` has no executed read, so it is latent. Executed on the same fixture:
+  Go/INNER `GetAll("genre")` = 2 rows vs the LEFT rendering = 4, and Go's `Count` = 3 vs the LEFT rendering
+  = 4. Both genre consumers take their joins from the shared `sql_tags::library_filter_joins`
+  (`sql_tags.rs:459-471`), so a join-KIND seam already exists (`join_clause`) — but changing it changes
+  genre's rendering, which genre's own test pins, so this stays genre's lane and is not fixable inside
+  S-D3g1's files. No Go test pins either shape: `persistence/tag_library_filtering_test.go` contains no
+  `LEFT` at all, so the genre lane must rely on an executed Go oracle rather than a repo test.
+- **RESIDUAL, deliberately untouched: `library_repo` still binds epoch integers into `datetime` columns**
+  (`ZERO_TIME` at `library_repo.rs:120`, bound at `:494`, `:599`, `:627`), which `time.rs:42-49` self-declares as
+  unconverted. Converting write-side storage was out of scope here; the new reads decode what the port writes
+  (`library_get_returns_the_full_record_from_an_integer_id_bind`), which is why the affinity hazard from
+  §Then item 3 stays open for the scanner lanes that range-predicate these columns.
+- **Deviation kept, not fixed: offset without limit renders `LIMIT -1 OFFSET n`**
+  (`library_repo.rs:219-221`, documented at `:411`). `library_get_all_offset_without_limit_executes_where_go_fails`
+  pins it: the port returns rows where Go's driver fails to parse the bound.
+- **Schema observation, not this lane's fix:** the fresh DDL seeds no `library` row
+  (`grep -rn "INSERT INTO library" rust/crates/nd-dbschema/src/schema_ddl.rs` is empty, and the golden DDL
+  is DDL-only by design), while Go's migrations do: `db/migrations/20240511220020_add_library_table.go:31`
+  inserts `library(id=1, 'Music Library')`, and `20250701010108_add_multi_library_support.go:41` only adds
+  the `default_new_users` column. Tests seed libraries explicitly. Recorded for the schema lane.
+- **Gate after this lane** (re-measured by the parent, real exit codes): `cargo fmt --all -- --check` 0;
+  `cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test -p nd-db --all-targets` 0 —
+  **718 passed / 0 failed / 0 ignored across 25 binaries** (was 697/24); `cargo test --workspace` 0 —
+  **1797 passed / 0 failed / 1 ignored across 68 binaries** (was 1776/67); `cargo doc -p nd-db --all-features`
+  0 with **22 warnings = 8 unresolved + 14 private**, the same set as the §S-D3f baseline (the two links this
+  lane briefly introduced, `FilterFn` and `RowGet::get_i32`, are now plain code spans); `git diff --check` 0.
+- **EXECUTED vs INFERRED:** every row set, count, id order and `(sql, args)` pair in the new tests was run
+  against real SQLite on the fresh schema, cross-checked against Go traces in `/tmp/sd3g1_oracle{,2..9}`.
+  Four arms are labelled INFERRED in their test comments rather than asserted as parity: the library
+  `pid_*`/`scanned_pid_*` empty-string reads, property `Get` on a stored empty string, `DefaultGet`'s
+  non-NotFound error arm (Go returns the default beside the error, which `Result` cannot represent, and it
+  is unreachable on the fresh schema), and the TEXT-stamped-row arm of
+  `library_scan_in_progress_follows_the_stamps_this_port_writes` (Go binds `time.Time{}`, so rows stored as
+  INTEGER 0 would satisfy its `<>` where the port excludes them — reasoned from SQLite affinity plus
+  `library_repository.go:191`, not run against the Go repository). Count paths deliberately DROP bounds:
+  `Repository::count` clears `limit`/`offset` (`sqlrepo.rs:294-301`) exactly where Go calls
+  `RemoveOffset().RemoveLimit()` (`sql_base_repository.go:566-567`), so the offset-without-limit divergence
+  above applies only to `get_all`-shaped reads, and
+  `library_count_all_query_executes_and_ignores_the_caller_page` pins that a caller page cannot shift a
+  count.
+- **Process note worth keeping:** this lane stopped three times mid-task at the same point — design
+  complete, large test file never written — with status `idle`, not an error. The fourth attempt succeeded
+  only when the file was written in chunks of 2-5 tests with a `cargo test --test <file>` run between each.
+  Prefer chunked file writes for any lane whose main deliverable is a large new test file.
 - UNVERIFIED (flagged, not inferred): §1b's two empirical Go JSON orderings (integer-key and participant-order traps — doc-asserted, not re-run); per-repo annotation-join coverage in base SELECTs; `nd_id::new_tag_id` id derivation; whether S-A's golden comparison is byte- or parse-based.
+**Reviewer round 2 on S-D3g1 (2026-11-18, agent `630467d6`, read-only, thinking `high`):** verdict
+APPROVE-WITH-FIXES, no P1. It independently re-derived the INNER-vs-LEFT divergence with its own pinned
+squirrel oracle and reproduced every gate number. Its findings were fixed by the parent — no child writer
+was active, so the checkout kept a single writer: the new harness leaked one temp DB per test
+(`drop(path)` deletes nothing; it now matches the sibling's `std::fs::remove_file(&path).ok();`), three
+executed read methods had no executed coverage (now pinned by
+`library_scan_in_progress_follows_the_stamps_this_port_writes`,
+`library_users_with_access_come_back_named_ordered_and_without_libraries`, and
+`library_count_all_query_executes_and_ignores_the_caller_page`, taking the file from 21 to 24 tests), the
+stale baseline line numbers cited above were corrected, and a test comment that mis-attributed CountAll's
+two-leg `ORDER BY total_songs desc, library.id` to `GetAll` was corrected (`applyOptions` emits one leg,
+`sql_base_repository.go:158`). Two of its findings are REFUTED: that a count carrying `LIMIT -1 OFFSET 2`
+silently returns a page-shifted count — no count path emits bounds at all, and SQLite returns NO rows for
+`LIMIT -1 OFFSET n` (CLI-verified), so the port yields 0 rather than 2; and that
+`persistence/tag_library_filtering_test.go` asserts the old LEFT text — that file contains no `LEFT`.
+Gate after these fixes: fmt 0; clippy `-D warnings` 0; `-p nd-db --all-targets` **721 passed / 0 failed
+across 25 binaries**; `--workspace` **1800 passed / 0 failed / 1 ignored across 68 binaries**; `cargo doc`
+0 with 22 warnings (8 unresolved + 14 private, unchanged); `git diff --check` 0; a full workspace run now
+leaves no `nd-db-hydrate-lib-prop-tag-*` files behind.
