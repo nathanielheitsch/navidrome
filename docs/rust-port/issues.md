@@ -191,7 +191,7 @@ absent from every branch). **Verify a lane's claims against `git log` and the wo
 | #05 slices 2–4 (`nd-db` repositories) | `nd-db` | **SQL SHAPING DONE — RUNTIME INTEGRATION PENDING** — slice 4 landed all 15 leaf repositories (album/artist/artwork_queue/artwork/folder/genre/library/mediafile/playlist/playlist_track/playqueue/plugin/property/radio/smart_playlist) + `criteria_sql.rs` (904L criteria→SQL compiler: Cond tree, threaded field map, join planner, orderBy coalesce/cast/role forms, JSON merge groups @350 batch, NFC/NFD pathVariants); 316 lib tests green, fmt clean, clippy -D warnings clean. Two-phase rowid fix: RemoveLimit/RemoveOffset strips base pagination AND its args, page args bind AT the JOIN position (sql_search.go:126-141). Test-oracle corrections against Go: a non-empty sort tag becomes the source (no order-name fallback, `cmp.Or`); `external_url` precedes `similar_artists` (struct field order). Security gate: `with_field_white_list` enforced on every QueryOptions consumer (artist/radio via RestRepository; scrobble/tag/transcoding/album take caller-materialized fragments — no raw options sort path). **Execution seam landed (`3ce1b154`):** `execution.rs` (`ToSql for sqlrepo::Value`, `execute`, `query_optional`, `query_all`) and `store::SQLStore` with sync (`with_connection_sync`/`with_tx_sync`/`with_tx_retry_sync`) and async (`with_connection`/`with_tx`/`with_tx_retry`, SQLite work and retry sleeps off the executor) verbs. `user_repo` now executes end-to-end with `UserRecord`/`UserRow` hydration mirroring dbx's field mapping and `PostScan` (`dee593b5`, 15 executed tests on per-test temp DBs); the `WHERE`-after-`GROUP BY` defect is fixed and the test pins the corrected statement. Pagination renders **decimal literals contributing zero args**, matching squirrel exactly (`select.go:376-388` stores `fmt.Sprintf("%d")`; `:140-150` writes it into the SQL and adds no args). `b78c01a2` removed a crate-wide divergence: the port had bound `LIMIT ?`/`OFFSET ?` as `Value::Integer` args, so it disagreed with the oracle in both SQL text and arg positions in every repository, not just a few. `Repository::to_sql()` arg vectors no longer carry bounds — consumers must not index pagination positions. Offset-without-limit still renders `LIMIT -1` first (cited deviation: squirrel's bare `OFFSET n` is a SQLite parse error and SQLite is the primary engine); pinned by an executed test asserting squirrel's bare `OFFSET` does not prepare. **Still not DONE:** the other ~14 repos only render SQL; general row hydration (`sql_base_repository.go:445,480`) exists only for `dbUser`. Crate count after `c8c71f8d`: 345 lib + 42 integration, 0 failed. **Player repository landed** (`c8c71f8d`, `player_repo.rs` 2124L + 19 executed tests on real temp DBs): `selectPlayer`/`newRestSelect` spine, `Get`/`Read`/`FindMatch`/`ReadAll`/`CountAll`/`CountByClient`, `Save`/`Put`/`Update` (both legs in one tx)/`Delete`, `SetAPIKey` (owner-only set vs `ownerOrAdmin` revoke), `FindByAPIKey`, unsalted sha256 `hash_api_key`, `has_api_key_filter`, `user_name`→`username` sort mapping, and `rest.ValidationError` as `PlayerError::ApiKeyValidation` with Go's exact message keys (`resources.player.validation.apiKeyFormat`, `ra.validation.required`, `ra.validation.unique`). Ownership is an explicit `LoggedUser` parameter — no ambient ctx. `PlayerRecord` stays local (nd-model has no Player DTO). Still missing: `GetUserLibraries`' executed path; password crypto (nd-auth); the remaining ~14 repos' hydration. |
 | #12 | `nd-sched` (scheduler half: crontab parser + robfig next-match cursor + Scheduler add/run/stop + CronLogger split) | **DONE (scheduler half)** — crontab.rs 703L + schedule.rs 562L + log_adapter.rs 103L; 39 tests green, clippy -D warnings clean. Validator-agreement pinned BOTH directions against nd-conf's crontab validator (#03); 5-field next-minute behavior pinned against a real robfig v3.0.1 Go oracle; `~` random resolved once at parse. Cleanup-audit orphan `crontab.rs` closed (rewritten). Maintenance hook (LockForMaintenance) lives in nd-scanner per issue boundaries |
 | #14 (decision half of `nd-stream`) | `nd-stream` decision half | **DONE (decision half)** — types.rs/aliases.rs/codec.rs/limitations.rs/decider.rs/probe_json.rs/token.rs (HS256 create+parse+resolve, explicit secret+`now_secs`, issuer = `nd-conf` JWT_ISSUER, stale/mismatch/expiry pinned)/legacy_client.rs + Cargo deps (nd-conf, nd-ffmpeg, serde/serde_json/thiserror/jsonwebtoken 9.0.0); 103 lib tests green, fmt clean, clippy -D warnings clean, `cargo build -p nd-stream` green. Probe verbs intentionally absent (left to #15/#07 integration) — decision takes `ProbeInput::{NotAvailable,Probed}` so `make_decision` is infallible. **Serving half (#15) PARTIAL** (`aa9b280e`, `a462b1f2`): `range.rs` (Go `net/http` `parseRange`/`checkIfRange` parity), `direct.rs` bounded file adapter, `probe_adapter.rs` (keeps Go's `ensureProbed` branch out of the decision layer so `make_decision` stays infallible), `transcode_body.rs` (non-seekable write loop, FLAC streaminfo patcher, explicit `disconnect` → group-kill cancel, `Drop` stops the child). 191 crate tests. **Remaining for #15:** the transcoding cache and the rate-limiting semaphore (`media_streamer.go:110-121`, `core/stream/limiter.go`) — today one ffmpeg process per call with no concurrency cap — plus archive, and the HTTP handler that consumes them. |
-| #15–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior). `nd-cli/src/main.rs` `main()` is **empty** — no DI wiring, no server bootstrap, so nothing boots. #26 additionally depends on the missing Rust player repository (see #05). |
+| #15–#24, #26–#28, #32, #33 (all remaining live issues; #29–#31 CANCELLED, #34 DROPPED) | remaining `nd-*` crates | SCAFFOLD (`OWNED_BY_ISSUE` marker; instantiates, no behavior). `nd-cli/src/main.rs` `main()` is **empty** — no DI wiring, no server bootstrap, so nothing boots. The historical note that #26 depends on a missing player repository is **stale**: `nd-db`'s `player_repo` landed in `c8c71f8d`, so #26's retained player-session half needs only the service lifecycle above it (see #26, scope split). |
 
 ## First-runnable-slice exit criteria
 
@@ -597,12 +597,37 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 ca
 - **What survives**: the 126 goldens under `server/subsonic/responses/.snapshots/` stay in-tree as **reference data** (a recorded behavioral spec of field shapes and streaming/Range/ETag semantics) consulted while authoring #27 — they gate nothing; the fixture *discipline* transfers to the canonical API (#27 captures its own recorded goldens from the Go binary). Subsonic *semantics* worth borrowing are recorded in #27's Build: typed-ID prefixes `al-`/`mf-`/`pl-` (`model/artwork_id.go`), artwork-ID composition `dc-<album>:<disc>`, the transcode-decision split (`core/stream/decider.go`). A future community Subsonic adapter, if ever wanted, would consume #27's published OpenAPI spec — a separate artifact, not a server lane.
 - **Risk**: — (not ported). **dependsOn**: — · **Owns**: — · **Replaces**: — (the Go paths retire unported)
 
-### #26 — Players / jukebox (`nd-players`)
-- **Build**: `core/players.go`, `core/playback/{playbackserver,device,queue}.go`, `core/playback/mpv/{mpv,track,sockets,sockets_win}.go`, `model/player.go`,
-  `server/subsonic/jukebox.go`. Keep the track-IPC message shape and `GetDeviceForUser` resolution; everything else is OS-conditional.
-- **Test**: socket-level fake-mpv harness; queue mutation table; `Players.Get/Register/Touch` expiry tests.
-- **Risk**: MED.
-- **dependsOn**: #05, #15, #13 · **Owns**: `nd-players/**` · **Replaces**: `core/players.go`, `core/playback/**`, `model/player.go`, `server/subsonic/jukebox.go`
+### #26 — Player-session service (`nd-players`); mpv/jukebox device service **DROPPED**
+- **Scope split (DECIDED 2026-11-18, user-approved `D-PLAYER26`)**: #26 bundled two unrelated things; they are now separated.
+  **Retained:** the player-session service — `core/players.go` `Get`/`Register`/`Touch` plus the `model/player.go` record
+  fields (`MaxBitRate`, `TranscodingId`, `ReportRealPath`, `ScrobbleEnabled`, `HasAPIKey`/`APIKey`). Go registers/touches a
+  player on every authenticated request (`server/subsonic/middlewares.go:291-307`, `server/jellyfin/middlewares.go:209`),
+  and those fields feed services that survive the port: the transcode decision (`core/stream/decider.go:159-161`, already
+  ported and tested in `nd-stream/src/legacy_client.rs` as `player_max_bit_rate` — currently dead because nothing persists
+  the row), the scrobbler's `ScrobbleEnabled` gate (`core/scrobbler/play_tracker.go:366,436,473`), and `ReportRealPath`.
+  The DB half is already **DONE** in `nd-db/src/player_repo.rs` (CRUD, `find_match`, API-key hash/`find_by_api_key`); only the
+  thin service lifecycle above it is missing. It has **no mpv dependency**.
+  **Dropped:** the server-side playback device / mpv IPC service — `core/playback/{playbackserver,device,queue}.go`,
+  `core/playback/mpv/**`, `server/subsonic/jukebox.go`. Rationale: its only entry point is Subsonic
+  (`server/subsonic/api.go:220-226`), cancelled by #25; no canonical native route exposes it and nothing else consumes
+  `core/playback/**` (`GetDeviceForUser` is only "the default device", called solely from `jukebox.go:47`); it is off by
+  default (`conf/configuration.go:1058-1061`) and `cmd/root.go:372-380` no-ops when disabled; the settled config contract
+  already drops `Jukebox.*`, `MPVPath`, `MPVCmdTemplate` (Part C item 12, `config-contract.md`); the bundled JS UI that
+  reached it is dropped (C25/C32); and it spawns host processes needing OS-specific sockets plus process reap that upstream
+  itself leaves unfinished (`playbackserver.go:51-53` "Should confirm all subprocess are terminated"). Nothing else loses
+  capability.
+- **Build**: player register/touch/get lifecycle + persistence over the existing `PlayerRepo`, with expiry/limiter semantics
+  from `core/players.go` (`consts.UpdatePlayerFrequency`) and the `model/player.go` field shapes. Deliberately **not** a
+  monolithic crate needing all of #05/#13/#15: it lands as API/BOOT-adjacent work consumed by stream decisions, key
+  issuance (Part C item 4) and the scrobbler.
+- **Test**: `Players.Get/Register/Touch` expiry + limiter tests; register reuse rules (client/user mismatch re-registers,
+  `FindMatch` reuse), owner-scoped persistence, and the stream decision actually receiving a persisted `MaxBitRate`
+  end-to-end. No mpv/fake-device harness — that scope is dropped.
+- **Risk**: LOW–MED (was MED with mpv). The retained half is small and mostly sits on already-landed player-repo work,
+  but it inherits the pending transcoding-read/seed dependency above.
+- **dependsOn**: #05 (player repo — landed `c8c71f8d`; **plus** the still-pending executed `transcoding_repo` get and
+  seeded default transcodings, since Go's `refresh` loads the transcoding row — `core/players.go:86-90`), #13 ·
+  **Owns**: `nd-players/**` · **Replaces**: `core/players.go`, `model/player.go` (mpv/playback paths retire unported)
 
 ### #27 — Canonical API surface (`nd-api`) (TRUNK)
 
@@ -659,7 +684,9 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 ca
 - **Leaf lane** (parallel with the spine): #01, #02, #03, #06, #11, #12, #09, #10 — no DB writes.
 - **Media adapters** (parallel with the spine): #07, #08, #09 — consume #01 only.
 - **Auth**: #13 gates #14, #15, #19, #24, #26, #27, #28 (#25/#29/#30 cancelled and own nothing).
-- **Stream chain** (strict): #07 → #14 → #15 → (#19, #26). Streaming reaches the wire only through #27's canonical endpoints.
+- **Stream chain** (strict): #07 → #14 → #15 → #19. Streaming reaches the wire only through #27's canonical endpoints. #26's
+  retained player-session service feeds the stream decision (persisted `MaxBitRate`) and key issuance but is not a
+  prerequisite for streaming itself; its dropped mpv half gated nothing.
 - **Scan pipeline**: #08 → #16 → #17 → #18. #17 feeds the `artwork_queue` drain in #18 and the FTS5 triggers in #04.
 - **Wire lane** (last): #24 → #27 → #28 — canonical surface only.
 - **Satellites** (last, concurrent): #20, #21, #22, #23, #32, #33.

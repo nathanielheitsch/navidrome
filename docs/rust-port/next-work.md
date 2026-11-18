@@ -49,9 +49,11 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    `ProgressInfo`, not tag-reader results. Initial in-process ingest does not require mixed Go/Rust IPC.
 7. **Consumer-gated residuals and later services:** durable g1/g2 Go evidence; sibling first-error reproductions;
    genre/options/participant/cursor/smart-playlist/track query issues; schema-golden verification; FTS repair and
-   maintenance/logging; full artwork/share/scrobble/external/lyrics/playlists/players/API/share-HTML expansion.
-   Keep accepted differences, known bugs and unverified behavior separate. Complex service tails remain
-   specification-blocked until their own contracts are ready; cancelled product surfaces stay cancelled.
+   maintenance/logging; full artwork/share/scrobbler/external/lyrics/playlists/player-session/API/share-HTML expansion.
+   The player-session service is retained (API-01-placed register/touch over the landed `PlayerRepo`); the mpv/jukebox
+   playback-device scope is dropped unported (`D-PLAYER26`). Keep accepted differences, known bugs and unverified behavior
+   separate. Complex service tails remain specification-blocked until their own contracts are ready; cancelled product
+   surfaces stay cancelled.
 
 Milestones 3-5 form the minimal vertical path; milestone 6 is needed for a complete #17 claim, not every first-playback
 test. The subplan index resolves exact task IDs, cross-plan prerequisite aliases, decision gates, file collisions, and

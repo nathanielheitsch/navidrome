@@ -67,7 +67,7 @@ agent message — the dependency is met only by a verified, reviewed package.**
 
 `FRONT-18/19/20/21/22/23/26/27/28/32/33` are the remaining service tails. Each needs its own
 dedicated plan + review when scoped; none gates #27A or the early HTTP boot. `FRONT-26` is
-blocked by the `D-PLAYER26` scope decision below (recommend: retain player-session service, drop mpv/jukebox).
+blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mpv/jukebox) — see that decision below.
 
 ---
 
@@ -86,7 +86,7 @@ blocked by the `D-PLAYER26` scope decision below (recommend: retain player-sessi
 | `SC-01` | Scanner manifest/dependency/cancellation/domain-equality placement | SC-02..14 | SC |
 | `SC-06/07` | Inaccessible-vs-deleted destructive-finalization policy; selective purge/GC scope; deterministic tie order | SC-06/SC-07 | SC + parent |
 | `SC-12/13` | Watcher backend + external progress-IPC mode (deferred, not first-slice gates) | SC-12/13/SC-14 mode ledger | SC + parent |
-| `D-PLAYER26` | **Split #26 into a retained player-session service and a DROPPED mpv/jukebox service — recommendation, awaiting user sign-off.** See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F5, player wiring | parent/user |
+| `D-PLAYER26` | **DECIDED 2026-11-18 (user-approved): split #26.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `PlayerRepo`); **drop** the mpv/jukebox device service. Canonical register/touch placement belongs to API-01. See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F1/F5, player wiring — resolved | parent/user |
 | Oracle harness | Approve new tracked Go harness under `testdata` (no Go-source edits) or an approved alternative; toolchain availability | EVID-02/03, SC-00 durable captures | parent |
 | Fixture/toolchain | Durable fixture location/recipe, synthetic-only credentials, `ffmpeg`/`ffprobe` provenance, native path disclosure/redaction | EVID-03, SC-00, API-06 | parent |
 
@@ -127,10 +127,16 @@ write subset + DB-11/typed folder query) → `SC-04` → `SC-06` complete phase 
 
 `BOOT-00` + `API-00` → independent read-only/serialized `BOOT-02` (login audience) and
 `API-04` (#15 stream handshake) → `BOOT-01` (after DB-05 seam) → `BOOT-03` HTTP shell →
-`BOOT-04` minimal CLI/service graph → `API-01` principal/key middleware → `API-02` scoped
-lookup (DB-11) → `API-03` key/revoke (DB-13) → `API-05` stream route + Axum body bridge →
-**`API-06` = #27A gate**, which stays BLOCKED until `SC-05`/`EXT-SC-REAL-SCAN` and real
-ffmpeg disconnect evidence exist. `API-F1…F7`, `BOOT-F1` are later full-service expansion.
+`BOOT-04` minimal CLI/service graph → `API-01` principal/key middleware — where the retained
+`D-PLAYER26` player-session service gets its canonical placement (resolve/touch the player and its
+transcoding row into the request context) → `API-02` scoped lookup (DB-11) → `API-03` key/revoke
+(DB-13, plus the restricted player-provisioning service: `PlayerRepo::save` requires a client-supplied
+key, so registration must use a validated `put`, not `save` unchanged) → `API-05` stream route + Axum
+body bridge → **`API-06` = #27A gate**, which stays BLOCKED until `SC-05`/`EXT-SC-REAL-SCAN` and real
+ffmpeg disconnect evidence exist. `API-F1…F7`, `BOOT-F1` are later full-service expansion. The full
+player-session contract (expiry/limiter rules, default transcoding, owner rules, persisted `MaxBitRate`
+reaching the stream decision and scrobbler gate) is `FRONT-26` + `player-service-contract.md`; no
+mpv/socket/process-reap scope belongs in any lane.
 
 ### Step 4 — evidence & operations
 
@@ -167,17 +173,29 @@ authenticated API client, not just the legacy wire, and its fields feed survivin
   `nd-stream/src/legacy_client.rs` (`player_max_bit_rate` forces downsampling,
   `decider.go:159-161` precedence), but **nothing registers or persists the player row**, so
   the cap is dead in practice — an integration gap, not a missing feature.
-- `ScrobbleEnabled` → the scrobbler (#20) gates Now Playing and scrobbles on it.
+- `ScrobbleEnabled` → the scrobbler (#20) gates Now Playing and scrobbles on it
+  (`core/scrobbler/play_tracker.go:366,436,473`).
 - `ReportRealPath` → reported playback path semantics.
+- `TranscodingId` → Go's `refresh` also loads the transcoding row alongside the player
+  (`core/players.go:86-90`). This is a real second dependency: `nd-db/src/transcoding_repo.rs`
+  currently **only renders SQL** (no executing `get`/`find_by_format`), and `nd-dbschema/src/schema_ddl.rs:56`
+  creates the `transcoding` table without seeding Go's default profiles (Go adds them in
+  `db/migrations/20200706231659_add_default_transcodings.go` and `20260309203355_ensure_default_transcodings.go`).
+  Both belong to #05 / BOOT-01 scope, not to this decision — but the retained player service cannot resolve a
+  transcoding profile until they land.
 - The `player` table, `PlayerRepo` CRUD, `find_match`, API-key hash/`find_by_api_key` are
   already DONE in `nd-db/src/player_repo.rs`; only the service lifecycle above it is missing.
 
-It also has **no mpv dependency**. In Go the middleware registers a player on every
-authenticated request, so API-key issuance (API-03) and stream decisions need this service
-whether or not jukebox exists.
+It also has **no mpv dependency**. Note where registration happens today: Go registers/touches players only in
+the Subsonic and Jellyfin middlewares (`server/subsonic/api.go:107-222` mounts `getPlayer`, `middlewares.go:291-313`;
+`server/jellyfin/middlewares.go:209`) — both cancelled surfaces — while the native API merely exposed `/player` CRUD
+(`server/nativeapi/native_api.go:75`) and API-key auth attached the key's player (`middlewares.go:182`). So the canonical
+surface must **deliberately choose** where register/touch runs (recommend: the API-01 principal/API-key middleware,
+resolving the player plus its transcoding row into the request context). That placement is API-01 design work, not
+something inherited from the dropped wire; without it the stream `MaxBitRate` cap and scrobbler gate stay dead.
 
-**2. mpv / server-side playback device — a genuinely optional niche feature, recommend
-DROPPING.** `core/playback/**` (`playbackserver`, `device`, `queue`, mpv IPC) spawns a real
+**2. mpv / server-side playback device — a genuinely optional niche feature, DROPPED by
+`D-PLAYER26`.** `core/playback/**` (`playbackserver`, `device`, `queue`, mpv IPC) spawns a real
 `mpv` process on the **server host** and drives it over a unix/named pipe — the Subsonic
 `jukeboxControl` feature. Evidence for dropping:
 
@@ -196,10 +214,10 @@ Nothing else consumes `core/playback/**`; `GetDeviceForUser` is only "the defaul
 is called solely from `jukebox.go`. So dropping it removes no capability any surviving
 service needs.
 
-**Recommendation (`D-PLAYER26`)**: split #26 — retain the player-session service as scoped
-work (player register/touch + persistence, feeding stream decision, API-key issuance and
-scrobbler), and mark the mpv/jukebox device service **DROPPED** with a short justification.
-Record it as a user decision; neither half gates #27A, and the player-session half lands as
-API/BOOT-adjacent work rather than a monolithic `nd-players` crate. If the user wants jukebox
-kept, it needs a dedicated platform/socket/process-reap contract and a canonical
-(non-Subsonic) route surface before it can be scoped.
+**Decision (`D-PLAYER26`, user-approved 2026-11-18)**: split #26 — retain the player-session
+service as scoped work (register/touch/get + persistence, feeding the stream decision, API-key
+issuance and the scrobbler), with its canonical placement chosen in API-01; mark the mpv/jukebox
+device service **DROPPED**, as justified above. Neither half gates #27A, and the retained half is
+API/BOOT-adjacent work rather than a monolithic `nd-players` crate. Reopening jukebox would
+require a dedicated platform/socket/process-reap contract and a canonical (non-Subsonic) route
+surface; it is not scheduled.

@@ -149,6 +149,14 @@ Repair, full maintenance/logging, complete API/services, HTML shares and metrics
 not automatic first-track/first-boot prerequisites. Cancelled Subsonic/Jellyfin/plugin/sonic/UI work stays cancelled;
 first playback uses the canonical API, not resurrected `/rest` routes. Full service tails require their own contracts.
 
+Player scope (decided 2026-11-18, `D-PLAYER26`, user-approved): #26 is split. The player-session service is retained —
+`Get`/`Register`/`Touch` over the landed `nd-db` `PlayerRepo`, with canonical placement chosen by API-01 — because its
+`MaxBitRate`/`TranscodingId` feed the already-ported stream decision (`nd-stream/src/legacy_client.rs`, currently dead
+because nothing persists the row) and `ScrobbleEnabled` gates the scrobbler. The mpv/jukebox server-side playback-device
+scope (`core/playback/**`, mpv IPC, `server/subsonic/jukebox.go`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) is **DROPPED**
+unported: Subsonic-only entry point, default-off, config keys already absent, JS UI dropped, unfinished subprocess reap
+upstream, and no other consumer. Neither half gates #27A; #26 is not DONE.
+
 ## Audit provenance
 
 Three independent read-only investigations in the existing workspace, with no test runs or repository writes:
