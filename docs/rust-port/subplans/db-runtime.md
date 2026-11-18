@@ -437,23 +437,32 @@ playlist_track, plugin, radio, scrobble, share, sql_restful, sql_tags, transcodi
 user. So `sanitizeSort` (`sql_restful.go:69-86`) always runs before an ORDER BY is
 rendered. The Rust executed reads do not all mirror that:
 
-| repo | executed read | options type | gate |
-|---|---|---|---|
-| transcoding | `read_all` `transcoding_repo.rs:566` | `RestQueryOptions` | **gated inside (fixed this round)** |
-| player | `read_all` `player_repo.rs:1167` | `Options` (sanitized form) | `Options::from_rest` exists (`:166`) but is not called inside `read_all` — convention-only |
-| library | `get_all` `library_repo.rs:987` | `QueryOptions` | unsanitized; Go `library_repository.go` calls `parseRestOptions` |
-| tag | `get_all` `tag_repo.rs:620` | `QueryOptions` | unsanitized; Go's `sql_tags.go` parses |
-| radio | `get_all` `radio_repo.rs:606` | `QueryOptions` | unsanitized; Go `radio_repository.go` parses |
+Measured against Go (`library_repository.go:325`/`:312`, `radio_repository.go:121`/`:113`,
+`player_repository.go:114`/`:103`, `sql_tags.go:224`/`:213`). Status after `62789ba2`:
+
+| repo | executed read | gate |
+|---|---|---|
+| transcoding | `read_all` `transcoding_repo.rs:566` | **gated inside** (`f8ceeb8f`) |
+| player | `read_all` `player_repo.rs:1167` | **gated inside** via `Options::from_rest` (`62789ba2`) |
+| library | `get_all` `library_repo.rs:987` | **gated inside** (`62789ba2`) |
+| tag | `get_all` `tag_repo.rs:620` | **gated inside** (`62789ba2`) |
+| radio | `get_all` `radio_repo.rs:606` | **gated inside**; new `parse_rest_options`/`sanitize_sort`/empty `SORT_MAPPINGS` (`62789ba2`) |
+
+`runtime_rest_sort_gate.rs` executes six tests over the migrated schema (three hostile
+arms per repository, stable order, no ORDER BY leg, whitelisted sorts still order, counts
+invariant). Each repository also gained a REST-shaped `count`; the raw `count_all*` keep
+already-parsed options because `count` drops the page and installs `<table>.id`
+(`sql_base_repository.go:568-569`). Library is the one place a caller sort really renders
+ahead of the reset leg — `CountAll` forwards `newSelect`'s output
+(`library_repository.go:291-292`) — confirmed with a squirrel probe:
+`ORDER BY library.id, total_songs asc` style output, no bound argument.
 
 Impact: an unsanitized `QueryOptions` handed to an executed read puts the caller's sort
 string straight into `ORDER BY`. On `transcoding` that was a measured information leak
-(masked `command` readable through row order); the other tables expose ORDER BY
-expressions over their own columns instead, so the severity is lower but the shape is
-the same. Fix per repo, one bounded package each, mirroring the transcoding change:
-take `RestQueryOptions` and parse internally, keep the raw renderer public with a
-warning that options must already come from the parser, and add a hostile-sort test
-that asserts no ORDER BY leg. Do not fix library/tag/radio/player by tightening the
-renderer — Go's renderer accepts whatever it is given.
+(masked `command` readable through row order); the other tables exposed ORDER BY
+expressions over their own columns, so lower severity, same shape. All five now parse
+internally, raw renderers stay untightened (Go's renderer accepts whatever `applyOptions`
+hands it, `sql_base_repository.go:157-158`) and carry the WARNING contract.
 
 ## Read-lane inventory and remaining gaps (2026-11-18)
 
@@ -465,8 +474,7 @@ Note `annotation_repo.rs` does not exist while `persistence/` has no annotation 
 either — annotations ride album/mediafile (`DB-15`), so no gap there.
 
 Near-term order after this commit, all DB-owned:
-1. **Sort-gate parity** for player, library, tag, radio (above). Cheap, security-shaped,
-   each independently verifiable. Launch serially (shared `sql_restful.rs` docs only).
+1. **Sort-gate parity** for player, library, tag, radio — **done** at `62789ba2`.
 2. **DB-01** missing-state bind repair — already READY, no prerequisites, and G0 gates
    DB-07/14. Unrelated to the gates, so it can run in a separate lane only if the
    checkout is free; otherwise keep it serial after the gate work.

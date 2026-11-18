@@ -22,11 +22,11 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
 
 ### Immediate next steps (2026-11-18, after `f8ceeb8f`)
 
-1. **W7 (running, `c5b51adf`): internal rest-option gates for the four remaining executed REST reads** —
-   `player_repo.rs:1167`, `library_repo.rs:987`, `tag_repo.rs:620`, `radio_repo.rs:606`. Go parses rest options inside
-   every REST read, so `sanitizeSort` always precedes `ORDER BY`; only transcoding mirrors that today. Parent
-   re-measures gates and reviews before commit. Audit: `subplans/db-runtime.md` “Executed-read sort gate audit”.
-2. **DB-01 (READY, no prerequisites): missing-state bind repair** — `mediafile_repo.rs` bind order plus an executed
+1. **Sort-gate parity — DONE at `62789ba2`** (parent-measured 771 DB / 1850 workspace / 22 rustdoc warnings).
+   `player_repo.rs`, `library_repo.rs`, `tag_repo.rs`, `radio_repo.rs` executed REST reads now take
+   `RestQueryOptions` and parse internally, matching Go; `runtime_rest_sort_gate.rs` proves hostile sorts are
+   dropped. Audit: `subplans/db-runtime.md` “Executed-read sort gate audit”.
+2. **DB-01 (READY, no prerequisites, lane running): missing-state bind repair** — `mediafile_repo.rs` bind order plus an executed
    real-schema regression. G0 gates DB-07/14, so it unblocks mutation work.
 3. **DB-03 / D-OPEN (DECISION REQUIRED)** — resolve the reproduced DB-path/pragma divergence: Go opens
    `navidrome.db` with `SQLITE_OPEN_URI` so the config DSN's pragmas apply, while a non-`file:` Rust path creates a
