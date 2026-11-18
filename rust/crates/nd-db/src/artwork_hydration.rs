@@ -12,7 +12,7 @@
 //! DTO rule: [`ItemImage`] and [`ItemArtworkInfo`] are nd-db-local. The
 //! crate defines no nd-model artwork DTOs
 //! (`docs/rust-port/hydrate-contract.md` §6 item 4), and both Go types are
-//! `structs:"-"` (`model/artwork.go:29-40`, `:70-78`), so they are read-path
+//! `structs:"-"` (`model/artwork.go:29-40`; `ItemArtworkInfo` is a plain struct with no tags, `:71-79`), so they are read-path
 //! state that never appears in `album_row`/`mediafile_row`: the write maps stay
 //! at 48 and 66 keys, which `docs/rust-port/next-work.md:775-779` pins and
 //! `runtime_hydrate_album_mediafile.rs::repo_hydrated_records_re_render_the_same_write_maps`
@@ -40,13 +40,26 @@
 //! [`hydrate_media_file_artwork`] once that lane has media files to fill.
 //!
 //! Also unported, as residuals recorded in `docs/rust-port/hydrate-contract.md`:
-//! the playlist/radio/folder wrappers of the same `hydrateItems` helper —
-//! `playlistRepository.hydrateArtwork` + the track-cursor variants
-//! (`playlist_repository.go:191-192`, `:207`, `:253`, `:406`),
-//! `radioRepository.hydrateArtwork` (`radio_repository.go:80-81`), and the
-//! folder `image_files`-based artwork path (`artwork_hydration.go:169`). Each
-//! is a thin wrapper over [`hydrate_items`] with its own kind prefix, so they
-//! land with their own repository slices rather than here.
+//! the playlist and radio wrappers of the same `hydrateItems` helper LANDED
+//! here — [`hydrate_playlist_artwork`] (`playlist_repository.go:191-194`, called
+//! from `findBy` `:187`, `GetAll` `:207` and `GetPlaylists` `:253`) and
+//! [`hydrate_radio_artwork`] (`radio_repository.go:80-83`, called from `Get` `:64`
+//! and `GetAll` `:75`). `hydratePlaylistTrackArtwork` (`artwork_hydration.go:169`,
+//! doc comment `:168`) also landed as
+//! [`crate::playlist_track_repo::hydrate_track_artwork`] and is reached by
+//! [`crate::playlist_track_repo::PlaylistTrackRepo::get_all`], which is Go's
+//! `GetAll` → `playlistRepo.loadTracks` → `hydratePlaylistTrackArtwork` path
+//! (`playlist_repository.go:406`). Still unported: the streaming lane above
+//! (`streamByIDs`/`hydrateCursor`/`artworkChunkSize`, and with them
+//! `playlistRepository.GetCursor` `:225-235` and the `hydratePlaylistTrackArtwork`
+//! call on the cursor batch at `playlist_track_repository.go:141`), and
+//! `getParticipants`/`GetWithParticipants`. There is NO folder artwork path to port:
+//! Go has no folder `hydrateItems` wrapper at all (`grep -n "image_files\|folder"
+//! persistence/artwork_hydration.go` is empty — `:169` is the playlist-track
+//! wrapper). The folder's image list is a JSON column hydrated by the folder
+//! repository's own hook (`folder_repository.go:27`, decoded at `:40-41`,
+//! re-marshaled at `:49-53`), already ported as `hydrate::unmarshal_image_files` /
+//! `FOLDER_IMAGE_FILES_PREFIX`. So there is nothing folder-related to port here.
 //!
 //! Two chunk sizes exist in Go and only one belongs here: `artworkBatchSize` =
 //! 200 (`artwork_repository.go:16`, used by `GetInfoForItems` at `:161`) is
@@ -69,6 +82,8 @@ use crate::album_repo::AlbumRecord;
 use crate::artist_repo::ArtistRecord;
 use crate::artwork_repo;
 use crate::mediafile_repo::MediaFileRecord;
+use crate::playlist_repo::PlaylistRecord;
+use crate::radio_repo::RadioRecord;
 
 /// `model.ItemImage` (`model/artwork.go:29-40`): the per-entity artwork state
 /// hydrated at query time and never persisted (every field is `structs:"-"`).
@@ -102,14 +117,15 @@ pub struct ItemImage {
     pub image_height: i32,
 }
 
-/// `model.ItemArtworkInfo` (`model/artwork.go:70-78`): the list-hydration
-/// projection, one row of `item_artwork ia LEFT JOIN artwork a`.
+/// `model.ItemArtworkInfo` (`model/artwork.go:71-79`): the list-hydration
+/// projection, one row of `item_artwork ia LEFT JOIN artwork a`. The Go struct
+/// carries no `structs` tags at all — it is a scan target, never a write input.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ItemArtworkInfo {
     /// `ItemID` — the map key Go indexes by
     /// (`artwork_repository.go:178-180`).
     pub item_id: String,
-    /// `Hash`: `""` means known absent (`model/artwork.go:79-80`).
+    /// `Hash`: `""` means known absent (`model/artwork.go:73`, read by `Absent()`, `:82`).
     pub hash: String,
     /// `COALESCE(a.blur_hash, '')`.
     pub blur_hash: String,
@@ -124,14 +140,14 @@ pub struct ItemArtworkInfo {
 }
 
 impl ItemArtworkInfo {
-    /// `ItemArtworkInfo.Absent()` (`model/artwork.go:81`): resolved with no
+    /// `ItemArtworkInfo.Absent()` (`model/artwork.go:82`): resolved with no
     /// image. An UNRESOLVED item is not absent — it has no entry at all.
     #[must_use]
     pub fn absent(&self) -> bool {
         self.hash.is_empty()
     }
 
-    /// `ItemArtworkInfo.Image()` (`model/artwork.go:84-93`): the entity-facing
+    /// `ItemArtworkInfo.Image()` (`model/artwork.go:85-95`): the entity-facing
     /// projection. Note the two derived fields: `image_absent` comes from
     /// [`Self::absent`], so a found hash never sets it.
     #[must_use]
@@ -311,6 +327,62 @@ pub fn hydrate_artist_artwork(
     );
 }
 
+/// `playlistRepository.hydrateArtwork` (`playlist_repository.go:191-194`): the
+/// embedded [`ItemImage`] of every playlist, from one `pl`-kind lookup
+/// ([`nd_id::ARTWORK_KIND_PLAYLIST_PREFIX`], mirroring Go's
+/// `model.KindPlaylistArtwork` prefix `pl`, `model/artwork_id.go:31`; the lookup
+/// binds the PREFIX, not the name — `artwork_repository.go:169`, executed:
+/// `WHERE (ia.item_kind = 'pl' AND ia.image_type = 'primary' AND …)`).
+///
+/// Go's `ref` accessor is `func(p *model.Playlist) (string, *model.ItemImage)` at
+/// `:193` — the playlist's own `ID` and the address of its embedded `ItemImage`,
+/// exactly the `id_of`/`image_of` pair [`hydrate_items`] takes. There is no
+/// playlist-specific artwork rule: unlike a media file, a playlist never inherits
+/// another entity's image, so the plain helper is the whole behavior.
+///
+/// Reached by `findBy` (`:187`, i.e. `Get` and `FindByPath`), `GetAll` (`:207`) and
+/// `GetPlaylists` (`:253`).
+pub fn hydrate_playlist_artwork(
+    conn: &Connection,
+    playlists: &mut [PlaylistRecord],
+    artwork_error: &mut Option<String>,
+) {
+    hydrate_items(
+        conn,
+        nd_id::ARTWORK_KIND_PLAYLIST_PREFIX,
+        playlists,
+        |p| p.id.as_str(),
+        |p| &mut p.image,
+        artwork_error,
+    );
+}
+
+/// `radioRepository.hydrateArtwork` (`radio_repository.go:80-83`): the embedded
+/// [`ItemImage`] of every radio, from one `ra`-kind lookup
+/// ([`nd_id::ARTWORK_KIND_RADIO_PREFIX`], mirroring Go's `model.KindRadioArtwork`
+/// prefix `ra`, `model/artwork_id.go:33`). Go's comment at `:79` — "fills each
+/// radio's ImageHash/ImageAbsent from one batched item_artwork lookup" — is
+/// literally all this wrapper does; its `ref` is `rd.ID, &rd.ItemImage` (`:82`).
+///
+/// Reached by `Get` (`:64`) and `GetAll` (`:75`). Radio has NO library or ownership
+/// filter anywhere — `radioRepository` defines no `userFilter` and `newSelect` adds
+/// none (`sql_base_repository.go:139-147`) — so unlike the playlist read there is no
+/// visibility clause anywhere in its statements.
+pub fn hydrate_radio_artwork(
+    conn: &Connection,
+    radios: &mut [RadioRecord],
+    artwork_error: &mut Option<String>,
+) {
+    hydrate_items(
+        conn,
+        nd_id::ARTWORK_KIND_RADIO_PREFIX,
+        radios,
+        |r| r.id.as_str(),
+        |r| &mut r.image,
+        artwork_error,
+    );
+}
+
 /// `hydrateMediaFileArtwork` (`artwork_hydration.go:94-135`): the branch matrix
 /// reproduced verbatim, in Go's statement order and with every `continue`.
 ///
@@ -433,7 +505,7 @@ mod tests {
 
     #[test]
     fn an_absent_entry_projects_absent_not_a_hash() {
-        // Arrange: the known-absent state (hash == "", model/artwork.go:79-80).
+        // Arrange: the known-absent state (hash == "", model/artwork.go:73, `:82`).
         let info = ItemArtworkInfo {
             item_id: "al-1".to_string(),
             ..Default::default()

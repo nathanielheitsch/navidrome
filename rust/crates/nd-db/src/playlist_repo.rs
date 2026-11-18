@@ -26,12 +26,13 @@
 //! the record — no caller-supplied column arrays for the write path.
 //!
 //! Not ported, with the reason: `GetCursor` (`:225-235`) and the streaming
-//! cursor machinery (`streamByIDs`), the artwork hydration
-//! (`hydrateArtwork`, `:191-194`, per-row image loads) and the `Tracks(...)`
-//! sub-repository binding (`playlist_track_repository.go:38-71` — that lane's
-//! own file) need either the streaming/execution layer or the sibling lane's
-//! surface; the select shapes they consume are pinned here
-//! ([`tracks_query`], [`get_all_ids_query`]). `rest.Repository`'s
+//! cursor machinery (`streamByIDs`) need the streaming/execution layer, and the
+//! `Tracks(...)` sub-repository binding (`playlist_track_repository.go:38-71`)
+//! belongs to that lane's own file; the select shapes they consume are pinned
+//! here ([`tracks_query`], [`get_all_ids_sql`]). The artwork hydration
+//! (`hydrateArtwork`, `:191-194`) landed with this file's read side
+//! ([`PlaylistRepo`]) and delegates to
+//! [`crate::artwork_hydration::hydrate_playlist_artwork`]. `rest.Repository`'s
 //! `Count`/`Read`/`ReadAll` are `CountAll`/`Get`/`GetAll` over
 //! already-parsed options (`:410-420`).
 
@@ -112,38 +113,62 @@ pub fn natural_sort(col: &str, enable_natural_sorting: bool) -> String {
     }
 }
 
-/// `smartPlaylistFilter` (`:76-81`): the `smart` REST filter — the empty
-/// string or the `rules` IS NULL disjunction.
+/// `smartPlaylistFilter` (`:76-81`): `Or{Eq{"rules": ""}, Eq{"rules": nil}}`.
+/// squirrel renders a nil-valued `Eq` as `rules IS NULL` with **no placeholder**
+/// (`squirrel@v1.5.4/expr.go:182-183`, `if val == nil { expr = fmt.Sprintf("%s %s NULL",
+/// key, nullOpr) }`, with `nullOpr = "IS"` at `:150` — no arg is appended) and
+/// parenthesizes every conjunction group it emits (`expr.go:384-386`). Executed
+/// against the pinned squirrel (`/tmp/sd3f_p1/args.go`):
+/// `sql = (rules = ? OR rules IS NULL)`, `len(args) == 1`.
+///
+/// **Defect fixed in this lane:** this builder used to emit
+/// `rules = ? OR rules = ?` with a `Value::Null` second arg. SQL three-valued logic
+/// makes `rules = NULL` never true, so a playlist whose `rules` cell is NULL — the
+/// normal non-smart row written by `put` — was EXCLUDED from Go's `smart` filter.
+/// Executed over {rules = "", rules = NULL}: the squirrel-rendered clause selects
+/// both rows, the old port text selected only the empty-string row.
 #[must_use]
 pub fn smart_playlist_filter() -> Sql {
     (
-        "rules = ? OR rules = ?".to_string(),
-        vec![Value::Text(String::new()), Value::Null],
+        "(rules = ? OR rules IS NULL)".to_string(),
+        vec![Value::Text(String::new())],
     )
 }
 
-/// `playlistFilter` (`:69-74`): the `q` REST filter — substring matches over
-/// the playlist name and comment OR-joined.
+/// `playlistFilter` (`:69-74`): `Or{substringFilter(name), substringFilter(comment)}`.
+/// Each `substringFilter` (`sql_restful.go:119-126`) is an **`And` over the
+/// whitespace-split parts**, so the two FIELDS OR while the parts within one field
+/// AND. Executed against the pinned squirrel (`/tmp/sd3f_p1/q.go`):
+/// `"rah frahm"` ⇒ `((playlist.name LIKE ? AND playlist.name LIKE ?) OR
+/// (playlist.comment LIKE ? AND playlist.comment LIKE ?))`, args
+/// `[%rah%, %frahm%, %rah%, %frahm%]` — the name legs bind before the comment legs,
+/// like Go's `Or{first, second}`.
+///
+/// **Two defects fixed in this lane.** (1) The builder used to flatten every part of
+/// BOTH fields into one `OR`, so a query whose words live in different fields matched
+/// a row Go rejects (name has word 1, comment has word 2). (2) An empty query used to
+/// return `1=0`. Go's `Or` is not empty in that case — its two legs are EMPTY `And`s,
+/// and squirrel renders an empty conjunction as `1=1` (`expr.go`, `sqlTrue`), so
+/// `q=` renders `((1=1) OR (1=1))` and matches EVERYTHING; `1=0` is what an empty *Or*
+/// renders, which Go never builds here. Executed: `q=""` ⇒ `((1=1) OR (1=1))`, no args.
 #[must_use]
 pub fn playlist_filter(value: &str) -> Sql {
     let parts = value.split_whitespace().collect::<Vec<_>>();
     if parts.is_empty() {
-        // squirrel's empty Or renders 1=0, matching nothing.
-        return ("1=0".to_string(), vec![]);
+        // Two empty And{} legs: squirrel renders each as the conjunction identity.
+        return ("((1=1) OR (1=1))".to_string(), vec![]);
     }
     let mut args = Vec::new();
-    let mut clauses = Vec::new();
-    // Go: Or{substringFilter(name), substringFilter(comment)} — each is an
-    // And over the field-split parts, so the two fields OR.
-    for part in &parts {
-        args.push(Value::Text(format!("%{part}%")));
-        clauses.push("playlist.name LIKE ?".to_string());
+    let mut legs = Vec::new();
+    for column in ["playlist.name", "playlist.comment"] {
+        let mut and_leg = Vec::new();
+        for part in &parts {
+            args.push(Value::Text(format!("%{part}%")));
+            and_leg.push(format!("{column} LIKE ?"));
+        }
+        legs.push(format!("({})", and_leg.join(" AND ")));
     }
-    for part in &parts {
-        args.push(Value::Text(format!("%{part}%")));
-        clauses.push("playlist.comment LIKE ?".to_string());
-    }
-    (clauses.join(" OR "), args)
+    (format!("({})", legs.join(" OR ")), args)
 }
 
 /// `selectPlaylist` (`:257-260`): `playlist.*`, the owner name and the
@@ -193,7 +218,7 @@ pub fn exists_sql(id: &str, user: &User) -> Sql {
     (sql, args)
 }
 
-/// `Delete` (`:106-108` via `delete`, `sql_base_repository.go:649-655`):
+/// `Delete` (`:106-108` via `delete`, `sql_base_repository.go:644-647`):
 /// `DELETE FROM playlist WHERE id IN (…) [visibility]` — chunked by the
 /// caller against SQLITE_MAX_VARIABLE_NUMBER.
 #[must_use]
@@ -212,14 +237,30 @@ pub fn delete_sql(ids: &[String], user: &User) -> Sql {
 
 /// `Get`/`findBy` (`:148-150`, `:175-189`): the selectPlaylist shape with the
 /// id and visibility clauses.
+///
+/// The visibility clause is parenthesized because `userFilter` returns an `Or`
+/// (`playlist_repository.go:88-91`) and squirrel parenthesizes every conjunct
+/// group it renders (`squirrel@v1.5.4/expr.go:384-386`; `And` and `Or` are both
+/// `conj.join`, `:391-401`). Executed against the pinned squirrel, a non-admin
+/// `Get` renders `WHERE (playlist.id = ? AND (public = ? OR owner_id = ?))`.
+/// Unparenthesized, SQL binds `AND` tighter than `OR`, so the predicate becomes
+/// `(id AND public) OR owner_id`: the id no longer restricts the owner branch,
+/// and a non-admin asking for an invisible id gets some OTHER visible row
+/// instead of NotFound. Executed in SQLite over {adm-private, adm-public,
+/// lim-private}: `WHERE id = ? AND public = ? OR owner_id = ?` bound to
+/// `adm-private` returns `lim-private`, and `nobody` also returns `lim-private`;
+/// the parenthesized form returns no rows for both, which is what the real Go
+/// repository reports (`data not found`, nil pointer). Same wrapping the
+/// sibling builders already use (`exists_sql`, `delete_sql`, `count_all_sql`,
+/// `get_all_ids_sql`, `get_playlists_sql`).
 #[must_use]
 pub fn get_sql(id: &str, user_id: &str, user: &User) -> Sql {
     let mut clauses = vec![(
         "playlist.id = ?".to_string(),
         vec![Value::Text(id.to_string())],
     )];
-    if let Some(filter) = user_filter(user) {
-        clauses.push(filter);
+    if let Some((filter_sql, filter_args)) = user_filter(user) {
+        clauses.push((format!("({filter_sql})"), filter_args));
     }
     select_playlist_sql(user_id, &clauses, &[])
 }
@@ -237,9 +278,18 @@ pub fn find_by_path_sql(path: &str, user_id: &str) -> Sql {
 
 /// `GetAll` (`:196-210`): the selectPlaylist shape with the visibility
 /// clause and the caller's sort mapping.
+///
+/// `GetAll` hands `userFilter` straight to `Where` (`:197`), so it is the whole
+/// predicate and needs no parentheses for CORRECTNESS — but the clause is wrapped
+/// here anyway so the rendered text matches squirrel's `Or` output
+/// (`WHERE (public = ? OR owner_id = ?)`, executed against squirrel v1.5.4) and so
+/// a future second conjunct cannot inherit [`get_sql`]'s precedence hazard.
 #[must_use]
 pub fn get_all_sql(user_id: &str, user: &User, order_by: &[String]) -> Sql {
-    let clauses = user_filter(user).map(|f| vec![f]).unwrap_or_default();
+    let clauses = user_filter(user)
+        .map(|(filter_sql, filter_args)| (format!("({filter_sql})"), filter_args))
+        .map(|clause| vec![clause])
+        .unwrap_or_default();
     select_playlist_sql(user_id, &clauses, order_by)
 }
 
@@ -281,8 +331,24 @@ pub fn get_all_ids_sql(user: &User, order_by: &[String]) -> Sql {
 }
 
 /// `GetPlaylists` (`:237-255`): the playlists containing a media file — the
-/// selectPlaylist shape joined to `playlist_tracks` and filtered by the
-/// media file id plus visibility, sorted by the `name` mapping.
+/// selectPlaylist shape joined to `playlist_tracks` and filtered by the media file id
+/// plus visibility, sorted by the `name` mapping.
+///
+/// Two text-level differences from Go's traced statement, both recorded:
+/// * Leg order. Go roots the statement at `playlist` (`selectPlaylist`, `:257-269`) and
+///   appends `Join("playlist_tracks on …")` (`:239`), tracing
+///   `FROM playlist JOIN user … LEFT JOIN annotation … JOIN playlist_tracks …`.
+///   The port roots at `playlist_tracks` and joins `playlist` (`:240`). Every leg is an
+///   INNER JOIN, so the row set, the column set and the bind order are identical; only
+///   the printed `FROM`/`JOIN` order differs, and SQLite's planner does not care.
+/// * Sort direction. `name_sort` is the caller's rendered mapping — Go's
+///   `buildSortOrder` (`sql_base_repository.go:199-228`) appends a direction, so the
+///   traced leg is `ORDER BY playlist.name asc`, and `applyOptions` emits ORDER BY only
+///   when `Sort != ""` (`:157-158`). `GetPlaylists` always passes `Sort: "name"`
+///   (`:238`), so the port's unconditional leg matches Go for its only call site; a
+///   caller wanting the traced text supplies `"playlist.name asc"`. The port-wide
+///   "`apply_pagination` renders no sort leg" residual (already recorded for
+///   `get_all_sql`) is why the direction is caller-supplied rather than derived.
 #[must_use]
 pub fn get_playlists_sql(media_file_id: &str, user_id: &str, user: &User, name_sort: &str) -> Sql {
     let mut sql = format!(
@@ -308,7 +374,7 @@ pub fn get_playlists_sql(media_file_id: &str, user_id: &str, user: &User, name_s
     (sql, args)
 }
 
-/// `GetWithTracks`'s track select (`:154-159`): the shared [`tracks_query`]
+/// `GetWithTracks`'s track select (`:160-162`): the shared [`tracks_query`]
 /// with the missing-track filter and the position order.
 #[must_use]
 pub fn load_tracks_sql(playlist_id: &str, user_id: &str, library_filter: Option<&Sql>) -> Sql {
@@ -318,23 +384,32 @@ pub fn load_tracks_sql(playlist_id: &str, user_id: &str, library_filter: Option<
 /// `tracksQuery` (`:374-397`): the track hydration select shared by
 /// `loadTracks` and `GetCursor` — annotation columns, media file and library
 /// joins, the library filter, and the playlist restriction. The annotation
-/// LEFT JOIN embeds the user id exactly as Go concatenates it (`:389-393`);
+/// LEFT JOIN embeds the user id exactly as Go concatenates it (`:390-393`);
 /// the builder models only INNER JOIN, so the whole select is spelled out.
 #[must_use]
 pub fn tracks_query(playlist_id: &str, user_id: &str, library_filter: Option<&Sql>) -> Sql {
-    // The annotation LEFT JOIN embeds the user id exactly as Go concatenates
-    // it (:389-393); the library filter is the caller's applyLibraryFilter.
-    let mut args = vec![Value::Text(playlist_id.to_string())];
+    // tracksQuery applies `applyLibraryFilter` FIRST (`playlist_repository.go:375`)
+    // and appends its own `Where(Eq{"playlist_id": id})` LAST (`:396`), so the
+    // filter clause precedes the playlist restriction and its bound arg binds
+    // first. `playlistTrackRepository.Read` is the opposite — it applies the
+    // filter LAST (`playlist_track_repository.go:117`), which is why
+    // [`crate::playlist_track_repo::read_sql`] binds the filter arg last.
     let library_clause = match library_filter {
-        Some((sql, lib_args)) => {
-            args.extend(lib_args.iter().cloned());
-            format!(
-                " AND {}",
-                sql.replace("media_file.library_id", "f.library_id")
-            )
-        }
-        None => String::new(),
+        Some((sql, _)) => format!(
+            "WHERE {} AND playlist_id = ?",
+            sql.replace("media_file.library_id", "f.library_id")
+        ),
+        None => "WHERE playlist_id = ?".to_string(),
     };
+    // The annotation LEFT JOIN embeds the user id exactly as Go concatenates it
+    // (`:390-393`), so it binds nothing. squirrel renders joins before WHERE
+    // (`select.go:92-118`), and its `Where` clauses bind in append order, so the
+    // filter arg comes before the playlist id.
+    let mut args: Vec<Value> = Vec::new();
+    if let Some((_, lib_args)) = library_filter {
+        args.extend(lib_args.iter().cloned());
+    }
+    args.push(Value::Text(playlist_id.to_string()));
     (
         format!(
             "SELECT coalesce(starred, 0) as starred, starred_at, \
@@ -345,14 +420,14 @@ pub fn tracks_query(playlist_id: &str, user_id: &str, library_filter: Option<&Sq
              annotation.item_type = 'media_file' AND annotation.user_id = '{user_id}') \
              INNER JOIN media_file f ON f.id = media_file_id \
              INNER JOIN library ON f.library_id = library.id \
-             WHERE playlist_id = ?{library_clause}"
+             {library_clause}"
         ),
         args,
     )
 }
 
-/// `GetWithTracks`'s missing filter + order (`:155-157`): the two clauses
-/// `loadTracks` pins over the shared query — `missing = false` and the
+/// `GetWithTracks`'s missing filter + order (`:161-162`): the two clauses
+/// `loadTracks` receives over the shared query — `missing = false` and the
 /// position order `playlist_tracks.id`.
 pub const LOAD_TRACKS_WHERE: &str = "missing = false";
 /// The position order of the load select (`:157`).
@@ -532,6 +607,16 @@ pub struct PlaylistRecord {
     /// RFC3339Nano wire form ([`crate::hydrate::to_go_time_text`]), NOT the
     /// SQLite storage spelling from [`crate::time::to_text`].
     pub annotation: nd_model::annotation::Annotation,
+    /// The promoted `ItemImage` embed (`model/playlist.go:22`, `structs:"-"`): the
+    /// playlist's own artwork state, **read-path only**. Filled by the SECOND
+    /// layer ([`crate::artwork_hydration::hydrate_playlist_artwork`],
+    /// `playlist_repository.go:191-194`) — never by
+    /// [`crate::hydrate::row_to_playlist`], whose projection has no artwork column,
+    /// so it stays zero (= UNRESOLVED) through phases 1 and 2. Zero is NOT the
+    /// known-absent state (`image_absent == true`); see
+    /// [`crate::artwork_hydration::ItemImage`]. Never emitted by [`playlist_row`],
+    /// so the write map keeps its column count unchanged.
+    pub image: crate::artwork_hydration::ItemImage,
     /// Go's `OwnerName` (`structs:"-"` at `model/playlist.go:26`), hydrated from
     /// the `user.user_name as owner_name` alias (`:259`). Read-path-only: dbx's
     /// `ScanStruct` maps by FIELD NAME (`dbx@v1.12.0/rows.go:60-85`), so the
@@ -810,6 +895,246 @@ pub fn load_tracks_include_missing(include_missing: bool) -> Option<&'static str
     }
 }
 
+/// Failures of the executed playlist reads ([`PlaylistRepo`]).
+///
+/// The variant set follows the sibling `ArtistRepo::ArtistError`
+/// (`artist_repo.rs:1498-1521`) and `PlaylistTrackRepo::PlaylistTrackError`
+/// (`playlist_track_repo.rs:570-600`): a statement/hydration failure and the
+/// not-found case, nothing else.
+#[derive(Debug, thiserror::Error)]
+pub enum PlaylistError {
+    /// The SQLite statement failed, or a row's hydration failed. Every read here is
+    /// `queryAll`, so a `PostScan` failure surfaces from dbx's slice loop — the hook
+    /// runs after a successful `Scan` and its error aborts the loop
+    /// (`dbx@v1.12.0/rows.go:177-190`, aborting at `:185-188`; a scan failure aborts
+    /// at `:169-171`), never from the single-row `ScanStruct` hook block at `:92-102`.
+    /// That is why a decode failure arrives here too — via
+    /// [`crate::hydrate::HydrateError::into_sqlite`].
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10` →
+    /// `rest.ErrNotFound`, `data not found`, `deluan/rest@v1.0.1/errors.go:14`).
+    ///
+    /// On this repository it comes ONLY from `findBy`'s row count
+    /// (`playlist_repository.go:182-184`: `if len(pls) == 0 { return nil,
+    /// model.ErrNotFound }`), which `Get` (`:148-150`) and `FindByPath`
+    /// (`:171-173`) both reach. Executed: `Get("pl-nobody")` returns
+    /// `err="data not found"` with a NIL pointer.
+    ///
+    /// No read here reaches `queryOne`, so `sql.ErrNoRows` is not this code path:
+    /// dbx's `All` loops `Next` then `Close` and makes an empty NON-nil slice for a
+    /// zero-row result (`dbx@v1.12.0/query.go:278-291`, `rows.go:122-125`), and
+    /// `sql.ErrNoRows` is returned only by `Rows.one`/`Rows.row`
+    /// (`rows.go:237-244`, `:281-294`). Go's `queryAll` ErrNoRows→ErrNotFound arm
+    /// (`sql_base_repository.go:451-454`) is therefore DEAD on every path in this
+    /// file, which is exactly why [`PlaylistRepo::get_all`] and
+    /// [`PlaylistRepo::get_playlists`] must NEVER report this variant — and why
+    /// Go's `GetPlaylists` `errors.Is(err, model.ErrNotFound)` arm
+    /// (`playlist_repository.go:244-246`) can never fire.
+    #[error("data not found")]
+    NotFound,
+}
+
+/// `playlistRepository` (`playlist_repository.go:20-22`) bound to one pooled
+/// connection — the executed READ side of the playlist repository.
+///
+/// Go binds a `dbx.Builder` and reaches the DB through the ambient ctx; this crate
+/// has no ambient context (the `sqlrepo.rs` DI freeze), so the caller threads a
+/// lease from [`crate::store::SQLStore::with_connection_sync`] (a transaction
+/// derefs to a `&Connection`) and every statement runs through
+/// [`crate::execution`] — the port of `executeSQL`/`queryOne`/`queryAll`
+/// (`sql_base_repository.go:336-355,375-388,441-457`). Rows are hydrated through
+/// the shared seam exactly as the album/artist reads do —
+/// [`crate::hydrate::row_to_playlist`] → [`PlaylistRow::into_record`] — with
+/// [`crate::hydrate::HydrateError::into_sqlite`] as the exit shape, and artwork
+/// hydration is the second layer, [`crate::artwork_hydration::hydrate_playlist_artwork`]
+/// (`hydrateArtwork`, `:191-194`).
+///
+/// `user_id` is Go's `loggedUser(ctx).ID` for `selectPlaylist`'s `withAnnotation`
+/// LEFT JOIN (`sql_annotations.go:63-77`); `user` is the visibility input of
+/// [`user_filter`] — `None` is admin/headless (Go returns the `And{}` identity, which
+/// the traced SQL renders as `AND (1=1)`; the port omits the clause entirely, the
+/// documented residual). Both are needed separately because the annotation join is
+/// emitted for an ADMIN too: the traced admin `Get` binds `annotation.user_id = 'adm'`.
+#[derive(Debug)]
+pub struct PlaylistRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> PlaylistRepo<'a> {
+    /// `NewPlaylistRepository` (`:53-66`): bind to `conn` (the pooled lease). Go's
+    /// registrations (the filter mappings and sort mappings it registers) are the
+    /// caller's inputs to the statement builders, not per-connection state.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get` (`:148-150`) → `findBy` (`:175-189`): [`get_sql`] (the selectPlaylist
+    /// shape narrowed to one id plus visibility), hydrated through both layers.
+    ///
+    /// Go's NotFound comes from the row COUNT after `queryAll`, not from a
+    /// driver-level no-rows condition — see [`PlaylistError::NotFound`] — and it is
+    /// decided BEFORE hydration, so a zero-row read issues no artwork lookup at all
+    /// (`:182-184` returns before `:187`). Go returns `nil` beside that error, so
+    /// the port's `Err` carries the same information.
+    ///
+    /// An artwork-lookup failure is NOT an error here: Go's `hydrateItems` logs and
+    /// returns an EMPTY map (`artwork_hydration.go:58-68`), so the playlist comes
+    /// back with a zero (unresolved) [`crate::artwork_hydration::ItemImage`]. That
+    /// failure is deliberately dropped here — Go's `findBy` has nowhere to report
+    /// it. Use [`PlaylistRepo::get_all`] when the caller needs it surfaced.
+    ///
+    /// # Errors
+    /// [`PlaylistError::NotFound`] when the id matches nothing — **including when the
+    /// visibility clause excludes it for a non-admin**, which requires [`get_sql`] to
+    /// parenthesize the `Or` clause (see that function); without the parentheses the
+    /// id stops restricting the owner branch and a different row comes back instead.
+    /// Executed against the real Go repository: `Get` on an admin-owned private
+    /// playlist as a non-admin gives `data not found` with a nil pointer, and a
+    /// missing id gives the same. [`PlaylistError::Sqlite`] on a statement or
+    /// hydration failure.
+    pub fn get(
+        &self,
+        id: &str,
+        user_id: &str,
+        user: &User,
+    ) -> Result<PlaylistRecord, PlaylistError> {
+        let statement = get_sql(id, user_id, user);
+        let records = self.read_hydrated(&statement)?;
+        // Go hydrates the whole (0-or-1 element) slice only AFTER the len check
+        // (`:182-187`), then takes `&list[0]`.
+        if records.is_empty() {
+            return Err(PlaylistError::NotFound);
+        }
+        let mut outcome = self.hydrate_artwork(records);
+        // Go's swallow-and-log path: the page still renders (`artwork_hydration.go:62-66`).
+        let _ = outcome.artwork_error;
+        Ok(outcome.items.remove(0))
+    }
+
+    /// `FindByPath` (`:171-173`) → the same `findBy` with the `path` Eq. Executed
+    /// against the real repository: the traced statement is
+    /// `… WHERE path = {:p2}` — NO visibility clause, unlike `Get` — so a
+    /// non-admin sees every playlist's file by path (scanner-side, headless). The
+    /// NotFound rule is identical to [`PlaylistRepo::get`].
+    ///
+    /// # Errors
+    /// [`PlaylistError::NotFound`] for a path with no row;
+    /// [`PlaylistError::Sqlite`] on a statement or hydration failure.
+    pub fn find_by_path(&self, path: &str, user_id: &str) -> Result<PlaylistRecord, PlaylistError> {
+        let statement = find_by_path_sql(path, user_id);
+        let mut records = self.read_hydrated(&statement)?;
+        if records.is_empty() {
+            return Err(PlaylistError::NotFound);
+        }
+        // Go hydrates ONLY the first row: `list := model.Playlists{pls[0].Playlist}`
+        // (`:186`) before calling hydrateArtwork, so a duplicate-path table issues
+        // `IN (1 id)` in Go and `IN (n ids)` here. Taking the row first keeps the
+        // artwork IN-list identical; the returned record is the same either way
+        // (`remove(0)` ≡ `pls[0]`). `playlist` has no unique index on `path`
+        // (`nd-dbschema` index list), so duplicates are reachable.
+        records.truncate(1);
+        let mut outcome = self.hydrate_artwork(records);
+        let _ = outcome.artwork_error;
+        Ok(outcome.items.remove(0))
+    }
+
+    /// `GetAll` (`:196-210`): [`get_all_sql`] under the caller's visibility and
+    /// sort-mapping legs, then artwork hydration.
+    ///
+    /// `order_by` is the caller's rendered sort mapping — Go maps `name` and
+    /// `owner_name` through `naturalSort` (`:62-65`), and with natural sorting off
+    /// the traced statement renders `ORDER BY playlist.name`. Passing `&[]` renders
+    /// no ORDER BY at all, which is Go's no-options behavior.
+    ///
+    /// An empty result is an empty `Vec`, never [`PlaylistError::NotFound`]: Go
+    /// returns `playlists` (a `make`d non-nil slice) with `err` from the `queryAll`
+    /// call unchanged (`:199-209`).
+    ///
+    /// `artwork_error` carries Go's swallowed `log.Error`
+    /// (`artwork_hydration.go:62-66`): the playlists come back either way, each with
+    /// a zero (unresolved) image — executed against the real repository with
+    /// `item_artwork` dropped, where every read still returned its rows.
+    ///
+    /// # Errors
+    /// [`PlaylistError::Sqlite`] when the statement fails or a row will not hydrate.
+    pub fn get_all(
+        &self,
+        user_id: &str,
+        user: &User,
+        order_by: &[String],
+    ) -> Result<crate::artwork_hydration::ReadOutcome<PlaylistRecord>, PlaylistError> {
+        let statement = get_all_sql(user_id, user, order_by);
+        let records = self.read_hydrated(&statement)?;
+        Ok(self.hydrate_artwork(records))
+    }
+
+    /// `GetPlaylists` (`:237-255`): the playlists containing `media_file_id`,
+    /// [`get_playlists_sql`] joined to `playlist_tracks` and sorted by the `name`
+    /// mapping, then artwork hydration.
+    ///
+    /// Go's `errors.Is(err, model.ErrNotFound)` arm (`:244-246`) — return an empty
+    /// `Playlists` with a nil error — is DEAD: `queryAll` never produces
+    /// `model.ErrNotFound`, because dbx's `All` yields an empty non-nil slice and
+    /// the ErrNoRows mapping lives only in `Rows.one`/`Rows.row`
+    /// (`dbx@v1.12.0/query.go:278-291`, `rows.go:237-244`,
+    /// `sql_base_repository.go:451-454`). The port therefore has no special arm:
+    /// a zero-row read is an empty `Vec` and a statement failure is
+    /// [`PlaylistError::Sqlite`], which is what Go returns on that path (`:247`).
+    ///
+    /// # Errors
+    /// [`PlaylistError::Sqlite`] when the statement fails or a row will not hydrate.
+    /// Never [`PlaylistError::NotFound`] — see above.
+    pub fn get_playlists(
+        &self,
+        media_file_id: &str,
+        user_id: &str,
+        user: &User,
+        name_sort: &str,
+    ) -> Result<crate::artwork_hydration::ReadOutcome<PlaylistRecord>, PlaylistError> {
+        let statement = get_playlists_sql(media_file_id, user_id, user, name_sort);
+        let records = self.read_hydrated(&statement)?;
+        Ok(self.hydrate_artwork(records))
+    }
+
+    /// Phase 1 + phase 2 (Go's `queryAll` + `toModels()`): the raw rows through the
+    /// shared seam, the `rules` shim decoded onto the record. A `PostScan` failure
+    /// aborts the whole read, as `queryAll` does in Go.
+    fn read_hydrated(&self, statement: &Sql) -> Result<Vec<PlaylistRecord>, PlaylistError> {
+        let rows =
+            crate::execution::query_all(self.conn, statement, crate::hydrate::row_to_playlist)?;
+        // Go's read funnel leaves a PostScan failure as a column-conversion error,
+        // so `into_sqlite` is the exit shape and `PlaylistError::Sqlite` wraps it.
+        Ok(rows
+            .into_iter()
+            .map(PlaylistRow::into_record)
+            .collect::<Result<Vec<PlaylistRecord>, crate::hydrate::HydrateError>>()
+            .map_err(crate::hydrate::HydrateError::into_sqlite)?)
+    }
+
+    /// Phase 3 (`hydrateArtwork`, `:191-194`): one batched `pl`-kind lookup over
+    /// the hydrated records. Chunking and the no-dedup id list are
+    /// [`crate::artwork_hydration`]'s behavior, not this method's.
+    fn hydrate_artwork(
+        &self,
+        records: Vec<PlaylistRecord>,
+    ) -> crate::artwork_hydration::ReadOutcome<PlaylistRecord> {
+        let mut items = records;
+        let mut artwork_error = None;
+        crate::artwork_hydration::hydrate_playlist_artwork(
+            self.conn,
+            &mut items,
+            &mut artwork_error,
+        );
+        crate::artwork_hydration::ReadOutcome {
+            items,
+            artwork_error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,6 +1237,154 @@ mod tests {
             ]
         );
     }
+    #[test]
+    fn get_sql_parenthesizes_the_or_visibility_clause_for_a_non_admin() {
+        // Go builds `And{Eq{"playlist.id": id}, userFilter(ctx)}`
+        // (`playlist_repository.go:149`), and squirrel wraps every conjunct group in
+        // parentheses (`squirrel@v1.5.4/expr.go:384-386`). Executed against the pinned
+        // squirrel, the non-admin statement is
+        //   WHERE (playlist.id = ? AND (public = ? OR owner_id = ?)).
+        // The port renders the flat conjunction squirrel would produce from the same
+        // parts, so the `Or` clause must keep its own parentheses: unparenthesized,
+        // SQL binds `AND` tighter than `OR`, so the predicate becomes
+        // `(id AND public) OR owner_id` and a non-admin asking for an invisible id
+        // gets a DIFFERENT visible row instead of NotFound (see `get_sql`'s comment
+        // for the executed rows).
+        // Go's `loggedUser(ctx).ID` is the SAME value in both places — the annotation
+        // join's `user_id` (`sql_annotations.go:64`) and userFilter's `owner_id`
+        // (`playlist_repository.go:90`) — so the test passes it as both args.
+        let (sql, args) = get_sql("pl-1", "lim", &Some("lim".to_string()));
+        assert_eq!(
+            sql,
+            "SELECT playlist.*, user.user_name as owner_name, \
+             coalesce(starred, 0) as starred, coalesce(rating, 0) as rating, starred_at, \
+             play_date, rated_at, coalesce(play_count, 0) as play_count, playlist.average_rating \
+             FROM playlist JOIN user ON user.id = owner_id \
+             LEFT JOIN annotation ON (annotation.item_id = playlist.id AND \
+             annotation.item_type = ? AND annotation.user_id = ?) \
+             WHERE playlist.id = ? AND (public = ? OR owner_id = ?)"
+        );
+        // Bind order is unchanged by the parentheses: annotation kind, annotation user,
+        // then the id, then the visibility pair.
+        assert_eq!(
+            args,
+            vec![
+                Value::Text("playlist".to_string()),
+                Value::Text("lim".to_string()),
+                Value::Text("pl-1".to_string()),
+                Value::Bool(true),
+                Value::Text("lim".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn admin_get_sql_keeps_the_identity_visibility_clause_absent() {
+        // userFilter returns `And{}` for an admin (`:85-86`), which squirrel renders as
+        // the traced `AND (1=1)`; the port omits the clause and binds nothing extra
+        // (the documented identity residual).
+        let (sql, args) = get_sql("pl-1", "adm", &None);
+        assert!(sql.ends_with("WHERE playlist.id = ?"), "{sql}");
+        assert_eq!(args.len(), 3, "only the annotation pair and the id bind");
+    }
+
+    #[test]
+    fn get_all_sql_wraps_the_visibility_clause_for_text_parity() {
+        // `GetAll` passes userFilter to `Where` directly (`:197`), so squirrel renders
+        // `WHERE (public = ? OR owner_id = ?)` (executed). The port wraps it to match,
+        // which also keeps a future conjunct from inheriting `get_sql`'s hazard.
+        let (sql, args) = get_all_sql(
+            "lim",
+            &Some("lim".to_string()),
+            &["playlist.name".to_string()],
+        );
+        assert!(
+            sql.contains("WHERE (public = ? OR owner_id = ?) ORDER BY playlist.name"),
+            "{sql}"
+        );
+        assert_eq!(args.len(), 4);
+        let (admin_sql, _) = get_all_sql("adm", &None, &[]);
+        assert!(
+            !admin_sql.contains("WHERE"),
+            "an admin sees everything: {admin_sql}"
+        );
+    }
+    #[test]
+    fn smart_playlist_filter_renders_is_null_with_one_bound_arg() {
+        // Go builds `Or{Eq{"rules": ""}, Eq{"rules": nil}}` (`playlist_repository.go:76-81`).
+        // squirrel turns the nil Eq into `rules IS NULL` with NO placeholder and wraps the
+        // Or (`squirrel@v1.5.4/expr.go:182-183`, the `if val == nil` arm, plus the
+        // conjunction wrap at `:384-386`) - executed against the
+        // pinned squirrel in `/tmp/sd3f_p1/args.go`:
+        //   sql = (rules = ? OR rules IS NULL), len(args) == 1.
+        // The port previously emitted `rules = ? OR rules = ?` with a NULL arg; SQL
+        // three-valued logic makes `rules = NULL` never true, which silently dropped the
+        // NULL-rules rows Go's filter includes. See the executed row set in
+        // `runtime_hydrate_playlist_radio_artwork.rs::smart_filter_clause_includes_a_null_rules_row`.
+        let (sql, args) = smart_playlist_filter();
+        assert_eq!(sql, "(rules = ? OR rules IS NULL)");
+        assert_eq!(args, [Value::Text(String::new())]);
+    }
+
+    #[test]
+    fn playlist_filter_ands_the_parts_inside_each_field_and_ors_the_fields() {
+        // `Or{substringFilter(name), substringFilter(comment)}` (`:69-74`) where each
+        // `substringFilter` (`sql_restful.go:119-126`) is an `And` over the split parts.
+        // Executed against the pinned squirrel (`/tmp/sd3f_p1/q.go`):
+        //   ((playlist.name LIKE ? AND playlist.name LIKE ?)
+        //    OR (playlist.comment LIKE ? AND playlist.comment LIKE ?))
+        // with args [%rah%, %frahm%, %rah%, %frahm%] - all name legs before all comment
+        // legs, matching Go's `Or{first, second}` render order.
+        let (sql, args) = playlist_filter("rah frahm");
+        assert_eq!(
+            sql,
+            "((playlist.name LIKE ? AND playlist.name LIKE ?) \
+             OR (playlist.comment LIKE ? AND playlist.comment LIKE ?))"
+        );
+        assert_eq!(
+            args,
+            [
+                Value::Text("%rah%".to_string()),
+                Value::Text("%frahm%".to_string()),
+                Value::Text("%rah%".to_string()),
+                Value::Text("%frahm%".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn playlist_filter_with_one_word_is_a_two_field_or() {
+        // Executed (`/tmp/sd3f_p1/q.go`, `q one word`):
+        //   ((playlist.name LIKE ?) OR (playlist.comment LIKE ?))
+        // Each leg keeps its own parentheses because squirrel wraps every conjunction
+        // group, so joining this clause with another conjunct cannot leak OR past AND.
+        let (sql, args) = playlist_filter("rah");
+        assert_eq!(sql, "((playlist.name LIKE ?) OR (playlist.comment LIKE ?))");
+        assert_eq!(
+            args,
+            [
+                Value::Text("%rah%".to_string()),
+                Value::Text("%rah%".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_playlist_query_matches_everything_not_nothing() {
+        // Go's `Or` is NOT empty for `q = ""`: its two legs are empty `And`s, and squirrel
+        // renders an empty conjunction as `1=1` (`expr.go`, `sqlTrue`). Executed
+        // (`/tmp/sd3f_p1/q.go`, `q empty`): `((1=1) OR (1=1))`, no args - it matches every
+        // row. `1=0` is what an empty `Or` renders (`sqlFalse`), and Go never builds one
+        // here; the port previously returned `1=0` and matched nothing.
+        let (sql, args) = playlist_filter("");
+        assert_eq!(sql, "((1=1) OR (1=1))");
+        assert!(args.is_empty());
+        let (whitespace_only, _) = playlist_filter("   ");
+        assert_eq!(
+            whitespace_only, "((1=1) OR (1=1))",
+            "Go uses strings.Fields"
+        );
+    }
 
     #[test]
     fn count_all_and_get_all_ids_pin_their_shapes() {
@@ -966,6 +1439,30 @@ mod tests {
              WHERE playlist_id = ?"
         );
         assert_eq!(args, vec![Value::Text("pl-1".to_string())]);
+    }
+
+    #[test]
+    fn tracks_query_binds_the_library_filter_before_the_playlist() {
+        // Arrange/Act: tracksQuery applies applyLibraryFilter FIRST (:375) and its
+        // own Where(Eq{"playlist_id": id}) LAST (:396).
+        let filter = (
+            "media_file.library_id IN (SELECT ul.library_id FROM user_library ul WHERE \
+             ul.user_id = ?)"
+                .to_string(),
+            vec![Value::Text("u1".to_string())],
+        );
+        let (sql, args) = load_tracks_sql("pl-1", "u1", Some(&filter));
+        // Assert: the alias-spelled filter (Go's "f" alias) precedes the playlist
+        // clause, and its arg binds first.
+        assert!(sql.contains("WHERE f.library_id IN (SELECT ul.library_id FROM user_library ul WHERE ul.user_id = ?) AND playlist_id = ?"));
+        assert!(!sql.contains("media_file.library_id"), "Go's alias is f");
+        assert_eq!(
+            args,
+            vec![
+                Value::Text("u1".to_string()),
+                Value::Text("pl-1".to_string())
+            ]
+        );
     }
 
     #[test]
@@ -1070,6 +1567,8 @@ mod tests {
             evaluated_at: None,
             // Derived, hydration-owned: never in playlist_row.
             annotation: nd_model::annotation::Annotation::default(),
+            // Second-layer artwork (`structs:"-"`): never in playlist_row.
+            image: crate::artwork_hydration::ItemImage::default(),
             // Read-path-only (`structs:"-"`): hydrated from the `owner_name`
             // alias, never in playlist_row.
             owner_name: "jdoe".to_string(),

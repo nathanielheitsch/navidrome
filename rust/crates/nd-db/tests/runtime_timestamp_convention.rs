@@ -207,6 +207,8 @@ fn radio_record(id: &str) -> RadioRecord {
         uploaded_image: String::new(),
         created_at: at(2024, 1, 1, 0, 0, 0),
         updated_at: at(2024, 1, 1, 0, 0, 0),
+        // Second-layer artwork (`structs:"-"`): never a put_cols leg.
+        image: nd_db::artwork_hydration::ItemImage::default(),
     }
 }
 

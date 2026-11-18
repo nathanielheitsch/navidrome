@@ -16,27 +16,33 @@
 //! `rest.ErrPermissionDenied`); the crate has no ambient context (the
 //! `sqlrepo.rs` DI rule), so the caller checks admin before calling —
 //! nothing in the SQL layer can stand in for the gate. Reads are unfiltered:
-//! radios are visible to every user (`:48`, no ownership/library filter in
-//! `newSelect`), which is also why `registerModel`'s only filter mapping is
+//! `radioRepository` defines NO `userFilter` at all (`grep -n "userFilter"
+//! persistence/radio_repository.go` is empty; the playlist repository's is at
+//! `playlist_repository.go:83-92`) and `newSelect` adds no clause
+//! (`sql_base_repository.go:139-147`), so `Get`/`GetAll` carry no ownership or
+//! library filter. Go's own comment saying radios are visible to every user sits on
+//! `Exists` (`:38`), not on the reads. `registerModel`'s only filter mapping is
 //! `containsFilter("name")` (`:20-22`).
 //!
 //! Timestamps: `radio.created_at`/`updated_at` are the non-optional
-//! `time.Time` of `model/radio.go:20,21`, stored as TEXT via [`crate::time`]
+//! `time.Time` of `model/radio.go:19-20`, stored as TEXT via [`crate::time`]
 //! (rusqlite's `DateTime<Utc>` shape — see `time.rs` for why epoch integers
 //! silently break range predicates and ordering). The caller owns the clock —
 //! `Put`'s `UpdatedAt = time.Now()` / fresh-row `CreatedAt` / `id.NewRandom()`
 //! minting (`:96-100`) are reproduced by [`put_sql`] taking `now` and minting
 //! through [`nd_id::new_random`].
 //!
-//! Not ported, with the reason: `hydrateArtwork` (`:73-76`) is the shared
-//! batched `item_artwork` lookup of `artwork_hydration.go:77-94` — that
-//! select belongs to the artwork repository lane (`artwork_repo.rs`), and
-//! every repo documents the same hand-off. `uploaded_image` is a
+//! Not ported: nothing of the read side remains — `hydrateArtwork`
+//! (`:79-83`) landed as
+//! [`crate::artwork_hydration::hydrate_radio_artwork`] (the shared batched
+//! `item_artwork` lookup of `artwork_hydration.go:58-90`) and runs inside
+//! [`RadioRepo::get`]/[`RadioRepo::get_all`]. `uploaded_image` is a
 //! migration-added column in Go's schema; `nd-dbschema`'s fresh DDL must
 //! carry it for the INSERT to bind (residual dependency on that lane).
 
 use chrono::{DateTime, Utc};
 
+use crate::marshal::to_snake_case;
 use crate::sql_restful::{contains_filter, RestRepository};
 use crate::sqlrepo::Value;
 use crate::time;
@@ -118,7 +124,7 @@ impl Col {
 
 /// `model.Radio` minus the `structs:"-"` embeds (`model/radio.go:12-21`):
 /// exactly the columns `toSQLArgs` yields, in struct order. `created_at`/
-/// `updated_at` are the non-optional `time.Time` of `model/radio.go:20,21`,
+/// `updated_at` are the non-optional `time.Time` of `model/radio.go:19-20`,
 /// stored via [`crate::time`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RadioRecord {
@@ -136,6 +142,17 @@ pub struct RadioRecord {
     pub created_at: DateTime<Utc>,
     /// `updated_at`.
     pub updated_at: DateTime<Utc>,
+    /// The promoted `ItemImage` embed (`model/radio.go:12`, `structs:"-"`): the
+    /// radio's own artwork state, **read-path only**. Filled by the SECOND layer
+    /// ([`crate::artwork_hydration::hydrate_radio_artwork`],
+    /// `radio_repository.go:80-83`). The read side scans straight into
+    /// `model.Radio`: Go has no `dbRadio` wrapper, no `PostScan` and no shim column
+    /// (`grep -n "dbRadio\|PostScan" persistence/radio_repository.go` returns
+    /// nothing), so there is NO phase 2 for radio and this field stays zero
+    /// (= UNRESOLVED) until the artwork layer runs. Zero is NOT known-absent; see
+    /// [`crate::artwork_hydration::ItemImage`]. Never emitted by [`put_cols`],
+    /// which stays at exactly the 7 persisted columns.
+    pub image: crate::artwork_hydration::ItemImage,
 }
 
 /// `toSQLArgs(&model.Radio{})` (`helpers.go:18-37`): every column, struct
@@ -177,7 +194,8 @@ pub fn rest_repo() -> RestRepository {
 }
 
 /// `Get`/`Read` (`:58-66,125-127`): `SELECT * … WHERE id = ?` — radios are
-/// visible to every user, so no ownership restriction applies (`:48`).
+/// visible to every user: `radioRepository` defines no `userFilter` and `newSelect`
+/// adds no clause (`sql_base_repository.go:139-147`).
 #[must_use]
 pub fn get_sql(id: &str) -> Sql {
     (
@@ -204,8 +222,16 @@ pub fn get_all_sql(
 }
 
 /// `CountAll`/`Count` (`:43-45,118-120` via `count`,
-/// `sql_base_repository.go:565-575`): `count(distinct radio.id) as count`
-/// with the caller's filters kept.
+/// `sql_base_repository.go:565-575`): `count(distinct radio.id) as count` with the
+/// caller's filters kept.
+///
+/// `count` always resets the sort to `OrderBy(r.tableName+".id")` before running the
+/// statement (`sql_base_repository.go:569`, "To remove any ORDER BY clause that
+/// could slow down the query"), so Go's traced text is
+/// `SELECT count(distinct radio.id) as count FROM radio ORDER BY radio.id` (executed,
+/// oracle `sql_shapes.txt`). The leg contributes no argument and cannot change a
+/// count, but `playlist_repo::count_all_sql` emits its equivalent and the two files
+/// in this lane should not disagree, so it is rendered here too.
 ///
 /// # Errors
 /// [`crate::sqlrepo::SqlError`] when the builder cannot materialize.
@@ -216,7 +242,11 @@ pub fn count_all_sql(
     if let Some(options) = options {
         sq = crate::sql_search::apply_filters(sq, options);
     }
-    sq.count(TABLE).to_sql()
+    // `count` removes any caller ORDER BY and installs `table.id`
+    // (`sql_base_repository.go:566-570`); `Repository::count` already drops the
+    // sort legs, so this restores the reset one Go always applies.
+    sq = sq.count(TABLE).order_by([format!("{TABLE}.id")]);
+    sq.to_sql()
 }
 
 /// `Exists` (`:48-50` via `exists`, `sql_base_repository.go:488-493`):
@@ -229,7 +259,7 @@ pub fn exists_sql(id: &str) -> Sql {
     )
 }
 
-/// `Delete` (`:51-57` via `deleteByID`, `sql_base_repository.go:594-601`):
+/// `Delete` (`:43-54` via `deleteByID`, `sql_base_repository.go:650-658`):
 /// one DELETE per id, in order; a zero-row delete is the caller's
 /// not-found. The admin gate is the caller's (see module header).
 #[must_use]
@@ -266,8 +296,16 @@ pub struct PutSql {
 /// `created_at`, `sql_base_repository.go:601-604`), followed by the full-row
 /// INSERT — plus the Bump-priority artwork enqueue.
 ///
-/// `cols_to_update`'s names are the fixed snake_case column identifiers
-/// (Go's `toSnakeCase` of the struct fields), never user text.
+/// `cols_to_update` are column NAMES as Go's callers pass them, not literal
+/// SQL identifiers: Go's `Put` appends `"UpdatedAt"` in camelCase
+/// (`radio_repository.go:95-97`) and `selectUpdateColumns` runs every requested
+/// name through `toSnakeCase` before matching the write map
+/// (`sql_base_repository.go:596-598`). So camelCase names such as
+/// `"StreamUrl"`/`"HomePageUrl"`/`"Name"` — exactly what the real Go callers pass
+/// (`server/subsonic/radio.go:122`, `server/nativeapi/radios.go:48` pass
+/// `"UploadedImage"`) — behave like Go's. The port normalizes through
+/// [`crate::marshal::to_snake_case`], the same seam `playlist_repo` uses; matching
+/// verbatim would silently drop the caller's columns and update only `updated_at`.
 #[must_use]
 pub fn put_sql(radio: &RadioRecord, now: DateTime<Utc>, cols_to_update: &[&str]) -> PutSql {
     let id = if radio.id.is_empty() {
@@ -321,18 +359,29 @@ pub fn put_sql(radio: &RadioRecord, now: DateTime<Utc>, cols_to_update: &[&str])
     }
 }
 
-/// `selectUpdateColumns` + the `UpdatedAt` append (`:101-103`,
-/// `sql_base_repository.go:587-609`): all columns when none requested,
-/// else the requested ones plus `updated_at`, always minus `created_at`.
+/// `selectUpdateColumns` + the `UpdatedAt` append (`:95-97`,
+/// `sql_base_repository.go:591-609`): all columns when none requested, else the
+/// `toSnakeCase`-normalized requested names plus `updated_at`, always minus
+/// `created_at`. Normalization happens BEFORE the append-matching, exactly as Go
+/// does it (`c2upd := slice.ToMap(colsToUpdate, toSnakeCase)`, `:596-598`), so a
+/// caller passing `"UpdatedAt"` is not duplicated and a camelCase name still matches
+/// its snake_case column.
 #[must_use]
 fn select_update_cols(all_cols: &[Col], cols_to_update: &[&str]) -> Vec<Col> {
-    let mut wanted: Vec<&str> = cols_to_update.to_vec();
-    if !wanted.is_empty() && !wanted.contains(&"updated_at") {
-        wanted.push("updated_at");
+    // Go appends the camelCase name (`radio_repository.go:96`) and snake-cases the
+    // whole slice (`sql_base_repository.go:596-598`); appending first and
+    // normalizing after is the same result.
+    let mut wanted: Vec<String> = cols_to_update.iter().map(|c| c.to_string()).collect();
+    if !wanted.is_empty() {
+        // Go appends unconditionally when the slice is non-empty
+        // (`radio_repository.go:95-97`); a duplicate collapses because the names are
+        // matched through a map (`sql_base_repository.go:596-598`).
+        wanted.push("UpdatedAt".to_string());
     }
+    let wanted: Vec<String> = wanted.iter().map(|c| to_snake_case(c)).collect();
     all_cols
         .iter()
-        .filter(|c| wanted.is_empty() || wanted.contains(&c.column.as_str()))
+        .filter(|c| wanted.is_empty() || wanted.iter().any(|w| w == &c.column))
         .filter(|c| !NEVER_UPDATE_COLS.contains(&c.column.as_str()))
         .cloned()
         .collect()
@@ -363,6 +412,211 @@ pub fn enqueue_artwork_sql(radio_id: &str, now: &DateTime<Utc>) -> Sql {
             time::value(now),
         ],
     )
+}
+
+/// Failures of the executed radio reads ([`RadioRepo`]).
+///
+/// The variant set follows the sibling `ArtistRepo::ArtistError`
+/// (`artist_repo.rs:1498-1521`) — a statement/scan failure and the not-found case —
+/// plus the one extra arm this repository needs because its statement builder
+/// returns a `Result`: [`RadioError::Builder`]. `PlayerError`
+/// (`player_repo.rs:243-272`) and `ShareError` (`share_repo.rs:161-180`) set the
+/// precedent for more than two arms when Go has more error paths.
+#[derive(Debug, thiserror::Error)]
+pub enum RadioError {
+    /// The SQLite statement failed, or a row could not be scanned. Unlike the
+    /// playlist and artist reads there is no `PostScan` hook to fail here —
+    /// `grep -n "dbRadio\|PostScan" persistence/radio_repository.go` is empty —
+    /// so this variant is a pure statement/scan failure. The one scan failure that
+    /// IS reachable is a NULL `created_at`/`updated_at` scanned into Go's
+    /// non-pointer `time.Time` (`model/radio.go:19-20`): executed against the
+    /// real repository, `Get` on such a row returns
+    /// `sql: Scan error on column index 4, name "created_at": unsupported Scan,
+    /// storing driver.Value type <nil> into type *time.Time` beside a NON-nil
+    /// pointer to a zero `Radio`. `GetAll` returns the same error, but the slice
+    /// beside it holds the rows scanned BEFORE the failing one
+    /// (`radio_repository.go:71-73` returns `res` with `err`; dbx appends each row
+    /// after a successful scan and aborts at `dbx@v1.12.0/rows.go:169-171`, so the
+    /// append loop at `:159-193` keeps everything up to the failure). Executed
+    /// against the real repository over {ra-ok1, ra-ok2, ra-null}: `len == 2` with
+    /// the error; with the NULL row first, `len == 0` (which is the shape the
+    /// earlier oracle saw, and why this bullet used to claim "always empty").
+    /// The port has no value-beside-error, so it reports only the error — see
+    /// [`RadioRepo::get_all`]. The fresh DDL declares both columns as bare
+    /// `datetime` with no DEFAULT, so NULL is reachable. The port reports it here —
+    /// NOT as [`RadioError::NotFound`] and NOT as a zero timestamp.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+
+    /// The statement could not be materialized — Go's `toSQL` failure
+    /// (`sql_base_repository.go:358-372`), which `queryAll` returns unchanged
+    /// (`:446-448`) and `GetAll` hands back beside its empty `res`
+    /// (`radio_repository.go:71-73`). For this table the builder's only failure
+    /// mode is `SqlError::NoTable`, which the fixed `radio` table makes
+    /// unreachable; the arm exists so the port does not have to invent a
+    /// `rusqlite::Error` for a builder failure.
+    #[error(transparent)]
+    Builder(#[from] crate::sqlrepo::SqlError),
+
+    /// No row matched — Go's `model.ErrNotFound` (`model/errors.go:10` →
+    /// `rest.ErrNotFound`, `data not found`, `deluan/rest@v1.0.1/errors.go:14`).
+    ///
+    /// Radio is the one repository in this slice whose NotFound comes from
+    /// `queryOne`: Go's `Get` (`radio_repository.go:56-66`) is a `queryOne`, which
+    /// maps `sql.ErrNoRows` to `model.ErrNotFound`
+    /// (`sql_base_repository.go:375-388`, `dbx@v1.12.0/rows.go:237-244`).
+    ///
+    /// **Go quirk, ported as information rather than as a value:** Go returns
+    /// `(&res, err)` at `:61`, so the pointer beside the error is NON-nil and points
+    /// at a zero `Radio` (`ID == ""`, `Name == ""`, zero `ItemImage`) — executed:
+    /// `Get("ra-nobody")` gives `err="data not found"` with `ptrNil=false`. The
+    /// port's `Err(NotFound)` carries the same information minus that dead pointer,
+    /// which no Go caller can legitimately read.
+    ///
+    /// [`RadioRepo::get_all`] NEVER reports this variant: `GetAll` is `queryAll`, and
+    /// dbx's `All` loops `Next` then `Close` and makes an empty NON-nil slice for a
+    /// zero-row result (`dbx@v1.12.0/query.go:278-291`, `rows.go:122-125`), so
+    /// `queryAll`'s ErrNoRows→ErrNotFound arm (`sql_base_repository.go:451-454`) is
+    /// dead code on that path.
+    #[error("data not found")]
+    NotFound,
+}
+
+/// `radioRepository` (`radio_repository.go:15-17`) bound to one pooled connection —
+/// the executed READ side of the radio repository.
+///
+/// Go binds a `dbx.Builder` and reaches the DB through the ambient ctx; this crate
+/// has no ambient context (the `sqlrepo.rs` DI freeze), so the caller threads a
+/// lease from [`crate::store::SQLStore::with_connection_sync`] (a transaction
+/// derefs to a `&Connection`) and every statement runs through
+/// [`crate::execution`] — the port of `executeSQL`/`queryOne`/`queryAll`
+/// (`sql_base_repository.go:336-355,375-388,441-457`). Rows hydrate through
+/// [`crate::hydrate::row_to_radio`] — a SINGLE phase, because Go has no `dbRadio`
+/// wrapper struct and no `PostScan` hook — and artwork hydration is the second
+/// layer, [`crate::artwork_hydration::hydrate_radio_artwork`]
+/// (`hydrateArtwork`, `radio_repository.go:80-83`).
+///
+/// No read takes a user: radios are visible to every user, because `Get`/`GetAll`
+/// build their statement with `newSelect` (`:57`, `:69`), which adds only the table,
+/// caller filters and pagination (`sql_base_repository.go:139-147`), and this
+/// repository defines no `userFilter` at all. Go's own comment saying radios are
+/// unfiltered sits on `Exists` (`:38`); the reads are unfiltered for the same reason,
+/// so neither [`get_sql`] nor [`get_all_sql`] carries an ownership or library clause.
+/// The admin gate (`isPermitted`, `:28-31`) governs WRITES only and stays the
+/// caller's (see module header).
+#[derive(Debug)]
+pub struct RadioRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> RadioRepo<'a> {
+    /// `NewRadioRepository` (`radio_repository.go:19-26`): bind to `conn` (the
+    /// pooled lease).
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// `Get`/`Read` (`:56-66`, `:116-118`): [`get_sql`] over the id, hydrated
+    /// through both layers.
+    ///
+    /// NotFound is `queryOne`'s no-rows condition (see [`RadioError::NotFound`]),
+    /// and as in Go it is decided BEFORE hydration — Go returns at `:60-62`, so a
+    /// missing id issues no `item_artwork` lookup at all. Executed: `Get` of an
+    /// unknown id traced only `SELECT * FROM radio WHERE id = ?`.
+    ///
+    /// An artwork-lookup failure is NOT an error here: Go's `hydrateItems` logs and
+    /// returns an EMPTY map (`artwork_hydration.go:58-68`), leaving the radio with a
+    /// zero (unresolved) [`crate::artwork_hydration::ItemImage`]. Executed with
+    /// `item_artwork` dropped: `Get` returned `err=""` with
+    /// `ItemImage{Hash:"", Absent:false, …}`. That failure is deliberately dropped,
+    /// because Go's `Get` has nowhere to report it — use [`RadioRepo::get_all`] to
+    /// have it surfaced.
+    ///
+    /// # Errors
+    /// [`RadioError::NotFound`] when the id matches nothing;
+    /// [`RadioError::Sqlite`] on a statement or scan failure (see that variant for
+    /// the NULL-timestamp case); [`RadioError::Builder`] only if the fixed-table
+    /// builder ever fails to materialize. An OFFSET-without-LIMIT page does NOT fail
+    /// here — see [`RadioRepo::get_all`] for that documented divergence.
+    pub fn get(&self, id: &str) -> Result<RadioRecord, RadioError> {
+        let statement = get_sql(id);
+        // Go's queryOne (`:59`) → dbx `Rows.one` (`dbx@v1.12.0/rows.go:237-244`);
+        // `query_optional`'s `None` is exactly that no-rows condition, which Go
+        // maps to model.ErrNotFound.
+        let mut record =
+            crate::execution::query_optional(self.conn, &statement, crate::hydrate::row_to_radio)?
+                .ok_or(RadioError::NotFound)?;
+        // Go wraps the single row in `model.Radios{res}` (`:63`) and hydrates that
+        // one-element slice — `from_mut` is the same 1-element slice.
+        let mut artwork_error = None;
+        crate::artwork_hydration::hydrate_radio_artwork(
+            self.conn,
+            std::slice::from_mut(&mut record),
+            &mut artwork_error,
+        );
+        // Go's swallow-and-log path (`artwork_hydration.go:62-66`): Get reports nothing.
+        let _ = artwork_error;
+        Ok(record)
+    }
+
+    /// `GetAll`/`ReadAll` (`:68-77`, `:120-122`): [`get_all_sql`] under the caller's
+    /// parsed options, then artwork hydration.
+    ///
+    /// `options` is the parsed rest shape (`rest_repo`'s `name` contains-filter plus
+    /// the pagination legs). Executed against the real repository,
+    /// `Sort: "name", Order: "desc", Max: 2, Offset: 1` traces
+    /// `SELECT * FROM radio ORDER BY name desc LIMIT 2 OFFSET 1`, and an
+    /// `Offset`-only option (`Max == 0`) traces `SELECT * FROM radio OFFSET 1` —
+    /// which SQLite rejects with `near "1": syntax error` in Go (executed).
+    /// **Divergence:** the port does NOT fail there. Its builder emits
+    /// `LIMIT -1 OFFSET n` ahead of a bare offset (`sqlrepo.rs:313-319`, a
+    /// deliberate cited deviation), so the offset-only page EXECUTES and skips rows
+    /// — pinned by `offset_without_limit_diverges_the_way_the_builder_documents`.
+    /// **Residual:** [`get_all_sql`] renders LIMIT/OFFSET and the filter but NOT the
+    /// ORDER BY leg (`apply_pagination`/`apply_filters` have no sort leg), so
+    /// `options.sort`/`options.order` change nothing and rows come back in SQLite's
+    /// order — the same documented divergence as
+    /// `artist_repo::ArtistRepo::get_all`. Reported, not changed: the builder shape
+    /// is pinned by `get_all_applies_parsed_filters_and_pagination`.
+    ///
+    /// Go returns its partially-filled `res` beside a statement error (`:71-73`), so
+    /// rows scanned before a failing row survive (see [`RadioError::Sqlite`]).
+    /// `Result` has no value-beside-error, so the port returns `Err` and drops them;
+    /// no Go caller reads that partial slice on this path either way, and
+    /// `playlist_repository.go:200-201` (playlist `GetAll`) returns `nil, err` — the
+    /// playlist read has no divergence here.
+    ///
+    /// An empty table is an empty `Vec` with `artwork_error == None`, never
+    /// [`RadioError::NotFound`] (see that variant's dbx proof). An empty slice also
+    /// issues no artwork query at all — `hydrate_item_images` returns early on no ids
+    /// (`artwork_hydration.go:59-61`).
+    ///
+    /// `artwork_error` carries Go's swallowed `log.Error`
+    /// (`artwork_hydration.go:62-66`): the radios come back either way, each with a
+    /// zero (unresolved) image — executed with `item_artwork` dropped, where
+    /// `GetAll` returned all 4 rows with zero images.
+    ///
+    /// # Errors
+    /// [`RadioError::Sqlite`] when the statement fails or a row will not scan
+    /// (including a NULL timestamp — NOT an OFFSET-without-LIMIT failure, which the
+    /// builder's `LIMIT -1` deviation makes executable here; see [`RadioRepo::get_all`]);
+    /// [`RadioError::Builder`] if the builder fails to materialize. Never
+    /// [`RadioError::NotFound`].
+    pub fn get_all(
+        &self,
+        options: Option<&crate::sql_restful::QueryOptions>,
+    ) -> Result<crate::artwork_hydration::ReadOutcome<RadioRecord>, RadioError> {
+        let statement = get_all_sql(options)?;
+        let mut items =
+            crate::execution::query_all(self.conn, &statement, crate::hydrate::row_to_radio)?;
+        let mut artwork_error = None;
+        crate::artwork_hydration::hydrate_radio_artwork(self.conn, &mut items, &mut artwork_error);
+        Ok(crate::artwork_hydration::ReadOutcome {
+            items,
+            artwork_error,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -398,12 +652,58 @@ mod tests {
             uploaded_image: "cover.png".to_string(),
             created_at: at(2024, 1, 1, 2, 4, 5),
             updated_at: at(2024, 1, 1, 2, 4, 5),
+            // Second-layer artwork (`structs:"-"`): never a put_cols leg.
+            image: crate::artwork_hydration::ItemImage::default(),
         }
+    }
+
+    /// Go's real callers pass camelCase names (`server/subsonic/radio.go:122` passes
+    /// `"StreamUrl", "HomePageUrl", "Name"`; `server/nativeapi/radios.go:48` passes
+    /// `"UploadedImage"`), and `selectUpdateColumns` snake-cases every requested name
+    /// (`sql_base_repository.go:596-598`) before matching the write map. Matching them
+    /// verbatim would drop all three and update only `updated_at`, so the SET list must
+    /// still name every requested column.
+    #[test]
+    fn put_with_camel_case_cols_to_update_matches_go_column_names() {
+        let record = radio("ra-1");
+        // Act: the exact call shape of `server/subsonic/radio.go:122`.
+        let put = put_sql(&record, now(), &["StreamUrl", "HomePageUrl", "Name"]);
+        let (sql, args) = &put.update;
+        // Assert: squirrel renders the SET pairs in write-map (struct) order —
+        // `radio_repository.go:96` appends `UpdatedAt` last in Go's slice, but the
+        // filtered map is iterated over `values`, i.e. the marshaled column order.
+        assert_eq!(
+            sql.as_str(),
+            "UPDATE radio SET stream_url = ?, name = ?, home_page_url = ?, updated_at = ? WHERE id = ?"
+        );
+        assert_eq!(
+            args.as_slice(),
+            [
+                Value::Text("https://example.com:4533/app".to_string()),
+                Value::Text("Radio One".to_string()),
+                Value::Text("https://example.com".to_string()),
+                Value::Text(NOW_STAMP.to_string()),
+                Value::Text("ra-1".to_string()),
+            ]
+        );
+    }
+
+    /// A camelCase `"UpdatedAt"` from the caller must not produce a second `updated_at`
+    /// leg: Go appends its own and the names collapse through
+    /// `slice.ToMap` (`sql_base_repository.go:596-598`), so a duplicate is harmless.
+    #[test]
+    fn cols_to_update_naming_updated_at_camel_case_does_not_duplicate_the_leg() {
+        let put = put_sql(&radio("ra-1"), now(), &["UpdatedAt"]);
+        assert_eq!(
+            put.update.0.as_str(),
+            "UPDATE radio SET updated_at = ? WHERE id = ?"
+        );
     }
 
     #[test]
     fn get_pins_the_unfiltered_row_select() {
-        // Arrange: Get (radio_repository.go:58-66) — every user sees radios (:48).
+        // Arrange: Get (radio_repository.go:58-66) — every user sees radios, because
+        // there is no userFilter (see the module header).
         // Act:
         let (sql, args) = get_sql("ra-1");
         // Assert:
@@ -446,7 +746,7 @@ mod tests {
         // Assert:
         assert_eq!(
             count_sql,
-            "SELECT count(distinct radio.id) as count FROM radio"
+            "SELECT count(distinct radio.id) as count FROM radio ORDER BY radio.id"
         );
         assert!(count_args.is_empty());
         assert_eq!(

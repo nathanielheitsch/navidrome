@@ -27,6 +27,61 @@
 //! artist pair ([`row_to_artist`] → [`artist_post_scan`], `:43-98`), whose
 //! second phase folds the `JSON_GROUP_OBJECT` library-stats alias into
 //! `Stats`/`Size`/`AlbumCount`/`SongCount` and decodes `similar_artists`.
+//! S-D3e landed the two **delegating** pairs ([`row_to_playlist_track`] →
+//! [`playlist_track_post_scan`], [`row_to_scrobble_buffer`] →
+//! [`scrobble_buffer_post_scan`]). Neither owns a shim column: both Go structs
+//! embed `dbMediaFile` and delegate the entire decode to `dbMediaFile.PostScan`
+//! (`playlist_track_repository.go:27-34`, `scrobble_buffer_repository.go:23-30`),
+//! then overwrite `MediaFile.ID = MediaFileID` — the single behavior of
+//! [`apply_embedded_mediafile_id`]. Phase 1 of both readers shares
+//! `mediafile_record_from_row` with [`row_to_mediafile`], so the media-file
+//! column set, its read order and its NULL behavior cannot drift between them.
+//!
+//! ## The embedded-media-file `id` collision (S-D3e's signature behavior)
+//!
+//! `dbPlaylistTrack` embeds `dbMediaFile` (which embeds `*model.MediaFile`) and
+//! `*model.PlaylistTrack`; `dbScrobbleBuffer` likewise embeds
+//! `*model.ScrobbleEntry`. A result column named `id` therefore names two
+//! candidate fields: `ID` through `dbMediaFile` at reflect path `[0,0,0]`
+//! (length 3) and `ID` through the outer entity at `[1,0]` (length 2). dbx keeps
+//! the SHALLOWEST path (`dbx@v1.12.0/struct.go:203-207`:
+//! `!ok || len(path2) < len(si.nameMap[fi.name].path)`), so the **outer entity's**
+//! `ID` wins the `id` mapping — the playlist position, or the scrobble entry id —
+//! and `MediaFile.ID` is bound by NOTHING at all. An executed dbx probe confirms
+//! it (executed against dbx v1.12.0 over real SQLite): a
+//! `dbPlaylistTrack`-shaped mirror over `SELECT mf.*, pt.*` leaves
+//! `MediaFile.ID == ""` while `Track.ID == "1"`; over `SELECT mf.id, pt.id` the
+//! outer field takes the LAST column's value, and reversing the two columns
+//! flips it — when several result columns share a name dbx maps every one of
+//! them to the SAME winning field (`rows.go:80-86` builds one ref per column from
+//! `dbNameMap`), so the LAST column scanned wins, because `sql.Rows.Scan`
+//! converts in emitted order. That is exactly why Go's
+//! hooks assign `MediaFile.ID = MediaFileID` (`:32`, `:28`) and why scrobble's
+//! select puts `s.*` last (`scrobble_buffer_repository.go:66-67`: "Put `s.*` last
+//! or else `m.id` overrides `s.id`").
+//!
+//! The port reproduces both rules with [`id_field_from_row`], which walks the
+//! columns named `id` in emitted order — the same order `sql.Rows.Scan` converts
+//! them in — and stops at the first NULL, which is where Go's scan aborts. The SQL
+//! statements stay byte-identical to Go's. rusqlite's own name lookup resolves a
+//! duplicate to the FIRST index (`rusqlite-0.32.1/src/column.rs:127-139`), so
+//! `get_text("id")` alone would take `m.id` here — the trap this helper exists to
+//! avoid, pinned by tests in both column orders.
+//!
+//! Two further Go-only consequences are recorded, not emulated. dbx's `indirect`
+//! allocates `dbMediaFile.MediaFile` mid-scan (`struct.go:251-259`), so the
+//! embedded pointer is non-nil even when a joined leg came back NULL. It never
+//! gets to carry anything, though: `ScanStruct` returns the `Scan` failure BEFORE
+//! the PostScanner check (`dbx@v1.12.0/rows.go:88-90` returns `r.Scan(refs...)`'s
+//! error; the hook at `:92-102` is reached only once the scan succeeded), so a row
+//! with NULL media-file legs never runs the copy and never reaches
+//! `MediaFile.ID = MediaFileID`. Executed against the real
+//! `scrobbleBufferRepository.Next`, such a row surfaces the `Scan` error itself —
+//! `sql: Scan error on column index 0, name "id": converting NULL to string is
+//! unsupported` — and no record is produced. In Rust the media-file columns are
+//! required, so a NULL leg fails phase 1 the same way: the caller sees no entry
+//! plus an error, as pinned at [`playlist_track_post_scan`] and
+//! [`scrobble_buffer_post_scan`].
 //!
 //! A raw row for these entities also carries a **join-only** column that the
 //! record keeps but the write map must not: `FolderRecord::library_path`
@@ -151,6 +206,8 @@ use crate::artist_repo::{ArtistRecord, ArtistRow, SimilarArtist, TOTAL_ROLE};
 use crate::folder_repo::{FolderRecord, FolderRow};
 use crate::mediafile_repo::{MediaFileRecord, MediaFileRow};
 use crate::playlist_repo::{PlaylistRecord, PlaylistRow};
+use crate::playlist_track_repo::{PlaylistTrackRecord, PlaylistTrackRow};
+use crate::scrobble_buffer_repo::{ScrobbleBufferRow, ScrobbleEntryRecord};
 use crate::sql_json::{unmarshal_discs, unmarshal_image_files, unmarshal_nullable_strings};
 use crate::sql_participations::unmarshal_participants;
 use crate::sql_participations::Role;
@@ -269,10 +326,16 @@ impl std::fmt::Display for DecodedPayload {
 impl std::error::Error for DecodedPayload {}
 
 impl HydrateError {
-    /// The seam's failure as a `rusqlite` conversion failure, the shape Go's
-    /// `ScanStruct` error takes out of the read (`database/sql` surfaces a
-    /// column-conversion failure from `Rows.Scan`): a
+    /// The seam's failure as a `rusqlite` conversion failure: a
     /// `FromSqlConversionFailure` whose payload IS the Go-prefixed message.
+    ///
+    /// This is a REPRESENTATION choice, not Go parity. Go's `ScanStruct` returns a
+    /// `PostScan` failure verbatim (`dbx@v1.12.0/rows.go:92-102` — the hook's `err`
+    /// is returned unchanged, not wrapped in `sql.ScanError`), so Go's text reaches
+    /// the caller unwrapped. The crate has no opaque error slot in its read
+    /// `Result`, so the seam's decode failure rides SQLite's conversion-failure
+    /// variant to land in the same repo error variant Go's failure would land in;
+    /// the message text and its Go prefix are preserved, only the wrapper differs.
     #[must_use]
     pub fn into_sqlite(self) -> SqliteError {
         match self {
@@ -375,6 +438,11 @@ pub trait RowGet {
     /// accessor's own missing-column error, so no statement handle is
     /// needed.
     fn has_column(&self, column: &str) -> bool;
+
+    /// A Go non-pointer `string` read from the column at `index` — the same
+    /// conversion arms as [`RowGet::get_text`], addressed by position instead of
+    /// name. Used for the duplicated-name columns of the S-D3e projections.
+    fn get_text_at(&self, index: usize) -> SqliteResult<String>;
 }
 
 impl RowGet for Row<'_> {
@@ -575,6 +643,119 @@ impl RowGet for Row<'_> {
         // column never errors here.
         self.get_ref(column).is_ok()
     }
+
+    fn get_text_at(&self, index: usize) -> SqliteResult<String> {
+        // Same conversion arms as [`RowGet::get_text`], addressed by position. The
+        // column NAME is still resolved so a failure carries Go's column identity
+        // exactly like the name-addressed accessor does.
+        let stmt = self.as_ref();
+        match self.get_ref(index)? {
+            // Go: NULL into a non-pointer string errors.
+            rusqlite::types::ValueRef::Null => Err(null_required_at(
+                stmt.column_name(index).unwrap_or("<unknown>"),
+                index,
+                Type::Text,
+            )),
+            rusqlite::types::ValueRef::Integer(value) => Ok(value.to_string()),
+            rusqlite::types::ValueRef::Real(value) => {
+                Ok(crate::criteria_sql::go_fmt_float64(value))
+            }
+            rusqlite::types::ValueRef::Text(bytes) | rusqlite::types::ValueRef::Blob(bytes) => {
+                Ok(go_string_from_bytes(bytes))
+            }
+        }
+    }
+}
+
+/// The index-addressed twin of [`null_required`]: the same Go-parity NULL
+/// failure for a column the caller resolved by INDEX because its name is
+/// duplicated in the projection (see [`id_field_from_row`], which walks every
+/// column of that name rather than resolving one index — dbx binds ALL of them
+/// to the same field, so a single-index read would miss the NULL that aborts
+/// Go's scan). It keeps both halves of Go's identity — the name and the
+/// position — because `sql: Scan error on column index N, name "X"` carries both.
+fn null_required_at(column: &str, index: usize, ty: Type) -> SqliteError {
+    SqliteError::FromSqlConversionFailure(
+        0,
+        ty,
+        Box::new(NullRequired(format!("{column} (index {index})"))),
+    )
+}
+
+/// The Go-parity message for a NULL cell scanned into a Go non-pointer `string`:
+/// `database/sql/convert.go:535` reports exactly this sentence, and it is what
+/// Go's S-D3e reads surface when a LEFT JOIN finds no `media_file` row (executed
+/// against the real repositories: `sql: Scan error on column index 0, name "id":
+/// converting NULL to string is unsupported`).
+pub const NULL_TO_STRING: &str = "converting NULL to string is unsupported";
+
+/// Payload of that failure. Like this module's other Go-shaped scan payloads it
+/// carries the column identity Go's `sql: Scan error on column index N, name "X"`
+/// wrapper supplied, because rusqlite surfaces only the payload's `Display` (see
+/// the module-level note on scan wording).
+#[derive(Debug)]
+struct GoNullString {
+    column: String,
+    index: usize,
+}
+
+impl std::fmt::Display for GoNullString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{NULL_TO_STRING} (column `{}`, index {})",
+            self.column, self.index
+        )
+    }
+}
+
+impl std::error::Error for GoNullString {}
+
+/// Read the field dbx binds for a DUPLICATED column name — here `id` — the way
+/// `sql.Rows.Scan` fills it. dbx maps EVERY result column of that name to the same
+/// winning field (`dbx@v1.12.0/rows.go:80-86` looks each name up in one `dbNameMap`),
+/// and `Scan` converts columns in emitted order, so:
+///
+/// * the LAST non-NULL cell of that name is the value that survives;
+/// * the FIRST NULL cell aborts the whole scan with Go's
+///   [`NULL_TO_STRING`] — even when a later column of the same name is non-NULL,
+///   because conversion stops at the failing cell. That is exactly Go's
+///   LEFT-JOIN-miss behavior, executed against the real
+///   `scrobbleBufferRepository.Next`:
+///   `sql: Scan error on column index 0, name "id": converting NULL to string is
+///   unsupported` (index 0 is `m.id`, the first column of `m.*`, and the entry's own
+///   `s.id` is never reached);
+/// * a projection with NO column of that name leaves Go's zero value — dbx builds a
+///   ref only for names its field map knows, and an unmatched column is scanned into
+///   a throwaway `sql.NullString` (`rows.go:80-86`). Empty, not an error.
+///
+/// # Errors
+/// Go's NULL-into-`string` payload naming the first NULL cell of that name.
+pub fn id_field_from_row(row: &Row<'_>) -> SqliteResult<String> {
+    let stmt = row.as_ref();
+    let mut value = String::new();
+    for index in 0..stmt.column_count() {
+        if stmt.column_name(index)? != "id" {
+            continue;
+        }
+        match row.get_ref(index)? {
+            rusqlite::types::ValueRef::Null => {
+                return Err(SqliteError::FromSqlConversionFailure(
+                    0,
+                    Type::Text,
+                    Box::new(GoNullString {
+                        column: stmt.column_name(index)?.to_string(),
+                        index,
+                    }),
+                ));
+            }
+            // Go's `reflect.String` arm renders any non-NULL cell through `asString`
+            // (`database/sql/convert.go:533-544`, `:557-578`), so an INTEGER position
+            // column becomes its decimal spelling. `get_text_at` reproduces that.
+            _ => value = row.get_text_at(index)?,
+        }
+    }
+    Ok(value)
 }
 
 /// Convert a Go string's raw bytes to Rust text using encoding/json's per-invalid-byte
@@ -1657,12 +1838,71 @@ pub fn row_to_playlist(row: &Row<'_>) -> SqliteResult<PlaylistRow> {
             rules: None,
             evaluated_at: row.get_opt_dt("evaluated_at")?,
             annotation: row_to_annotation(row)?,
+            // The promoted `ItemImage` embed is filled by the SECOND layer
+            // (`artwork_hydration::hydrate_playlist_artwork`, Go's `hydrateArtwork`
+            // at `playlist_repository.go:191-194`); `selectPlaylist` emits no
+            // artwork column, so phase 1 leaves Go's zero value = UNRESOLVED.
+            image: crate::artwork_hydration::ItemImage::default(),
             // `OwnerName` is scanned by field name despite `structs:"-"`.
             owner_name: owner_name_column(row)?,
             // The row's own primary key (`Playlist.ID` scans `id` normally).
             id: row.get_text("id")?,
         },
         rules,
+    })
+}
+
+/// `radioRepository.Get`'s row mapping (`radio_repository.go:56-66`): there is
+/// deliberately **one phase, not two**. Go has no `dbRadio` wrapper struct, no
+/// `PostScan` hook and no shim column —
+/// `grep -n "dbRadio\|PostScan" persistence/radio_repository.go` returns nothing —
+/// because `queryOne`/`queryAll` `ScanStruct` straight into `model.Radio`
+/// (`dbx@v1.12.0/rows.go:60-85`). So this reader yields a
+/// [`crate::radio_repo::RadioRecord`] directly: there is no raw-row twin and no
+/// phase-2 hook to invent, and nothing here normalises a column after the scan.
+///
+/// `SELECT *` emits the table's own columns in DDL order, so every field is read
+/// by name: `id`, `stream_url`, `name`, `home_page_url`, `uploaded_image` are
+/// non-pointer Go `string` ([`RowGet::get_text`] — a NULL cell fails the scan,
+/// `database/sql/convert.go:535`), and `created_at`/`updated_at` are NON-pointer
+/// Go `time.Time` (`model/radio.go:20-21`) read with [`RowGet::get_dt`], which
+/// likewise ERRORS on NULL. Executed against the real repository over a row with
+/// NULL `created_at`: `Get` returns
+/// `sql: Scan error on column index 4, name "created_at": unsupported Scan,
+/// storing driver.Value type <nil> into type *time.Time` beside a NON-nil pointer
+/// to a zero Radio (Go's `return &res, err`, `:61`). `GetAll` over the same row
+/// returns the same error beside the rows already scanned — dbx appends each row
+/// after a successful scan and aborts the loop at
+/// (`dbx@v1.12.0/rows.go:169-171`, appending at `:192`), and
+/// `radio_repository.go:71-73` returns `res` together with `err`. Executed over
+/// {ok1, ok2, null}: `len == 2` with the error; with the NULL row first `len == 0`,
+/// which is the shape an earlier oracle saw. The fresh DDL declares both columns as
+/// bare `datetime` with no DEFAULT, so NULL is reachable. The port reports that
+/// failure as [`crate::radio_repo::RadioError::Sqlite`] — NOT NotFound and not a
+/// zero timestamp — and drops the partial slice, since `Result` has no
+/// value-beside-error (see [`crate::radio_repo::RadioRepo::get_all`]). The artwork
+/// layer never runs for such a row because Go returns before `hydrateArtwork`
+/// (`:60-62`).
+///
+/// The `structs:"-"` embed is the read-path field: `image` stays zero here and the
+/// second layer
+/// ([`crate::artwork_hydration::hydrate_radio_artwork`]) fills it. Radio has no
+/// `Annotations` embed (`model/radio.go:12` is `ItemImage`) and its `SELECT *`
+/// joins nothing, so a radio carries no annotation state at all.
+///
+/// # Errors
+/// A NULL or unscannable *required* radio column fails, per Go parity.
+pub fn row_to_radio(row: &Row<'_>) -> SqliteResult<crate::radio_repo::RadioRecord> {
+    Ok(crate::radio_repo::RadioRecord {
+        id: row.get_text("id")?,
+        stream_url: row.get_text("stream_url")?,
+        name: row.get_text("name")?,
+        home_page_url: row.get_text("home_page_url")?,
+        uploaded_image: row.get_text("uploaded_image")?,
+        created_at: row.get_dt("created_at")?,
+        updated_at: row.get_dt("updated_at")?,
+        // `ItemImage` (`structs:"-"`): the second layer's job, zero = unresolved.
+        image: crate::artwork_hydration::ItemImage::default(),
     })
 }
 
@@ -2301,11 +2541,20 @@ fn go_zero_or_none(row: &Row<'_>, column: &str) -> SqliteResult<Option<DateTime<
 ///
 /// The JSON **shim** columns (`discs`, `participants`, `tags`, `folder_ids`) use the
 /// same accessor for a different reason: dbx binds a reference only for a column its
-/// field map names, so a projection that omits a shim leaves the Go field empty and
-/// `PostScan`'s `!= ""` guard takes the skip branch (`album_repository.go:43`,
-/// `mediafile_repository.go:59`). That is why the light projections (`getAllIDs`, the
-/// rowid pick) hydrate without erroring — their column list simply omits the shims.
-/// A present shim cell keeps Go's non-pointer `string` behavior: SQL NULL aborts the
+/// field map names (`dbx@v1.12.0/rows.go:80-86`), so a projection that omits a shim
+/// leaves the Go field at its zero value, `""`. What that zero value then does depends
+/// on the hook: the GUARDED shims take `PostScan`'s `!= ""` skip branch
+/// (`album_repository.go:43`/`:52`/`:59`, `mediafile_repository.go:59`), but the
+/// UNGUARDED `participants` decode does NOT skip — `unmarshalParticipants("")` fails
+/// with Go's media-file/album prefix (`album_repository.go:48`,
+/// `mediafile_repository.go:55-58`), so an omitted `participants` column is an ERROR,
+/// not an empty map. Pinned by
+/// `runtime_hydrate_playlist_track_scrobble.rs::a_projection_without_the_participants_shim_still_fails_the_unguarded_decode`.
+/// The light projections (`getAllIDs`, the rowid pick) never reach a hook at all: they
+/// scan a plain `[]string`/`[]int64` through `queryAllSlice` (`sql_base_repository.go:460-466`)
+/// → dbx `Query.Column` (`query.go:308-316`) → `Rows.column` (`rows.go:200-233`), which scans
+/// each row into a bare element and never calls `ScanStruct`, so there is no `PostScanner`
+/// call. A present shim cell keeps Go's non-pointer `string` behavior: SQL NULL aborts the
 /// read.
 ///
 /// # Errors
@@ -2413,100 +2662,132 @@ pub fn row_to_mediafile(row: &Row<'_>) -> SqliteResult<MediaFileRow> {
     Ok(MediaFileRow {
         participants: join_text(row, "participants")?,
         tags: join_text(row, "tags")?,
-        record: MediaFileRecord {
-            // The row's own primary key (`MediaFile.ID` scans `id` by field name).
-            id: row.get_text("id")?,
-            album: row.get_text("album")?,
-            album_artist: row.get_text("album_artist")?,
-            album_artist_id: row.get_text("album_artist_id")?,
-            album_id: row.get_text("album_id")?,
-            artist: row.get_text("artist")?,
-            artist_id: row.get_text("artist_id")?,
-            birth_time: row.get_dt("birth_time")?,
-            // Go `*int` → NULL is the nil pointer.
-            bit_depth: row.get_opt_i32("bit_depth")?,
-            bit_rate: row.get_i32("bit_rate")?,
-            bpm: row.get_opt_i32("bpm")?,
-            catalog_num: row.get_text("catalog_num")?,
-            channels: row.get_i32("channels")?,
-            codec: row.get_text("codec")?,
-            comment: row.get_text("comment")?,
-            compilation: row.get_bool("compilation")?,
-            created_at: go_zero_or_none(row, "created_at")?,
-            date: row.get_text("date")?,
-            disc_number: row.get_i32("disc_number")?,
-            disc_subtitle: row.get_text("disc_subtitle")?,
-            duration: row.get_f64("duration")?,
-            explicit_status: row.get_text("explicit_status")?,
-            folder_id: row.get_text("folder_id")?,
-            // The COLUMN value; phase 2 overwrites it only when tags is non-empty.
-            genre: row.get_text("genre")?,
-            has_cover_art: row.get_bool("has_cover_art")?,
-            library_id: row.get_i64("library_id")?,
-            lyrics: row.get_text("lyrics")?,
-            mbz_recording_id: row.get_text("mbz_recording_id")?,
-            mbz_release_track_id: row.get_text("mbz_release_track_id")?,
-            mbz_album_id: row.get_text("mbz_album_id")?,
-            mbz_release_group_id: row.get_text("mbz_release_group_id")?,
-            mbz_artist_id: row.get_text("mbz_artist_id")?,
-            mbz_album_artist_id: row.get_text("mbz_album_artist_id")?,
-            mbz_album_type: row.get_text("mbz_album_type")?,
-            mbz_album_comment: row.get_text("mbz_album_comment")?,
-            missing: row.get_bool("missing")?,
-            order_album_artist_name: row.get_text("order_album_artist_name")?,
-            order_album_name: row.get_text("order_album_name")?,
-            order_artist_name: row.get_text("order_artist_name")?,
-            order_title: row.get_text("order_title")?,
-            original_date: row.get_text("original_date")?,
-            original_year: row.get_i32("original_year")?,
-            path: row.get_text("path")?,
-            pid: row.get_text("pid")?,
-            probe_data: row.get_text("probe_data")?,
-            release_date: row.get_text("release_date")?,
-            release_year: row.get_i32("release_year")?,
-            // `*float64` read from Go's `Rg*` shim columns — the copies at
-            // `mediafile_repository.go:50-53` are identity no-ops here.
-            rg_album_gain: row.get_opt_f64("rg_album_gain")?,
-            rg_album_peak: row.get_opt_f64("rg_album_peak")?,
-            rg_track_gain: row.get_opt_f64("rg_track_gain")?,
-            rg_track_peak: row.get_opt_f64("rg_track_peak")?,
-            sample_rate: row.get_i32("sample_rate")?,
-            size: row.get_i64("size")?,
-            sort_album_artist_name: row.get_text("sort_album_artist_name")?,
-            sort_album_name: row.get_text("sort_album_name")?,
-            sort_artist_name: row.get_text("sort_artist_name")?,
-            sort_title: row.get_text("sort_title")?,
-            suffix: row.get_text("suffix")?,
-            // Decoded by phase 2 from the raw shim column.
-            tags: BTreeMap::new(),
-            title: row.get_text("title")?,
-            track_number: row.get_i32("track_number")?,
-            year: row.get_i32("year")?,
-            // Decoded by phase 2 from the raw shim column.
-            participants: BTreeMap::new(),
-            // Derived from the decoded participants in phase 2.
-            participant_names: Vec::new(),
-            updated_at: go_zero_or_none(row, "updated_at")?,
-            // Join-only (`structs:"-"`): read onto the record, never written.
-            library_path: join_text(row, "library_path")?,
-            library_name: join_text(row, "library_name")?,
-            annotation: row_to_annotation(row)?,
-            // `withBookmark` emits the column only for a logged-in user; an absent
-            // column is Go's zero value, exactly as dbx discarding it leaves it.
-            bookmark_position: if row.has_column("bookmark_position") {
-                row.get_i64("bookmark_position")?
-            } else {
-                0
-            },
-            // Derived by phase 2 from the decoded tags.
-            genres: Vec::new(),
-            // S-D3c: same rule as the album — PostScan reads no artwork column. Go's
-            // `ItemImage` embed and `MediaFile.AlbumImage` (`model/mediafile.go:30,34`)
-            // are filled by `crate::artwork_hydration::hydrate_media_file_artwork`, so
-            // this phase leaves both at Go's zero value (= UNRESOLVED, not absent).
-            image: crate::artwork_hydration::ItemImage::default(),
-            album_image: crate::artwork_hydration::ItemImage::default(),
+        // `None` reads the record's `id` from the row, as Go scans `MediaFile.ID`
+        // by field name. S-D3e's readers pass an id override instead — see
+        // [`apply_embedded_mediafile_id`].
+        record: mediafile_record_from_row(row, None)?,
+    })
+}
+
+/// The media-file column set shared by [`row_to_mediafile`] and the two S-D3e
+/// delegating readers, so the projection, read ORDER and NULL behavior have one
+/// source of truth and cannot drift between a `media_file` read and a track or
+/// scrobble read over the same joined columns.
+///
+/// `entry_id` is the outer entity's id — the value dbx binds for the DUPLICATED
+/// `id` name, i.e. the playlist position or the scrobble entry id. Passing it is
+/// what keeps the raw record faithful to Go: Go's `MediaFile.ID` is bound by
+/// nothing and therefore starts as the empty `string`, and the only assignment it
+/// ever receives is [`apply_embedded_mediafile_id`] in the hook. The seed is
+/// deliberately NOT the media file's own `id`, which Go never reads, and NOT
+/// `None`, which would read the FIRST `id` column (`m.id`/`f.id`) — a cell Go
+/// binds to neither field. `None` is [`row_to_mediafile`]'s case, where `id`
+/// genuinely is the media file's primary key.
+///
+/// # Errors
+/// A missing or NULL *required* media_file column fails, per Go parity.
+fn mediafile_record_from_row(
+    row: &Row<'_>,
+    entry_id: Option<&str>,
+) -> SqliteResult<MediaFileRecord> {
+    Ok(MediaFileRecord {
+        // Either the row's own primary key (`MediaFile.ID` scans `id` by field
+        // name), or the outer entity's id — the cell that actually wins the
+        // duplicated name, and which the hook replaces with `media_file_id`.
+        id: match entry_id {
+            Some(value) => value.to_string(),
+            None => row.get_text("id")?,
         },
+        album: row.get_text("album")?,
+        album_artist: row.get_text("album_artist")?,
+        album_artist_id: row.get_text("album_artist_id")?,
+        album_id: row.get_text("album_id")?,
+        artist: row.get_text("artist")?,
+        artist_id: row.get_text("artist_id")?,
+        birth_time: row.get_dt("birth_time")?,
+        // Go `*int` → NULL is the nil pointer.
+        bit_depth: row.get_opt_i32("bit_depth")?,
+        bit_rate: row.get_i32("bit_rate")?,
+        bpm: row.get_opt_i32("bpm")?,
+        catalog_num: row.get_text("catalog_num")?,
+        channels: row.get_i32("channels")?,
+        codec: row.get_text("codec")?,
+        comment: row.get_text("comment")?,
+        compilation: row.get_bool("compilation")?,
+        created_at: go_zero_or_none(row, "created_at")?,
+        date: row.get_text("date")?,
+        disc_number: row.get_i32("disc_number")?,
+        disc_subtitle: row.get_text("disc_subtitle")?,
+        duration: row.get_f64("duration")?,
+        explicit_status: row.get_text("explicit_status")?,
+        folder_id: row.get_text("folder_id")?,
+        // The COLUMN value; phase 2 overwrites it only when tags is non-empty.
+        genre: row.get_text("genre")?,
+        has_cover_art: row.get_bool("has_cover_art")?,
+        library_id: row.get_i64("library_id")?,
+        lyrics: row.get_text("lyrics")?,
+        mbz_recording_id: row.get_text("mbz_recording_id")?,
+        mbz_release_track_id: row.get_text("mbz_release_track_id")?,
+        mbz_album_id: row.get_text("mbz_album_id")?,
+        mbz_release_group_id: row.get_text("mbz_release_group_id")?,
+        mbz_artist_id: row.get_text("mbz_artist_id")?,
+        mbz_album_artist_id: row.get_text("mbz_album_artist_id")?,
+        mbz_album_type: row.get_text("mbz_album_type")?,
+        mbz_album_comment: row.get_text("mbz_album_comment")?,
+        missing: row.get_bool("missing")?,
+        order_album_artist_name: row.get_text("order_album_artist_name")?,
+        order_album_name: row.get_text("order_album_name")?,
+        order_artist_name: row.get_text("order_artist_name")?,
+        order_title: row.get_text("order_title")?,
+        original_date: row.get_text("original_date")?,
+        original_year: row.get_i32("original_year")?,
+        path: row.get_text("path")?,
+        pid: row.get_text("pid")?,
+        probe_data: row.get_text("probe_data")?,
+        release_date: row.get_text("release_date")?,
+        release_year: row.get_i32("release_year")?,
+        // `*float64` read from Go's `Rg*` shim columns — the copies at
+        // `mediafile_repository.go:50-53` are identity no-ops here.
+        rg_album_gain: row.get_opt_f64("rg_album_gain")?,
+        rg_album_peak: row.get_opt_f64("rg_album_peak")?,
+        rg_track_gain: row.get_opt_f64("rg_track_gain")?,
+        rg_track_peak: row.get_opt_f64("rg_track_peak")?,
+        sample_rate: row.get_i32("sample_rate")?,
+        size: row.get_i64("size")?,
+        sort_album_artist_name: row.get_text("sort_album_artist_name")?,
+        sort_album_name: row.get_text("sort_album_name")?,
+        sort_artist_name: row.get_text("sort_artist_name")?,
+        sort_title: row.get_text("sort_title")?,
+        suffix: row.get_text("suffix")?,
+        // Decoded by phase 2 from the raw shim column.
+        tags: BTreeMap::new(),
+        title: row.get_text("title")?,
+        track_number: row.get_i32("track_number")?,
+        year: row.get_i32("year")?,
+        // Decoded by phase 2 from the raw shim column.
+        participants: BTreeMap::new(),
+        // Derived from the decoded participants in phase 2.
+        participant_names: Vec::new(),
+        updated_at: go_zero_or_none(row, "updated_at")?,
+        // Join-only (`structs:"-"`): read onto the record, never written.
+        library_path: join_text(row, "library_path")?,
+        library_name: join_text(row, "library_name")?,
+        annotation: row_to_annotation(row)?,
+        // `withBookmark` emits the column only for a logged-in user; an absent
+        // column is Go's zero value, exactly as dbx discarding it leaves it.
+        bookmark_position: if row.has_column("bookmark_position") {
+            row.get_i64("bookmark_position")?
+        } else {
+            0
+        },
+        // Derived by phase 2 from the decoded tags.
+        genres: Vec::new(),
+        // S-D3c: same rule as the album — PostScan reads no artwork column. Go's
+        // `ItemImage` embed and `MediaFile.AlbumImage` (`model/mediafile.go:30,34`)
+        // are filled by `crate::artwork_hydration::hydrate_media_file_artwork`, so
+        // this phase leaves both at Go's zero value (= UNRESOLVED, not absent).
+        image: crate::artwork_hydration::ItemImage::default(),
+        album_image: crate::artwork_hydration::ItemImage::default(),
     })
 }
 
@@ -2554,6 +2835,194 @@ pub fn mediafile_post_scan(raw: MediaFileRow) -> Result<MediaFileRecord, Hydrate
     }
 
     Ok(record)
+}
+
+/// `dbPlaylistTrack` phase 1 (`persistence/playlist_track_repository.go:22-25`):
+/// the `dbMediaFile` column set plus the track's own identity. `dbPlaylistTrack`
+/// adds no `structs:"-"` shim of its own, so phase 2 is a pure delegation to
+/// [`mediafile_post_scan`] followed by [`apply_embedded_mediafile_id`].
+///
+/// `position` is the LAST column named `id` — the cell dbx actually binds, because
+/// `PlaylistTrack.ID` at path `[1,0]` beats `MediaFile.ID` at `[0,0,0]` and the
+/// last of several same-named columns wins (module note above). In both Go selects
+/// that is `playlist_tracks.id`. It goes through [`RowGet::get_text_at`] because
+/// Go's destination is a `string` while `playlist_tracks.id` is INTEGER: Go's
+/// `reflect.String` arm renders any non-NULL cell through `asString`
+/// (`database/sql/convert.go:533-544`, `:557-578`), so position `3` becomes `"3"`
+/// on both sides — executed against the real repository, where `Read(1)` yields
+/// `ID == "1"` and `MediaFileID == "m1"`.
+///
+/// # Errors
+/// A missing or NULL *required* media-file column fails, per Go parity. When a
+/// projection's joined `f.*` legs come back NULL (a track whose `media_file` row is
+/// gone), [`id_field_from_row`] reports Go's
+/// `converting NULL to string is unsupported` naming the first NULL cell — the
+/// column Go's `Scan` aborts on. Go's own `Read` hides that behind an INNER JOIN,
+/// so its ghost row yields `model.ErrNotFound` instead; see
+/// [`crate::playlist_track_repo::PlaylistTrackRepo::read`].
+pub fn row_to_playlist_track(row: &Row<'_>) -> SqliteResult<PlaylistTrackRow> {
+    // The duplicated-name `id` scan FIRST: in this projection `id` is column 0
+    // (`f.*` leads), so a projection with several NULL legs aborts on the same
+    // cell Go's `Scan` aborts on. The shim reads follow, keeping
+    // row_to_mediafile's precedence for the remaining columns.
+    let position = id_field_from_row(row)?;
+    let participants = join_text(row, "participants")?;
+    let tags = join_text(row, "tags")?;
+    let record = mediafile_record_from_row(row, Some(&position))?;
+    Ok(PlaylistTrackRow {
+        participants,
+        tags,
+        position,
+        media_file_id: row.get_text("media_file_id")?,
+        playlist_id: row.get_text("playlist_id")?,
+        record,
+    })
+}
+
+/// `dbPlaylistTrack.PostScan` (`persistence/playlist_track_repository.go:27-34`):
+/// delegate to `dbMediaFile.PostScan` verbatim, then overwrite the media file's id
+/// with `media_file_id`.
+///
+/// The delegation is the whole hook, so the participants/tags decode, their guards
+/// and [`MEDIAFILE_PREFIX`] are exactly `mediafile_post_scan`'s: a bad `participants`
+/// cell reached through a track row reports Go's **media-file** sentence
+/// (`parsing media_file from db: …`), not a playlist-track message, because
+/// `:27-30` returns the inner error unchanged. The order is Go's too: the media-file
+/// decode runs BEFORE the id overwrite.
+///
+/// # Errors
+/// [`HydrateError::Decoded`] carrying [`MEDIAFILE_PREFIX`], or a transparent SQLite
+/// error.
+pub fn playlist_track_post_scan(
+    raw: PlaylistTrackRow,
+) -> Result<PlaylistTrackRecord, HydrateError> {
+    let mut media = mediafile_post_scan(MediaFileRow {
+        record: raw.record,
+        participants: raw.participants,
+        tags: raw.tags,
+    })?;
+    // `:32` — `t.PlaylistTrack.MediaFile = *t.dbMediaFile.MediaFile` copies the
+    // hydrated media file onto the track (a plain struct move in Rust), and `:33`
+    // overwrites its id.
+    apply_embedded_mediafile_id(&mut media, &raw.media_file_id);
+    Ok(PlaylistTrackRecord {
+        id: raw.position,
+        media_file_id: raw.media_file_id,
+        playlist_id: raw.playlist_id,
+        media,
+    })
+}
+
+/// `dbScrobbleBuffer` phase 1 (`persistence/scrobble_buffer_repository.go:18-21`):
+/// the `dbMediaFile` column set plus the entry's own columns.
+///
+/// `entry_id` is the LAST column named `id`: `ScrobbleEntry.ID` at path `[1,0]` is
+/// the field that wins the duplicated name, and Go's `SELECT m.*, s.*` puts `s.*`
+/// last precisely so `s.id` — not `m.id` — is the value that lands in it
+/// (`scrobble_buffer_repository.go:66-67`: "Put `s.*` last or else `m.id` overrides
+/// `s.id`"). [`id_field_from_row`] reproduces that without touching the statement; an
+/// executed dbx mirror of the struct over both column orders confirms the flip
+/// (`[m.*, s.*]` → entry id `tieA`, `[s.*, m.*]` → the media file's `m1`).
+///
+/// `play_time`/`enqueue_time` are Go's non-pointer `time.Time` fields: NULL errors,
+/// and an unparseable cell in a declared `datetime` column scans as
+/// [`go_zero_time`] with no error. An INTEGER cell in that declared column scans
+/// through [`driver_integer_dt`] as Go does — executed: an epoch-integer `play_time`
+/// comes back as `2020-09-13 12:26:40 +0000 UTC`.
+///
+/// # Errors
+/// A missing or NULL *required* column fails. For `Next`'s LEFT JOIN over a missing
+/// `media_file`, Go's `queryOne` fails on the FIRST NULL column of the projection —
+/// executed against the real repository, whose logged error is
+/// `sql: Scan error on column index 0, name "id": converting NULL to string is
+/// unsupported` (index 0 is `m.id`, the first column of `m.*`). It is NOT
+/// `model.ErrNotFound`, so `Next` does NOT treat it as an empty queue.
+/// [`id_field_from_row`] surfaces Go's own sentence naming that column.
+pub fn row_to_scrobble_buffer(row: &Row<'_>) -> SqliteResult<ScrobbleBufferRow> {
+    // Same ordering rule as row_to_playlist_track: `m.id` is column 0 of
+    // `m.*, s.*`, so the `id` scan is Go's first failure point for a projection
+    // whose joined media file is gone.
+    let entry_id = id_field_from_row(row)?;
+    let participants = join_text(row, "participants")?;
+    let tags = join_text(row, "tags")?;
+    let record = mediafile_record_from_row(row, Some(&entry_id))?;
+    Ok(ScrobbleBufferRow {
+        participants,
+        tags,
+        entry_id,
+        service: row.get_text("service")?,
+        user_id: row.get_text("user_id")?,
+        play_time: row.get_dt("play_time")?,
+        enqueue_time: row.get_dt("enqueue_time")?,
+        // Go scans `ScrobbleEntry.MediaFileID` from `s.media_file_id` and the hook
+        // copies it onto the media file (`:28`); `m.id` is never read for it.
+        media_file_id: row.get_text("media_file_id")?,
+        // Seeded with the entry id because that is the only `id` cell dbx binds —
+        // `MediaFile.ID` is bound by nothing, so its value comes entirely from the
+        // hook's overwrite. `None` would read `m.id`, a cell Go binds to neither
+        // field.
+        record,
+    })
+}
+
+/// `dbScrobbleBuffer.PostScan` (`persistence/scrobble_buffer_repository.go:23-30`):
+/// delegate to `dbMediaFile.PostScan`, then overwrite the media file's id with
+/// `media_file_id`, exactly like the playlist-track hook.
+///
+/// `participants` is the media file's decoded map, because in Go the entry has no
+/// participants field of its own: `model.ScrobbleEntry` (`model/scrobble_buffer.go:8-16`)
+/// embeds `MediaFile`, so `ScrobbleEntry.Participants` IS `MediaFile.Participants`
+/// (executed: `&e.Participants == &e.MediaFile.Participants` is `true` for every entry
+/// `Next` returns). `Next` then OVERWRITES that field with
+/// `getParticipants`'s result (`scrobble_buffer_repository.go:84`,
+/// `sql_participations.go:127-146`), which re-reads the artists and replaces each
+/// participant's embedded `Artist` wholesale where its `artist.id IN (…)` select
+/// returns a row. That re-read is NOT part of the PostScan contract and this port
+/// does NOT perform it: [`crate::scrobble_buffer_repo::ScrobbleBufferRepo::next`]
+/// stops at the delegated decode, so its entry carries the alias value BEFORE
+/// Go's re-read. See that module's note for the executed replace/keep behavior of
+/// the re-read.
+///
+/// # Errors
+/// [`HydrateError::Decoded`] carrying [`MEDIAFILE_PREFIX`], or a transparent SQLite
+/// error.
+pub fn scrobble_buffer_post_scan(
+    raw: ScrobbleBufferRow,
+) -> Result<ScrobbleEntryRecord, HydrateError> {
+    let mut media = mediafile_post_scan(MediaFileRow {
+        record: raw.record,
+        participants: raw.participants,
+        tags: raw.tags,
+    })?;
+    apply_embedded_mediafile_id(&mut media, &raw.media_file_id);
+    // Go's alias is ONE shared field; Rust has value semantics, so the entry's
+    // copy is a clone of the media file's decoded map (identical content, and
+    // pinned equal by a test). This is what the caller sees until Go's
+    // `getParticipants` re-read replaces it — which this port does not perform.
+    let participants = media.participants.clone();
+    Ok(ScrobbleEntryRecord {
+        id: raw.entry_id,
+        service: raw.service,
+        user_id: raw.user_id,
+        play_time: raw.play_time,
+        enqueue_time: raw.enqueue_time,
+        media_file_id: raw.media_file_id,
+        media,
+        participants,
+    })
+}
+
+/// The single statement both S-D3e hooks share:
+/// `t.PlaylistTrack.MediaFile.ID = t.MediaFileID`
+/// (`playlist_track_repository.go:32`) and
+/// `t.ScrobbleEntry.MediaFile.ID = t.MediaFileID`
+/// (`scrobble_buffer_repository.go:28`). The media file's identity comes from the
+/// junction column, never from the joined media-file row's own `id`.
+///
+/// It is unconditional and unguarded, so an empty `media_file_id` legitimately
+/// yields a media file with an empty id; there is no validation to add.
+pub fn apply_embedded_mediafile_id(media: &mut MediaFileRecord, media_file_id: &str) {
+    media.id = media_file_id.to_string();
 }
 
 /// `dbArtist` phase 1 (`artist_repository.go:32-36`): the artist columns the

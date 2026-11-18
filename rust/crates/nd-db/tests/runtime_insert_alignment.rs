@@ -1196,6 +1196,8 @@ fn playlist_insert_is_sqlite_syntax_and_stores_each_value() {
         evaluated_at: None,
         // Hydration-owned derived fields: absent from playlist_row.
         annotation: nd_model::annotation::Annotation::default(),
+        // Second-layer artwork (`structs:"-"`): absent from playlist_row.
+        image: nd_db::artwork_hydration::ItemImage::default(),
         // Read-path-only (`structs:"-"`): absent from playlist_row.
         owner_name: "jdoe".to_string(),
     };

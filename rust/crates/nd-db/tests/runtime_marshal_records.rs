@@ -318,6 +318,8 @@ fn non_smart_record() -> PlaylistRecord {
         evaluated_at: None,
         // Hydration-owned derived fields: absent from playlist_row.
         annotation: nd_model::annotation::Annotation::default(),
+        // Second-layer artwork (`structs:"-"`): absent from playlist_row.
+        image: nd_db::artwork_hydration::ItemImage::default(),
         // Read-path-only (`structs:"-"`): absent from playlist_row.
         owner_name: "jdoe".to_string(),
     }
@@ -356,6 +358,8 @@ fn smart_record() -> PlaylistRecord {
         evaluated_at: Some(dt("06:07:08")),
         // Derived, hydration-owned: absent from playlist_row.
         annotation: nd_model::annotation::Annotation::default(),
+        // Second-layer artwork (`structs:"-"`): absent from playlist_row.
+        image: nd_db::artwork_hydration::ItemImage::default(),
         // Read-path-only (`structs:"-"`): absent from playlist_row.
         owner_name: "jdoe".to_string(),
     }

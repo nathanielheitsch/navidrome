@@ -495,6 +495,9 @@ fn playlist_base_read_hydrates_rules_counters_and_annotation() {
         rules: got.rules.clone(),
         evaluated_at: got.evaluated_at,
         annotation: got.annotation.clone(),
+        // Phase 1 leaves the promoted `ItemImage` zero (= UNRESOLVED): artwork
+        // hydration is a separate batched read, so this select never fills it.
+        image: nd_db::artwork_hydration::ItemImage::default(),
         owner_name: "admin".to_string(),
     };
     assert_eq!(got, expected);

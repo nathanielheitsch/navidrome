@@ -352,7 +352,7 @@ integrates, runs the gate, and commits.
 | **S-D3 scout brief** | read-only | `hydrate-scan-contract.md` (8-hook inventory, decoder gaps, seam design) | **DONE** |
 | **S-D3a hydrate core + folder/user** | write, after S-D2b1 | new `hydrate.rs` + `lib.rs`, folder/user hooks, executed reads | S-D3b |
 | **S-D3b album/mediafile hydration** | write, after S-D3a | `hydrate.rs` (`row_to_album`/`album_post_scan`/`row_to_mediafile`/`mediafile_post_scan`), `album_repo::AlbumRow`, `mediafile_repo::MediaFileRow`, `sql_tags::tags_to_genres` + `Genre`, `tests/runtime_hydrate_album_mediafile.rs` | **IMPLEMENTED, review APPROVE** (uncommitted working tree; fresh-round reviewer found no P1/P2/P3; gate re-measured: fmt clean, clippy `-D warnings` clean, 1665 passed / 0 failed / 1 ignored across 63 binaries; blocks S-D3c) |
-| **S-D3c artist/playlist/track/scrobble** | write, after S-D3b | stats/similar-artists/criteria decoders + delegating hooks | #17. **PARTIAL: the ARTIST part LANDED** as lane "S-D3d" (stats fold + similar-artists decoder + `ArtistRow`/`ArtistRepo` reads + `hydrate_artist_artwork`, `tests/runtime_hydrate_artist.rs`, gate 1720/0 across 65 after fix round 2 — see the S-D3d section below). Still open: playlist `criteria` rules hook wiring beyond S-D3a, playlist_track, scrobble_buffer, and the playlist/radio artwork wrappers |
+| **S-D3c artist/playlist/track/scrobble** | write, after S-D3b | stats/similar-artists/criteria decoders + delegating hooks | #17. **PARTIAL.** The ARTIST part LANDED as lane "S-D3d" (stats fold + similar-artists decoder + `ArtistRow`/`ArtistRepo` reads + `hydrate_artist_artwork`, `tests/runtime_hydrate_artist.rs`, gate 1720/0 across 65 after fix round 2). The playlist_track + scrobble_buffer part LANDED as lane **S-D3e** (contract `:208-211`): delegating post-scan records + `id` overwrite on the seam, `PlaylistTrackRepo::read`/`get_all`, `ScrobbleBufferRepo::next`, `hydrate_track_artwork` via the media-file wrapper, `tests/runtime_hydrate_playlist_track_scrobble.rs` (24 tests, re-measured), gate 1746/0 across 66 (that workspace figure is one short of the 1747 its own `nd-db` total implies — see the arithmetic note in the S-D3f section) — see the S-D3e section below. The playlist + radio `hydrateItems` wrappers AND both repos' read sides LANDED as lane **S-D3f** (contract `:213-215`): `hydrate_playlist_artwork`/`hydrate_radio_artwork` over the shared `hydrate_items`, `PlaylistRepo::get`/`get_all`/`find_by_path`/`get_playlists`, `RadioRepo::get`/`get_all`, `tests/runtime_hydrate_playlist_radio_artwork.rs` (20 tests), gate 1776/0 across 67. Still open: playlist `criteria` rules hook wiring beyond S-D3a, `getParticipants`/`GetWithParticipants`, and all cursor/streaming (`streamByIDs`/`hydrateCursor`) |
 
 S-D3 is pre-scoped in [`hydrate-scan-contract.md`](hydrate-scan-contract.md): all 8 `PostScan` hooks inventoried
 with exact guards/prefixes, column-to-decoder map, the six missing decoders (annotation columns, `bookmark_position`,
@@ -765,8 +765,10 @@ returned as `None` rather than a zero stamp — a record-shape divergence from G
 write-path): hydration overwrites caller-populated `participant_names` with sort
 names dropped (Go's base `GetAll` never calls `getParticipants`,
 `sql_participations.go:61-76`, so Go's hydrated participants carry none either);
-participant role order is `BTreeMap`-sorted vs Go's random map order, harmless only
-because `sql_feeders.rs::search_participants` sorts and re-dedupes; annotation
+participant role order is `BTreeMap`-sorted (~~vs Go's random map order~~ **corrected
+in S-D3e**: `json.Marshal` sorts map keys, executed stable across runs, so the column
+bytes MATCH Go; only `AllNames`' iteration order is random, and
+`sql_feeders.rs::search_participants` sorts and re-dedupes it); annotation
 stamps keep the stored zone while record stamps render as `Z` (the folder/playlist
 precedent); and ~~no repo-level read API is wired to `row_to_album`/
 `row_to_mediafile` yet — tests only~~, which **S-D3c below landed** (repo reads plus
@@ -909,7 +911,8 @@ Search results NOT artwork-hydrated because the Rust search projection from
 `library_path`/`library_name`/annotation columns and is therefore not hydratable
 through this seam at all; cursor/streaming reads (`streamByIDs`, `chunkOptions`,
 `hydrateCursor`, `hydratePlaylistTrackArtwork`) unwired with `cursor_chunk_sql` left
-for that lane; `getParticipants`/`GetWithParticipants` unported; and the explicit list
+for that lane (`hydratePlaylistTrackArtwork` since LANDED in S-D3e over the media-file wrapper;
+`streamByIDs`/`hydrateCursor` still unported); `getParticipants`/`GetWithParticipants` unported; and the explicit list
 of Go reads that do NOT hydrate (`GetTouchedAlbums`, media_file `GetCursor` — asserted
 by `persistence/artwork_hydration_test.go:633` — `GetMissingAndMatching`,
 `FindByPaths`, `FindRecentFilesBy*`).
@@ -1218,7 +1221,10 @@ carries `average_rating` (the 19 columns enumerated from `schema_ddl.rs:48`); dr
 `full_text`/`search_normalized`; `JOIN` vs `INNER JOIN` wording; `GetCursor`/`GetIndex`
 inheriting hydration transitively while remaining statement-only builders; and the unported
 playlist/radio/playlist-track artwork wrappers plus `getParticipants`/
-`GetWithParticipants`.
+`GetWithParticipants`. **[S-D3e update, 2026-11-17: `hydratePlaylistTrackArtwork` LANDED as
+`playlist_track_repo::hydrate_track_artwork`, so the playlist-track wrapper is no longer unported;
+`getParticipants`/`GetWithParticipants` and the playlist/radio `hydrateItems` wrappers still are.
+See the S-D3e section below.]**
 
 **Round 4 (2026-11-16), residual documentation plus two new tests — no production code changed.** Scope: the round-3 review's documentation-completeness findings. The parent's verified fact list was re-executed end to end (Go 1.27.4 via `$(go env GOROOT)`, serde_json 1.0.154 exactly as in `rust/Cargo.lock`, no `preserve_order` feature), and all new claims below carry executed strings. Production code was NOT touched; the parent added two test functions after the writer stopped (`duplicate_keys_and_sorted_error_order_diverge_from_go` by the writer, `path_escaping_and_empty_key_diverge_from_go` by the parent), and the parent corrected the writer's Go type legs in this section and in `hydrate-contract.md` — see (D).
  - **Line-count correction (task a).** The `Landed` bullet's `NEW, 2123L, 28 tests` pre-dated the fix rounds' additions; measured after round 4's edits and the parent's follow-up test the file is **2502 lines with 31 `#[test]` functions** (53 `fn` occurrences counting helpers — "tests" means `#[test]` fns).
@@ -1234,3 +1240,421 @@ playlist/radio/playlist-track artwork wrappers plus `getParticipants`/
 **Round 6 (2026-11-16), final read-only verification - APPROVE, zero findings.** Verifier 5e8590e1 (bifrost/openrouter/coding, a different model from the round-5 reviewer) ran against a frozen hash snapshot that stayed unchanged for its whole session and re-measured every doc assertion: put_sql's executable body identical to HEAD (sed -n '600,644p' of HEAD vs sed -n '758,802p' of the worktree with comments excluded, diff exit 0 - the parent reproduced this), the updated_at push at :767 inside the if at :766-768 (the docs cite the enclosing :765-768 span), comment at :742-756, HEAD comment at :597, HEAD wanted.push at :609, markdown integrity (even backtick and quote counts on the lane's lines), and the metrics (2502 lines / 31 #[test] / 53 fn; 28 residual bullets; 1722/0/1 across 65; nd-db 643 across 22; 23 doc warnings, 9 + 14). The known nd-stream flake passed in its full run.
 
 **Gate after rounds 5-6** (run by the parent after the last doc edit; real exit codes): cargo fmt --all -- --check 0; cargo clippy --all-targets --all-features -- -D warnings 0; cargo test --all-targets --all-features --no-fail-fast 0 - **1722 passed / 0 failed / 1 ignored across 65 binaries**, reproduced in a clean copy of rust/ outside the checkout with identical totals; cargo test -p nd-db --all-targets --all-features --no-fail-fast - **643 passed / 0 failed / 0 ignored across 22 binaries** (was 612 across 21 at the S-D3c baseline); cargo test -p nd-db --all-features --test runtime_hydrate_artist 0 - 31/0/0; cargo doc -p nd-db --all-features --no-deps 0 with 23 warnings (9 unresolved + 14 private, unchanged baseline); git diff --check 0. Status at lane close: HEAD was `1c215a7e` when the gates were measured; the lane is then committed as one GPG-signed commit on master atop it. Working tree = 5 modified + 1 untracked before that commit; no Cargo.toml/Cargo.lock, no generated file, no Go source, no scratch dir touched. The only executable lines this lane changed relative to HEAD are the S-D3d read/hydration additions themselves (get_all_sql gained the annotation threading, ArtistRepo::get/get_all were wired, the artist post-scan seam and artist artwork wrapper added); rounds 4-6 changed comments, docs and tests only.
+
+## S-D3e: playlist_track + scrobble_buffer hydration, repo reads, playlist-track artwork (2026-11-17)
+
+**Numbering.** This is `hydrate-scan-contract.md:208-211` — the delegating-hook slice for
+`dbPlaylistTrack` (`persistence/playlist_track_repository.go:27-34`) and `dbScrobbleBuffer`
+(`persistence/scrobble_buffer_repository.go:23-30`). `next-work.md`'s slice table files the same
+material under "S-D3c artist/playlist/track/scrobble"; the artist half landed as lane S-D3d above,
+and this closes the playlist_track/scrobble_buffer half.
+
+**What landed** (4 modified sources + 1 new test file + these two docs):
+- `hydrate.rs` — the two raw row readers `row_to_playlist_track` (`:2795`) and `row_to_scrobble_buffer`
+  (`:2873`), and the two post-scan hooks `playlist_track_post_scan` (`:2828`) and
+  `scrobble_buffer_post_scan` (`:2921`), each delegating to the existing `mediafile_post_scan` and then
+  applying the signature `MediaFile.ID = MediaFileID` overwrite through the shared
+  `apply_embedded_mediafile_id` (`playlist_track_repository.go:31-32`,
+  `scrobble_buffer_repository.go:27-28`). Both readers build their media file through
+  `mediafile_record_from_row` (`:2621`) with an `entry_id` override, so the media-file projection, read
+  order and NULL behavior have ONE source of truth and cannot drift between a `media_file` read and a
+  joined track or scrobble read. `id_field_from_row` (`:734`) resolves the DUPLICATED `id` name by
+  walking every column of that name (dbx maps all of them to one field — `dbx@v1.12.0/struct.go:203-207`
+  — and `sql.Rows.Scan` converts in emitted order, so the LAST non-NULL cell wins while any NULL cell
+  aborts the scan). The record/row types live with their repos: `PlaylistTrackRecord`/`PlaylistTrackRow`
+  in `playlist_track_repo.rs:79`/`:130`, `ScrobbleEntryRecord`/`ScrobbleBufferRow` in
+  `scrobble_buffer_repo.rs:97`/`:147`.
+- `playlist_track_repo.rs` — `PlaylistTrackRepo::read` (Go `Read` `:98-121`, a `queryOne`, so a miss is
+  `model.ErrNotFound`) and `get_all` (Go `GetAll` `:123-129` → `playlistRepository.loadTracks`
+  `playlist_repository.go:399-408`), plus `hydrate_track_artwork`, the port of
+  `hydratePlaylistTrackArtwork` (`artwork_hydration.go:169-181`), which REUSES
+  `artwork_hydration::hydrate_media_file_artwork` over `tracks[i].MediaFile` — `model/artwork_id.go:29-33`
+  defines no `pt` kind, so there is no playlist-track artwork lookup to invent.
+- `playlist_repo.rs` — `tracks_query`/`load_tracks_sql` carry the `library_path`/`library_name` legs and
+  Go's filter-first clause order; `LOAD_TRACKS_WHERE` holds the `missing = false` + `playlist_tracks.id`
+  order `GetWithTracks` adds (`:160-162`).
+- `scrobble_buffer_repo.rs` — `next_sql` keeps Go's `SELECT m.*, s.*` order and the LEFT JOIN verbatim
+  (`:66-70`, "Put `s.*` last or else m.id overrides s.id"); `ScrobbleBufferRepo::next` maps dbx's
+  no-rows case to `Ok(None)` exactly like Go's `(nil, nil)` (`:78-80`).
+- `tests/runtime_hydrate_playlist_track_scrobble.rs` — NEW, 24 `#[test]` functions, executed
+  against `nd_dbschema::schema::apply_fresh_schema` (behavior assertions are all runtime; the
+  statement-shape assertions are the documented exception already used by `runtime_hydrate_artist.rs`).
+  Coverage: the `media_file_id → media_file.id` overwrite on both repos; a track whose `playlist_tracks.id`
+  differs from its media file id; annotation columns with and without an annotation row for `Read` and for
+  `tracksQuery` (with `library_path`/`library_name` present only in the latter); library-filter exclusion;
+  `Next`'s `ORDER BY play_time, s.rowid` FIFO and the nil-nil empty queue; a LEFT JOIN row whose
+  `media_file` is deleted; mediafile post-scan reuse (participants/tags/four `rg_*`/lyrics) reached through a
+  track row; media-file-kind artwork states reached through tracks; `get_all` artwork hydration through the
+  wrapper with an empty batch issuing no query; and write-map invariance asserted as
+  `playlist_track`/`scrobble_buffer` maps EQUAL to `mediafile_row` key-for-key rather than a derived count.
+
+**Three claims that execution overturned** — each re-verified by running the REAL Go repositories in a
+`/tmp` harness (`replace github.com/navidrome/navidrome => <this checkout>`, Go 1.27.4, `-tags fts5`),
+not by reading:
+1. **`ScrobbleEntry.Participants` is not a separate field.** `model/scrobble_buffer.go:8-16` embeds
+   `MediaFile`, so the entry's participants ARE the media file's (executed `ALIASED=true`,
+   `&e.Participants == &e.MediaFile.Participants`). The first implementation left the entry's map empty
+   and called that "not fabricating participants"; both the code and the test were wrong, and the test is
+   now `scrobble_entry_participants_are_the_media_file_alias_not_a_fabricated_map`. Go's `getParticipants`
+   re-read (`scrobble_buffer_repository.go:84`) is still NOT performed, so the port returns Go's value
+   BEFORE the re-read. Executed contrast with JSON names `JSON-A1/A2/A3`, an `artist` row for `a1`/`a3` and
+   a `library_artist` row only for `a1`: Go's `Next` yields `a1 name="DB-A1" sort="SortA1" order="db-a1"
+   mbid="mbid-a1"` and leaves `a2`/`a3` at their JSON values; `Get` keeps all three JSON names.
+2. **`m.*` does not lack `participants`/`tags`.** `rust/crates/nd-dbschema/src/schema_ddl.rs:64` declares
+   both `jsonb NOT NULL DEFAULT '{}'`, so `SELECT m.*` carries them and the delegated PostScan decodes them
+   (executed in Go: `len(Participants)=1`,
+   `ParticipantsDetail={role=artist subRole="" id="a1" name="Artist A"}`). The older doc claim that the
+   delegation "runs over absent JSON columns" is corrected in `hydrate-contract.md` §1 and in
+   `hydrate-scan-contract.md` §2c/§2g.
+3. **A missing `media_file` is a scan ERROR, not a tolerated hook.** `m.id` is NULL, dbx binds it into the
+   promoted non-pointer `MediaFile.ID`, and Go fails before PostScan: executed
+   `entry=nil err="sql: Scan error on column index 0, name \"id\": converting NULL to string is unsupported"`
+   with `errors.Is(err, model.ErrNotFound) == false` and `errors.Is(err, sql.ErrNoRows) == false`. The brief's
+   expectation ("the delegated hook must tolerate absent `participants`/`tags`") is not the behavior, and the
+   `(nil, nil)` empty-queue contract stays scoped to a genuinely empty queue.
+
+**Also found while verifying (recorded, not changed):** `playlistTrackRepository.Count` LEFT-joins
+`media_file` (`:86`) while `CountAll` INNER-joins it (`:82`), and both add `applyLibraryFilter(..., "f")`
+(`:85`, `:88`) — so for an admin (filter skipped, `sql_base_repository.go:265-271`) Go's `Count` includes a
+track whose media file is gone and `CountAll` does not. Executed against ghost rows:
+`adm Count=4 err=<nil> | CountAll=2`, `lim Count=2 | CountAll=2`. The port's `count_query` uses `inner_join`
+(`playlist_track_repo.rs:227-232`), which PRE-DATES this lane (`git show HEAD:...` shows the same shape), and
+`Count` is a `rest.Repository` seam (`rest.QueryOptions` + `parseRestOptions`, `:91`) belonging to the REST
+lane — recorded as a residual rather than half-fixed.
+
+**Gate after this lane** (from `rust/`, all run by the parent after the writer stopped; real exit codes):
+`cargo fmt --all -- --check` 0; `cargo clippy --all-targets --all-features -- -D warnings` 0;
+`cargo test --all-targets --all-features --no-fail-fast` 0 — **1747 passed / 0 failed / 1 ignored across 66
+binaries** (baseline 1722 / 0 / 1 across 65; +25 = 24 lane tests + 1 new `playlist_repo` unit test);
+`cargo test -p nd-db --all-targets --all-features --no-fail-fast` 0 — **668 passed / 0 failed / 0 ignored
+across 23 binaries** (baseline 643 across 22); `cargo test -p nd-db --all-features --test
+runtime_hydrate_playlist_track_scrobble` 0 — 24/0/0; `cargo doc -p nd-db --all-features --no-deps` 0 with
+**22 warnings** — same 14 private warnings as baseline and 8 unresolved vs baseline's 9: the lane fixed one
+PRE-EXISTING baseline warning by correcting an intra-doc link that pointed at the Go name
+`get_all_ids_query` instead of the Rust `get_all_ids_sql` (`playlist_repo.rs:34`), and added none. Measured by
+stashing the lane's `src/` changes and re-running the same command (baseline 23: 9 unresolved + 14 private).
+`git diff --check` 0 from the repo root. `nd-stream`'s
+`transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` is the known timing-sensitive
+flake (it counts live `sleep` stub PIDs via `ps`); it passed in this lane's full run and was not touched.
+
+**Review round 2 (2026-11-17, read-only reviewer `0e801085…`, `bifrost/vllm/strata-coder`, same workspace,
+no edits).** Verdict APPROVE WITH FINDINGS. Behavioral parity: the reviewer found NO undocumented divergence
+in `PostScan` ×2, `Read`, `GetAll`/`tracksQuery`, or scrobble `Next` (join order, column interleave, filter
+position FIRST vs LAST, LIMIT/ORDER BY, `ErrNotFound` → `(nil,nil)`, unported `getParticipants`), and confirmed
+the participants alias, the 180-assertion executed coverage (138 `assert_eq!` + 42 `assert!`), and the key-for-key write map. Its gate run matches
+the parent's exactly: 66 binaries / 1746 passed / 0 failed / 1 ignored, clippy clean, 22 doc warnings.
+
+**Parent adjudication of its findings (each re-verified by the parent, not accepted on claim).**
+- **P1 "participant role order is a write-map divergence" — REJECTED, the reviewer is wrong and the docs were
+  corrected.** `marshalParticipants` passes a `map[model.Role][]participant` to `json.Marshal`
+  (`sql_participations.go:50-59`), and Go's `encoding/json` SORTS map keys — `encode.go:781-794` extracts with
+  `v.MapRange()` then `slices.SortFunc` over the resolved key strings (documented at `encode.go:184-186`).
+  Executed against the real `model.Participants` with roles inserted out of string order: 5 consecutive
+  marshals byte-identical, keys `albumartist, artist, producer`; a separate 5-run plain-map oracle and an
+  8-run loop over non-ASCII keys gave one distinct output each. So the Rust `BTreeMap` key order REPRODUCES
+  Go's column bytes. What IS nondeterministic is `Participants.AllNames()` (`model/participants.go:175-185`),
+  which walks the map directly: 40 executed calls over the same input produced 3 distinct name orders. That
+  feeds `full_text`/`search_participants`, which `sql_feeders.rs::search_participants` sorts and re-dedupes
+  (`:67-76`), so it stays unobservable. `hydrate-contract.md`'s S-D3c bullet and §7 plus `next-work.md`'s
+  carried-forward bullet were rewritten accordingly.
+- **P2(c) "`join_text` turns a missing participants column into empty where Go errors" — REFUTED BY
+  EXECUTION.** `join_text` yields `""`, and Go's unguarded `unmarshalParticipants`
+  (`mediafile_repository.go:55-58`) fails on `""` (`json.Unmarshal("")` → `unexpected end of JSON input`,
+  executed in a Go oracle). New executed test
+  `a_projection_without_the_participants_shim_still_fails_the_unguarded_decode` projects EVERY fresh-DDL
+  `media_file` column except `participants`/`tags` (derived from `pragma_table_info`, not hand-listed) and
+  asserts the hook still reports `parsing media_file from db: parsing participants:`. The leniency itself —
+  an absent column reads as the zero value rather than a missing-column error — mirrors dbx binding refs only
+  for result columns (`dbx@v1.12.0/rows.go:76-87`) and is now its own residual bullet; it is unreachable from
+  any live read: every projection that REACHES the entity hydrator carries both shims —
+  `get_sql`/`get_all_sql`/`get_random_hydrate_sql` all render `select_media_file`'s
+  `SELECT media_file.*, library.path as library_path, …` (`mediafile_repo.rs:283-285`, which
+  `get_random_hydrate_sql` reuses at `:511`; phase 1's `get_random_rowid_sql` is the one that emits
+  only `media_file.rowid` at `:452`), and `find_by_paths_sql`/`get_missing_and_matching_sql` emit
+  `SELECT * FROM media_file`/`SELECT media_file.*` (`:1541`, `:1694`). The id-only projections
+  (`get_all_ids_sql` `:742`, `get_random_rowid_sql` `:452`) are never passed to
+  `row_to_mediafile` — `get_all_ids_sql` has no repo-level caller in the port at all (only its own
+  unit test), and `get_random_rowid_sql`'s rowids feed `get_random_hydrate_sql`, which does carry
+  the columns.
+- **P2(a), P2(b), P2(d), P2(e), P3 "four new tests"/"annotation_play_count unguarded"/P2(f) HANDOFF totals —
+  REJECTED as fabricated.** None of the quoted text or symbols exists in the tree: `grep` for "117 tests",
+  "96 pre-existing", `load_tracks_interleaves_annotation_columns_in_go_order`,
+  `load_tracks_renders_the_library_join_legs`, `get_all_executes_against_a_real_database`,
+  `playlist_track_write_map`, `scrobble_write_map`, `select.go:305`, `hydrate-contract.md:205`,
+  "free to reorder", "minus id/library_path/library_name/genres", "unguarded Go-parity decoder", and
+  "verified 2026-11-12" in `hydrate-contract.md` all return nothing; `playlist_repo.rs` has 20 `#[test]`s in
+  51 `fn`s, not 149/116; the cited line ranges hold unrelated code; `mediafile_row`'s second parameter is
+  `append_subtitle`, not an FTS flag, so the lane's 66-key figure matches the executed precedent at
+  `runtime_hydrate_album_mediafile.rs:1301`/`:2520`; `annotation_play_count` (`hydrate.rs:1933`) has no guard
+  at all (the guard the reviewer describes belongs to the caller-side `row_to_annotation`); `join_text`
+  pre-dates this lane (`git show HEAD:...hydrate.rs:2314`) and cites nothing.
+- **P2(g) 22 intra-doc-link warnings — confirmed, repo-wide, 0 from the lane's four files, no action.**
+- **Its INFERRED/GAPS note is accurate**: no Go harness was run, so cross-language byte goldens for the
+  playlist/scrobble write maps were source-argued. The parent closed part of that gap with its own Go oracles
+  (participants marshalling, `AllNames` ordering, `json.Unmarshal("")`).
+
+**Docs-evidence audit (2026-11-17, read-only auditor `4a831abf…`, `bifrost/vllm/strata-coder`, same
+workspace, no edits).** Verdict APPROVE WITH FINDINGS. It independently reproduced every gate number
+(1747/0/1 across 66; nd-db 668/0/0 across 23; lane 24/0/0; fmt 0; clippy 0; doc 22 = 14 private + 8
+unresolved; `git diff --check` 0), confirmed all four parent edits accurate, re-ran the participants oracle
+(5 runs byte-identical) and `AllNames` (40 calls → exactly 3 orders), and confirmed `json.Unmarshal("")` →
+`unexpected end of JSON input`. Parent adjudication of its findings:
+- **F1 ACCEPTED — a real undocumented divergence the parent had wrongly rejected.** Executed against the real
+  Go repository (`/tmp/sd3e_f1`, `-tags netgo,sqlite_fts5`): with `participants = ''`,
+  `playlistTrackRepository.Read` returns `ptrNil=false ID="1" MediaFileID="m1" MediaFile.ID="" Title=""`
+  **beside** `err="parsing media_file from db: parsing participants: unexpected end of JSON input"`, because
+  dbx allocates the shared embedded pointer (`struct.go:251-258` `indirect`) and fills it before `PostScan`
+  (`rows.go:88-99`). On a missing row it IS nil (`ptrNil=true err="data not found"`), and `GetAll` returns a
+  nil slice, so the port's empty `Vec` is faithful. Recorded as a new S-D3e residual bullet; the §S-D3b
+  `Get`-returns-nil precedent is scoped to say it does not cover this path. Not emulated: `Result` has no
+  value-beside-error and no Go caller reads the value on error (only non-test caller
+  `server/subsonic/sharing.go:99` is the share repo; `deluan/rest@v1.0.1/controller.go:26-31` marshals only
+  when `err == nil`).
+- **F3 ACCEPTED** — the deleted-media-file bullet named `playlist_track_left_join_over_a_deleted_media_file_fails_the_scan`
+  as demonstrating `Read`; it actually asserts a hand-written LEFT JOIN, while `Read` INNER-joins and yields
+  `NotFound` (which the other test asserts). Reworded to say exactly that.
+- **F4 ACCEPTED** — "54-assertion" was stale; the file has 180 assertion invocations (138 `assert_eq!`,
+  42 `assert!`).
+- **F6/F7 ACCEPTED** — the claim that `get_random_rowid_sql` "never reaches the hydrator" was over-broad and
+  `get_random_hydrate_sql` was mis-described as emitting bare `media_file.*`. Rewritten: it reuses
+  `select_media_file` (`mediafile_repo.rs:283-285` at `:511`), so its projection DOES carry both shims and
+  does reach the hydrator; only `get_all_ids_sql` (`:742`, no repo-level caller) and `get_random_rowid_sql`
+  (`:452`, whose rowids feed `get_random_hydrate_sql`) are id/rowid-only and never passed to
+  `row_to_mediafile`.
+- **F9 ACCEPTED (partly)** — `hydrate-contract.md:102`'s blanket "no non-nil pointer beside `ErrNotFound`"
+  is now scoped: true for album/mediafile `Get` and for track `Read` on `ErrNotFound` (executed
+  `ptrNil=true`), false for track `Read` on a `PostScan` failure.
+- **F2 REJECTED** — `hydrate-contract.md:151` lists exactly `(a)`–`(d)` and says "four ways"; there is no
+  `(e)` on that line. The auditor's count came from its own line-wrapping of the bullet.
+- **F5 REJECTED as fabricated** — `next_orders_by_play_time_then_id_fifo` appears nowhere in the docs
+  (`grep -rn "then_id_fifo" docs/rust-port/` is empty); the docs use the correct name.
+- **F8 REJECTED for this lane** — `sql_participations.rs:26-33`'s stale entry-order rationale is real but
+  PRE-EXISTING (`git show HEAD:rust/crates/nd-db/src/sql_participations.rs` shows identical text), outside
+  S-D3e's scope; recorded here so the S-A lane can correct it, not edited here.
+- **F10/F11 REJECTED as fabricated** — no text claiming `Count` "keeps `ORDER BY`" and none claiming
+  `hydrate_media_file_artwork` "runs on the `get_all` path" exists in the docs or the lane's sources
+  (`grep` empty). The auditor was describing the code's behavior, not a claim it made.
+
+**Round-2 reviewer re-audited itself and REVISED its verdict to APPROVE** (`0e801085…`, same workspace,
+read-only). It voided its own P1, P2(a), P2(b), P2(c), P2(d), P2(e), P2(f) and P3 items as **fabricated
+evidence** — not line drift, since it confirmed the four sources were byte-identical to what it reviewed
+while its post-review reconstruction only needed the OLD test hash. It independently confirmed the parent's
+corrections: Go sorts map keys (`encode.go:781-794` over `resolveKeyName`, with `model/participants.go:58-60`
+`Role.MarshalText` supplying the resolved string) and Rust's `Role(String)` derives `Ord` on the inner string
+and serializes as `serialize_str`, so `BTreeMap` gives the same bytes; `join_text` predates the lane and cites
+`album_repository.go:43`/`mediafile_repository.go:59`, never `hydrate-contract.md:205`. Its citation re-audit
+with a corrected resolver found 0 out-of-range citations (333 in the sources + new test, 94 in the docs' added
+lines) — its earlier "24 problems" was resolver error, having matched `convert.go`/`row.rs` to go-sqlite3 and
+sqlx. It reproduced the gates (1747/0/1 across 66; nd-db 668; lane 24/0/0) and flagged one REAL item:
+
+- **P2 ACCEPTED — `hydrate.rs`'s `join_text` comment over-claimed (pre-existing HEAD text, now scoped).** It
+  said the shim columns' absent value makes "`PostScan`'s `!= ""` guard take the skip branch … That is why
+  the light projections (`getAllIDs`, the rowid pick) hydrate without erroring." That holds only for the
+  GUARDED shims (`album_repository.go:43`/`:52`/`:59`, `mediafile_repository.go:59` — Rust mirrors each at
+  `hydrate.rs:2540`/`:2554`/`:2566`/`:2767`); `participants` is UNGUARDED (`album_repository.go:48`,
+  `mediafile_repository.go:55-58`), so an omitted column ERRORS — exactly what this lane's new test proves,
+  which contradicted the comment. Rewritten to separate guarded from unguarded, and to state the real reason
+  the light projections never error: `queryAllSlice` (`sql_base_repository.go:460-466`) → dbx `Query.Column`
+  (`query.go:308-316`) → `Rows.column` (`rows.go:200-233`) scans each row into a bare element and never calls
+  `ScanStruct`, so `PostScan` is never invoked (verified against the vendored module; Go's `getAllIDs`,
+  `album_repository.go:262-271`, scans `[]string` the same way). Docs-only; no behavior change, gates
+  re-run: fmt 0, clippy 0, doc 22, workspace 1747/0/1 across 66, nd-db exit 0, lane 24/0/0, `git diff --check` 0.
+- **Two P3 items declined as out-of-lane**: `HANDOFF.md:24-30` is already date-scoped ("Measured at `12e270f7`
+  (2026-11-11)") and untouched by this lane; `hydrate-scan-contract.md:218`'s "verified 2026-11-12" names its
+  own lane (S-D3a), so it is accurate as written.
+- **Its own caveat is recorded**: it is the same model family as the parent, produced fabricated citations in
+  its first pass, and no independent provider was available on either side (every non-`pi/bifrost/vllm` route
+  is disabled or budget-capped).
+
+**Round-3 verification of that fix (`0e801085…`, read-only, no edits). VERDICT: APPROVE, no findings open.**
+It proved the fix is comment-only structurally rather than by trust: only `hydrate.rs` moved since its
+round-2 audit, the other three sources and the test file byte-identical, every symbol before the `join_text`
+block at an unchanged line and every symbol after it shifted by exactly +9 with identical bodies, and
+`join_text`'s body byte-compared against HEAD (parent re-ran this independently: identical, 6 lines). It also
+verified the new citations — `ScanStruct` is DEFINED at `dbx rows.go:65` and invoked ONLY at `:270` inside
+`Rows.one`, while `Rows.column` calls plain `r.Scan` at `:226`, so `PostScan` genuinely never runs on the
+light projections — and confirmed the guarded/unguarded split and the four Rust `is_empty()` mirrors.
+- **Its correction applied**: it flagged `Rows.column`'s span as `rows.go:200-233`, not the `200-221` the
+  parent's comment claimed (the function ends at `:233` with `return r.Close()`; `:221` is only the
+  `refs[0] = ev.Interface()` arm). Both the comment and this document now say `200-233`. Parent re-verified
+  the span and `Query.Column` at `query.go:308-316` directly.
+- Its two remaining flagged citations were checked by the parent and are NOT defects:
+  `persistence/helpers.go:89-94` is `naturalSort`, `deluan/rest@v1.0.1/errors.go:14` is
+  `ErrNotFound = errors.New("data not found")`.
+- Gates re-run by the parent after the range fix: fmt 0; clippy 0; `cargo doc -p nd-db` 22 warnings;
+  workspace 66 binaries / 1747 passed / 0 failed / 1 ignored (exit 0).
+**Process note for the record**: this reviewer's FIRST report contained fabricated citations and must not be
+cited as evidence; the self-audit and this round-3 pass are the ones to rely on. It is the same model family
+as the parent, so both are corroborating rather than independent.
+
+**Residuals** are recorded in `hydrate-contract.md`'s new S-D3e block (12 bullets): the participants alias and
+the unperformed re-read; deleted-media-file scan error vs the empty-queue contract; the `m.*` participants/tags
+correction; the absent-`participants`/`tags` shim column yielding `""` and still failing the unguarded
+decode; the duplicated-`id` last-column rule and its NULL abort; the four `Read`-vs-`tracksQuery`
+asymmetries (column spelling/order, filter-first vs filter-last bind order, the `library` join only in
+`tracksQuery`, NULL annotation timestamps when no annotation row exists); Go's `JOIN` text and nested
+`WHERE (…) AND …` vs the port's `INNER JOIN` and flat `WHERE`; `GetAll` forwarding `QueryOptions` so
+`Sort`/`Order`/`Max`/`Offset` AND `Filters` reach Go's tracks select while the port renders none of them (with
+`optimizePagination` inexpressible and Go's `Offset`-only option a SQLite syntax error, executed); `NotFound`
+from `queryOne` vs an empty `Vec` from `queryAll`, and `Read` being the only track read that skips artwork
+hydration; Go's non-nil partially-populated `*PlaylistTrack` beside a `PostScan` error vs the port's bare
+`Err`; `ORDER BY play_time, s.rowid` over text timestamps with `Length` counting rows `Next` can never
+return; and the pre-existing `Count` LEFT-join vs `CountAll` INNER-join divergence. Still unported:
+`playlistTrackRepository.GetCursor` (`:131-143`, `queryWithStableResults` + `hydrateCursor`),
+`streamByIDs`/`artworkChunkSize`, and `getParticipants`/`GetWithParticipants`. (The playlist and radio
+`hydrateItems` wrappers were unported at that writing; **S-D3f below landed both**.)
+
+## S-D3f: playlist + radio artwork hydration wrappers and both repo read sides (2026-11-17)
+
+**Numbering.** This is `hydrate-scan-contract.md:213-215` — sub-slice **S-D3f**, the *second*
+hydration layer (`hydrateItems`' batched `item_artwork` lookup filling `ItemImage`), kept out of
+`hydrate.rs` by that contract. `next-work.md`'s slice table files the same material under
+"S-D3c artist/playlist/track/scrobble"; S-D3d landed the artist wrapper and S-D3e the
+playlist-track one, and this closes the remaining two (`hydrateItems` has exactly four Go call
+sites: `album_repository.go:258`, `artist_repository.go:295`, `playlist_repository.go:192`,
+`radio_repository.go:81`). It also wires the READ side of both repositories, which until now were
+statement-only builders (`git show HEAD:rust/crates/nd-db/src/playlist_repo.rs` and
+`…/radio_repo.rs` expose only `*_sql` builders — no `PlaylistRepo::get`/`get_all`/`find_by_path`/
+`get_playlists`, no `RadioRepo::get`/`get_all`).
+
+**What landed** (5 modified sources + 1 new test file + these docs):
+- `artwork_hydration.rs` — `hydrate_playlist_artwork` (`playlist_repository.go:191-194`) and
+  `hydrate_radio_artwork` (`radio_repository.go:80-83`), both over the existing `hydrate_items`, so
+  the four states come from ONE lookup: empty ids issue no statement (`artwork_hydration.go:59-61`),
+  a failed lookup yields an EMPTY map with earlier chunks discarded
+  (`artwork_repository.go:175-176` + caller `:65`), `BATCH_SIZE = 200` chunks
+  (`artwork_repository.go:16`, used at `:161`), ids collected in slice order **without dedup**
+  (`:81-84`). Kind is the PREFIX (`pl`/`ra`, `model/artwork_id.go:31,33`), bound as
+  `artwork_repository.go:169` binds it — never the kind name. The module header's residual list is
+  corrected: it previously said the folder `image_files` artwork path was unported at
+  `artwork_hydration.go:169`, but `:169` is `hydratePlaylistTrackArtwork` and there is NO folder
+  wrapper in that file at all.
+- `playlist_repo.rs` — `PlaylistRepo::get`/`get_all`/`find_by_path`/`get_playlists`, all through
+  `crate::execution` + `hydrate::row_to_playlist` + the new wrapper, with Go's NotFound decided by
+  ROW COUNT before hydration (`findBy` `:182-187`) rather than by a driver no-rows condition, and
+  the artwork failure swallowed by `get`/`find_by_path` but surfaced as `ReadOutcome::artwork_error`
+  by `get_all`/`get_playlists` — exactly Go's swallow-and-log (`artwork_hydration.go:62-66`).
+- `radio_repo.rs` — `RadioRepo::get` (queryOne ⇒ NotFound before hydration, `:58-66`) and
+  `get_all` (`:68-77`), neither carrying a user or any visibility clause, plus the
+  `ItemImage` field on both records so hydration has a destination (the `structs:"-"` embeds are
+  read-path-only: neither write map gained an artwork leg, asserted against the live DDL).
+- `tests/runtime_hydrate_playlist_radio_artwork.rs` — NEW, 20 `#[test]` functions, executed against
+  `nd_dbschema::schema::apply_fresh_schema`. Coverage: all four artwork states per repo through
+  both `get` and `get_all`; NotFound for both repos with the artwork lookup provably never run
+  (`item_artwork` dropped first, so a lookup that ran would have produced Go's swallowed-error
+  shape instead); a failed lookup reported by `get_all` and swallowed by `get`; empty tables as
+  empty `Vec` with no artwork query at all; kind-prefix isolation and no cross-kind id collision;
+  `FindByPath` emitting no visibility clause; `GetPlaylists` hydrating only the matching playlist;
+  the 201-id chunk boundary (2 statements, no dedup); write-map invariance DERIVED from
+  `PRAGMA table_info` rather than a guessed count (playlist 15 keys — `id`/`rules`/
+  `average_rating` excluded and why — radio 7, `image` never a leg); and the offset-only page
+  executing as the builder documents.
+
+**Three defects found and fixed in this lane** — each confirmed by executing the pinned sources
+against a real DB or the pinned squirrel, never by reading alone:
+1. **`PlaylistRepo::get` defeated the visibility clause.** `get_sql` pushed `user_filter`'s
+   `public = ? OR owner_id = ?` raw into a flat `WHERE a AND b`, so SQL's precedence made the
+   predicate `(id AND public) OR owner_id`. Executed against the pinned squirrel, Go renders
+   `WHERE (playlist.id = ? AND (public = ? OR owner_id = ?))` (`expr.go:384-386` wraps every
+   conjunction group). Executed rows over {adm-private, adm-public, lim-private} as a non-admin:
+   Go gave `data not found` for the admin-private id and for a missing id, and the specific row for
+   each visible id; the flat port form returned the `lim`-owned row for ALL FOUR requests,
+   including `pl-nobody`. Fixed by wrapping the clause as the five sibling builders already did;
+   `get_all_sql` wraps it too for text parity. Pinned by 3 new unit tests plus the executed
+   `playlist_get_visibility_clause_still_restricts_the_requested_id` (four request arms, exact row
+   identity, `GetAll` 2 vs 3 matching the oracle `adm=3 | lim=2`). Blast radius was limited to
+   `get_sql`: `find_by_path_sql` carries one clause, and every other builder was already wrapped.
+2. **`radio_repo::select_update_cols` matched column names verbatim.** Go's `Put` appends the
+   camelCase `"UpdatedAt"` (`radio_repository.go:95-97`) and `selectUpdateColumns` runs every
+   requested name through `toSnakeCase` (`sql_base_repository.go:596-598`); radio's real callers
+   pass camelCase (`server/subsonic/radio.go:122` → `"StreamUrl", "HomePageUrl", "Name"`;
+   `server/nativeapi/radios.go:48`,`:70` → `"UploadedImage"`). Executed before the fix: those three
+   columns were silently dropped and the statement became
+   `UPDATE radio SET updated_at = ? WHERE id = ?`. Fixed by normalizing through
+   `crate::marshal::to_snake_case` (the seam `playlist_repo` already uses), with a camelCase
+   `"UpdatedAt"` collapsing instead of duplicating the leg. Pinned by 2 new unit tests.
+
+3. **The two playlist REST filter builders were wrong against squirrel** (latent — neither has a
+   consumer in `rust/crates` yet, and `playlist_repo` exposes no `RestRepository`). Executed against
+   the pinned squirrel (`/tmp/sd3f_p1/args.go`, `/tmp/sd3f_p1/q.go`):
+   `smartPlaylistFilter` renders `(rules = ? OR rules IS NULL)` with ONE arg (a nil `Eq` becomes
+   `IS NULL` with no placeholder, `expr.go:182-183` — `if val == nil`, not a `case nil:` arm), but the port emitted
+   `rules = ? OR rules = ?` with a NULL bind — and `rules = NULL` is never true, so it excluded
+   exactly the NULL-`rules` rows a non-smart `Put` writes (`playlist_repository.go:49`).
+   `playlistFilter` flattened every word of BOTH fields into one `OR`, while Go's two
+   `substringFilter` legs are `And`s over `strings.Fields` (`sql_restful.go:119-126`), so the port
+   matched a row with one word per field Go rejects. And an empty `q` returned `1=0`: Go's `Or` legs
+   are empty `And`s, rendered `1=1` each (`sqlTrue`), so `q=` matches everything. All three now match
+   squirrel's text and argument counts, and every `Or` these builders emit is parenthesized
+   (`expr.go:384-386`). Pinned by 4 unit tests and 2 executed row-set tests
+   (`smart_filter_clause_includes_a_null_rules_row`,
+   `q_filter_requires_all_words_within_one_field_not_across_fields`), each of which also asserts the
+   pre-fix text as the counterfactual. Four fragments still return a bare `OR` and are recorded as
+   residuals rather than changed — `child_playlist_filter_sql:293`, `criteria_sql::Cond`'s `Or` join
+   (`criteria_sql.rs:1385-1389`), `playlist_track_repo::add_discs_sql:585`, and
+   `artwork_queue_repo::source_filter_sql:284-287` — each executed against squirrel/SQLite to show the
+   flat form changes a row set. Round 2's justification that Go passes `child_playlist_filter_sql` as
+   the ONLY filter is wrong: `GetAll` appends `.Where(r.userFilter(ctx))` (`playlist_repository.go:196-197`),
+   so a conjunct does sit beside it. See the S-D3f residual block in `hydrate-contract.md`.
+
+**Also fixed in this lane but previously unlisted:** `tracks_query` (`playlist_repo.rs`) now applies
+the library filter BEFORE `playlist_id`, matching Go's `applyLibraryFilter` first
+(`playlist_repository.go:375`) and `Where(Eq{"playlist_id": id})` last (`:396`); it used to render
+`WHERE playlist_id = ? AND <filter>` with the playlist id bound first. Clause order cannot change a
+row set (both legs are AND-ed), so this is SQL-text and bind-order parity with Go's trace —
+`playlist_track_repo::read_sql` keeps the opposite order because Go's `Read` applies the filter last
+(`playlist_track_repository.go:117`), and the executed
+`library_filter_arg_order_differs_between_read_and_tracks_query` plus
+`library_filter_excludes_tracks_from_unseen_libraries` (row set, in the S-D3e file) pin both sides.
+
+**A doc claim corrected against the source, not softened:** `radio_repo`'s header said
+`cols_to_update`'s names are "the fixed snake_case column identifiers, never user text" — that was
+not the contract Go's callers use. Also corrected in the source comments: radio's unfiltered reads
+are unfiltered because there is no `userFilter` and `newSelect` adds nothing
+(`sql_base_repository.go:139-147`), NOT because of the `Exists` comment at `:38`; `RadioRepo::get`'s
+`# Errors` no longer lists the OFFSET-without-LIMIT syntax error, which the builder's `LIMIT -1`
+deviation makes unreachable here; `hydrate::row_to_radio` no longer claims `GetAll` returns
+`len == 0` for a NULL timestamp — dbx appends before aborting (`rows.go:169-171`, append at `:192`)
+so Go returns the rows scanned so far beside the error (executed `len == 2`; `len == 0` only when
+the failing row is first), and playlist genuinely returns `nil, err` (`playlist_repository.go:200-201`).
+`radio_repo::count_all_sql` now renders the `ORDER BY radio.id` leg Go's `count` always installs
+(`sql_base_repository.go:569`, traced in the oracle), which `playlist_repo::count_all_sql` already
+emitted.
+
+**Gate after this lane** (run by the parent; real exit codes): `cargo fmt --all -- --check` 0;
+`cargo clippy --all-targets --all-features -- -D warnings` 0; `cargo test --workspace --all-targets
+--all-features --no-fail-fast` 0 — **1776 passed / 0 failed / 1 ignored across 67 binaries**;
+`cargo test -p nd-db --all-targets --all-features` 0 — **697 passed / 0 failed / 0 ignored across 24
+binaries**; `cargo test -p nd-db --all-features --test runtime_hydrate_playlist_radio_artwork` 0 —
+20/0/0; `cargo doc -p nd-db --all-features --no-deps` 0 with **22 warnings**
+**Arithmetic check on the recorded totals (verified, not re-measured):** the non-`nd-db` suite mass is
+constant at 1079 across these three lanes (`1776 − 697 = 1079` now, `1770 − 691 = 1079` and `1722 − 643 = 1079` at the S-D3d
+baseline), so the S-D3e section's workspace figure **1746** was one short of what its own `nd-db`
+figure implies (`1079 + 668 = 1747`); `nd-db` itself is self-consistent (`643 + 25 + 23 + 6 = 697`). The
+gate numbers in THIS section are the parent's own measured output, so the chain is now pinned at 1776 (1770 before this round's 6 added tests).
+ (8 unresolved + 14
+private — one unresolved link FEW than the S-D3d/S-D3e baseline of 9 + 14, because a stale
+`[`get_all_ids_query`]` reference was removed and none was added); `git diff --check` 0. The
+known `nd-stream` flake
+(`transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes`) passed in the
+full parallel run and was not touched. Working tree at lane close: 3 modified docs + 5 modified
+nd-db sources + 2 untracked nd-db test files; no Cargo.toml/Cargo.lock, no generated file, no Go
+source, no scratch dir touched or deleted.
+
+**Round 3 (2026-11-18, after the third fresh review):** the reviewer's verdict was APPROVE-WITH-FIXES with
+no P1, and it independently re-executed both round-2 fixes and confirmed them. Every finding was re-verified
+against the pinned sources before acting; round-3 changes are documentation/comment corrections only, so no
+test was added or removed and the gate numbers above are unchanged. Fixed: the `radio_repository.go:70-73`
+citation still present at `runtime_hydrate_playlist_radio_artwork.rs:1082` (correct range `:71-73`), that file's
+`model/artwork.go:49` and `:81-93` refs (actual `:50` and `:82-95`), the misquoted squirrel arm (`case nil:` →
+`expr.go:182-183` `if val == nil`) in `playlist_repo.rs:118` and both doc bullets, `playlist_repo.rs`'s `Delete`
+citation (`sql_base_repository.go:644-647`, not `:649-655`), `radio_repo.rs`'s `deleteByID` citation (`:650-658`,
+not `:594-601`) and its `GetAll`-empty-`res` range, `next-work.md:355`'s "(18 tests)" (the file has 20), and the
+OR-precedence residual bullet, which round 2 had under-enumerated and justified with a claim the source
+contradicts. The `playlist_track_repo::library_filter` alias contract is now documented at its definition after
+executing the parse error it causes. Refuted one reviewer claim: it asserted `read_sql` normalizes the library
+filter's alias the way `tracks_query` does — `read_sql` has no `replace` call (`playlist_track_repo.rs:253-263`),
+so it carries the same requirement as the builder-shaped queries, and the doc was written to say that.
+Reviewer citations it did NOT change and this lane leaves alone: `artwork_repo.rs:197`, `runtime_artwork_hydration.rs:10`/`:280`
+and `smart_playlist_repo.rs:32` carry the same off-by-one `model/artwork.go` refs but are committed files outside
+this lane's ownership.
