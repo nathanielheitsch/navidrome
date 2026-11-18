@@ -5,16 +5,17 @@
 //! `tableName`, `filterMappings` (`sql_base_repository.go:45,111`) and
 //! `isFieldWhiteListed` (`:46,110` — registered via `registerModelWhiteList`,
 //! ported here as [`RestRepository::with_field_white_list`]). Go's
-//! package-global `whiteList` map + `mutex` (`:142-145`) exists only because
+//! package-global `whiteList` map + `mutex` (`:137-140`) exists only because
 //! Go captures the whitelist closure at `registerModel` time and other
 //! packages mutate the global from `init()`; Rust owns the set by value in
 //! the instance, so the registry/mutex have no counterpart.
 //!
-//! `fullTextFilter` (`sql_restful.go:74-82`) is deferred: it composes
+//! `fullTextFilter` (`sql_restful.go:109-117`) is deferred: it composes
 //! `mbidExpr` and `getSearchStrategy` from `persistence/sql_search.go`, which
 //! is another lane's module (`sql_search*.rs` stubs), and nothing in this
 //! layer can stand in for them; it ports with that slice. There is no logging
-//! dependency here, so Go's `log.Warn` calls (`:29,47`) drop silently with
+//! dependency here, so Go's `log.Warn` calls (`:40` for a dropped filter,
+//! `:75` for a dropped sort) drop silently with
 //! the same filter/sort-dropping semantics.
 //!
 //! Determinism deviation: Go iterates `options.Filters` (a map) in random
@@ -26,7 +27,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::sqlrepo::Value;
 
 /// The `model.Annotations{}` fields `registerFieldWhiteList` always merges
-/// into every whitelist (`sql_restful.go:151-154`), snake_cased.
+/// into every whitelist (`sql_restful.go:159-162`), snake_cased.
 pub const ANNOTATION_FIELDS: &[&str] = &[
     "play_count",
     "play_date",
@@ -38,10 +39,10 @@ pub const ANNOTATION_FIELDS: &[&str] = &[
 ];
 
 /// One rest-layer WHERE clause — the `Sqlizer`s the filter functions build
-/// (`sql_restful.go:50-118`): squirrel `Eq` / `Like` / free-form fragment.
+/// (`sql_restful.go:88-135`): squirrel `Eq` / `Like` / free-form fragment.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Filter {
-    /// `column = ?` (squirrel `Eq`, `eqFilter` `:86-88`).
+    /// `column = ?` (squirrel `Eq`, `eqFilter` `:88-90`).
     Eq {
         /// The matched column.
         column: String,
@@ -85,12 +86,12 @@ impl Filter {
     }
 }
 
-/// A `filterFunc` (`sql_restful.go:11`): maps `(field, value)` to a filter,
-/// or `None` to drop it (Go's nil-`Sqlizer` check, `:24-26`).
+/// A `filterFunc` (`sql_restful.go:18`): maps `(field, value)` to a filter,
+/// or `None` to drop it (Go's nil-`Sqlizer` check, `:33-35`).
 pub type FilterFn = Box<dyn Fn(&str, &str) -> Option<Filter>>;
 
 /// `rest.QueryOptions` input (`github.com/deluan/rest`), the shape
-/// `parseRestOptions` consumes (`sql_restful.go:31-45`).
+/// `parseRestOptions` consumes (`sql_restful.go:54-67`).
 #[derive(Debug, Clone, Default)]
 pub struct RestQueryOptions {
     /// Sort field name (camelCase from the API, snake_cased in `sanitizeSort`).
@@ -101,13 +102,13 @@ pub struct RestQueryOptions {
     pub max: i64,
     /// Page start (`Offset`).
     pub offset: i64,
-    /// Filter values by field name; empty values are ignored (`:22-24`).
+    /// Filter values by field name; empty values are ignored (`:26-29`).
     pub filters: BTreeMap<String, String>,
 }
 
-/// `model.QueryOptions` output of `parseRestOptions`
-/// (`model/query_options.go` as used by `sql_restful.go:33-43`): the
-/// sanitized sort plus the parsed filter clauses.
+/// `model.QueryOptions` output of `parseRestOptions` (`model/datastore.go:9-16`
+/// as used by `sql_restful.go:55-65`): the sanitized sort plus the parsed filter
+/// clauses.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct QueryOptions {
     /// Sanitized sort field (`sanitizeSort`, empty when dropped).
@@ -119,15 +120,16 @@ pub struct QueryOptions {
     /// Page start.
     pub offset: i64,
     /// The `"seed"` filter value `parseRestOptions` lifts out of the map
-    /// (`:38-40`).
+    /// (`:60-63`).
     pub seed: Option<String>,
-    /// The parsed WHERE clauses (`None` when no filters were given, `:44`).
+    /// The parsed WHERE clauses (`None` when no filters were given: `:64` via
+    /// `parseRestFilters`, whose empty-map arm returns nil at `:21-23`).
     pub filters: Option<Vec<Filter>>,
 }
 
 impl QueryOptions {
     /// Renders `filters` as the `WHERE` body `applyFilters` feeds into the
-    /// builder (`sql_base_repository.go:60-70`): every clause AND-joined,
+    /// builder (`sql_base_repository.go:247-252`): every clause AND-joined,
     /// values bound in order. `None` when there are no filters.
     #[must_use]
     pub fn where_clause(&self) -> Option<(String, Vec<Value>)> {
@@ -145,7 +147,7 @@ impl QueryOptions {
     }
 }
 
-/// `toSnakeCase` (`persistence/helpers.go:47-53`): `matchFirstCap`
+/// `toSnakeCase` (`persistence/helpers.go:48-52`): `matchFirstCap`
 /// (`(.)([A-Z][a-z]+)` → `${1}_${2}`) then `matchAllCap`
 /// (`([a-z0-9])([A-Z])` → `${1}_${2}`), lowercased. Ported without the
 /// regexes: an uppercase char is prefixed with `_` when its successor is
@@ -196,9 +198,9 @@ pub fn split_sort_fields(input: &str, delimiter: char) -> Vec<String> {
     fields
 }
 
-/// `registerModelWhiteList`/`registerFieldWhiteList` (`sql_restful.go:121-135`)
-/// minus the global registry: snake_case every instance field name and merge
-/// [`ANNOTATION_FIELDS`] in.
+/// `registerModelWhiteList`/`registerFieldWhiteList` (`sql_restful.go:142-146`
+/// and `:148-163`) minus the global registry: snake_case every instance field name
+/// and merge [`ANNOTATION_FIELDS`] in.
 #[must_use]
 pub fn register_model_white_list(
     fields: impl IntoIterator<Item = impl AsRef<str>>,
@@ -213,7 +215,7 @@ pub fn register_model_white_list(
     set
 }
 
-/// The rest-facing half of `sqlRepository` (`sql_restful.go:10-16` uses):
+/// The rest-facing half of `sqlRepository` (`sql_restful.go:20-52,69-86` uses it:
 /// `tableName`, `filterMappings`, `isFieldWhiteListed`.
 #[derive(Default)]
 pub struct RestRepository {
@@ -234,8 +236,8 @@ impl RestRepository {
         }
     }
 
-    /// The `tableName` this layer renders into filters (`registerModel`,
-    /// `sql_base_repository.go:101-106`).
+    /// The `tableName` this layer renders into filters (`registerModel` sets it at
+    /// `sql_base_repository.go:105-109`).
     #[must_use]
     pub fn table_name(&self) -> &str {
         &self.table_name
@@ -256,7 +258,7 @@ impl RestRepository {
     }
 
     /// Sets `isFieldWhiteListed` via `registerModelWhiteList`
-    /// (`sql_base_repository.go:110`, `sql_restful.go:110`).
+    /// (`sql_base_repository.go:110`, `sql_restful.go:142-146`).
     #[must_use]
     pub fn with_field_white_list(
         mut self,
@@ -266,10 +268,10 @@ impl RestRepository {
         self
     }
 
-    /// `sanitizeSort` (`sql_restful.go:47-60`): snake_case the sort field,
+    /// `sanitizeSort` (`sql_restful.go:69-86`): snake_case the sort field,
     /// drop it unless whitelisted (`lookupSortMapping` is the base
-    /// repository's slice; its known-mapping arm joins there), and fold the
-    /// order to `asc`/`desc` (empty stays empty, `:55-59`).
+    /// repository's slice; its known-mapping arm joins there at `:74`), and fold the
+    /// order to `asc`/`desc` (empty stays empty, `:79-84`).
     #[must_use]
     pub fn sanitize_sort(&self, sort: &str, order: &str) -> (String, String) {
         let mut sort = sort;
@@ -296,10 +298,11 @@ impl RestRepository {
         (sort_out, order_out)
     }
 
-    /// `parseRestFilters` (`sql_restful.go:13-30`): walk the filter values,
+    /// `parseRestFilters` (`sql_restful.go:20-52`): walk the filter values,
     /// skip empties, consult the custom mappings, enforce the whitelist,
     /// exact-match `…id` fields and "starts with" everything else. `None`
-    /// when nothing survived (Go returns the nil `And{}`).
+    /// when nothing survived (Go's nil `And{}` for the empty-map arm, `:21-23`,
+    /// which is also what `parseRestOptions` hands back for no filters).
     #[must_use]
     pub fn parse_rest_filters(&self, options: &RestQueryOptions) -> Option<Vec<Filter>> {
         if options.filters.is_empty() {
@@ -307,11 +310,11 @@ impl RestRepository {
         }
         let mut filters = Vec::new();
         for (field, value) in &options.filters {
-            // Ignore filters with empty values (`:23-25`).
+            // Ignore filters with empty values (`:26-29`).
             if value.is_empty() {
                 continue;
             }
-            // Look for a custom filter function (`:27-31`).
+            // Look for a custom filter function (`:30-37`).
             let field = field.to_lowercase();
             if let Some(func) = self.filter_mappings.get(&field) {
                 if let Some(filter) = func(&field, value) {
@@ -320,19 +323,19 @@ impl RestRepository {
                 continue;
             }
             // Ignore invalid filters (not based on a field or filter
-            // function, `:33-36`); no whitelist set means everything passes,
-            // matching the Go nil-func check `:33`.
+            // function, `:38-42`); no whitelist set means everything passes,
+            // matching the Go nil-func check `:39`.
             if let Some(list) = &self.white_list {
                 if !list.contains(&field) {
                     continue;
                 }
             }
-            // For fields ending in "id", use an exact match (`:38-41`).
+            // For fields ending in "id", use an exact match (`:43-47`).
             if field.ends_with("id") {
                 filters.push(eq_filter(&field, value));
                 continue;
             }
-            // Default to a "starts with" filter (`:43-44`).
+            // Default to a "starts with" filter (`:48-49`).
             filters.push(Filter::Like {
                 column: field,
                 pattern: format!("{value}%"),
@@ -341,7 +344,7 @@ impl RestRepository {
         (!filters.is_empty()).then_some(filters)
     }
 
-    /// `parseRestOptions` (`sql_restful.go:31-45`): sanitize sort/order,
+    /// `parseRestOptions` (`sql_restful.go:54-67`): sanitize sort/order,
     /// copy max/offset, lift `"seed"` out of the filters map, parse the rest.
     /// Go's variadic `options ...rest.QueryOptions` ports as `Option`.
     #[must_use]
@@ -361,7 +364,7 @@ impl RestRepository {
     }
 }
 
-/// `eqFilter` (`sql_restful.go:86-88`): `Eq{field: value}`.
+/// `eqFilter` (`sql_restful.go:88-90`): `Eq{field: value}`.
 #[must_use]
 pub fn eq_filter(field: &str, value: &str) -> Filter {
     Filter::Eq {
@@ -370,8 +373,8 @@ pub fn eq_filter(field: &str, value: &str) -> Filter {
     }
 }
 
-/// `startsWithFilter` (`sql_restful.go:90-94`): a `filterFunc` binding
-/// `field LIKE 'value%'` — it ignores the requested field name (`:91`).
+/// `startsWithFilter` (`sql_restful.go:92-96`): a `filterFunc` binding
+/// `field LIKE 'value%'` — it ignores the requested field name (`:93`).
 pub fn starts_with_filter(field: impl Into<String>) -> FilterFn {
     let column = field.into();
     Box::new(move |_field: &str, value: &str| {
@@ -382,7 +385,7 @@ pub fn starts_with_filter(field: impl Into<String>) -> FilterFn {
     })
 }
 
-/// `containsFilter` (`sql_restful.go:96-100`): a `filterFunc` binding
+/// `containsFilter` (`sql_restful.go:98-102`): a `filterFunc` binding
 /// `field LIKE '%value%'`.
 pub fn contains_filter(field: impl Into<String>) -> FilterFn {
     let column = field.into();
@@ -394,7 +397,7 @@ pub fn contains_filter(field: impl Into<String>) -> FilterFn {
     })
 }
 
-/// `booleanFilter` (`sql_restful.go:102-105`): `Eq{field: value == "true"}`
+/// `booleanFilter` (`sql_restful.go:104-107`): `Eq{field: value == "true"}`
 /// on the lowercased value.
 #[must_use]
 pub fn boolean_filter(field: &str, value: &str) -> Filter {
@@ -404,7 +407,7 @@ pub fn boolean_filter(field: &str, value: &str) -> Filter {
     }
 }
 
-/// `substringFilter` (`sql_restful.go:84-85`): every whitespace-separated
+/// `substringFilter` (`sql_restful.go:119-126`): every whitespace-separated
 /// word of the value AND-joined as `field LIKE '%word%'`.
 #[must_use]
 pub fn substring_filter(field: &str, value: &str) -> Filter {
@@ -427,7 +430,7 @@ pub fn substring_filter(field: &str, value: &str) -> Filter {
     }
 }
 
-/// `idFilter` (`sql_restful.go:106-108`): a `filterFunc` matching
+/// `idFilter` (`sql_restful.go:128-130`): a `filterFunc` matching
 /// `<table>.id` exactly, ignoring the requested field name.
 pub fn id_filter(table: impl Into<String>) -> FilterFn {
     let column = format!("{}.id", table.into());
@@ -439,7 +442,7 @@ pub fn id_filter(table: impl Into<String>) -> FilterFn {
     })
 }
 
-/// `invalidFilter` (`sql_restful.go:110-114`): the always-false `Eq{"1": "0"}`
+/// `invalidFilter` (`sql_restful.go:132-135`): the always-false `Eq{"1": "0"}`
 /// Go falls back to after its `log.Warn`.
 #[must_use]
 pub fn invalid_filter(field: &str, value: &str) -> Filter {
@@ -525,7 +528,7 @@ mod tests {
 
     #[test]
     fn to_snake_case_matches_helpers_go_shapes() {
-        // Arrange/Act/Assert: matchFirstCap + matchAllCap (helpers.go:47-53).
+        // Arrange/Act/Assert: matchFirstCap + matchAllCap (helpers.go:45-52).
         assert_eq!(to_snake_case("AlbumID"), "album_id");
         assert_eq!(to_snake_case("ApiKey"), "api_key");
         assert_eq!(to_snake_case("URL"), "url");
@@ -536,8 +539,8 @@ mod tests {
 
     #[test]
     fn sanitize_sort_snake_cases_whitelists_and_folds_order() {
-        // Arrange: sanitizeSort (sql_restful.go:47-60) on a whitelist
-        // registered via registerModelWhiteList (:121-135) + Annotations.
+        // Arrange: sanitizeSort (sql_restful.go:69-86) on a whitelist
+        // registered via registerModelWhiteList (:142-146) + Annotations.
         let repo = RestRepository::new("album").with_field_white_list(["Title", "Year"]);
         // Act:
         let kept = repo.sanitize_sort("Title", "DESC");
@@ -547,7 +550,7 @@ mod tests {
         assert_eq!(kept, ("title".to_string(), "desc".to_string()));
         assert_eq!(dropped, (String::new(), String::new()));
         assert_eq!(empty_order, ("title".to_string(), String::new()));
-        // The annotation fields merged in (:151-154).
+        // The annotation fields merged in (:159-162).
         let list = register_model_white_list(["Title"]);
         assert!(list.contains("starred"));
         assert!(list.contains("average_rating"));
@@ -555,7 +558,7 @@ mod tests {
 
     #[test]
     fn parse_rest_filters_skips_empty_drops_unwhitelisted_and_specializes() {
-        // Arrange: parseRestFilters (sql_restful.go:13-30) with mappings,
+        // Arrange: parseRestFilters (sql_restful.go:20-52) with mappings,
         // whitelist, an empty value, an "id" field and a default field.
         let repo = RestRepository::new("media_file")
             .with_filter_mappings([("genre", contains_filter("genre"))])
@@ -587,7 +590,7 @@ mod tests {
         .expect("clauses render");
         // Assert: BTreeMap order (artist_id < genre < title2);
         // "unknown" is not whitelisted and "title2" snake-cases to title_2,
-        // also not whitelisted, so both are dropped (:33-36).
+        // also not whitelisted, so both are dropped (:38-42).
         assert_eq!(sql, "artist_id = ? AND genre LIKE ?");
         assert_eq!(
             args,
@@ -600,7 +603,7 @@ mod tests {
 
     #[test]
     fn parse_rest_filters_none_when_map_empty() {
-        // Arrange: the len(options.Filters)==0 branch (:14-16).
+        // Arrange: the len(options.Filters)==0 branch (:21-23).
         let repo = RestRepository::new("album");
         // Act:
         let filters = repo.parse_rest_filters(&RestQueryOptions::default());
@@ -610,7 +613,7 @@ mod tests {
 
     #[test]
     fn parse_rest_options_lifts_seed_and_sanitizes() {
-        // Arrange: parseRestOptions (sql_restful.go:31-45).
+        // Arrange: parseRestOptions (sql_restful.go:54-67).
         let repo = RestRepository::new("album").with_field_white_list(["Title"]);
         let mut options = RestQueryOptions {
             sort: "Title".to_string(),
@@ -646,24 +649,24 @@ mod tests {
 
     #[test]
     fn filter_helpers_render_go_shapes() {
-        // Arrange: the standalone filter funcs (sql_restful.go:84-114).
-        // Act/Assert: eqFilter (:86-88).
+        // Arrange: the standalone filter funcs (sql_restful.go:88-135).
+        // Act/Assert: eqFilter (:88-90).
         let mut args = Vec::new();
         assert_eq!(
             eq_filter("id", "a1").render(&mut args),
             "id = ?".to_string()
         );
-        // startsWithFilter (:90-94).
+        // startsWithFilter (:92-96).
         let starts = starts_with_filter("sort_name")("name", "beat").expect("some");
         let mut args = Vec::new();
         assert_eq!(starts.render(&mut args), "sort_name LIKE ?".to_string());
         assert_eq!(args, vec![Value::Text("beat%".to_string())]);
-        // containsFilter (:96-100).
+        // containsFilter (:98-102).
         let contains = contains_filter("tags")("tags", "rock").expect("some");
         let mut args = Vec::new();
         assert_eq!(contains.render(&mut args), "tags LIKE ?".to_string());
         assert_eq!(args, vec![Value::Text("%rock%".to_string())]);
-        // booleanFilter (:102-105).
+        // booleanFilter (:104-107).
         assert_eq!(
             boolean_filter("starred", "TRUE"),
             Filter::Eq {
@@ -671,7 +674,7 @@ mod tests {
                 value: Value::Bool(true)
             }
         );
-        // substringFilter (:84-85).
+        // substringFilter (:119-126).
         let sub = substring_filter("title", "britney  spears");
         let mut args = Vec::new();
         assert_eq!(
@@ -685,12 +688,12 @@ mod tests {
                 Value::Text("%spears%".to_string()),
             ]
         );
-        // idFilter (:106-108).
+        // idFilter (:128-130).
         let idf = id_filter("artist")("whatever", "ar-9").expect("some");
         let mut args = Vec::new();
         assert_eq!(idf.render(&mut args), "artist.id = ?".to_string());
         assert_eq!(args, vec![Value::Text("ar-9".to_string())]);
-        // invalidFilter (:110-114).
+        // invalidFilter (:132-135).
         let bad = invalid_filter("bogus", "value");
         let mut args = Vec::new();
         assert_eq!(bad.render(&mut args), "1 = ?".to_string());

@@ -3727,6 +3727,37 @@ pub fn row_to_tag(row: &Row<'_>) -> SqliteResult<crate::tag_repo::Tag> {
     })
 }
 
+/// The `SELECT * FROM transcoding` row (`transcoding_repository.go:24`, `:39`, `:69`):
+/// the four text columns plus Go's non-pointer `int` `DefaultBitRate
+/// (`model/transcoding.go:9-14`), read in struct-declaration order. Hook-free —
+/// `grep -n "dbTranscoding\|PostScan" persistence/transcoding_repository.go` is empty,
+/// so there is no phase 2 (`hydrate-contract.md:218`), and the DTO stays in nd-db
+/// (`hydrate-contract.md:324`).
+///
+/// `default_bit_rate` uses [`RowGet::get_i64`], so a NULL cell is a SCAN error, not
+/// NotFound and not a zero bit rate: Go scans into a non-pointer `int` and
+/// `database/sql` cannot store a nil driver value into it
+/// (`convert.go:521-526`). The fresh DDL declares
+/// `default_bit_rate int default 192` with NO `not null`
+/// (`nd-dbschema/src/schema_ddl.rs:56`), so a NULL cell is reachable and fails the
+/// same way in both languages.
+///
+/// `command` is read UNMASKED here — masking is the repository's
+/// `Read`/`ReadAll` boundary (`transcoding_repository.go:56-58`, `:75-78`), so
+/// `Get`/`FindByFormat` hand the stream layer the real command.
+///
+/// # Errors
+/// A missing or NULL transcoding column fails, per Go parity.
+pub fn row_to_transcoding(row: &Row<'_>) -> SqliteResult<crate::transcoding_repo::Transcoding> {
+    Ok(crate::transcoding_repo::Transcoding {
+        id: row.get_text("id")?,
+        name: row.get_text("name")?,
+        target_format: row.get_text("target_format")?,
+        command: row.get_text("command")?,
+        default_bit_rate: row.get_i64("default_bit_rate")?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -80,13 +80,17 @@
 //! `ORDER BY library.id` for a sorted call; the executed trace contradicts that,
 //! and the claim is corrected here.
 //!
-//! `optimizePagination` (`sql_base_repository.go:476-486`) is NOT ported. It is
-//! gated on `conf.Server.DevOffsetOptimize`, whose Go default is 0: the field is
-//! declared at `conf/configuration.go:145` and never given a `viper.SetDefault`,
-//! and an executed repository run at the default traced plain
-//! `SELECT * FROM library OFFSET 5` / `OFFSET 100` for every offset, never the
-//! rowid rewrite. At that default the rewrite is unreachable, so omitting it is
-//! parity rather than a gap.
+//! `optimizePagination` (`sql_base_repository.go:475-486`) is NOT ported. It is
+//! gated on `conf.Server.DevOffsetOptimize`, whose Go default is 50000: the field is
+//! declared at `conf/configuration.go:145` and given
+//! `viper.SetDefault("devoffsetoptimize", 50000)` at `:1129`, and the Rust port carries
+//! `dev_offset_optimize: 50000` (`nd-conf/src/config.rs:746`). The rewrite therefore
+//! only fires for `Offset > 50000` (`:478`), so an ordinary offset reaches plain
+//! `SELECT * FROM library OFFSET 5` / `OFFSET 100` — which is what an executed
+//! repository run at the default traced, never the rowid rewrite. Omitting it is
+//! parity for every offset a test can reach; offsets above 50000 would take Go's
+//! rewrite and are NOT ported (reported, not implemented — this slice is documentation
+//! only, see [`get_all_query_sql`]).
 //!
 //! Clause order for a filtered, sorted page is `WHERE … ORDER BY … LIMIT … OFFSET …`
 //! in both languages: `newSelect` runs `applyOptions` (which appends ORDER BY and
@@ -407,7 +411,9 @@ pub fn parse_rest_options(
 /// `WHERE (name LIKE ? AND path LIKE ?) ORDER BY name desc LIMIT 3`.
 ///
 /// `optimizePagination` stays unported (module header): at Go's default
-/// `DevOffsetOptimize = 0` the rowid rewrite is unreachable.
+/// `DevOffsetOptimize = 50000` (`conf/configuration.go:1129`, mirrored by
+/// `nd-conf/src/config.rs:746`) the rowid rewrite only fires above that offset, so
+/// every page this renderer is tested with takes the plain `OFFSET` path.
 ///
 /// Deviation kept, not fixed: an `Offset` with no `Max` renders `LIMIT -1 OFFSET n`
 /// ([`Repository::to_sql`], `sqlrepo.rs:313-319`), whereas Go's bare `OFFSET n` is a
