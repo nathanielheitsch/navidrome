@@ -263,6 +263,51 @@ checks `err` (`:482`) — a documented difference, not implemented here.
 10. **Review/DoD:** G and fresh cross-boundary reviewer: DB owns writes only, SC constructs batch/aggregates; first honest phase1 persistence ready when this + DB-11 + external SC acceptance passes, not full #05.
 
 ## DB-15 — Average-rating renderer repair and typed annotation reassignment
+### Parent verification of DB-15's premise (2026-11-18, DB-03 lane running)
+
+Confirmed independently, not copied from the plan:
+- `sql_annotations.rs:301` `update_avg_rating_sql` emits `UPDATE {t} SET average_rating = ?
+  WHERE id = ?` (2 placeholders) with 3 args `[item_id, table, item_id]`. Executed against
+  SQLite: `Wrong number of parameters passed to query. Got 3, needed 2` — the renderer cannot
+  execute at all, so this is not a silent no-op like DB-01 was.
+- Go's `updateAvgRating` (`persistence/sql_annotations.go:151-160`) puts the aggregate
+  **inside** the SET via `sq.Expr(...)`. Reproduced with pinned squirrel v1.5.4:
+  `UPDATE media_file SET average_rating = coalesce((select round(avg(rating), 2) from
+  annotation where item_id = ? and item_type = ? and rating > 0), 0) WHERE id = ?`,
+  args `[mf1 media_file mf1]`. Executing that shape gives `round(avg(4,5),2) = 4.5`.
+- The crate already exposes the expression as `average_rating_expr_sql()` (`:314`) and it is
+  referenced ONLY from its own test (`grep` shows definition at `:314`, use at `:608`) — the
+  renderer never embeds it, and the lib test at `:602` pins the broken shape.
+- Correct fix = embed the expression and keep the same 3 args (verified executing).
+- Blast radius in Go for the DB-01 class of bug: `scanner/phase_1_folders.go:446` calls
+  `mfRepo.MarkMissing(ctx, true, entry.missingTracks...)` and `:534` calls
+  `Folder().MarkMissing`, so an ids-first bind in the Rust port would leave missing tracks
+  flagged as present after a scan. That is why DB-01 needed executed tests, not more
+  renderer assertions.
+- `reassign_annotation_sql` (`:359`) matches Go's `Expr` render exactly (`update or ignore
+  annotation set item_id = ? where item_type = ? and item_id = ?`, args `[newID table
+  prevID]` — squirrel probe confirmed), so only the average leg is broken.
+
+### Renderer placeholder/arg audit (2026-11-18)
+
+A structural scan of every `pub fn … -> Sql` for `?` count vs bound-arg count flagged these
+candidates; all were inspected and only DB-15's is a real defect. The rest legitimately have
+dynamic counts (`vec![..]` for the fixed prefix + per-chunk/per-column expansion) or return a
+`(Sql, Sql)` pair where the caller supplies the aggregate values:
+`album_repo.rs:1235 copy_attributes_update_sql` (args come from the caller's `values`, count
+follows `columns`), `playlist_repo.rs:476 refresh_counters_sql` (update leg intentionally
+partial: caller fills duration/size/count — pin this shape when DB-17 executes it),
+`radio_repo.rs:501 enqueue_artwork_sql` (6 placeholders, 6 args), `folder_repo.rs:975
+purge_empty_sql`, `mediafile_repo.rs:1514 find_by_paths_sql`, `artwork_queue_repo.rs:305
+source_filter_sql`, `sql_annotations.rs:143 ann_id`, `sql_bookmarks.rs:56 bmk_id`, the
+`put_sql`/`put_update_sql` family (`artist/library/radio/user/playlist/album`, args built from
+the record), and `share_repo.rs:248 update_sql` (args from `cols`).
+Recommendation: when DB-21 integrates acceptance, add ONE executed gate that prepares every
+renderer's statement against the migrated schema and asserts `parameter_count() ==
+args.len()`. That would have caught DB-01 and DB-15 mechanically instead of by review, and it
+costs one test file. Do not add it before the mutation renderers stabilize (DB-04..DB-17), or
+it will fail on intentionally-partial shapes like `refresh_counters_sql`.
+
 
 1. **Status: BLOCKED for runtime; repair portion READY.** Prereqs DB-00/03 for executed tx helper; render-only regression can be assigned first independently. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation average on ID changes. Non-goals: general rating/starring endpoints.
 2. **V, newly found during planning:** `B/sql_annotations.rs:301-309` `update_avg_rating_sql` emits `SET average_rating=? WHERE id=?` but args `[itemId,table,itemId]`; the actual aggregate expression is separately `average_rating_expr_sql:314-316`, not embedded. Existing `update_avg_rating_binds_subquery_args_before_where_id`602-620 pins that inconsistent shape. Go `persistence/sql_annotations.go:151-162` embeds coalesced rounded avg positive ratings; `ReassignAnnotation:185-196` UPDATE OR IGNORE then update average. No execution by planner/parent claimed for this new renderer defect.
@@ -550,3 +595,43 @@ Near-term order after this commit, all DB-owned:
    ~30s against a 3s deadline under full-workspace load. Reproduced as a single failing
    binary in one run, clean in the other three runs and isolated. Needs its own
    investigation in `nd-stream`, not a DB change.
+
+## D-OPEN DECISION (2026-11-18, user-approved: option a)
+
+**Decision:** typed open options applied as explicit per-connection PRAGMA statements, with
+effective-state read-back before a handle joins the pool. Literal DSN pass-through is
+rejected as the mechanism, but the **config value stays Go-compatible**, so the loader must
+translate it rather than require users to rewrite it.
+
+Contract for DB-03:
+1. `DbOpenOptions { journal_mode, busy_timeout, synchronous, foreign_keys }` with Go's
+   effective defaults: WAL for file-backed DBs, `busy_timeout = 15000`,
+   `synchronous = NORMAL` (1), `foreign_keys = on`. `:memory:` keeps `journal = MEMORY`
+   semantics (SQLite rejects WAL on a memory DB, so the translation must not force WAL there).
+2. `effective_path` must stop handing SQLite a filename that includes the query string. It
+   parses a Go-style DSN: `_journal_mode`, `_busy_timeout`, `_foreign_keys`, `synchronous`
+   become `DbOpenOptions`; genuine SQLite URI params (`cache=`, `mode=`) are kept by
+   re-emitting a `file:` URI; unknown params are rejected with an explicit error rather than
+   silently dropped. `nd-conf`'s `DEFAULT_DB_PATH` (`rust/crates/nd-conf/src/consts.rs:16`,
+   mirroring `consts/consts.go:14`) is the reference input and must parse to exactly the
+   defaults above with path `navidrome.db`.
+3. Pragmas are applied per handle **after** extension registration and **read back**; a
+   handle whose effective state differs from the request fails pool creation. Remember
+   `PRAGMA busy_timeout=N` returns a row — use `query_row`, not `execute`
+   (`execute` → `ExecuteReturnedResults`).
+4. Migration sequencing must not lose the settings: Go disables FK around migrations and
+   re-enables it (`db/db.go:85-91`), and the pragma state is per-connection, so verify each
+   pooled handle ends with `foreign_keys = on` regardless of what migration ran on it.
+5. Pin Rust's `foreign_keys` default honestly. Measured `PRAGMA foreign_keys` = 1 on every
+   handle including `rusqlite::Connection::open`, and this build is **non-bundled**
+   (`rusqlite 0.32.1` against system SQLite 3.46.0). Do not claim a build flag; state the
+   measured source or leave it as "observed default, enforced explicitly".
+6. `Pool::new` (`rust/crates/nd-db/src/pool.rs:120-135`) passes only `config.path` today;
+   thread the options through `PoolConfig`/`SQLStore::open` (`store.rs:188`) without
+   changing the public `with_connection_sync`/`with_tx_sync` surface.
+
+Out of scope for DB-03: the `NewSqliteDb` per-DB isolation note — that symbol does not
+exist in this checkout (`grep -rn 'NewSqliteDb' --include='*.go' .` is empty; Go uses the
+`db.Db()` singleton at `db/db.go:41-68` and `tests/harness/harness.go:52-58` sets
+`conf.Server.DbPath` to a temp file + `?_journal_mode=WAL` with `SetMaxOpenConns(1)`). The
+earlier `db.rs:100-103` note was a bad citation and must be corrected, not implemented.
