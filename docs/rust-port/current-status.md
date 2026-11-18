@@ -16,17 +16,16 @@ A scaffold test asserting an issue number is not runtime coverage.
 
 ## Fresh parent-measured gates
 
-**Superseding measurement: `master` at `f8ceeb8f` (2026-11-18, after S-D3f/S-D3g2/S-D-W4+W6).** Measured by the
-parent on a clean tree from `rust/` with `CARGO_TARGET_DIR=/tmp/ndtarget`; every command below exited **0** except
-none. W7 (`c5b51adf`) is editing player/library/tag/radio on top of this, so these numbers describe `f8ceeb8f`, not
-the working tree.
+**Superseding measurement: `master` at `f57ae050` (2026-11-18, after W4+W6 `f8ceeb8f`, W7 `62789ba2` and DB-01
+`f57ae050`).** Measured by the parent on a clean tree from `rust/` with `CARGO_TARGET_DIR=/tmp/ndtarget`; every
+command below exited **0**.
 
 | Command | Actual result |
 |---|---|
 | `cargo fmt --all -- --check` | Pass |
-| `cargo test --locked -p nd-db --all-targets --all-features --no-fail-fast` | **765 passed / 0 failed / 0 ignored**; `-- --list` lists exactly 765 |
+| `cargo test --locked -p nd-db --all-targets --all-features --no-fail-fast` | **778 passed / 0 failed / 0 ignored** (765 after W6, +6 W7, +7 DB-01) |
 | `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Pass (exit 0) |
-| `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` | **1844 passed / 0 failed / 1 ignored**, 70 result groups |
+| `cargo test --locked --workspace --all-targets --all-features --no-fail-fast` | **1857 passed / 0 failed / 1 ignored** (1844 → 1850 → 1857); clean in every run this session |
 | `cargo doc --locked -p nd-db --all-features --no-deps` | Pass, **22 warnings** — set byte-identical to the earlier `/tmp/doc_baseline.txt` after sorting (the summary line is the 23rd line, which caused a transient 23-warning report) |
 | `git diff --check` | Pass |
 

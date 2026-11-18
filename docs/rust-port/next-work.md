@@ -26,13 +26,18 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    `player_repo.rs`, `library_repo.rs`, `tag_repo.rs`, `radio_repo.rs` executed REST reads now take
    `RestQueryOptions` and parse internally, matching Go; `runtime_rest_sort_gate.rs` proves hostile sorts are
    dropped. Audit: `subplans/db-runtime.md` “Executed-read sort gate audit”.
-2. **DB-01 (READY, no prerequisites, lane running): missing-state bind repair** — `mediafile_repo.rs` bind order plus an executed
-   real-schema regression. G0 gates DB-07/14, so it unblocks mutation work.
-3. **DB-03 / D-OPEN (DECISION REQUIRED)** — resolve the reproduced DB-path/pragma divergence: Go opens
-   `navidrome.db` with `SQLITE_OPEN_URI` so the config DSN's pragmas apply, while a non-`file:` Rust path creates a
-   file literally named `navidrome.db?cache=shared&…` and silently keeps rusqlite defaults (journal DELETE,
-   synchronous FULL, busy_timeout 5000). Needs the user's call on defaults before launch. Also fix the
-   `db.rs::NewSqliteDb` self-comparison before any DB-backed Go oracle fixture is trusted.
+2. **DB-01 — DONE at `f57ae050`** (parent-measured 778 DB / 1857 workspace / 22 rustdoc warnings).
+   `mark_missing_sql` was a silent no-op (0 rows affected; with numeric-looking ids it could corrupt the wrong row);
+   args now follow Go's `.Set`/`.Where` order (`mediafile_repository.go:459-461`) and
+   `runtime_missing_state.rs` executes 7 real-schema tests plus a pre-fix control. Reverting the fix fails 5 of 7,
+   so the gate is non-vacuous. G0 now unblocks DB-07/14.
+3. **DB-03 / D-OPEN (DECISION REQUIRED — awaiting user choice)** — probe at `a4f03812` shows a `file:` URI alone is
+   not enough: rusqlite honors real SQLite URI params (`mode=`, `cache=`) but NOT go-sqlite3's `_journal_mode`,
+   `_busy_timeout`, `_foreign_keys`, `synchronous=` conventions, so every open keeps journal=delete, busy_timeout
+   5000, synchronous=2. Explicit per-connection PRAGMA statements do work (measured `wal`/15000/1). Option (a):
+   typed `DbOpenOptions` applied as pragmas with per-handle read-back; option (b): DSN pass-through, which still
+   needs the same pragma translation. Also: Rust's `foreign_keys=1` default is not yet attributed (system sqlite
+   vs compile-time default) and `db.rs::NewSqliteDb` self-compares `db` to `db` (`:100-103`).
 4. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
    goldens (artist/album/mediafile/playlist_tracks/plugin/scrobble). Lowest priority.
 5. **Then the mutation packages DB-04…DB-10** — the real critical path into the scanner slice.
