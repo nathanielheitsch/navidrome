@@ -649,6 +649,13 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 ca
   serialized. Status parity is Go’s: cross-owner read 404 (`player_repository_test.go:163-167`), cross-owner write 403
   (`classifyOwnedWriteMiss`, `sql_base_repository.go:554-563`). No player route is mounted today — scope, not delivered
   behavior.
+  **Edge guardrails (audit-verified 2026-11-18):** `PUT` must call `update_owned` with an explicit non-empty column list and
+  never `PlayerRepo::put` (`player_repo.rs:922-947` re-owns a foreign row: `UPDATE player SET user_id=? WHERE id=?`, no
+  ownership predicate; measured `Ok(1)` + `user_id` changed in `/tmp/fkprobe2`, Go parity identical); never
+  `LoggedUser::headless()` for a user request; never persist a client-supplied `lastSeen`; never `{:?}`-log a `PlayerRecord`
+  (`Debug` at `:206` + `api_key: Option<String>` at `:235` leaks the plaintext key). Clamp `maxBitRate`, validate that
+  `transcoding_id` exists (no FK: `schema_ddl.rs:65`), require non-empty `name`/`client`, and never pass request text into
+  `Options::filters` (raw SQL fragment, `:155`).
 - **Build**: player register/touch/get lifecycle + write-throttled persistence over the existing `PlayerRepo` — Go has no
   expiry mechanism, only `LastSeen = time.Now()` stamping (`core/players.go:78`) and a write limiter at
   `consts.UpdatePlayerFrequency` = 1 minute (`core/players.go:26`, `consts/consts.go:89`) — plus the `model/player.go`
