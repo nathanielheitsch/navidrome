@@ -485,6 +485,43 @@ expressions over their own columns, so lower severity, same shape. All five now 
 internally, raw renderers stay untightened (Go's renderer accepts whatever `applyOptions`
 hands it, `sql_base_repository.go:157-158`) and carry the WARNING contract.
 
+## D-OPEN probe: rusqlite ignores go-sqlite3's DSN pragmas (2026-11-18, refines `5ebb8110`)
+
+Re-measured through `nd_dbschema::schema::open` (which ORs `SQLITE_OPEN_URI`,
+`schema.rs:59-62`) against real files (`/tmp/db03`). SQLite 3.46.0, **non-bundled**
+(`CARGO_FEATURE_BUNDLED` unset).
+
+| open argument | file actually created | journal / busy_timeout / synchronous |
+|---|---|---|
+| `…/navidrome.db?cache=shared&_busy_timeout=15000&_journal_mode=WAL&_foreign_keys=on&synchronous=normal` (Go's `DefaultDbPath` shape, `consts/consts.go:14`) | `navidrome.db?cache=shared&_busy_timeout=…&synchronous=normal` — the query string is part of the filename | `delete` / 5000 / 2 |
+| `file:<abs>/navidrome.db?_journal_mode=WAL&_busy_timeout=15000&synchronous=1` | `navidrome.db` (URI parsed correctly) | still `delete` / 5000 / 2 |
+| `file:c.db?mode=memory&cache=shared` | real URI params **are** honored (`journal=memory`) | — |
+
+Conclusion, replacing the earlier "pass a `file:` URI and the pragmas apply" framing:
+`_journal_mode`, `_busy_timeout`, `_foreign_keys` and `synchronous=` are **go-sqlite3
+conventions**, not SQLite URI parameters. rusqlite only honors genuine SQLite URI params
+(`mode=`, `cache=`), so a `file:` URI alone fixes the filename but applies none of Go's
+settings. Only explicit per-connection `PRAGMA` statements reproduce Go, and that is what
+`schema.rs`'s `ConnectHook` equivalent must do (it currently only registers extensions).
+Measured that explicit statements do work on this handle: `PRAGMA journal_mode=WAL` ->
+`wal`, `busy_timeout=15000` -> 15000, `synchronous=NORMAL` -> 1.
+
+Two corrections to earlier notes: (1) `PRAGMA busy_timeout=N` returns a row, so it must be
+read with `query_row`, not `execute` (`execute` fails with `ExecuteReturnedResults`);
+(2) `PRAGMA foreign_keys` reads **1** on every handle here, including
+`rusqlite::Connection::open`. Go gets FK=1 from its DSN pragma (`netgo,sqlite_fts5` build
+tags, `Makefile:5` — no `sqlite_foreign_keys` tag). Where Rust's default comes from is NOT
+yet established (system sqlite vs a compile-time default); DB-03 must determine it and pin
+it with an executed assertion instead of assuming a build flag.
+
+D-OPEN options for the user: (a) typed `DbOpenOptions { journal_mode, busy_timeout,
+synchronous, foreign_keys }` applied as explicit pragmas with read-back per handle —
+reproduces Go's effective state and is testable; (b) literal DSN pass-through — would still
+require translating go-sqlite3 conventions into pragmas, so it is really (a) plus a parser.
+Also unresolved: `db.rs::NewSqliteDb` self-compares `db` to `db` (`:100-103`), so Go's
+"one file per DB in a process" isolation does not hold; fix before DB-backed Go oracle
+fixtures are relied on.
+
 ## Read-lane inventory and remaining gaps (2026-11-18)
 
 Executed-query count per repo (`grep -c execution::query`): library 7, folder 5,
