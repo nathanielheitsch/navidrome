@@ -10,14 +10,25 @@ Each later agent must receive this preamble, the validation/review contract belo
 
 - **DB: missing-bind repair; timestamp lifecycle; effective pool pragmas; transactional writes/typed reads/cursors/GC.** EVID may characterize these dependencies but does not implement them.
 - **SC: storage/mapping bridge; pure ToAlbum/equality; phases/controller/watch/progress IPC.** Initial in-process fixtures do not wait for IPC.
-- **Measured pooled-connection pragmas (audit 2026-11-18, `/tmp/fkprobe2`, `/tmp/fkcheck`):** rusqlite **ignores** Go’s DSN
-  parameters, so the production DSN (`nd-conf/src/consts.rs:15-16`, copied verbatim from `consts/consts.go:14`) yields
-  `busy_timeout=5000` (Go: 15000), `journal_mode=delete` (Go: WAL), and `cache=shared`/`synchronous=normal` are dropped.
-  `PRAGMA foreign_keys` is never issued by `nd_dbschema::schema::open` (`schema.rs:57-78`) or `nd-db/src/pool.rs:120-128`; FK
-  is ON only because `libsqlite3-sys` compiles `-DSQLITE_DEFAULT_FOREIGN_KEYS=1` (`libsqlite3-sys-0.30.1/build.rs:123`).
-  That is an accidental build-flag dependency — a system-sqlite/sqlcipher build would silently drop referential integrity
-  and let `put`/`save` attach players to nonexistent users. Required: explicit per-connection pragmas (foreign_keys,
-  busy_timeout, journal_mode) with assertions, not DSN trust.
+- **Measured DB-path/pragma divergence (audit 2026-11-18, reproduced in `/tmp/godsn` vs `/tmp/dsnprobe`).** Go opens
+  `conf.Server.DbPath` (`db/db.go:62`) with go-sqlite3 v1.14.52, whose `_open` ORs `SQLITE_OPEN_URI` unconditionally
+  (`sqlite3.go:64-66`), so a plain path plus query params parses as a URI and per-connection pragmas are issued: measured
+  `foreign_keys=1`, `busy_timeout=15000`, `journal_mode=wal`, `synchronous=1`, and the file is `navidrome.db`.
+  Rust builds the same shape (`nd-conf/src/config.rs:999-1010` joins `data_folder` + `DEFAULT_DB_PATH` filename +
+  `db_path_params()`), but rusqlite does **not** parse a query string on a non-`file:` name, so measured behavior is:
+  a literal file named `navidrome.db?cache=shared&_busy_timeout=15000&_journal_mode=WAL&_foreign_keys=on&synchronous=normal`
+  is created, and the connection reports `foreign_keys=1` (build flag `libsqlite3-sys-0.30.1/build.rs:123
+  -DSQLITE_DEFAULT_FOREIGN_KEYS=1`), `busy_timeout=5000` (rusqlite hardcoded), `journal_mode=delete`, `synchronous=2`.
+  Note Go does **not** rely on a build flag for FK: `Makefile:5` is `netgo,sqlite_fts5` (no `sqlite_foreign_keys`), so Go’s
+  FK comes from the DSN pragma — Rust’s FK is accidental and would vanish on a system-sqlite/sqlcipher build.
+  Required fix (bounded, one writer): `open` must normalize a non-URI path into `file:<path>?<query>` (URI flag already set,
+  `schema.rs:57-63`), then issue explicit `PRAGMA foreign_keys=ON`, `busy_timeout`, `journal_mode`, `synchronous` from typed
+  config rather than DSN text; keep `apply_fresh_schema`’s temporary `foreign_keys=off` window (`schema.rs:126-146`);
+  audit every open path (`pool.rs:118-132`, `migrate.rs:30-33`, `backup.rs:177,:192`, `MEMORY_DSN` `schema.rs:26`, ~13 test
+  helpers using `file:...&_foreign_keys=on`). Assertions must read the pragmas per pooled connection, and WAL changes on-disk
+  artifacts (`-wal`/`-shm`) plus `cache=shared` semantics, so check tests that open the same file concurrently.
+  No current test asserts any pragma (`grep -rn pragma rust/crates/nd-db/tests` hits only `pragma_table_info`), so this is
+  unproven today. Do not claim parity from `DEFAULT_DB_PATH` being carried verbatim.
 - **BOOT: bootstrap/library and transcoding seed ownership; listener; Send boundaries; auth audience and stream-header commitment seams.** Parent has identified login-token audience vs API-native gate mismatch and `StreamHandler::serve` returning headers only after pumping/cleanup. These are BOOT/API dependencies, not EVID/OPS repair work.
 - **API: route/DTO/error/OpenAPI contracts, Go native fixture capture, key-issuance HTTP integration and epoch routes.** EVID's database-oracle capture is not a substitute for API contract capture.
 - **EVID:** durable DB oracles, current-state/deviation amendments, narrowly scoped residual-query parity and first-error reproduction. **OPS:** schema provenance/repair, logging and maintenance lifecycle. OPS tails do not automatically gate #27A.
