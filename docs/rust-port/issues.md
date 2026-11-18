@@ -641,10 +641,14 @@ reference data only — nothing gates on them (#25 is CANCELLED); #27 and #28 ca
   `updateOwned` (`persistence/sql_base_repository.go:506-514`, which deletes `user_id` because ownership is immutable on
   update) with `ownedRow` (`:97-102`) restricting the write; the field whitelist is `:538-549`. `MaxBitRate` is already
   consumed by the ported decision, so bitrate editing is functional once a row persists. What is **missing** is the picker:
-  a read-only `GET /api/transcoding` (masked `command`, `transcoding_repo.rs:60,69`), plus #05 executing the transcoding
-  read and a BOOT-owned default seed (`nd-conf` `DEFAULT_TRANSCODINGS`, `consts.rs:241+`; fresh DDL seeds nothing,
-  `schema_ddl.rs:56`). Profile **editing** stays dropped (Part C item 1), `EnableTranscodingConfig` stays absent from the
-  fresh TOML, `report_real_path` is not exposed as a knob until re-specified, and `apiKey`/hash is never serialized.
+  a read-only `GET /api/transcoding` (caller applies `mask_command`/`mask_commands`, `transcoding_repo.rs:60,69`), plus
+  #05 executing the transcoding read and a BOOT-owned default seed (`nd-conf` `DEFAULT_TRANSCODINGS`,
+  `consts.rs:242`, 4 entries; fresh DDL seeds nothing, `schema_ddl.rs:56`). Profile **editing** stays dropped (Part C
+  item 1); `EnableTranscodingConfig` stays **carried but unused** (`keys.rs:189-193`, `config.rs:435,:662` — parsed,
+  no consumer, no editor route); `report_real_path` is not exposed as a knob until re-specified; `apiKey`/hash is never
+  serialized. Status parity is Go’s: cross-owner read 404 (`player_repository_test.go:163-167`), cross-owner write 403
+  (`classifyOwnedWriteMiss`, `sql_base_repository.go:554-563`). No player route is mounted today — scope, not delivered
+  behavior.
 - **Build**: player register/touch/get lifecycle + write-throttled persistence over the existing `PlayerRepo` — Go has no
   expiry mechanism, only `LastSeen = time.Now()` stamping (`core/players.go:78`) and a write limiter at
   `consts.UpdatePlayerFrequency` = 1 minute (`core/players.go:26`, `consts/consts.go:89`) — plus the `model/player.go`
@@ -756,4 +760,4 @@ These are the open contract questions the revision did not settle. Each names th
 17. **Zero-consumer crates — DECIDED**: `nd-backgrounds` (#34) and `nd-sonic` (#31) are out of the workspace; re-open individually if a Flutter need appears.
 18. **Player scope — DECIDED 2026-11-18 (`D-PLAYER26` + `D-PLAYER-EDIT`, user-approved in-session)**: two decisions, both recorded with evidence in `subplans/README.md`.
     (a) **#26 splits.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `nd-db` `PlayerRepo`); **drop** the server-side mpv/jukebox playback device (`core/playback/**`, mpv IPC, `server/subsonic/jukebox.go`, `Jukebox.*`/`MPVPath`/`MPVCmdTemplate`) — Subsonic-only entry point, default-off, config keys already absent, JS UI dropped, unfinished subprocess reap upstream, no surviving non-test consumer.
-    (b) **Per-device preference editing is retained product scope.** `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`updateOwned` drops `user_id` — `persistence/sql_base_repository.go:506-514` — and `ownedRow` (`:97-102`) restricts the write; whitelist per `registerModelWhiteList`), and a **read-only** `GET /api/transcoding` profile list is required so a device can pick `transcoding_id`. Transcoding profile **editing** stays dropped (item 1), `EnableTranscodingConfig` stays absent from the fresh TOML, `report_real_path` must not be exposed as an editable knob until its canonical meaning is defined, and no key/hash is ever serialized. Requires #05's executing `transcoding_repo` read and a BOOT-owned default seed from `nd-conf` `DEFAULT_TRANSCODINGS`. Blocks #27, #26, #05.
+    (b) **Per-device preference editing is retained product scope** — repository legs landed, no route mounted yet. `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`updateOwned` drops `user_id` — `persistence/sql_base_repository.go:506-514` — and `ownedRow` (`:97-102`) restricts the write; whitelist per `registerModelWhiteList`), and a **read-only** `GET /api/transcoding` profile list is required so a device can pick `transcoding_id` (caller-applied masking; Go status parity read404/write403). Transcoding profile **editing** stays dropped (item 1), `EnableTranscodingConfig` stays absent from the fresh TOML, `report_real_path` must not be exposed as an editable knob until its canonical meaning is defined, and no key/hash is ever serialized. Requires #05's executing `transcoding_repo` read and a BOOT-owned default seed from `nd-conf` `DEFAULT_TRANSCODINGS`. Blocks #27, #26, #05.

@@ -54,7 +54,8 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    playback-device scope is dropped unported (`D-PLAYER26`). Per-device preference editing is retained (`D-PLAYER-EDIT`): owner-scoped
    `GET`/`PUT /api/player/{id}` (ownership-restricted `read`/`update_owned`, immutable `user_id`, whitelist enforced) plus
    a **read-only** `GET /api/transcoding` profile list, which needs #05's executing `transcoding_repo` read and a BOOT-owned
-   seed from `nd-conf` `DEFAULT_TRANSCODINGS` — a picker with no rows cannot set `transcoding_id`. Profile **editing** stays dropped. Keep accepted differences, known bugs and unverified behavior
+   seed from `nd-conf` `DEFAULT_TRANSCODINGS` (`consts.rs:242`, 4 entries) — a picker with no rows cannot set
+   `transcoding_id`, and no player route is mounted yet. Profile **editing** stays dropped; status parity is read 404 / write 403. Keep accepted differences, known bugs and unverified behavior
    separate. Complex service tails remain specification-blocked until their own contracts are ready; cancelled product
    surfaces stay cancelled.
 

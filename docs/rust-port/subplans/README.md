@@ -191,12 +191,17 @@ behavior inherited from a live path. Its fields feed services that survive the p
   * `nd-db/src/transcoding_repo.rs` **only renders SQL** (`get_sql` :77, `find_by_format_sql` :87,
     `read_all_sql` :114, `put_sql` :147, `delete_sql` :202) and never executes — #05 work.
   * `nd-dbschema/src/schema_ddl.rs:56` creates the `transcoding` table but inserts nothing, so a fresh
-    Rust DB has **zero profiles**. Go seeds them (`db/migrations/20200706231659_add_default_transcodings.go`,
-    `20260309203355_ensure_default_transcodings.go`). The definitions are already carried in Rust as
-    `nd-conf` `DEFAULT_TRANSCODINGS` (`rust/crates/nd-conf/src/consts.rs:241+`, mp3/opus/aac/flac/…
-    matching `consts/consts.go:176+`), so the seeding gap is a wiring decision, not missing data —
-    but seeding belongs to BOOT/#05 policy, never to static DDL (`OPS-01` keeps DDL and data seeding
-    separate). `player.transcoding_id` has no foreign key (`schema_ddl.rs:65`), so an unknown id is a
+    Rust DB has **zero profiles**. Go seeds them (`db/migrations/20200706231659_add_default_transcodings.go:33`,
+    one `id.NewRandom()` per row when the table is empty; `20260309203355_ensure_default_transcodings.go`
+    tops up missing defaults idempotently). The definitions are already carried in Rust as
+    `nd-conf` `DEFAULT_TRANSCODINGS` (`rust/crates/nd-conf/src/consts.rs:242`, exactly 4 entries: mp3,
+    opus, aac, flac — byte-identical commands to `consts/consts.go:176-206`), so the seeding gap is a
+    wiring decision, not missing data — but seeding belongs to BOOT/#05 policy, never to static DDL
+    (`OPS-01` keeps DDL and data seeding separate). Upgrade-only migrations
+    (`20260307175815_add_codec_and_update_transcodings.go`, `20260618120509_add_metadata_to_default_transcodings.go`)
+    rewrite rows that still hold an *older* unmodified default, so an upgraded Go DB can legitimately hold
+    a command neither table has (e.g. the ipod/fragmp4 AAC row). That is an upgrade-state divergence, not a
+    fresh-install one. `player.transcoding_id` has no foreign key (`schema_ddl.rs:65`), so an unknown id is a
     silent no-profile rather than an error — worth an explicit validation choice at the API edge.
   Neither the read nor the seed is provided by `D-PLAYER26`; the player service cannot resolve or offer
   a profile until they land.
@@ -274,9 +279,13 @@ Reopening jukebox would require a dedicated platform/socket/process-reap contrac
 
 ## Per-device editing (D-PLAYER-EDIT, user-approved in-session 2026-11-18)
 
-**The storage half already exists.** `GET`/`PUT`/`DELETE /api/player` are real native Go routes today
-(`server/nativeapi/native_api.go:75`, `rx(r, "/player", api.ds.Player(), true)` — the third argument is
-what enables POST/PUT/DELETE), and the Rust repository already executes the ownership-safe legs:
+**Go exposes the routes today; the Rust repository legs are landed but nothing calls them.**
+`GET`/`PUT`/`DELETE /api/player` are real native Go routes (`server/nativeapi/native_api.go:75`,
+`rx(r, "/player", api.ds.Player(), true)` — the **fourth** argument, `persistable` (`:106`), is what enables
+POST/PUT/DELETE; GET stays open regardless). On the Rust side the repository already executes the
+ownership-safe legs — but `nd-api` is a scaffold (`rust/crates/nd-api/src/lib.rs`, 765 bytes), no `/api`
+router is mounted anywhere in `rust/crates`, and `PlayerRepo` has zero non-test callers. So **no endpoint
+works end to end yet**; "editable" below means repository capability plus the Go oracle, not a live route:
 
 - `update_owned_sql` (`player_repo.rs:961`) drops `user_id`/`created_at` from the SET, keeps `id`, and
   restricts via `owned_row` — mirroring `updateOwned` (`persistence/sql_base_repository.go:506-514`,
@@ -289,11 +298,12 @@ what enables POST/PUT/DELETE), and the Rust repository already executes the owne
 - `PlayerRepo::read(id, user)` (:1129) is the ownership-**restricted** read and `get(id)` (:1119) is
   unrestricted. Which one a route calls is the entire authorization decision for `GET`.
 
-**Editable by owner today, essentially for free.** `TranscodingId`, `MaxBitRate` and `ScrobbleEnabled`
-can be set through that ownership-restricted path. `MaxBitRate` is precisely the field the stream
-decision already honors (`core/stream/decider.go:159-161` → `nd-stream`
-`DecisionOptions::player_max_bit_rate`), so "lower the bitrate on my phone" works the moment a player
-row exists and is persisted.
+**Editable by owner once a route exists, with no new logic.** `TranscodingId`, `MaxBitRate` and
+`ScrobbleEnabled` are settable through that ownership-restricted path today (exercised by the crate’s own
+tests only). `MaxBitRate` is precisely the field the stream decision already honors
+(`core/stream/decider.go:159-161` → `nd-stream` `DecisionOptions::player_max_bit_rate`,
+`legacy_client.rs:38,55-59`), so "lower the bitrate on my phone" needs only a mounted route and one
+persisted row — no new decision logic.
 
 **Two gaps to close, plus one carve-out:**
 
@@ -301,14 +311,19 @@ row exists and is persisted.
    `GET /api/transcoding` existed but its write access was gated on `EnableTranscodingConfig`
    (default false, `native_api.go:76`), and Part C item 1 drops the **config editor**. With this
    decision, a **read-only** `GET /api/transcoding` returning id/name/target_format/default_bit_rate
-   becomes required API scope — non-admin-safe, since `mask_command`/`mask_commands`
-   (`transcoding_repo.rs:60,69`) already hide the ffmpeg command from non-admins. Profile
-   creation/editing stays dropped, and `EnableTranscodingConfig` stays absent from the fresh TOML
-   (`config-contract.md:60` records the Go inventory, not a port decision).
+   becomes required API scope. `mask_command`/`mask_commands` (`transcoding_repo.rs:60,69`) implement Go's
+   masking (`persistence/transcoding_repository.go:54-60,:75-78`) but **only hide the command when a caller
+   applies them** — today they have no caller outside the crate's tests, so the route must apply them.
+   Profile creation/editing stays dropped. Note that `EnableTranscodingConfig` is **carried** in the fresh
+   TOML (`nd-conf/src/keys.rs:189-193`, `config.rs:435,:662`; it appears in the frozen key list at
+   `tests/loader.rs:27`, and `config-contract.md` §1 "TOML root keys (carried)" lists it at `:60`), so the key
+   is accepted and parsed — it simply has **no consumer** outside `nd-conf`. Do not describe it as removed:
+   unknown keys are fatal, so dropping it later would be its own contract change.
 2. **No executing transcoding read, and no seeded profiles** — see the `TranscodingId` bullet above.
    Without rows a picker renders empty. `DEFAULT_TRANSCODINGS` already exists in
-   `nd-conf/src/consts.rs:241+` (mp3/opus/aac/flac/…, matching `consts/consts.go:176+`), so this is
-   wiring, not missing data. Seeding belongs to BOOT/#05 policy; static DDL stays data-free (`OPS-01`).
+   `nd-conf/src/consts.rs:242` (exactly 4 entries — mp3, opus, aac, flac — with commands byte-identical to
+   `consts/consts.go:176-206`), so this is wiring, not missing data. Seeding belongs to BOOT/#05 policy;
+   static DDL stays data-free (`OPS-01`).
    `player.transcoding_id` carries no foreign key (`schema_ddl.rs:65`), so an unknown id is silently
    "no profile" rather than an error — pick explicit validation at the API edge.
 3. **Carve-out:** `ReportRealPath` remains editable-but-meaningless until its canonical semantics are
@@ -319,14 +334,26 @@ row exists and is persisted.
    reference data, not the frozen native contract.
 
 **Where it lands:** API-00 captures the player/transcoding wire contracts before any handler; API-01
-owns principal resolution and ownership enforcement; API-03 owns key issuance and the player PATCH
-surface; API-F1/F5 carry the read-only transcoding list and device-profile endpoints; FRONT-26 owns the
-service semantics and `player-service-contract.md` (to be authored). #05 owns the executing
-`transcoding_repo` read and #04/#05 the seed policy. None of this gates #27A, which needs only one
-persisted player to prove its stream cap end to end.
+owns principal resolution and ownership enforcement; **API-03 owns the player route file
+`nd-api/src/player.rs`** (key issuance plus profile `GET`/`PUT` — no PATCH verb in this contract);
+API-F1/F5 own the read-only transcoding list and `nd-api/src/player_preferences.rs`, and must not
+duplicate that route; FRONT-26 owns the service semantics and `player-service-contract.md` (to be
+authored). #05 owns the executing `transcoding_repo` read; #04/#05 the seed policy. **#27A is unchanged:**
+its exit criteria remain fresh DB → real track scan → authenticated lookup → direct Range → forced
+transcode (`subplans/boot-api.md` §1), and a fixture-inserted player only proves the stream-cap hook. No
+part of `D-PLAYER-EDIT` gates that slice.
 
 **Decision (`D-PLAYER-EDIT`, user-approved in-session 2026-11-18):** retain per-device preference
 editing as canonical scope — owner-scoped player `GET`/`PUT` with immutable ownership and an enforced
 field whitelist, a read-only transcoding profile list, an executing `transcoding_repo` read, and a
 BOOT-owned default-profile seed. Transcoding profile **editing**, `ReportRealPath` semantics, and any
-jukebox surface stay out of scope.
+jukebox surface stay out of scope; `EnableTranscodingConfig` keeps its carried-but-unused status.
+
+**Status-code parity (measured, not assumed).** Go distinguishes the two failure kinds and the port
+already mirrors both: a cross-owner **read** yields `model.ErrNotFound` (the ownership-restricted select
+matches no row — pinned by `persistence/player_repository_test.go:163-167`) → 404, while a cross-owner
+**write** yields `rest.ErrPermissionDenied` via `classifyOwnedWriteMiss`
+(`persistence/sql_base_repository.go:554-563`, pinned at `:139`) → 403. Rust equivalent:
+`player_repo.rs:1063-1069` `classify_owned_write_miss`. So the canonical contract is **404 on
+cross-owner reads, 403 on cross-owner writes**. Collapsing both to 404 to suppress enumeration is a
+deliberate deviation API-00 must record as an accepted difference — not parity, and not silent.
