@@ -3,6 +3,11 @@
 //! Scaffold stage for nd-scanner: this crate instantiates empty so later issues
 //! (#17) can fill it without pulling the world in (#S1 test contract).
 
+/// Real local-filesystem stat/read/list plus explicit symlink classification — the
+/// deliberately small first slice of SC-02 (`docs/rust-port/subplans/scanner.md`).
+/// Not `MusicFS`, not the walker/ignore/hash surface, and not SC-02 completion.
+pub mod storage;
+
 /// Scaffold marker: the public surface authored by #17 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 17;
 
