@@ -473,6 +473,30 @@ it will fail on intentionally-partial shapes like `refresh_counters_sql`.
 10. **Review/DoD:** G, source-level placeholder/bind check AND real read-back; no runtime transfer caller before this passes. Parent may split a READY repair-only assignment without changing stable ID.
 
 ## DB-16 — Move/reference/copy transaction primitives
+### Pre-flight parity finding: empty column list (2026-11-18, parent-measured)
+
+`share::update_sql(id, &[], owner)` renders `UPDATE share SET  WHERE id = ?`, a SQLite syntax
+error; `ShareRepo::update` therefore returns `ShareError::Sqlite` on an empty `cols`. Go's
+semantics differ and must be pinned, not guessed: `shareRepository.Update`
+(`persistence/share_repository.go:158-166`) appends `updated_at` **only when `len(cols) > 0`**,
+then `updateOwned` → `filterUpdateValues` → `selectUpdateColumns`, whose predicate is
+`len(c2upd) == 0 || found` (`persistence/sql_base_repository.go:600`) — so an empty list keeps
+**every** model column, `created_at`/`birth_time` are deleted (`:605,:608`), `user_id` is deleted
+(`:512`), and `updateValues["id"] = id` (`:614`) makes the SET never empty. Net Go behavior: an
+empty `cols` updates the whole row (including `updated_at`) rather than failing.
+
+The only production caller passes two columns (`core/share.go:51` `last_visited_at`,
+`visit_count`; `core/share.go:148` forwards the API's `cols...`, which could be empty for a
+client sending none), so the divergence is reachable through the API path in principle.
+
+**DB-16 (or a dedicated share lane) must:** (a) decide and document faithful parity — empty
+`cols` means "update all model columns except created_at/birth_time/user_id, plus id" — or a
+deliberate rejection error, with a citation; (b) prove the chosen behavior by executing against
+`apply_fresh_schema`, including the `updated_at` inclusion rule (`updated_at` is appended only
+when `cols` is non-empty, so an explicit `cols` list must already include `updated_at` to
+refresh it); (c) never emit an empty SET silently. Do not "fix" this by defaulting to
+`updated_at`-only, which is neither behavior.
+
 
 1. **Status: BLOCKED.** Prereqs DB-00/02/03/07/09/10/11/15; external `SC.move-selection` for integrated scanner matching, not DB implementation. Goal: user-data-preserving executed operations; DB does not choose ambiguous candidate or maintain SC processed-album map.
 2. **V:** `B/mediafile_repo.rs:1818-1853` reference bundle omits target avg recalculation because it calls only low-level reassign SQL; Go `persistence/mediafile_repository.go:410-430` calls full ReassignAnnotation, bookmark, playlist, scrobbles, OR IGNORE buffer. Album copy builders `B/album_repo.rs:1220,1235`; Go CopyAttributes331-356 casts text and skips NULL/empty/0001-created_at poison. Scanner move291-335 in phase2 puts old ID onto target, deletes discarded new row, optional album reassignment/copy (not identical to generic ReassignReferences).
