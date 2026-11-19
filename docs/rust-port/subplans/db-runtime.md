@@ -347,6 +347,44 @@ Accepted conclusions (I re-checked each against source myself):
   standalone read renderers (`get_annotations_sql`, `annotation_exists_sql`, `annotation_count_sql`)
   or re-document them as an invented seam with the missing-id parity fact stated. Do not "fix" the
   count by inventing an id column.
+### DB-15 fix design (parent, 2026-11-18) — verified arg order by execution
+
+**The average-rating repair is exactly one line plus its doc, and the arg order is already right.**
+`squirrel` renders SET before WHERE and inlines `Expr` args at their position, so Go's
+`toSQL()` order is `(itemID, tableName)` from the subquery then `id` from the outer WHERE — the
+same list `update_avg_rating_sql` already builds. The only bug is that the expression text is
+never placed in the SQL. Correct renderer:
+
+```rust
+format!("UPDATE {table} SET average_rating = {expr} WHERE id = ?", expr = average_rating_expr_sql())
+// args unchanged: [item_id, table, item_id]  → 3 placeholders, 3 args
+```
+
+Verified in `/tmp/w11check`: executing that statement with `params!["mf1","media_file","mf1"]`
+returns `rows=1` and `average_rating=4` for ratings 5/3/0 across three users. Constraints the
+implementation and tests must keep:
+- No `user_id` predicate in the subquery — Go aggregates across **all** users
+  (`persistence/sql_annotations.go:151-157`), and `rating > 0` only.
+- `table` is bound as a **value** (`item_type = ?`), never interpolated.
+- `average_rating_expr_sql()` stays the single source of the expression text; the fix embeds it,
+  so the existing pin test on the raw expression still has meaning.
+- `SETMap` sorting is irrelevant here (Go uses chained `Set`, one column), so column order is not
+  a factor; do not "align" it with SetMap sorting.
+
+**Disposition of the three standalone annotation read renderers** (`get_annotations_sql`,
+`annotation_exists_sql`, `annotation_count_sql`): parent decision is **keep-and-redocument**, not
+delete. Reasons: removing a public API is a deliberate divergence deserving its own approval, and
+the honest statement is a documented seam, not silence. Concretely: drop the false claim that they
+serve a lazy `annotation()` repository; state that Go has no annotation repository (its surface is
+the `AnnotatedRepository` mixin, `model/annotation.go:18-23`, implemented by `sqlRepository` at
+`persistence/sql_annotations.go:137,142,162,185`) and that Go reads `annotation` only via the
+`withAnnotation` LEFT JOIN (`:69-72`) and the `updateAvgRating` subquery (`:151-157`); state that
+`annotation` has **no id column** (`schema_ddl.rs:59`, PK `unique(user_id,item_id,item_type)`) so
+`annotation_count_sql` cannot be prepared, and add an executed test asserting exactly that failure
+(`no such column: annotation.id`) so the latent defect is pinned rather than silently shipped.
+If you (reviewer) find a real Go read that needs one of these shapes, say so — that would change
+the disposition to "implement Go's actual shape".
+
 ### Parent executed reproduction (2026-11-18, `/tmp/w11check`, fresh schema + FK-enforced seed)
 
 Fixture: library 1, folder f1, media_file mf1, three users each annotating mf1 with ratings
