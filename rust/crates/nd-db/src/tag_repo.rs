@@ -8,11 +8,14 @@
 //! and logging stay with `store.rs`/the caller, so this port stops at the same
 //! `(sql, args)` pairs (see [`Sql`]).
 //!
-//! Ported here: `Add`'s chunked `tag` + `library_tag` inserts (`:23-45`,
-//! `slices.Chunk(tags, 200)` → [`CHUNK_SIZE`]), `UpdateCounts`'s two templated
-//! upserts (`:48-69`), `GetAll`'s name-filtered aggregate select
-//! (`baseTagRepository.newSelect`, `sql_tags.go:180-198`) EXECUTED through
-//! [`TagRepo::get_all`], and the private `purgeUnused` delete (`:85-103`).
+//! Ported and EXECUTED here: `Add`'s chunked `tag` + `library_tag` inserts
+//! (`:26-50`, `slices.Chunk(tags, 200)` → [`CHUNK_SIZE`]) run on the caller's
+//! transaction through [`add_in_tx`], with [`add_sql`] left as the renderer it
+//! executes; `UpdateCounts`'s two templated upserts (`:48-69`) stay RENDERED
+//! only (DB-17 owns their execution), `GetAll`'s name-filtered aggregate select
+//! (`baseTagRepository.newSelect`, `sql_tags.go:180-198`) is EXECUTED through
+//! [`TagRepo::get_all`], and the private `purgeUnused` delete (`:85-103`) stays
+//! rendered (DB-20 owns it).
 //!
 //! Not ported, with the reason: the base repository's REST surface
 //! (`Count`/`Read`/`ReadAll`, `sql_tags.go:202-231`) is NOT exposed here as its own
@@ -55,6 +58,7 @@
 //! That leg sits AFTER GROUP BY, which is squirrel's clause kind order
 //! (`sqlrepo.rs:352-356`) and Go's trace order.
 
+use crate::runtime_error::DbOperationError;
 use crate::sql_restful::RestRepository;
 use crate::sql_tags::{library_filter_joins, Sql};
 use crate::sqlrepo::{Repository, Value};
@@ -102,8 +106,13 @@ pub struct AddChunkSql {
     pub library_tag_insert: Sql,
 }
 
-/// `Add` (`tag_repository.go:23-45`): the chunked insert pairs. Idempotent via
-/// both `ON CONFLICT … DO NOTHING` suffixes, so a re-scan re-adds safely.
+/// `Add` (`tag_repository.go:26-50`): the chunked insert pairs, RENDERED. Go
+/// builds one pair per `slices.Chunk(tags, 200)` and executes dictionary-then-link
+/// (`:28-47`); [`add_in_tx`] executes exactly these pairs, so nothing here is a
+/// second renderer. Idempotent via both `ON CONFLICT … DO NOTHING` suffixes, so a
+/// re-scan re-adds safely, and an empty `tags` renders — and executes — nothing.
+/// Counts are NOT part of the contract: the link rows carry literal `0, 0` and
+/// `ON CONFLICT DO NOTHING` leaves an existing row's counts untouched.
 #[must_use]
 pub fn add_sql(library_id: i64, tags: &[Tag]) -> Vec<AddChunkSql> {
     tags.chunks(CHUNK_SIZE)
@@ -141,6 +150,80 @@ pub fn add_sql(library_id: i64, tags: &[Tag]) -> Vec<AddChunkSql> {
             }
         })
         .collect()
+}
+
+/// Callback error of the executed tag [`add_in_tx`], which has NO domain failure
+/// to carry: Go's `Add` returns a bare `error` that can only be a driver failure
+/// (`tag_repository.go:33-36`, `:44-47`) — no validation, no `NotFound`, no
+/// permission check. `Infallible` makes the `Domain` arm structurally uninhabited
+/// rather than reserved, as in `library_repo::LibraryScanError`, and keeps every
+/// SQLite failure on the [`DbOperationError::Sqlite`] arm so `store::is_busy`
+/// still classifies `SQLITE_BUSY` for the executor's retry loop.
+pub type TagWriteError = DbOperationError<std::convert::Infallible>;
+
+/// `Add` (`tag_repository.go:26-50`) EXECUTED on the CALLER's transaction: per
+/// 200-row chunk the dictionary insert runs first, then the `library_tag` link
+/// (`:28-47`), both from [`add_sql`] rather than re-rendered here. An empty `tags`
+/// yields no chunk, so the call issues NO statement at all — not an empty insert.
+///
+/// What this deliberately does NOT do, all of it Go parity:
+/// * **Ids are taken verbatim.** `Add` binds `t.ID` (`:31`) and never derives or
+///   validates it; `model.NewTag`/`nd_id::new_tag_id` belong to the caller that
+///   builds tags upstream (`model/tag.go:63-71`, `Tags.FlattenAll`). A caller
+///   handing back an id that disagrees with its name/value is stored as-is, and
+///   the call neither recomputes, dedupes, nor rejects.
+/// * **No validation of name or value.** Both DDL columns are `default '' not
+///   null` (`nd-dbschema/src/schema_ddl.rs:55`), so an empty or adversarial value
+///   is a storable value; Go validates nothing in `Add`.
+/// * **No dedupe at this boundary.** Duplicate input rows are legal for `Add` — the
+///   scanner dedupes by tag ID upstream in `loadTagsFromFiles`
+///   (`scanner/phase_1_folders.go:294,305-306,323`), but `Add` itself performs no
+///   dedupe and accepts repeats, and
+///   `on conflict (id) do nothing` collapses them to one dictionary row and one
+///   link row (EXECUTED-RUST in `tests/runtime_tag_writes.rs`: repeated input
+///   collapses to one dictionary row and one link row).
+/// * **No counts reset.** Link rows insert literal `0, 0` and the composite
+///   `on conflict (tag_id, library_id) do nothing` leaves an existing row's
+///   counts intact, so re-`Add` cannot zero them; `UpdateCounts` (DB-17) owns
+///   that column and until it runs a freshly-added tag reports `0/0`.
+///
+/// One library per call: `Add` takes a scalar `libraryID` (`:26`), so every tag
+/// here links to that library and a caller needing two libraries calls it twice.
+///
+/// Both legs share the caller's transaction, so a failure anywhere rolls the
+/// whole bundle back. That is load-bearing rather than cosmetic: EXECUTED-RUST in
+/// `tests/runtime_tag_writes.rs`, the same two rendered chunks run in AUTOCOMMIT on
+/// an FK-on connection — what Go's `Add` does when no transaction wraps it — fail
+/// with `SQLITE_CONSTRAINT_FOREIGNKEY` and LEAVE the dictionary rows committed. That
+/// leak is Go's own behavior untransacted, and the tx-bound API is what prevents it.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended
+/// code intact) from either leg: the `SQLITE_CONSTRAINT_FOREIGNKEY` of a missing
+/// library, and the table-level `tags_name_value` UNIQUE (`schema_ddl.rs:55`,
+/// `unique (tag_name, tag_value)`) when two DIFFERENT ids carry the same
+/// `(tag_name, tag_value)` — that constraint is not covered by the `(id)`
+/// conflict target, so it is a hard failure of the whole `Add` in Go too
+/// (`:28-29` uses the same target). Never [`DbOperationError::Domain`]:
+/// [`TagWriteError`] has no inhabited domain arm.
+///
+/// Divergence, deliberate: Go wraps the SECOND leg as
+/// `fmt.Errorf("adding library_tag entries: %w", err)` (`:46`), so Go's error TEXT
+/// gains a prefix. The port keeps the raw `rusqlite::Error` on the `Sqlite` arm
+/// instead, because the executor's retry classifier matches on that type — a
+/// stringified wrapper would hide `SQLITE_BUSY` (`decisions.md` E1). Same call as
+/// `library_repo::add_artist_in_tx` records.
+pub fn add_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    library_id: i64,
+    tags: &[Tag],
+) -> Result<(), TagWriteError> {
+    for chunk in add_sql(library_id, tags) {
+        crate::execution::execute(tx, &chunk.tag_insert).map_err(DbOperationError::sqlite)?;
+        crate::execution::execute(tx, &chunk.library_tag_insert)
+            .map_err(DbOperationError::sqlite)?;
+    }
+    Ok(())
 }
 
 /// `UpdateCounts` (`tag_repository.go:48-69`): one upsert per stats table
