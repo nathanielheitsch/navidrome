@@ -59,6 +59,10 @@ prerequisites and record actual exercised paths. This run did not boot a server 
 
 The earlier 733 DB / 1812 workspace boundary belongs to S-D3g2 before its follow-up. The transient report of
 23 current rustdoc warnings is superseded by this actual 22-warning measurement, not by arithmetic over source tests.
+Cause of that off-by-one, recorded so it is not repeated: `grep -c '^warning:'` also counts rustdoc's own
+summary line ("warning: nd-db (lib doc) generated 22 warnings"). The current warning set at `3a4c3cd7` is
+byte-identical to the 22-warning baseline (8 unresolved links + 14 private-item links), verified by diffing the
+sorted warning lists — no rustdoc warnings were added or removed by the recent work.
 Documentation is **not warning-free**; do not silently add rustdoc `-D warnings` as a gate without resolving that debt.
 
 ## Landed history and naming
