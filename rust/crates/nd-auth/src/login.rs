@@ -138,18 +138,19 @@ fn payload(state: &LoginState, user: UserRecord) -> Response {
         id: user.id.clone(),
         token_epoch: user.token_epoch,
     };
-    let token = match state
-        .auth
-        .create_token(&subject, &user.user_name, user.is_admin, now)
-    {
-        Ok(token) => token,
-        Err(_) => {
-            return failed(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Unknown error authenticating user",
-            )
-        }
-    };
+    let token =
+        match state
+            .auth
+            .create_native_session_token(&subject, &user.user_name, user.is_admin, now)
+        {
+            Ok(token) => token,
+            Err(_) => {
+                return failed(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Unknown error authenticating user",
+                )
+            }
+        };
     let avatar = (state.enable_gravatar && !user.email.is_empty())
         .then(|| nd_utils::gravatar::url(&user.email, 50));
     Json(LoginPayload {

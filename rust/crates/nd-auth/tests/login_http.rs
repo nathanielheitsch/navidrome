@@ -9,7 +9,8 @@ use axum::routing::{get, post};
 use axum::Router;
 use nd_auth::credentials::{Authenticator, SigningSecrets};
 use nd_auth::login::{create_admin, login, login_from_headers, HeaderLoginState, LoginState};
-use nd_auth::middleware::{authenticate, AuthGate, MiddlewareState, ProxyPeer};
+use nd_auth::middleware::{authenticate, AuthGate, AuthenticatedUser, MiddlewareState, ProxyPeer};
+use nd_auth::refresh::refresh;
 use nd_auth::setup_store::run_initial_setup;
 use nd_auth::verifier::ResolutionConfig;
 use nd_db::pool::{Pool, PoolConfig};
@@ -644,4 +645,503 @@ async fn dev_admin_coexists_with_a_differently_cased_username() {
     assert_eq!(count, 2, "case-sensitive UNIQUE lets both rows exist");
     drop(store);
     let _ = std::fs::remove_file(path);
+}
+
+// ---- BOOT-02: the token login actually returns must be native + expiring ----
+//
+// These run the real `POST /login` / `POST /create` handlers against a
+// fresh-schema SQLite store and then send the UNMODIFIED returned token to a
+// strict `AuthGate::Api` router (`ResolutionConfig::default()`: no dev
+// username, no trusted header), so a 200 can only come from the mint itself.
+
+/// Strict API fixture for a login-issued token.
+fn api_routes(store: SQLStore, auth: Authenticator) -> Router {
+    Router::new()
+        .route(
+            "/",
+            get(
+                |axum::Extension(user): axum::Extension<AuthenticatedUser>| async move {
+                    assert_eq!(user.username, "alice");
+                    assert!(user.is_admin);
+                    "ok"
+                },
+            ),
+        )
+        .layer(from_fn_with_state(
+            MiddlewareState {
+                store,
+                auth,
+                gate: AuthGate::Api,
+                resolution: ResolutionConfig::default(),
+            },
+            authenticate,
+        ))
+}
+
+/// Assert the decoded claims of a login-issued token against the DB row, and
+/// return them. `adm=false`/`ep=0` are legitimately omitted by serde, so this
+/// compares decoded semantics, not byte presence.
+fn assert_native_session_claims(
+    auth: &Authenticator,
+    token: &str,
+    user: &nd_db::user_repo::UserRecord,
+    mint_window: (i64, i64),
+) -> nd_auth::claims::Claims {
+    let claims = auth.validate(token).unwrap_or_else(|error| {
+        panic!("the login token must verify under its own signing secret: {error:?}")
+    });
+    assert_eq!(
+        claims.aud,
+        vec![nd_auth::claims::AUDIENCE_NATIVE.to_string()],
+        "a login token must carry aud=[native]"
+    );
+    assert_eq!(claims.iss, nd_auth::claims::JWT_ISSUER);
+    assert_eq!(claims.sub, user.user_name);
+    assert_eq!(claims.user_id, user.id, "uid must name the executing row");
+    assert_eq!(claims.is_admin, user.is_admin);
+    assert_eq!(
+        claims.epoch, user.token_epoch,
+        "ep must be the stored epoch"
+    );
+    assert!(
+        claims.iat >= mint_window.0 && claims.iat <= mint_window.1,
+        "iat must sit inside the request clock window"
+    );
+    assert!(claims.exp > 0, "a session token must never be non-expiring");
+    assert_eq!(
+        claims.exp,
+        claims.iat + auth.session_timeout_secs(),
+        "the lifetime must be the configured session timeout"
+    );
+    claims
+}
+
+#[tokio::test]
+async fn login_token_is_native_expiring_and_roundtrips_strict_api() {
+    let (store, path, auth) = setup();
+    let state = LoginState::new(
+        store.clone(),
+        auth.clone(),
+        20,
+        Duration::from_secs(60),
+        false,
+    )
+    .unwrap();
+    let app = routes(state);
+
+    // First admin through the real handler, then an ordinary /login.
+    let created = app
+        .clone()
+        .oneshot(request(
+            "/create",
+            r#"{"username":"alice","password":"secret"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+
+    let before = now_secs();
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/login",
+            r#"{"username":"alice","password":"secret"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let after = now_secs();
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    let axum::Json(payload) = axum::Json::<TokenPayload>::from_bytes(&body).unwrap();
+
+    let user = store
+        .with_connection_sync(|conn| Ok(UserRepo::new(conn).find_by_username("alice")))
+        .unwrap()
+        .unwrap();
+    assert_native_session_claims(&auth, &payload.token, &user, (before, after));
+
+    // The exact token the UI received authenticates the strict API gate.
+    let api = api_routes(store.clone(), auth.clone());
+    let api_request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {}", payload.token))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        api.clone().oneshot(api_request).await.unwrap().status(),
+        StatusCode::OK,
+        "the login token must be accepted by AuthGate::Api unchanged"
+    );
+
+    // Non-admin sibling: adm decodes false, and the token still works for its
+    // own user at the API gate.
+    store
+        .with_connection_sync(|conn| {
+            let stamp = "2024-01-01T00:00:00Z";
+            UserRepo::new(conn)
+                .put(
+                    &nd_db::user_repo::UserPutValues {
+                        id: "bob-id",
+                        user_name: "bob",
+                        name: "Bob",
+                        email: "",
+                        password: Some(
+                            &nd_auth::credentials::password::hash_password("bobpw").unwrap(),
+                        ),
+                        is_admin: false,
+                        last_login_at: None,
+                        last_access_at: None,
+                        created_at: stamp,
+                        updated_at: stamp,
+                        scrobble_filter: "",
+                    },
+                    stamp,
+                    false,
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    let before = now_secs();
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/login",
+            r#"{"username":"bob","password":"bobpw"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    let axum::Json(payload) = axum::Json::<TokenPayload>::from_bytes(&body).unwrap();
+    let bob = store
+        .with_connection_sync(|conn| Ok(UserRepo::new(conn).find_by_username("bob")))
+        .unwrap()
+        .unwrap();
+    let claims = assert_native_session_claims(&auth, &payload.token, &bob, (before, now_secs()));
+    assert!(!claims.is_admin);
+
+    let bob_request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {}", payload.token))
+        .body(Body::empty())
+        .unwrap();
+    let bob_app = Router::new()
+        .route(
+            "/",
+            get(
+                |axum::Extension(user): axum::Extension<AuthenticatedUser>| async move {
+                    assert_eq!(user.username, "bob");
+                    assert!(!user.is_admin);
+                    "ok"
+                },
+            ),
+        )
+        .layer(from_fn_with_state(
+            MiddlewareState {
+                store: store.clone(),
+                auth: auth.clone(),
+                gate: AuthGate::Api,
+                resolution: ResolutionConfig::default(),
+            },
+            authenticate,
+        ));
+    assert_eq!(
+        bob_app.oneshot(bob_request).await.unwrap().status(),
+        StatusCode::OK,
+        "a non-admin login token authenticates its own user at the API gate"
+    );
+
+    // A wrong password still yields 401 with no token anywhere.
+    let wrong = app
+        .oneshot(request(
+            "/login",
+            r#"{"username":"alice","password":"wrong"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    assert!(!wrong.headers().contains_key("x-nd-authorization"));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn create_admin_token_roundtrips_strict_api() {
+    // The first-setup path shares `payload`, so its token must be native and
+    // expiring too.
+    let (store, path, auth) = setup();
+    let app = routes(
+        LoginState::new(
+            store.clone(),
+            auth.clone(),
+            20,
+            Duration::from_secs(60),
+            false,
+        )
+        .unwrap(),
+    );
+    let before = now_secs();
+    let response = app
+        .clone()
+        .oneshot(request(
+            "/create",
+            r#"{"username":"alice","password":"secret"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let after = now_secs();
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    let axum::Json(payload) = axum::Json::<TokenPayload>::from_bytes(&body).unwrap();
+
+    let (count, user) = store
+        .with_connection_sync(|conn| {
+            let repo = UserRepo::new(conn);
+            Ok((repo.count_all().unwrap(), repo.find_first_admin().unwrap()))
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    assert!(user.is_admin);
+    assert!(
+        nd_auth::credentials::password::verify_password("secret", &user.password).unwrap(),
+        "the stored credential is a real argon2id hash"
+    );
+    assert_native_session_claims(&auth, &payload.token, &user, (before, after));
+
+    let api = api_routes(store.clone(), auth.clone());
+    let api_request = Request::builder()
+        .uri("/")
+        .header("x-nd-authorization", format!("Bearer {}", payload.token))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        api.clone().oneshot(api_request).await.unwrap().status(),
+        StatusCode::OK,
+        "the first-admin token must authenticate the strict API gate"
+    );
+
+    // Second first-admin attempt is still refused and mints nothing.
+    let another = app
+        .clone()
+        .oneshot(request("/create", r#"{"username":"bob","password":"pw"}"#))
+        .await
+        .unwrap();
+    assert_eq!(another.status(), StatusCode::FORBIDDEN);
+    assert!(!another.headers().contains_key("x-nd-authorization"));
+    assert_eq!(
+        store
+            .with_connection_sync(|conn| Ok(UserRepo::new(conn).count_all().unwrap()))
+            .unwrap(),
+        1
+    );
+
+    // A login for the same admin yields the same shape (shared payload path).
+    let login = app
+        .oneshot(request(
+            "/login",
+            r#"{"username":"alice","password":"secret"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let body = to_bytes(login.into_body(), 8192).await.unwrap();
+    let axum::Json(relogin) = axum::Json::<TokenPayload>::from_bytes(&body).unwrap();
+    assert_native_session_claims(&auth, &relogin.token, &user, (before, now_secs() + 1));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn invalid_session_timeout_fails_login_closed_without_a_token() {
+    // Same signing keys, misconfigured session timeout: the stored credential
+    // is still valid, but the mint is refused. Both paths that share `payload`
+    // — first-admin `/create` and ORDINARY `/login` against the committed admin
+    // — must return the existing generic sanitized 500 with no token anywhere.
+    // Asserts the exact existing body text, so an internal error string cannot
+    // slip through; production body policy is not changed by this test.
+    for timeout in [0_i64, -1, i64::MAX] {
+        let (store, path, _) = setup();
+        let auth = Authenticator::new(
+            SigningSecrets {
+                current: b"test signing secret".to_vec(),
+                previous: None,
+                public_current: b"other secret".to_vec(),
+            },
+            timeout,
+        );
+        let state = LoginState::new(
+            store.clone(),
+            auth.clone(),
+            20,
+            Duration::from_secs(60),
+            false,
+        )
+        .unwrap();
+        let app = routes(state);
+
+        for (route, body) in [
+            ("/create", r#"{"username":"alice","password":"secret"}"#),
+            ("/login", r#"{"username":"alice","password":"secret"}"#),
+        ] {
+            let response = app.clone().oneshot(request(route, body)).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "timeout {timeout} must fail the {route} mint, not mint a token"
+            );
+            assert!(
+                !response.headers().contains_key("x-nd-authorization"),
+                "{route} must advertise no replacement token"
+            );
+            let bytes = to_bytes(response.into_body(), 8192).await.unwrap();
+            let text = std::str::from_utf8(&bytes).unwrap();
+            assert_eq!(
+                text, GENERIC_LOGIN_FAILURE,
+                "{route} must return the existing generic sanitized body verbatim"
+            );
+            assert_no_jwt_payload(text, route);
+        }
+
+        // The credential itself is fine, so the failure really is the mint: the
+        // admin row exists and the password verifies against the stored hash.
+        let user = store
+            .with_connection_sync(|conn| Ok(UserRepo::new(conn).find_by_username("alice")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            store
+                .with_connection_sync(|conn| Ok(UserRepo::new(conn).count_all().unwrap()))
+                .unwrap(),
+            1,
+            "the admin row committed before the mint failed (config atomicity is BOOT's job, an accepted known boundary)"
+        );
+        assert!(
+            nd_auth::credentials::password::verify_password("secret", &user.password).unwrap(),
+            "the stored credential is valid — only the mint failed"
+        );
+        drop(app);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// The exact generic body `login.rs` returns on an unauthenticated internal
+/// failure — pinned verbatim, not merely "does not contain `token`".
+const GENERIC_LOGIN_FAILURE: &str = "Unknown error authenticating user";
+
+/// Assert a failure body carries no minted token in any shape: no `token`
+/// field, no `Bearer` value, no base64url JWT segment, and at most one `.`
+/// (a three-part JWT would have two).
+fn assert_no_jwt_payload(text: &str, route: &str) {
+    assert!(
+        !text.contains("token"),
+        "{route} body must carry no token: {text}"
+    );
+    assert!(
+        !text.contains("Bearer"),
+        "{route} body must carry no bearer: {text}"
+    );
+    assert!(
+        !text.contains("eyJ"),
+        "{route} body must carry no JWT: {text}"
+    );
+    let dots = text.matches('.').count();
+    assert!(
+        dots <= 1,
+        "{route} body must not contain a JWT structure: {text}"
+    );
+}
+
+#[tokio::test]
+async fn refresh_emits_no_token_when_session_timeout_is_invalid() {
+    // A token minted by a correctly configured Authenticator is still accepted
+    // by a same-key Authenticator with an invalid timeout: the request
+    // authenticates and the body is preserved, but the refresh cannot re-stamp
+    // a valid expiry, so no new token is advertised.
+    let (store, path, auth) = setup();
+    store
+        .with_connection_sync(|conn| {
+            let stamp = "2024-01-01T00:00:00Z";
+            let hash = nd_auth::credentials::password::hash_password("secret").unwrap();
+            UserRepo::new(conn)
+                .put(
+                    &nd_db::user_repo::UserPutValues {
+                        id: "alice-id",
+                        user_name: "alice",
+                        name: "Alice",
+                        email: "",
+                        password: Some(&hash),
+                        is_admin: true,
+                        last_login_at: None,
+                        last_access_at: None,
+                        created_at: stamp,
+                        updated_at: stamp,
+                        scrobble_filter: "",
+                    },
+                    stamp,
+                    false,
+                )
+                .unwrap();
+            Ok(())
+        })
+        .unwrap();
+    let token = auth
+        .create_native_session_token(
+            &nd_auth::claims::TokenSubject {
+                id: "alice-id".into(),
+                token_epoch: 0,
+            },
+            "alice",
+            true,
+            now_secs(),
+        )
+        .unwrap();
+
+    let broken = Authenticator::new(
+        SigningSecrets {
+            current: b"test signing secret".to_vec(),
+            previous: None,
+            public_current: b"other secret".to_vec(),
+        },
+        0,
+    );
+    let app = Router::new()
+        .route("/", get(|| async { "body survives" }))
+        .layer(from_fn_with_state(broken.clone(), refresh))
+        .layer(from_fn_with_state(
+            MiddlewareState {
+                store: store.clone(),
+                auth: broken,
+                gate: AuthGate::Api,
+                resolution: ResolutionConfig::default(),
+            },
+            authenticate,
+        ));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/")
+                .header("x-nd-authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !response.headers().contains_key("x-nd-authorization"),
+        "an invalid expiry must emit no replacement token"
+    );
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    assert_eq!(std::str::from_utf8(&body).unwrap(), "body survives");
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
 }
