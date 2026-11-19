@@ -47,9 +47,16 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    range predicates). Inventory in `subplans/db-runtime.md`. Runs after DB-03 lands (one writer).
    Also ready for a later lane: DB-15's render-only repair (`update_avg_rating_sql` cannot execute —
    2 placeholders, 3 args) and the renderer `parameter_count` gate idea.
-5. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
+5. **DB-00 / D-ERROR — decided (parent: option B), lane running `5b8c42a4` once the tree is clean.** A
+   `DbRuntimeError` seam added beside the existing `with_tx*` (no signature churn): `Domain(E) /
+   Sqlite{stage, source} / BusyExhausted{attempts, stage, source}`, preserving typed SQLite causes through
+   `Error::source()`. Go's `WithTxRetry` (`persistence/persistence.go:207-228`) retries only `db.IsBusy`
+   errors on a 5s/10s/15s schedule (`:203,:205,:225`) and never retries a domain error — verified.
+   This unblocks DB-04 onward, which all list DB-00 as a prerequisite.
+6. **Then the mutation packages DB-04…DB-10** — the real critical path into the scanner slice.
+
+7. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
    goldens (artist/album/mediafile/playlist_tracks/plugin/scrobble). Lowest priority.
-5. **Then the mutation packages DB-04…DB-10** — the real critical path into the scanner slice.
 
 Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin`, `scrobble`, `share`, `smart_playlist`,
 `user_props`; `annotation_repo.rs` does not exist because annotations ride album/media-file (DB-15), so that is not a

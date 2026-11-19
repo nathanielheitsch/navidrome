@@ -47,6 +47,34 @@ go run -tags 'netgo sqlite_fts5' ./rust/crates/nd-db/tests/testdata/go_db_runtim
 Flags are a proposed harness interface. Require exit0, expected case IDs/count, actual temp filename, source/version metadata, output SHA256 and successful independent comparison before replacing tracked expected data. Oracle temp DBs contain synthetic data only. Do not persist secrets/binaries/live DBs. Normalize only declared nondeterminism: Go map iteration as sets/multisets, dynamic `time.Now` via verified parse/storage-class/relative-order assertions, not fabricated constant bytes. Preserve IDs, row identities, ordered binds and deterministic timestamps exactly. Compare Rust storage using its approved chrono TEXT convention, not Go wire spelling. Existing JSON/feeder harnesses have replicated-unexported-method limitations and do not certify SQL execution. `/tmp` trace citations alone are not a durable oracle.
 
 ## DB-00 — Typed operation error and transaction seam
+### D-ERROR DECISION (2026-11-18, parent decision: option B, narrow seam)
+
+**Chosen:** option B — one `DbRuntimeError` for the new persistence seam, with explicit
+`Domain(E)` / `Sqlite { stage, source }` / `BusyExhausted { attempts, stage, source }`
+variants that keep the typed `rusqlite::Error` (and its extended code) reachable through
+`Error::source()`. No new dependencies; `thiserror` is already used crate-wide. The existing
+`with_tx`/`with_tx_retry`/`with_connection_sync`/`with_tx_sync`/`with_tx_retry_sync`/async
+signatures stay untouched — new `try_with_tx`/`try_with_tx_retry` live beside them, so no
+consumer is force-migrated and no repo error type is flattened into `StoreError::Other`'s
+String. Option A (generic `OperationError<E>` over every existing callback) is rejected as
+scope creep for this package; if it is ever wanted it can be layered on B later.
+
+Verified Go ground truth for the retry contract (`persistence/persistence.go`):
+- `txRetryDelay = 5s` (`:203`), `txMaxRetries = 3` (`:205`).
+- `WithTxRetry` (`:207-228`) joins an existing tx when the store is already inside one
+  (`:209-211`), reruns **only** when `db.IsBusy(err)` (`:218`), and returns any non-busy
+  error immediately — so a domain error is never retried.
+- Backoff is `(attempt + 1) * txRetryDelay` = 5s, 10s, 15s (`:225`), and the wait is
+  cancellable via `ctx.Done()` (`:222-224`). The Rust port has no ambient context; the
+  injected `Delay` covers the schedule, and cancellation is out of scope for this seam.
+- `withBusyRetry` (`:232-236`) only reclassifies logging; no behavioral effect. Nothing to
+  port.
+
+Non-vacuity requirement carried into the package: a busy test must force a **real**
+SQLITE_BUSY from a second connection holding a write lock, never a hand-built
+`rusqlite::Error`; and the rollback test must write inside the transaction before returning
+a domain error, so an implementation that commits `Ok(Err(…))`-style results fails.
+
 
 1. **Status: DECISION REQUIRED.** Goal: freeze and implement a no-string-loss policy for domain failures crossing SQLStore callbacks. Prerequisites: parent decision `D-ERROR`. Non-goals: wholesale repository error migration, scheduler, mapping, new dependencies.
 2. **Starting evidence (V):** existing `with_tx<T>(..., FnOnce(&Transaction)->Result<T,rusqlite::Error>)` and retry variant are `B/store.rs:83-138`; SQLStore sync/async counterparts `:196-264`. Entity repos return domain wrappers, e.g. `AlbumError`, `MediaFileError`; marshal errors cannot simply use `?` into those callbacks. `StoreError::BusyRetriesExhausted` retains a String cause (`:35-41`), not the actual final error. Existing tests `runtime_execution::store_transaction_commits_and_rolls_back_without_executor_blocking`, `store_transaction::with_tx_retry_runs_block_once_on_not_busy_failure`, `busy_retry_mapping::busy_lock_exhausts_tx_retry_at_tx_max_retries` cover the current SQLite-only seam.
