@@ -43,9 +43,23 @@ pub enum StoreError {
         cause: String,
     },
 
+    /// An operation and its transaction rollback both failed.
+    #[error("rollback failed after {original}: {rollback}")]
+    RollbackFailed {
+        /// Original operation failure.
+        #[source]
+        original: Box<StoreError>,
+        /// Concrete error from the rollback attempt.
+        rollback: RsError,
+    },
+
     /// The idle-queue mutex was poisoned by a panic in a lease holder.
     #[error("nd-db pool state poisoned by a panic in a previous lease holder")]
     Poisoned,
+
+    /// Every owned connection was discarded or its held initializer was dropped.
+    #[error("database pool has no live connections")]
+    Depleted,
 
     /// A blocking task panicked or was cancelled before starting.
     #[error("database blocking task failed: {0}")]
@@ -57,23 +71,13 @@ pub enum StoreError {
     Other(#[from] RsError),
 }
 
-/// `db/db.go:128-140 ErrorCodes`/`IsBusy`: `SQLITE_BUSY` (extended code 5,
-/// including `SQLITE_BUSY_SNAPSHOT`) and `SQLITE_LOCKED` (extended code 17,
-/// including `SQLITE_LOCKED_SHAREDCACHE`) are the lock-class failures the
-/// transaction retry may clear; everything else fails immediately
-/// (`persistence.go:218`).
+/// `db/db.go:128-140` `ErrorCodes`/`IsBusy`: only the `SQLITE_BUSY` primary code
+/// (5, including `SQLITE_BUSY_SNAPSHOT` and other extended BUSY codes) is retryable;
+/// `SQLITE_LOCKED` primary code 6 is not (`persistence.go:218`).
 #[must_use]
 pub fn is_busy(err: &RsError) -> bool {
     match err {
-        RsError::SqliteFailure(failure, _) => {
-            // Extended codes: 5 = SQLITE_BUSY | SQLITE_BUSY_SNAPSHOT (+ RECOVERY,
-            // + TIMEOUT), 17 = SQLITE_LOCKED | SQLITE_LOCKED_SHAREDCACHE (+ VTAB).
-            // Match on the low byte, mirroring Go's `code == ErrBusy` comparison
-            // of the base code (`db/db.go:139`) while keeping LOCKED retryable
-            // per the slice-1 decision (next-work.md:71-76).
-            failure.extended_code & 0xff == ffi::SQLITE_BUSY
-                || failure.extended_code & 0xff == ffi::SQLITE_LOCKED
-        }
+        RsError::SqliteFailure(failure, _) => failure.extended_code & 0xff == ffi::SQLITE_BUSY,
         _ => false,
     }
 }
@@ -89,21 +93,156 @@ pub fn with_tx<T>(
     conn: &mut rusqlite::Connection,
     block: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T, RsError>,
 ) -> Result<T, StoreError> {
-    let tx = match conn.transaction() {
-        Ok(tx) => tx,
-        Err(e) => return Err(classify(e)),
-    };
-    let outcome = block(&tx);
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
+    let mut tx = conn.transaction().map_err(classify)?;
+    let outcome = catch_unwind(AssertUnwindSafe(|| block(&tx)));
     match outcome {
-        Ok(value) => match tx.commit() {
-            Ok(()) => Ok(value),
-            Err(e) => Err(classify(e)),
-        },
-        Err(e) => {
-            // DropBehavior::Rollback runs on drop; make the rollback explicit so
-            // a poisoned `conn` state can never leak past this call.
-            let _ = tx.finish();
-            Err(classify(e))
+        Err(payload) => {
+            tx.set_drop_behavior(rusqlite::DropBehavior::Rollback);
+            let _rollback = rollback_transaction(tx);
+            resume_unwind(payload)
+        }
+        Ok(Err(source)) => {
+            let original = classify(source);
+            match rollback_transaction(tx) {
+                Ok(()) => Err(original),
+                Err(rollback) => Err(StoreError::RollbackFailed {
+                    original: Box::new(original),
+                    rollback,
+                }),
+            }
+        }
+        Ok(Ok(value)) => {
+            tx.set_drop_behavior(rusqlite::DropBehavior::Rollback);
+            match tx.execute_batch("COMMIT") {
+                Ok(()) => Ok(value),
+                Err(source) => {
+                    let original = classify(source);
+                    match rollback_transaction(tx) {
+                        Ok(()) => Err(original),
+                        Err(rollback) => Err(StoreError::RollbackFailed {
+                            original: Box::new(original),
+                            rollback,
+                        }),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Run a typed transaction while retaining the callback's domain error.
+///
+/// Callback SQLite errors are always staged as `Body`; callbacks cannot assign
+/// executor stages or fabricate retry-exhaustion/pool results. A body failure is
+/// rolled back explicitly, and rollback errors preserve both typed failures.
+pub fn try_with_tx<T, E: std::error::Error + 'static>(
+    conn: &mut rusqlite::Connection,
+    block: impl FnOnce(
+        &rusqlite::Transaction<'_>,
+    ) -> Result<T, crate::runtime_error::DbOperationError<E>>,
+) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+    try_with_tx_using_rollback(conn, block, rollback_transaction)
+}
+
+fn rollback_transaction(mut tx: rusqlite::Transaction<'_>) -> Result<(), RsError> {
+    tx.set_drop_behavior(rusqlite::DropBehavior::Rollback);
+    tx.finish()
+}
+
+fn try_with_tx_using_rollback<T, E: std::error::Error + 'static>(
+    conn: &mut rusqlite::Connection,
+    block: impl FnOnce(
+        &rusqlite::Transaction<'_>,
+    ) -> Result<T, crate::runtime_error::DbOperationError<E>>,
+    rollback: impl FnOnce(rusqlite::Transaction<'_>) -> Result<(), RsError>,
+) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+    use crate::runtime_error::{DbOperationError, DbRuntimeError, TransactionStage};
+    use std::panic::{catch_unwind, resume_unwind, AssertUnwindSafe};
+
+    let mut tx = conn
+        .transaction()
+        .map_err(|source| DbRuntimeError::Sqlite {
+            stage: TransactionStage::Begin,
+            source,
+        })?;
+    let outcome = catch_unwind(AssertUnwindSafe(|| block(&tx)));
+    match outcome {
+        Err(payload) => {
+            tx.set_drop_behavior(rusqlite::DropBehavior::Rollback);
+            // Preserve the original panic payload. If rollback also fails, Lease::drop
+            // quarantines any still-active connection; the cleanup error cannot be
+            // attached without replacing that payload.
+            let _rollback = rollback(tx);
+            resume_unwind(payload)
+        }
+        Ok(Err(operation)) => {
+            let original = match operation {
+                DbOperationError::Domain(error) => DbRuntimeError::Domain(error),
+                DbOperationError::Sqlite(source) => DbRuntimeError::Sqlite {
+                    stage: TransactionStage::Body,
+                    source,
+                },
+            };
+            match rollback(tx) {
+                Ok(()) => Err(original),
+                Err(rollback) => Err(DbRuntimeError::RollbackFailed {
+                    original: Box::new(original),
+                    rollback,
+                }),
+            }
+        }
+        Ok(Ok(value)) => {
+            tx.set_drop_behavior(rusqlite::DropBehavior::Rollback);
+            match tx.execute_batch("COMMIT") {
+                Ok(()) => Ok(value),
+                Err(source) => {
+                    let original = DbRuntimeError::Sqlite {
+                        stage: TransactionStage::Commit,
+                        source,
+                    };
+                    match rollback(tx) {
+                        Ok(()) => Err(original),
+                        Err(rollback) => Err(DbRuntimeError::RollbackFailed {
+                            original: Box::new(original),
+                            rollback,
+                        }),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Only typed `SQLITE_BUSY` errors are retried; LOCKED, `Domain(E)`, rollback
+/// failures, and all other variants return immediately, irrespective of text.
+///
+/// The callback may execute up to `TX_MAX_RETRIES + 1` times and must avoid
+/// external side effects. `delay` receives 0, 1, 2 (5s, 10s, 15s in production).
+pub fn try_with_tx_retry<T, E: std::error::Error + 'static>(
+    conn: &mut rusqlite::Connection,
+    delay: &dyn Fn(u32) -> Duration,
+    block: impl Fn(&rusqlite::Transaction<'_>) -> Result<T, crate::runtime_error::DbOperationError<E>>,
+) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+    use crate::runtime_error::DbRuntimeError;
+
+    let mut attempt = 0;
+    loop {
+        match try_with_tx(conn, &block) {
+            Ok(value) => return Ok(value),
+            Err(DbRuntimeError::Sqlite { stage, source }) if is_busy(&source) => {
+                if attempt >= TX_MAX_RETRIES {
+                    return Err(DbRuntimeError::BusyExhausted {
+                        attempts: attempt + 1,
+                        stage,
+                        source,
+                    });
+                }
+                std::thread::sleep(delay(attempt));
+                attempt += 1;
+            }
+            Err(error) => return Err(error),
         }
     }
 }
@@ -272,6 +411,34 @@ impl SQLStore {
         with_tx_retry(lease.conn_mut(), &production_delay, block)
     }
 
+    /// Typed synchronous transaction entrypoint; domain errors remain intact.
+    pub fn try_with_tx_sync<T, E: std::error::Error + 'static>(
+        &self,
+        block: impl FnOnce(
+            &rusqlite::Transaction<'_>,
+        ) -> Result<T, crate::runtime_error::DbOperationError<E>>,
+    ) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+        let mut lease = self
+            .pool
+            .checkout()
+            .map_err(crate::runtime_error::DbRuntimeError::Pool)?;
+        try_with_tx(lease.conn_mut(), block)
+    }
+
+    /// Typed retrying transaction entrypoint, holding one lease across all attempts.
+    pub fn try_with_tx_retry_sync<T, E: std::error::Error + 'static>(
+        &self,
+        block: impl Fn(
+            &rusqlite::Transaction<'_>,
+        ) -> Result<T, crate::runtime_error::DbOperationError<E>>,
+    ) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+        let mut lease = self
+            .pool
+            .checkout()
+            .map_err(crate::runtime_error::DbRuntimeError::Pool)?;
+        try_with_tx_retry(lease.conn_mut(), &production_delay, block)
+    }
+
     /// Run checkout and synchronous repository work on a blocking thread.
     ///
     /// # Errors
@@ -306,5 +473,85 @@ impl SQLStore {
     ) -> Result<T, StoreError> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || store.with_tx_retry_sync(block)).await?
+    }
+
+    /// Run typed transaction work on a blocking thread.
+    ///
+    /// If the awaiting future is dropped after the task starts, work is not cancelled:
+    /// the transaction continues to completion and the lease is eventually returned.
+    pub async fn try_with_tx<T: Send + 'static, E: std::error::Error + Send + 'static>(
+        &self,
+        block: impl FnOnce(
+                &rusqlite::Transaction<'_>,
+            ) -> Result<T, crate::runtime_error::DbOperationError<E>>
+            + Send
+            + 'static,
+    ) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.try_with_tx_sync(block))
+            .await
+            .map_err(|error| crate::runtime_error::DbRuntimeError::Pool(StoreError::Task(error)))?
+    }
+
+    /// Run typed transaction work with busy retries on a blocking thread.
+    ///
+    /// The callback may run more than once and must not perform external side effects. A dropped
+    /// waiter does not cancel started blocking work; the transaction runs to completion.
+    pub async fn try_with_tx_retry<T: Send + 'static, E: std::error::Error + Send + 'static>(
+        &self,
+        block: impl Fn(&rusqlite::Transaction<'_>) -> Result<T, crate::runtime_error::DbOperationError<E>>
+            + Send
+            + 'static,
+    ) -> Result<T, crate::runtime_error::DbRuntimeError<E>> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.try_with_tx_retry_sync(block))
+            .await
+            .map_err(|error| crate::runtime_error::DbRuntimeError::Pool(StoreError::Task(error)))?
+    }
+}
+
+#[cfg(test)]
+mod rollback_cleanup_tests {
+    use super::*;
+    use crate::pool::{Pool, PoolConfig};
+    use crate::runtime_error::{DbOperationError, DbRuntimeError};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("probe domain failure")]
+    struct ProbeDomain;
+
+    #[test]
+    fn failed_rollback_is_typed_and_discards_pool_lease() {
+        let (pool, initializer) = Pool::new(&PoolConfig::with_size(":memory:", 1)).unwrap();
+        initializer
+            .execute_batch("CREATE TABLE item(value TEXT NOT NULL);")
+            .unwrap();
+        pool.put_back(initializer).unwrap();
+        let mut lease = pool.checkout().unwrap();
+
+        let result: Result<(), DbRuntimeError<ProbeDomain>> = try_with_tx_using_rollback(
+            lease.conn_mut(),
+            |tx| {
+                tx.execute("INSERT INTO item(value) VALUES('not committed')", [])
+                    .map_err(DbOperationError::sqlite)?;
+                Err(DbOperationError::Domain(ProbeDomain))
+            },
+            |mut tx| {
+                tx.set_drop_behavior(rusqlite::DropBehavior::Ignore);
+                drop(tx);
+                Err(RsError::InvalidQuery)
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(DbRuntimeError::RollbackFailed {
+                original,
+                rollback: RsError::InvalidQuery
+            }) if matches!(*original, DbRuntimeError::Domain(ProbeDomain))
+        ));
+
+        drop(lease);
+        assert_eq!(pool.live_count(), 0);
+        assert!(matches!(pool.checkout(), Err(StoreError::Depleted)));
     }
 }

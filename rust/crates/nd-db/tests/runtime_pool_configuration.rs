@@ -1366,10 +1366,17 @@ fn a_shared_cache_exposes_sqlite_locked_sharedcache_between_handles() {
             Err(rusqlite::Error::SqliteFailure(failure, _)) => failure.extended_code,
             Err(other) => panic!("{label}: expected an SQLite failure, got {other}"),
         };
-        assert!(
-            is_busy(refused.as_ref().unwrap_err()),
-            "{label}: busy-class"
-        );
+        if label == "cache=shared" {
+            assert!(
+                !is_busy(refused.as_ref().unwrap_err()),
+                "LOCKED is not retryable BUSY"
+            );
+        } else {
+            assert!(
+                is_busy(refused.as_ref().unwrap_err()),
+                "BUSY must be retryable"
+            );
+        }
         if label == "cache=shared" {
             assert_eq!(
                 code,
