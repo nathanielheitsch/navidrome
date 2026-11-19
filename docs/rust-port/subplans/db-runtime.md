@@ -373,25 +373,32 @@ statements — `annotations::update_avg_rating_sql` (2 placeholders, 3 args), co
 caller supplies duration/size/count); when DB-17 executes it, bind all five or the statement
 fails with `Wrong number of parameters`. Three other findings the by-inspection pass missed:
 - `sql_annotations.rs:381/392/405` (`get_annotations_sql`, `annotation_exists_sql`,
-  `annotation_count_sql`) have **no Go counterpart**: Go has no annotation repository and never
-  selects from `annotation` (`grep -rn 'annotation' persistence/persistence.go` is only the four
-  `cleanAnnotations` GC calls at `:267-270`; `SQLStore` has no annotation field). Worse,
+  `annotation_count_sql`) have **no Go counterpart as standalone reads** — correction after the
+  R2 audit: Go *does* read `annotation` in production, but only through the `withAnnotation`
+  LEFT JOIN (`persistence/sql_annotations.go:69-72`) and the `updateAvgRating` subquery
+  (`:151-157`, `coalesce((select round(avg(rating), 2) from annotation where item_id = ? and
+  item_type = ? and rating > 0), 0)`). What does not exist is an annotation **repository**:
+  `SQLStore` has no annotation field (`persistence/persistence.go`) and no
+  `Select().From(annotationTable)` anywhere. Worse,
   `annotation_count_sql` emits `count(distinct annotation.id)` — `annotation` has **no id
   column** (`schema_ddl.rs:59`, PK is `unique(user_id,item_id,item_type)`), so it fails
   preparation outright: `no such column: annotation.id`. Its doc claim that these serve "the
   lazy `annotation()` repository (`persistence.go:17-40`)" is false. Nothing calls them outside
-  their own unit tests, so they are dead code asserting a shape Go never produces; the DB-15
-  lane should delete them or re-document them as an invented seam (the generic
+  their own unit tests, so they assert a shape Go never produces; the DB-15 lane should delete
+  them or re-document them as an invented seam (the generic
   `sqlRepository.count`/`exists` cannot be instantiated over `annotation` precisely because of
-  the missing id column — that is the real parity fact).
+  the missing id column — that is the real parity fact). R2 independently reproduced the
+  prepare failure (`no such column: annotation.id`) and the rating mismatch
+  (`Err(InvalidParameterCount(3, 2))` on execute) against the real fresh schema.
 - Clause **fragments** cannot be prepared standalone by design (`ann_id`, `bmk_id`,
   `with_bookmark`, `annotation_join`, `folder::library_filter`, `folder_subtree_filter`,
   `playlist_track::library_filter_on`, `artwork_queue::source_filter_sql` all return WHERE/JOIN
   pieces). A future param-count gate must wrap them in a statement instead of preparing them
   directly — record that so the gate does not report false failures.
-- `plugin` is absent from the fresh DDL (already documented as deferred in
-  `plugin_repo.rs:11-14`); `DELETE FROM plugin` therefore fails until nd-dbschema adds it. Not a
-  repo bug.
+- `plugin` is absent from the fresh DDL; `DELETE FROM plugin` therefore fails with
+  `no such table: plugin`. Not a repo bug, but `plugin_repo.rs:11-14` claims the schema slice
+  "owns adding it", which contradicts `schema-contract.md:93-96` (the table is deliberately
+  dropped). That comment is stale and needs the scope decision below.
 - `share::update_sql` with an empty `cols` renders `UPDATE share SET  WHERE id = ?`, a syntax
   error. Go's `updateOwned` path can never produce an empty SET because `filterUpdateValues`
   always adds `id` (`persistence/sql_base_repository.go:612-616`, `selectUpdateColumns :593-609`
