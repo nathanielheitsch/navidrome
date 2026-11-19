@@ -62,6 +62,19 @@ Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin`, `scrobb
 `user_props`; `annotation_repo.rs` does not exist because annotations ride album/media-file (DB-15), so that is not a
 gap. Non-DB follow-up: the `nd-stream` teardown flake (see the gate table).
 
+### Decision ask (scope): does `plugin_repo.rs` belong in the port at all?
+
+`schema-contract.md:93-96` says the `plugin` table is **dropped** — Part C item 14 removes
+`/api/plugin*` and does not port `persistence/plugin_cleanup.go`, so
+`db/migrations/20260106000620_create_plugin_table.sql` is not ported. `plugin_repo.rs` was
+ported anyway (`:11-14` notes the table is absent), so every statement it renders — including
+the executed path I probed (`DELETE FROM plugin WHERE id = ?`) — fails with `no such table:
+plugin` against the Rust schema. Options: (a) delete `plugin_repo.rs` and its tests as
+out-of-scope dead code (my recommendation: it can never run against the schema we ship, and its
+tests only assert rendered strings); (b) keep it and mark the module `#[cfg(feature =
+"plugin-table")]`/documented-unreachable until a schema decision reverses §1.5. Needs your call
+before a lane touches it — deleting a public module is a deliberate divergence, not a fix.
+
 ### Revised milestones and dependencies
 1. **DB safety and configuration gates, before enabling writes:** repair media-file missing-update bind order; unify
    scanner TEXT timestamps/idle sentinels across writers, comparisons and hydration; measure intended path/PRAGMAs
