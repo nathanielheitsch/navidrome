@@ -327,6 +327,31 @@ result on identical fixtures).
 10. **Review/DoD:** G and fresh cross-boundary reviewer: DB owns writes only, SC constructs batch/aggregates; first honest phase1 persistence ready when this + DB-11 + external SC acceptance passes, not full #05.
 
 ## DB-15 — Average-rating renderer repair and typed annotation reassignment
+### R2 independent audit verdict (2026-11-18, `/tmp/nd-independent-audit`)
+
+Probe over the real fresh schema: 189 statement records → **178 OK / 9 ERROR / 2 MISMATCH**.
+Accepted conclusions (I re-checked each against source myself):
+- Go's annotation surface is the `AnnotatedRepository` mixin (`model/annotation.go:18-23`)
+  implemented by `sqlRepository` methods `SetStar`/`SetRating`/`IncPlayCount`/`ReassignAnnotation`
+  (`persistence/sql_annotations.go:137,142,162,185`). There is **no** annotation repository, but
+  Go *does* read `annotation` via the `withAnnotation` LEFT JOIN (`:69-72`) and the
+  `updateAvgRating` subquery (`:151-157`). My earlier "never selects from annotation" wording was
+  wrong and is corrected above.
+- `update_avg_rating_sql` (`sql_annotations.rs:301-306`) renders `SET average_rating = ?` while
+  passing the two subquery args plus the row id → `Err(InvalidParameterCount(3, 2))` on execute.
+  Root cause: the aggregate expression is built but never embedded in the SQL. **DB-15 owns the
+  fix**; Go's shape is `Set("average_rating", Expr("coalesce((select … ) , 0)"))`.
+- `annotation_count_sql` (`:405-409`) emits `count(distinct annotation.id)`; `annotation` has no
+  id column, so preparation fails outright (`no such column: annotation.id`). Neither renderer has
+  a non-test call site, so both are latent. **DB-15 also owns disposition**: delete the three
+  standalone read renderers (`get_annotations_sql`, `annotation_exists_sql`, `annotation_count_sql`)
+  or re-document them as an invented seam with the missing-id parity fact stated. Do not "fix" the
+  count by inventing an id column.
+- R2's coverage claim is explicitly **bounded**: complex signatures and multi-shape inputs were
+  sampled loosely, so "no other fixed-shape mismatch" is unproven globally, not disproved.
+  Fragments must be wrapped before preparation (it also found `artwork_queue_filter_sql` and
+  `child_playlist_filter_sql` are fragments).
+
 ### Parent verification of DB-15's premise (2026-11-18, DB-03 lane running)
 
 Confirmed independently, not copied from the plan:
