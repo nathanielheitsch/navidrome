@@ -407,9 +407,15 @@ fn radio_put_round_trips_and_the_enqueue_is_text_too() {
 }
 
 /// `artist_repo::put_sql` (`artist_repository.go:239-253`) executed: `Put`
-/// stamps `CreatedAt = new(time.Now())`, `UpdatedAt = CreatedAt` (:240-241),
-/// `UpdateExternalInfo` (:247-253) re-stamps `updated_at` and
-/// `external_info_updated_at` while leaving `created_at` alone.
+/// stamps `CreatedAt = new(time.Now())`, `UpdatedAt = CreatedAt` (:240-241) — which
+/// reaches the row on the UNFILTERED save because the full-column SET carries
+/// `updated_at`. `UpdateExternalInfo` (:247-253) re-stamps `external_info_updated_at`
+/// while leaving BOTH `created_at` and `updated_at` alone: `selectUpdateColumns`
+/// (`sql_base_repository.go:593-610`) keeps exactly the 7 requested columns and that
+/// list never names `updated_at`. (DB-08 restored that Go behavior; the previous Rust
+/// renderer appended `updated_at` to every filtered SET, which made an external-info
+/// refresh clobber the scanner's stamp and re-enter the `RefreshStats(allArtists=false)`
+/// cutoff at `artist_repository.go:479`.)
 #[test]
 fn artist_put_stamps_both_and_update_external_info_keeps_created_at() {
     let (store, path) = store();
@@ -441,8 +447,8 @@ fn artist_put_stamps_both_and_update_external_info_keeps_created_at() {
         None,
         "Go's nil *time.Time is NULL, not the old 0 sentinel"
     );
-    // Act: UpdateExternalInfo — the 7-column list plus the appended
-    // updated_at, never created_at.
+    // Act: UpdateExternalInfo — the 7-column list only. Never created_at, and never
+    // updated_at: Go's SET is exactly the requested columns (`:599-604`).
     let later = at(2024, 4, 2, 6, 0, 0);
     let mut stamped = artist_record("ar-1");
     stamped.biography = "Born in Pasadena".to_string();
@@ -461,7 +467,8 @@ fn artist_put_stamps_both_and_update_external_info_keeps_created_at() {
     );
     assert_eq!(
         stored_text(&store, artist_repo::TABLE, "updated_at", "ar-1").as_deref(),
-        Some("2024-04-02 06:00:00+00:00")
+        Some("2024-04-01 06:00:00+00:00"),
+        "a filtered save that does not select updated_at leaves the stored stamp alone (selectUpdateColumns keeps exactly the requested columns, sql_base_repository.go:599-604; UpdateExternalInfo lists 7 columns, artist_repository.go:250-253)"
     );
     assert_eq!(
         stored_text(

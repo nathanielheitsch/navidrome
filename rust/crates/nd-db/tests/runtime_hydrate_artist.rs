@@ -2309,8 +2309,9 @@ fn raw_similar_artists_text_survives_a_read_then_write_cycle() {
 }
 
 /// The hydrated record keeps Go's `Put` stamping behaviour after hydration:
-/// `put_sql` re-stamps `updated_at` and keeps a stored `created_at`
-/// (`artist_repository.go:240-242`).
+/// an UNFILTERED save stamps `updated_at` and keeps a stored `created_at`
+/// (`artist_repository.go:240-242`), and a FILTERED save writes only the columns it
+/// names (`sql_base_repository.go:593-610`).
 #[test]
 fn hydrated_record_round_trips_through_the_write_path() {
     let (store, path) = fresh_store();
@@ -2361,17 +2362,36 @@ fn hydrated_record_round_trips_through_the_write_path() {
         "Put stamps updated_at = CreatedAt"
     );
 
-    // A second save keeps created_at and re-stamps updated_at.
+    // A second save with a FILTERED selection (biography only) writes that column and
+    // leaves BOTH stamps alone. Go parity (DB-08): `selectUpdateColumns`
+    // (sql_base_repository.go:593-610) keeps exactly the requested columns minus
+    // created_at/birth_time, so `updated_at` is re-stamped ONLY when the caller selects it
+    // — as the scanner's list does (scanner/phase_1_folders.go:403-405) but a
+    // biography/external-info update does not (artist_repository.go:247-253). The previous
+    // Rust renderer appended `updated_at` to every filtered SET, which this expectation now
+    // forbids: an external-info refresh must not clobber the scanner's stamp, because
+    // `artist.updated_at` is the RefreshStats(allArtists=false) cutoff
+    // (artist_repository.go:479).
     let later = nd_db::time::parse("2025-05-05 05:00:00+00:00").expect("later parses");
-    let ((update2, update_args2), _insert2) = artist_repo::put_sql(&got, later, &["biography"]);
-    lease(&store, |conn| {
+    let mut edited = got.clone();
+    edited.biography = "Born in Pasadena".to_string();
+    let ((update2, update_args2), _insert2) = artist_repo::put_sql(&edited, later, &["biography"]);
+    let matched = lease(&store, |conn| {
         conn.execute(&update2, rusqlite::params_from_iter(update_args2.iter()))
             .expect("update runs")
     });
+    assert_eq!(
+        matched, 1,
+        "the UPDATE leg matched the existing row, so the preserved stamp below is the output of a real filtered write, not a zero-row no-op"
+    );
     let again = lease(&store, |conn| {
         ArtistRepo::new(conn).get("ar-1", &None, None)
     })
     .expect("get 2");
+    assert_eq!(
+        again.biography, "Born in Pasadena",
+        "the selected column landed"
+    );
     assert_eq!(
         again.created_at,
         Some(now),
@@ -2379,8 +2399,8 @@ fn hydrated_record_round_trips_through_the_write_path() {
     );
     assert_eq!(
         again.updated_at,
-        Some(later),
-        "every save re-stamps updated_at"
+        Some(now),
+        "a selection that does not name updated_at leaves the stored stamp at the earlier value even though `later` was passed as the caller's clock"
     );
 
     drop(store);

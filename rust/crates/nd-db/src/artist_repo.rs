@@ -95,6 +95,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 use crate::artwork_hydration::{hydrate_artist_artwork, ItemImage, ReadOutcome};
+use crate::runtime_error::DbOperationError;
 use crate::sql_participations::Role;
 use crate::sql_restful::{Filter, QueryOptions, RestRepository};
 use crate::sql_search::{mbid_expr, rowid_page_phase, SearchConfig, Sql};
@@ -647,6 +648,93 @@ pub const EXTERNAL_INFO_COLS: [&str; 7] = [
     "external_info_updated_at",
 ];
 
+/// The columns the typed write boundary [`put_artist_in_tx`] can select: every
+/// `artist` column [`put_cols`] emits EXCEPT `created_at` and `id`.
+///
+/// `created_at` is not a member because Go's `selectUpdateColumns` deletes it from
+/// the UPDATE set (`sql_base_repository.go:601`) — immutability of the create stamp
+/// is STRUCTURAL here, exactly as in `LibraryColumn` (`library_repo.rs:585-598`), and
+/// `id` is the UPDATE's `WHERE` key rather than a SET target. `updated_at`, `full_text`
+/// and `search_normalized` ARE members: Go's scanner lists all three explicitly
+/// (`scanner/phase_1_folders.go:403-405`), and `dbArtist.PostMapArgs` warns that a
+/// derived column omitted from that list goes stale forever (`artist_repository.go:
+/// 108-109`).
+///
+/// This enum replaces Go's free-form `colsToUpdate ...string` for the executed
+/// boundary, so a caller cannot name a column outside the map and Go's `toSnakeCase`
+/// normalization of caller strings (`sql_base_repository.go:596-598`) has nothing to
+/// normalize. An empty slice is Go's empty variadic list — `len(c2upd) == 0`, `:599` —
+/// i.e. every column [`put_cols`] yields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArtistColumn {
+    /// `artist.name`.
+    Name,
+    /// `artist.sort_artist_name`.
+    SortArtistName,
+    /// `artist.order_artist_name`.
+    OrderArtistName,
+    /// `artist.mbz_artist_id`.
+    MbzArtistId,
+    /// `artist.biography`.
+    Biography,
+    /// `artist.small_image_url`.
+    SmallImageUrl,
+    /// `artist.medium_image_url`.
+    MediumImageUrl,
+    /// `artist.large_image_url`.
+    LargeImageUrl,
+    /// `artist.external_url`.
+    ExternalUrl,
+    /// `artist.similar_artists` (the marshalled `[{id, name}]` JSON).
+    SimilarArtists,
+    /// `artist.external_info_updated_at` — the external provider's own throttle stamp
+    /// (`core/external/provider.go:235,286`), NOT `updated_at`.
+    ExternalInfoUpdatedAt,
+    /// `artist.missing`.
+    Missing,
+    /// `artist.uploaded_image`.
+    UploadedImage,
+    /// `artist.full_text` — derived by `PostMapArgs` (`:109`).
+    FullText,
+    /// `artist.search_normalized` — derived by `PostMapArgs` (`:110`).
+    SearchNormalized,
+    /// `artist.updated_at`, written ONLY when selected (see [`put_sql`]).
+    UpdatedAt,
+}
+
+impl ArtistColumn {
+    /// The registered snake column name, i.e. a key of the map [`put_cols`] builds.
+    /// Public deliberately: it is the column identity of a variant, so a caller (or a
+    /// diagnostic) can name the column an `ArtistColumn` selects without going through
+    /// the private `column_names` rendering of a whole slice.
+    #[must_use]
+    pub const fn column(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::SortArtistName => "sort_artist_name",
+            Self::OrderArtistName => "order_artist_name",
+            Self::MbzArtistId => "mbz_artist_id",
+            Self::Biography => "biography",
+            Self::SmallImageUrl => "small_image_url",
+            Self::MediumImageUrl => "medium_image_url",
+            Self::LargeImageUrl => "large_image_url",
+            Self::ExternalUrl => "external_url",
+            Self::SimilarArtists => "similar_artists",
+            Self::ExternalInfoUpdatedAt => "external_info_updated_at",
+            Self::Missing => "missing",
+            Self::UploadedImage => "uploaded_image",
+            Self::FullText => "full_text",
+            Self::SearchNormalized => "search_normalized",
+            Self::UpdatedAt => "updated_at",
+        }
+    }
+}
+
+/// The typed column list of [`put_artist_in_tx`]: `&[ArtistColumn]` is rendered as the
+/// snake names [`put_sql`] filters on. An empty slice selects all columns.
+fn column_names(columns: &[ArtistColumn]) -> Vec<&'static str> {
+    columns.iter().map(|column| column.column()).collect()
+}
 /// `dbSimilarArtist` marshalling (`:38-41`, `PostMapArgs` `:101-106`):
 /// `[{id, name}]` with Go's `omitempty` key skipping, `[]` when empty.
 #[must_use]
@@ -742,18 +830,51 @@ pub fn put_cols(artist: &ArtistRecord) -> Vec<(String, Value)> {
 /// `Put` (`:239-245`) / `UpdateExternalInfo` (`:247-253`) via `put`
 /// (`sql_base_repository.go:618-642`): the UPDATE-first/INSERT-fallback
 /// upsert. `selectUpdateColumns` (`sql_base_repository.go:593-610`) filters the SET
-/// list to the requested columns (all when none), minus `created_at`/`birth_time`;
-/// `Put` stamps `CreatedAt = new(time.Now())` and `UpdatedAt = CreatedAt`
-/// (`:240-241`), so an unfiltered save re-stamps `updated_at` — TRUE for `Put` (no
-/// `cols_to_update`, the full-column SET includes it), FALSE for a FILTERED update,
-/// where Go's SET is exactly the requested columns and `UpdateExternalInfo`
-/// (`:247-253`) never lists `updated_at`, so Go does not re-stamp it there. The
-/// `updated_at` push below (`:765-768`) nonetheless appends it to every filtered
-/// UPDATE — a pre-existing divergence at HEAD (`git show HEAD:rust/crates/nd-db/src/artist_repo.rs
-/// | grep -n 'wanted.push'`), pinned by `put_sql_update_leg_filters_cols_and_appends_updated_at`
-/// and deliberately not changed (write path outside S-D3d's read scope; see the S-D3d
-/// residual list E in `docs/rust-port/hydrate-contract.md`). The UPDATE's row count
-/// decides which statement ran — the caller's.
+/// list to the requested columns (all when none), minus `created_at`/`birth_time`.
+///
+/// `updated_at` is written ONLY when explicitly selected — Go parity, restored here.
+/// `Put` stamps `CreatedAt = UpdatedAt = time.Now()` on the MODEL (`:240-241`), which is
+/// why an UNFILTERED save (`cols_to_update` empty, `len(c2upd) == 0`, `:599`) re-stamps
+/// `updated_at`: the full-column SET carries it. A FILTERED save writes exactly the
+/// requested columns, so `UpdateExternalInfo` (`:247-253`), whose 7-column list never names
+/// `updated_at`, leaves the stored stamp untouched. The scanner's call DOES name it
+/// (`scanner/phase_1_folders.go:403-405`). Consequence, recorded for `decisions.md`:
+/// `artist.updated_at` is the cutoff of `RefreshStats(allArtists=false)`
+/// (`artist_repository.go:479`), so under Go parity an external-info refresh no longer
+/// re-enters the touched-artist stats set — under the previous forced append it did, and it
+/// silently overwrote the scanner's stamp.
+///
+/// `created_at` stays immutable on the UPDATE leg (`:601`); the INSERT leg keeps it, stamped
+/// to `now` when the record carries none. `now` is the CALLER's clock, never the commit clock.
+///
+/// Empty SET, resolved honestly: Go's `filterUpdateValues` (`:612-616`) ALWAYS re-adds `id`
+/// to the SET map, so a selection that resolves to nothing settable — `&["created_at"]`, or a
+/// `sort_artist_name`/`mbz_artist_id` selection whose record value is empty and dropped by
+/// `PostMapArgs` (`artist_repository.go:113-120`) — renders `UPDATE artist SET id = ? WHERE
+/// id = ?` in Go. Executed (sqlite3 3.54.0): 1 row affected for an existing id, 0 for a
+/// missing one — a real no-op UPDATE carrying NO error. This renderer emits exactly that
+/// minimal no-op statement rather than the degenerate `SET  WHERE` (a parse error) and rather
+/// than `crate::marshal::MarshalError::EmptyUpdateSet`, which belongs to the shared map seam
+/// and would be a recorded divergence here. An UNFILTERED selection already carries `id` from
+/// [`put_cols`], so it is not duplicated. [`put_artist_in_tx`] therefore reports
+/// `inserted: false` on an existing row and a full INSERT on a miss with no existence SELECT
+/// shortcut — trigger firing and `RowsAffected` parity come from the statement itself, which
+/// a pre-flight read would not reproduce.
+///
+/// Where the SET TEXT differs from Go's, deliberately and unchanged from HEAD: Go's SET map
+/// carries the no-op `id = ?` on EVERY filtered update (`:612-616`), and this renderer binds
+/// `id` only in `WHERE id = ?` — the same omission `crate::marshal` documents for the shared
+/// seam (`marshal.rs:204-211`). It is a no-op assignment, so the stored values and the
+/// affected-row count are identical; only the column list in the statement text differs.
+///
+/// `cols_to_update` is the legacy free-form seam: entries are normalized with
+/// [`crate::marshal::to_snake_case`] exactly as Go's `selectUpdateColumns` does (`:596-598`),
+/// so `"UpdatedAt"` behaves like Go's camelCase entry. An entry naming no column of the map
+/// selects nothing, i.e. resolves to the no-op statement above. No caller text reaches SQL:
+/// SET identifiers come from [`put_cols`] only and every value is bound. The typed write
+/// boundary [`put_artist_in_tx`] takes [`ArtistColumn`] instead and has nothing to normalize.
+///
+/// The UPDATE's row count decides which statement ran — the caller's ([`put_artist_in_tx`]).
 #[must_use]
 pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str]) -> (Sql, Sql) {
     let stamped = ArtistRecord {
@@ -762,15 +883,25 @@ pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str
         ..artist.clone()
     };
     let all_cols = put_cols(&stamped);
-    let mut wanted: Vec<&str> = cols_to_update.to_vec();
-    if !wanted.is_empty() && !wanted.contains(&"updated_at") {
-        wanted.push("updated_at");
-    }
-    let update_cols: Vec<&(String, Value)> = all_cols
+    // Go's `selectUpdateColumns` normalizes each caller entry with `toSnakeCase`
+    // (`sql_base_repository.go:596-598`) before matching snake column keys.
+    let wanted: Vec<String> = cols_to_update
         .iter()
-        .filter(|(col, _)| wanted.is_empty() || wanted.contains(&col.as_str()))
+        .map(|col| crate::marshal::to_snake_case(col))
+        .collect();
+    let mut update_cols: Vec<&(String, Value)> = all_cols
+        .iter()
+        .filter(|(col, _)| wanted.is_empty() || wanted.contains(col))
         .filter(|(col, _)| col != "created_at")
         .collect();
+    if !wanted.is_empty() && update_cols.is_empty() {
+        // Go's `filterUpdateValues` re-adds `id` (`sql_base_repository.go:612-616`):
+        // the minimal no-op `SET id = ?`, not an empty SET and not an error.
+        update_cols = vec![all_cols
+            .iter()
+            .find(|(col, _)| col == "id")
+            .expect("put_cols always emits the id column")];
+    }
     let set = update_cols
         .iter()
         .map(|(col, _)| format!("{col} = ?"))
@@ -799,6 +930,112 @@ pub fn put_sql(artist: &ArtistRecord, now: DateTime<Utc>, cols_to_update: &[&str
         insert_args,
     );
     (update, insert)
+}
+
+/// What a successful [`put_artist_in_tx`] reports.
+///
+/// Both fields are ADVISORY until the caller commits: a rolled-back Put publishes nothing,
+/// and the artist repository keeps no cache either (Go keeps none), so there is nothing to
+/// invalidate on rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistWriteResult {
+    /// The written row's id: [`ArtistRecord::id`], which is always non-empty here.
+    /// Go's `put` returns `(newId, err)` (`sql_base_repository.go:618-642`) and
+    /// `artistRepository.Put` DISCARDS it (`artist_repository.go:239-245`); the port reports
+    /// it because DB-09/10 need it to order junction writes.
+    pub id: String,
+    /// `true` when the INSERT leg ran rather than the UPDATE leg, i.e. when the UPDATE
+    /// matched zero rows (`sql_base_repository.go:630-641`).
+    pub inserted: bool,
+}
+/// Callback error of the executed artist [`put_artist_in_tx`].
+///
+/// There is NO builder arm, and inventing one would be wrong: [`put_sql`] returns
+/// `(`[`Sql`]`, `[`Sql`]`)` — it is infallible today — and a selection that resolves to
+/// nothing settable renders the Go-parity no-op `SET id = ? WHERE id = ?` (see [`put_sql`])
+/// instead of failing. A `crate::marshal::MarshalError` arm would claim a failure the artist
+/// renderer cannot produce; `D-ERROR` keeps a typed arm for causes that actually exist.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtistWriteError {
+    /// [`ArtistRecord::id`] is empty, so there is nothing to write. **DOCUMENTED DEVIATION,
+    /// not exact Go parity:** Go's `put` fills an empty id with `id2.NewRandom()`
+    /// (`sql_base_repository.go:635-638`) and SKIPS the UPDATE leg entirely, returning the
+    /// generated id with no error. This port refuses instead, because artist identity comes
+    /// from SC (`nd_id::new_hash`/`new_hash1`/`new_random`, `nd-id/src/lib.rs:115-133`) and a
+    /// DB-side id generator would be an invented policy nobody asked for. Accepted under the
+    /// supplied-SC-ID contract (parent decision); Go has no equivalent error here, so do NOT
+    /// describe this arm as Go-exact.
+    #[error("artist record has an empty id: the id comes from SC and is never generated here")]
+    EmptyId,
+}
+/// `Put` (`artist_repository.go:239-245`) EXECUTED on the CALLER's transaction: Go's
+/// `r.put(ctx, dba.ID, dba, colsToUpdate...)` upsert (`sql_base_repository.go:618-642`) in
+/// Go's own statement order — UPDATE by `id` FIRST, and the INSERT only when that matched
+/// zero rows. A zero-row UPDATE is the insert fallback (`:630-641`, the new record with a
+/// predefined id), NOT a miss and never a `NotFound`.
+///
+/// Identity: the id is the caller's — `record.id` is the UPDATE's `WHERE id = ?` and the
+/// INSERT's id column. This function never recomputes it and invents no random-id arm or
+/// retry: Go fills an empty id with `id2.NewRandom()` (`:635-638`), but an artist id always
+/// arrives from SC, so an empty `record.id` is refused as a typed contract violation BEFORE
+/// any statement runs. That refusal is a **port-side deviation from Go** (Go generates an id
+/// and succeeds), not a Go error; see [`ArtistWriteError::EmptyId`].
+///
+/// Timestamps: `now` is the caller's clock and reaches [`put_sql`] as its stamp — never the
+/// commit clock and never re-read inside this function. `updated_at` is written only when
+/// [`ArtistColumn::UpdatedAt`] is selected (Go parity, see [`put_sql`]); `created_at` is
+/// immutable on the UPDATE leg and keeps the record's own value on the INSERT leg, falling
+/// back to `now` only when the record carries none (`artist_repository.go:240-241`). The
+/// record is borrowed and never mutated: stamps travel as bound values.
+///
+/// Columns: `cols` is the typed [`ArtistColumn`] set — an empty slice is Go's empty variadic
+/// list (all columns), and a selection that resolves to nothing settable runs the Go-parity
+/// no-op UPDATE. There is no arbitrary-SQL column input on this boundary.
+///
+/// Scope: a caller-trusted primitive. `WHERE id = ?` and nothing else, exactly like Go: no
+/// library predicate, no auth check, no ownership guard. The `library_artist` link is NOT
+/// written here — it stays DB-05's [`crate::library_repo::add_artist_in_tx`], which the caller
+/// runs as a separate statement in the SAME transaction (Go's scanner calls `artistRepo.Put`
+/// then `libraryRepo.AddArtist` back to back, `scanner/phase_1_folders.go:401-412`).
+///
+/// The transaction is the caller's: this never begins, commits, retries, or runs in
+/// autocommit, and there is no connection-bound variant. Raw SQLite errors keep their concrete
+/// cause and extended code on the [`DbOperationError::Sqlite`] arm — Go returns artist Put
+/// errors raw and unwrapped (`:243-244` adds no `fmt.Errorf`).
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`ArtistWriteError::EmptyId`] for an empty
+/// [`ArtistRecord::id`]; [`DbOperationError::Sqlite`] carrying the concrete
+/// `rusqlite::Error` (extended code intact) from the UPDATE or the INSERT.
+/// A later caller-owned library link can fail separately in the same transaction;
+/// such a failure is not emitted by this function. A repeated artist id is an
+/// UPDATE hit rather than a constraint failure; a zero-row UPDATE is NOT an error.
+pub fn put_artist_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    record: &ArtistRecord,
+    now: &DateTime<Utc>,
+    cols: &[ArtistColumn],
+) -> Result<ArtistWriteResult, DbOperationError<ArtistWriteError>> {
+    if record.id.is_empty() {
+        // Go's `id == ""` arm generates a random id (`:635-638`). The port refuses
+        // instead: artist identity belongs to SC, and inventing a DB-side id would be a
+        // policy nobody asked for.
+        return Err(DbOperationError::Domain(ArtistWriteError::EmptyId));
+    }
+    let statements = put_sql(record, *now, &column_names(cols));
+    // UPDATE first (`:624-633`): a row count > 0 ends the Put, so the INSERT never runs.
+    if crate::execution::execute(tx, &statements.0).map_err(DbOperationError::sqlite)? > 0 {
+        return Ok(ArtistWriteResult {
+            id: record.id.clone(),
+            inserted: false,
+        });
+    }
+    // INSERT fallback (`:634-641`).
+    crate::execution::execute(tx, &statements.1).map_err(DbOperationError::sqlite)?;
+    Ok(ArtistWriteResult {
+        id: record.id.clone(),
+        inserted: true,
+    })
 }
 
 /// `getAllIDs` (`:283-291`): `SELECT artist.id` over the library joins,
@@ -1925,34 +2162,187 @@ mod tests {
         assert!(!empty_names.contains(&"mbz_artist_id"));
     }
 
+    /// Go parity (DB-08, parent decision): `selectUpdateColumns`
+    /// (`sql_base_repository.go:593-610`) keeps EXACTLY the requested columns, so a
+    /// filtered UPDATE does NOT re-stamp `updated_at` unless it is selected. The previous
+    /// behavior — appending `updated_at` to every filtered SET — was a divergence at HEAD and
+    /// made `UpdateExternalInfo` (`artist_repository.go:247-253`) clobber the scanner's stamp.
     #[test]
-    fn put_sql_update_leg_filters_cols_and_appends_updated_at() {
-        // Arrange: UpdateExternalInfo (:247-253) — the fixed column list.
+    fn put_sql_update_leg_filters_cols_and_writes_updated_at_only_when_selected() {
+        // Arrange: UpdateExternalInfo (:247-253) — the fixed column list, no updated_at.
         let artist = ArtistRecord {
             id: "ar-1".to_string(),
             name: "X".to_string(),
             biography: "b".to_string(),
             ..ArtistRecord::default()
         };
-        // Act:
+        // Act: the 7-column external-info selection.
         let ((update_sql, update_args), (insert_sql, _)) =
             put_sql(&artist, at(2024, 1, 2, 0, 0, 0), &EXTERNAL_INFO_COLS);
-        // Assert: only the 7 external-info columns + appended updated_at,
-        // never created_at.
+        // Assert: exactly the 7 requested columns, no appended updated_at, never created_at.
         assert_eq!(
             update_sql,
             "UPDATE artist SET biography = ?, small_image_url = ?, medium_image_url = ?, \
              large_image_url = ?, external_url = ?, similar_artists = ?, \
-             external_info_updated_at = ?, updated_at = ? WHERE id = ?"
+             external_info_updated_at = ? WHERE id = ?"
         );
-        assert_eq!(update_args.len(), 9);
-        assert_eq!(
-            update_args[7],
-            Value::Text("2024-01-02 00:00:00+00:00".to_string()),
-            "the appended updated_at"
+        assert_eq!(update_args.len(), 8, "7 SET args + the WHERE id");
+        assert_eq!(update_args[7], Value::Text("ar-1".to_string()));
+        assert!(
+            !update_sql.contains(" updated_at = ?"),
+            "no updated_at column in the SET (external_info_updated_at is a different column)"
         );
-        assert_eq!(update_args[8], Value::Text("ar-1".to_string()));
+        assert!(!update_sql.contains("created_at"));
         assert!(insert_sql.starts_with("INSERT INTO artist (id, name, "));
+        assert!(
+            insert_sql.contains("updated_at"),
+            "the INSERT leg still carries updated_at (Put stamps both, :240-241)"
+        );
+    }
+
+    /// `updated_at` IS in the SET when the caller selects it: the scanner's own list
+    /// (`scanner/phase_1_folders.go:403-405`) names it, which is why Go re-stamps there.
+    #[test]
+    fn put_sql_writes_updated_at_only_when_the_selection_names_it() {
+        // Arrange: the scanner's 7-column list, `updated_at` included.
+        let artist = ArtistRecord {
+            id: "ar-1".to_string(),
+            name: "X".to_string(),
+            ..ArtistRecord::default()
+        };
+        let scanner_cols = [
+            "name",
+            "mbz_artist_id",
+            "sort_artist_name",
+            "order_artist_name",
+            "full_text",
+            "search_normalized",
+            "updated_at",
+        ];
+        // Act:
+        let ((update_sql, update_args), _) =
+            put_sql(&artist, at(2024, 1, 2, 0, 0, 0), &scanner_cols);
+        // Assert:
+        assert_eq!(
+            update_sql,
+            // put_cols order: the record's field order, with the derived columns last.
+            // Empty sort_artist_name/mbz_artist_id are dropped by PostMapArgs (:113-120),
+            // so they are absent from the SET even though the scanner requested them.
+            "UPDATE artist SET name = ?, order_artist_name = ?, updated_at = ?, \
+             full_text = ?, search_normalized = ? WHERE id = ?"
+        );
+        assert_eq!(update_args.len(), 6);
+    }
+
+    /// Go normalizes every `colsToUpdate` entry with `toSnakeCase`
+    /// (`sql_base_repository.go:596-598`), so a camelCase entry selects its snake column. A
+    /// selection with nothing settable runs Go's no-op `SET id = ?` (`filterUpdateValues`,
+    /// `:612-616`) instead of emitting `SET  WHERE` or a missing-column error; an unfiltered
+    /// selection already carries `id` and must not duplicate it.
+    #[test]
+    fn put_sql_normalizes_column_names_and_resolves_an_empty_selection_to_the_go_noop() {
+        // Arrange:
+        let artist = ArtistRecord {
+            id: "ar-1".to_string(),
+            name: "X".to_string(),
+            biography: "b".to_string(),
+            ..ArtistRecord::default()
+        };
+        // Act: camelCase entries, exactly as Go's callers pass them.
+        let ((camel_sql, camel_args), _) = put_sql(
+            &artist,
+            at(2024, 1, 2, 0, 0, 0),
+            &["UpdatedAt", "externalInfoUpdatedAt"],
+        );
+        // Assert: normalized to the snake column keys.
+        assert_eq!(
+            camel_sql,
+            "UPDATE artist SET external_info_updated_at = ?, updated_at = ? WHERE id = ?"
+        );
+        assert_eq!(camel_args.len(), 3);
+        // Act/Assert: `created_at` alone (dropped by selectUpdateColumns) and an entry naming
+        // no column of the map both resolve to the executable no-op.
+        for cols in [&["created_at"][..], &["totally_unknown_column"][..]] {
+            let ((noop_sql, noop_args), _) = put_sql(&artist, at(2024, 1, 2, 0, 0, 0), cols);
+            assert_eq!(
+                noop_sql, "UPDATE artist SET id = ? WHERE id = ?",
+                "{cols:?}"
+            );
+            assert_eq!(
+                noop_args,
+                vec![Value::Text("ar-1".to_string()); 2],
+                "SET id and WHERE id"
+            );
+        }
+        // Act/Assert: unfiltered = all columns, `id` once, stamps present, created_at dropped.
+        let ((all_sql, _), (insert_sql, _)) = put_sql(&artist, at(2024, 1, 2, 0, 0, 0), &[]);
+        let set_part = all_sql
+            .split(" WHERE ")
+            .next()
+            .expect("the UPDATE carries a WHERE clause");
+        assert_eq!(
+            set_part.matches("id = ?").count(),
+            1,
+            "no duplicated SET id"
+        );
+        assert!(all_sql.ends_with("WHERE id = ?"));
+        assert!(all_sql.contains("updated_at = ?"));
+        assert!(!all_sql.contains("created_at"));
+        assert!(insert_sql.contains("created_at"));
+    }
+
+    /// The typed [`ArtistColumn`] set covers exactly the settable keys of the map [`put_cols`]
+    /// builds — everything except `created_at` (dropped on UPDATE) and `id` (the WHERE key) —
+    /// so a caller cannot name a column outside it and no free-form SQL reaches the SET list.
+    #[test]
+    fn artist_column_covers_the_settable_put_cols_keys() {
+        // Arrange: a record carrying the values that keep every key in the map.
+        let artist = ArtistRecord {
+            id: "ar-1".to_string(),
+            name: "X".to_string(),
+            sort_artist_name: "s".to_string(),
+            mbz_artist_id: "m".to_string(),
+            ..ArtistRecord::default()
+        };
+        let keys: Vec<String> = put_cols(&artist).into_iter().map(|(c, _)| c).collect();
+        let typed: Vec<&str> = [
+            ArtistColumn::Name,
+            ArtistColumn::SortArtistName,
+            ArtistColumn::OrderArtistName,
+            ArtistColumn::MbzArtistId,
+            ArtistColumn::Biography,
+            ArtistColumn::SmallImageUrl,
+            ArtistColumn::MediumImageUrl,
+            ArtistColumn::LargeImageUrl,
+            ArtistColumn::ExternalUrl,
+            ArtistColumn::SimilarArtists,
+            ArtistColumn::ExternalInfoUpdatedAt,
+            ArtistColumn::Missing,
+            ArtistColumn::UploadedImage,
+            ArtistColumn::FullText,
+            ArtistColumn::SearchNormalized,
+            ArtistColumn::UpdatedAt,
+        ]
+        .iter()
+        .map(|column| column.column())
+        .collect();
+        // Assert: every typed name is a key of the map.
+        for name in &typed {
+            assert!(
+                keys.iter().any(|k| k.as_str() == *name),
+                "{name} missing from put_cols"
+            );
+        }
+        let mut unlisted: Vec<String> = keys
+            .iter()
+            .filter(|k| !typed.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        unlisted.sort();
+        assert_eq!(unlisted, vec!["created_at".to_string(), "id".to_string()]);
+        // An empty typed slice is Go's empty variadic list: the filter restricts nothing.
+        assert!(column_names(&[]).is_empty());
+        assert_eq!(column_names(&[ArtistColumn::Biography]), vec!["biography"]);
     }
 
     #[test]
