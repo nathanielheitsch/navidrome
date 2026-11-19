@@ -865,9 +865,10 @@ hands it, `sql_base_repository.go:157-158`) and carry the WARNING contract.
 
 ## D-OPEN probe: rusqlite ignores go-sqlite3's DSN pragmas (2026-11-18, refines `5ebb8110`)
 
-Re-measured through `nd_dbschema::schema::open` (which ORs `SQLITE_OPEN_URI`,
-`schema.rs:59-62`) against real files (`/tmp/db03`). SQLite 3.46.0, **non-bundled**
-(`CARGO_FEATURE_BUNDLED` unset).
+Historical pre-DB-03 probe (the measured unconfigured-handle rows below are not
+the current configured `schema::open` behavior). This workspace uses SQLite 3.46.0
+BUNDLED via rusqlite 0.32.1/libsqlite3-sys 0.30.1; the old nonbundled diagnosis was
+incorrect. See the implementation/adjudication section below for current policy.
 
 | open argument | file actually created | journal / busy_timeout / synchronous |
 |---|---|---|
@@ -876,21 +877,25 @@ Re-measured through `nd_dbschema::schema::open` (which ORs `SQLITE_OPEN_URI`,
 | `file:c.db?mode=memory&cache=shared` | real URI params **are** honored (`journal=memory`) | — |
 
 Conclusion, replacing the earlier "pass a `file:` URI and the pragmas apply" framing:
-`_journal_mode`, `_busy_timeout`, `_foreign_keys` and `synchronous=` are **go-sqlite3
-conventions**, not SQLite URI parameters. rusqlite only honors genuine SQLite URI params
-(`mode=`, `cache=`), so a `file:` URI alone fixes the filename but applies none of Go's
-settings. Only explicit per-connection `PRAGMA` statements reproduce Go, and that is what
-`schema.rs`'s `ConnectHook` equivalent must do (it currently only registers extensions).
+`_journal_mode`, `_busy_timeout`, `_foreign_keys` and `_synchronous` are go-sqlite3
+conventions, not SQLite URI parameters; bare `synchronous` is ignored by Go too.
+rusqlite honors genuine URI parameters (`mode=`, `cache=`), but explicit
+per-connection PRAGMAs are necessary for Go conventions. The current implementation
+below applies these plus `_cache_size`; this historical probe predates that code.
 Measured that explicit statements do work on this handle: `PRAGMA journal_mode=WAL` ->
 `wal`, `busy_timeout=15000` -> 15000, `synchronous=NORMAL` -> 1.
 
 Two corrections to earlier notes: (1) `PRAGMA busy_timeout=N` returns a row, so it must be
 read with `query_row`, not `execute` (`execute` fails with `ExecuteReturnedResults`);
 (2) `PRAGMA foreign_keys` reads **1** on every handle here, including
-`rusqlite::Connection::open`. Go gets FK=1 from its DSN pragma (`netgo,sqlite_fts5` build
-tags, `Makefile:5` — no `sqlite_foreign_keys` tag). Where Rust's default comes from is NOT
-yet established (system sqlite vs a compile-time default); DB-03 must determine it and pin
-it with an executed assertion instead of assuming a build flag.
+`rusqlite::Connection::open`. Go gets FK=1 for its default DSN from the DSN's own
+`_foreign_keys=on` pragma (`netgo,sqlite_fts5` build tags, `Makefile:5` — no
+`sqlite_foreign_keys` tag), and FK=0 for a bare path. Rust's default is now established:
+`nd-dbschema/Cargo.toml:14` builds rusqlite 0.32.1 with `bundled`, so SQLite comes from
+`libsqlite3-sys` 0.30.1, which passes `-DSQLITE_DEFAULT_FOREIGN_KEYS=1`
+(`libsqlite3-sys-0.30.1/build.rs:123`), and `PRAGMA compile_options` on the built handle
+reports `DEFAULT_FOREIGN_KEYS` alongside SQLite 3.46.0. It is a compile-time default
+enforced explicitly by the port when a DSN names FK, not a build-tag effect.
 
 D-OPEN options for the user: (a) typed `DbOpenOptions { journal_mode, busy_timeout,
 synchronous, foreign_keys }` applied as explicit pragmas with read-back per handle —
@@ -975,15 +980,16 @@ effective-state read-back before a handle joins the pool. Literal DSN pass-throu
 rejected as the mechanism, but the **config value stays Go-compatible**, so the loader must
 translate it rather than require users to rewrite it.
 
-Contract for DB-03:
+Historical DB-03 proposal, superseded by the implementation/adjudication below
+(in particular default-vs-driver state, exact URI forwarding, and typed admission):
 1. `DbOpenOptions { journal_mode, busy_timeout, synchronous, foreign_keys }` with Go's
    effective defaults: WAL for file-backed DBs, `busy_timeout = 15000`,
    `synchronous = NORMAL` (1), `foreign_keys = on`. `:memory:` keeps `journal = MEMORY`
    semantics (SQLite rejects WAL on a memory DB, so the translation must not force WAL there).
 2. `effective_path` must stop handing SQLite a filename that includes the query string. It
-   parses a Go-style DSN: `_journal_mode`, `_busy_timeout`, `_foreign_keys`, `synchronous`
-   become `DbOpenOptions`; genuine SQLite URI params (`cache=`, `mode=`) are kept by
-   re-emitting a `file:` URI; unknown params are rejected with an explicit error rather than
+   parses Go conventions `_journal_mode`, `_busy_timeout`, `_foreign_keys`, `_synchronous`
+   and `_cache_size` into options; bare `synchronous` is ignored. Genuine file: URIs
+   retain their ORIGINAL query; non-URI queries are stripped (default-cache exception).
    silently dropped. `nd-conf`'s `DEFAULT_DB_PATH` (`rust/crates/nd-conf/src/consts.rs:16`,
    mirroring `consts/consts.go:14`) is the reference input and must parse to exactly the
    defaults above with path `navidrome.db`.
@@ -994,10 +1000,9 @@ Contract for DB-03:
 4. Migration sequencing must not lose the settings: Go disables FK around migrations and
    re-enables it (`db/db.go:85-91`), and the pragma state is per-connection, so verify each
    pooled handle ends with `foreign_keys = on` regardless of what migration ran on it.
-5. Pin Rust's `foreign_keys` default honestly. Measured `PRAGMA foreign_keys` = 1 on every
-   handle including `rusqlite::Connection::open`, and this build is **non-bundled**
-   (`rusqlite 0.32.1` against system SQLite 3.46.0). Do not claim a build flag; state the
-   measured source or leave it as "observed default, enforced explicitly".
+5. Corrected build evidence: rusqlite 0.32.1 uses BUNDLED SQLite 3.46.0 via
+   libsqlite3-sys 0.30.1, whose build.rs:123 sets `SQLITE_DEFAULT_FOREIGN_KEYS=1`.
+   This explains FK=1 on an unconfigured handle; it is not Go's default.
 6. `Pool::new` (`rust/crates/nd-db/src/pool.rs:120-135`) passes only `config.path` today;
    thread the options through `PoolConfig`/`SQLStore::open` (`store.rs:188`) without
    changing the public `with_connection_sync`/`with_tx_sync` surface.
@@ -1007,3 +1012,258 @@ exist in this checkout (`grep -rn 'NewSqliteDb' --include='*.go' .` is empty; Go
 `db.Db()` singleton at `db/db.go:41-68` and `tests/harness/harness.go:52-58` sets
 `conf.Server.DbPath` to a temp file + `?_journal_mode=WAL` with `SetMaxOpenConns(1)`). The
 earlier `db.rs:100-103` note was a bad citation and must be corrected, not implemented.
+
+## D-OPEN as implemented (2026-11-18, DB-03 + review adjudication)
+
+Point 1 of the contract above said "Go's effective defaults: WAL for file-backed DBs,
+15000, NORMAL, FK-on". That conflated two different things, and the review corrected it.
+Measured against go-sqlite3 v1.14.52 (`sql.Open` + `SELECT 1` + pragma read-back):
+
+* the **driver's own** state for a path nobody configures is journal mode UNSET
+  (`journalMode` empty, `sqlite3.go:1236`, so no `PRAGMA journal_mode` is exec'd),
+  `busy_timeout = 5000` (`:1231`, exec'd `:1665`), foreign keys UNSET
+  (`foreignKeys = -1`, `:1234`, so no `PRAGMA foreign_keys`, `:1851-1853`),
+  `synchronous = NORMAL` exec'd unconditionally (`:1241`, `:1906`). A bare path
+  therefore reads `delete` / 5000 / sync 1 / fk 0.
+* **Navidrome's WAL / 15000 / NORMAL / FK-on** comes from `consts.DefaultDbPath`
+  (`consts/consts.go:14`, mirrored at `rust/crates/nd-conf/src/consts.rs:16`), which
+  `conf/configuration.go:404-406` substitutes **only when `DbPath` is empty**. It is a
+  config preset, not a driver default, and a user-configured custom `DbPath` gets the
+  driver state plus whatever its own query asks for.
+
+### The two grammars, not one normalized query
+
+1. `DbOpenOptions { journal_mode: Option<JournalMode>, busy_timeout: u64,
+   synchronous: Synchronous, foreign_keys: Option<bool>, cache_size: Option<i64> }` separates unnamed settings
+   (no pragma/read-back assertion) from requests. The memory journal expectation is
+   inferred from the decoded URI path and final ordered `mode` value, not Go's map.
+2. Go parses a query only if the first `?` index is >= 1 (`sqlite3.go:1247-1250`):
+   `?_fk=off` is a literal filename. `url.ParseQuery` percent-decodes names and values,
+   maps `+` to space, and supplies the FIRST value per decoded name. Alias presence
+   overrides canonical presence regardless of order, even if the alias value is empty
+   (`:1338-1345`, `:1401-1408`, `:1438-1445`, `:1538-1545`). Names are case-sensitive;
+   the four convention values are case-insensitive. This map extracts conventions
+   and the initial zVfs argument; it does NOT reconstruct the SQLite URI.
+
+   For an accepted `file:` DSN, SQLite receives `file:<path-as-written>?<ORIGINAL query>`,
+   byte-for-byte: no re-encoding, deduplication, or '+' conversion. Underscore
+   conventions stay in the URI (SQLite ignores them; the driver options apply them).
+   SQLite percent-decodes ONCE (`sqlite3.c:182839-182870`) with '+' left literal, then
+   processes ALL ordered mode/cache/vfs occurrences (`:182903-182965`). Later values
+   overwrite earlier ones where allowed; invalid intermediate transitions still fail.
+   Thus `mode=rwc&mode=ro` opens read-only, but `mode=ro&mode=rwc` fails with
+   `access mode not allowed: rwc`. `mode=memory&mode=rwc` creates a real file on the
+   delete journal, while the reverse stays in memory. `cache=shared&cache=private`
+   is private. URI `vfs=` OVERWRITES the zVfs argument: `vfs=unix&vfs=not-a-vfs`
+   fails, while the reverse opens. Go's first-value rule is NOT SQLite's URI rule.
+   This loop belongs to `sqlite3ParseUri` (declared `sqlite3.c:182763`), not a VFS
+   directory opener. Other readers are platform-specific: `exclusive` is Windows VFS
+   (`sqlite3.c:51816`); `rbu_memory` is RBU VFS (`:223262`), not Unix pager state.
+   Decoded NUL discards the rest of its path/name/value component (`:182849-182863`).
+   Memory classification mirrors that truncation only; the URI stays verbatim.
+
+   **Parameter policy** (matches `parse_open_input`'s actual branches):
+   * `_journal_mode`/`_journal`, `_busy_timeout`/`_timeout`, `_synchronous`/`_sync`,
+     `_foreign_keys`/`_fk`: resolve alias/first-value precedence into open options; an
+     empty winning value is unset. Retained but inert to SQLite in a file: URI.
+   * `_cache_size`: first value, empty means unset; otherwise signed base-10 int64
+     validation (`sqlite3.go:1572-1577`) and verbatim normalized-int64 rendering into
+     `PRAGMA cache_size` (`:1917-1921`). Read-back is compared to SQLite's resolved
+     value: exact at both i32 endpoints and within that range, otherwise 0 (including
+     2147483648, -2147483649, 4294967297, i64::MAX and i64::MIN). Shipped
+     `rust/Cargo.lock:667-668` resolves libsqlite3-sys **0.30.1**: its SQLite
+     `PragTyp_CACHE_SIZE` is `sqlite3.c:139581`, calling `sqlite3Atoi` at `:139586`.
+     `sqlite3Atoi` (`:35917`) initializes x=0 and discards `sqlite3GetInt32`'s result;
+     GetInt32 (`:35858`) leaves x untouched at overflow exits `:35899` (i>10) and
+     `:35903` (v-neg>2147483647). This is SQLite TEXT-to-int conversion, NOT
+     driver-side low-word truncation, and is distinct from the earlier `_journal_mode`
+     URI pointer-arithmetic truncation issue. Mismatch messages retain requested
+     (including its sign), resolved and actual values. EffectiveState/token admission
+     compares the actual resolved state, so a changed cache size still fails.
+     None emits no pragma/no assertion; it is NOT a state-free driver cache.
+   * `vfs`, `cache`, `mode`, `immutable`, `nolock`, `psow`, `readonly_shm`, `exclusive`,
+     `modeof`, `8_3_names`, `rbu_memory`: reject an empty FIRST Go-decoded value;
+     otherwise SQLite interprets the untouched URI query. A non-URI query is stripped.
+     First Go-decoded `vfs` additionally configures zVfs for both shapes.
+   * `journal_mode`, `journal`, `busy_timeout`, `timeout`, `synchronous`, `sync`,
+     `foreign_keys`, `fk`: accept any value, ignore, retain in a file: URI.
+   * `_txlock`, `_loc`: empty accepted; otherwise validate transaction grammar or ASCII
+     zone-name shape, configure no SQLite state, retain but inert in a file: URI.
+     Host zoneinfo existence is deliberately not checked (`_loc=UTC/Paris` may be
+     accepted here when Go rejects it).
+   * `_auto_vacuum`/`_vacuum`, `_case_sensitive_like`/`_cslike`, `_defer_foreign_keys`/
+     `_defer_fk`, `_ignore_check_constraints`, `_locking_mode`/`_locking`, `_query_only`,
+     `_recursive_triggers`/`_rt`, `_secure_delete`, `_writable_schema`, `_mutex`,
+     `_stmt_cache_size`, `_auth`, `_auth_user`, `_auth_pass`, `_auth_crypt`, `_auth_salt`:
+     resolve the winning canonical/alias name by PRESENCE before any validation.
+     The loser's value is never inspected. An empty winner configures nothing, except `_auth`,
+     whose presence alone triggers rejection (Go also fails without `_auth_user`, wording
+     differs). Nonempty winners are Go-grammar validated THEN refused. Thus
+     `_auto_vacuum=nonsense&_vacuum=` opens; `_vacuum=nonsense&_auto_vacuum=` errors.
+     `_stmt_cache_size` remains a driver-side statement-cache option.
+   * Any other name (including uppercase or misspelled conventions and `verbose`) is
+     rejected as unknown.
+
+   Explicit input restriction: percent-decoded query names/values must be UTF-8,
+   including inert values (`_loc=%FF`, `journal_mode=%FF`). Go permits arbitrary bytes;
+   the port rejects these with `not valid UTF-8` rather than replacing bytes silently.
+   Raw semicolons (Go's ParseQuery error), malformed escapes, bare items without '=',
+   empty names, and '#' fragments in file: URIs are also rejected. Empty pairs (&&)
+   are skipped. Plain filenames retain literal '#' and percent escapes.
+3. Pragmas are applied per handle after extension registration, in go-sqlite3's order
+   (busy `:1665`, FK `:1852`, journal `:1866`, synchronous `:1906`, cache `:1917-1921`), and the effective
+   state is read back; a mismatch fails pool creation. `PRAGMA busy_timeout` is read with
+   `query_row` because it returns a row. The ORDER is not observable on this build —
+   measured: `PRAGMA journal_mode=wal` changes neither `busy_timeout` nor `synchronous`
+   (SQLite applies `SQLITE_DEFAULT_WAL_SYNCHRONOUS` to a btree only when it differs from
+   `SQLITE_DEFAULT_SYNCHRONOUS`, `sqlite3.c:73776`/`:73875`, and `PRAGMA compile_options`
+   reports both as 2) — so busy-before-journal is kept because it is Go's order and stays
+   correct if SQLite ever gives WAL its own defaults, not because this SQLite needs it.
+   `busy_timeout`'s numeric domain is reproduced rather than rejected
+   (`SQLITE_BUSY_TIMEOUT_MAX_MS`): go-sqlite3 sends the value as pragma TEXT
+   (`sqlite3.go:1665`) and SQLite's `sqlite3Atoi` returns 0 — with no error — above
+   `INT_MAX` or past 10 digits (`sqlite3.c:141340`, `:35858-35910`), so 2147483648,
+   4294967297, 10000000000 and every negative value end at 0 on BOTH drivers (measured),
+   while 2147483647, 777 and `000000000000000000005` (Go normalizes to `5`) are applied
+   verbatim. Only what go-sqlite3's own `strconv.ParseInt` rejects
+   (`9223372036854775808`, `0x10`, `1_000`, `12.5`, `+5`, `abc`) is an error here,
+   mirroring Go's `Invalid _busy_timeout`. So no DSN is rejected, and no read-back
+   fails, because of its `busy_timeout` value: `%2B5` decodes to `+5`, which Go's
+   `ParseInt` accepts (a leading sign is valid) and this port resolves to 5, while a RAW
+   `+` decodes to a space and fails on both sides. `_loc` is the one place where the port
+   cannot match Go exactly — it validates the zone-name SHAPE but cannot consult the
+   host's zoneinfo, so a well-formed name that is not installed (`_loc=UTC/Paris`, which
+   Go rejects with `not a directory`) is accepted; that parameter configures no SQLite
+   state, so nothing about the handle differs.
+4. `Pool::new` returns `(Pool, Initializer)`: the held-out handle is wrapped in an
+   unforgeable, pool-bound token (private fields, immutable Deref only). Schema
+   initialization takes `&Connection`, so no mutable/extracting accessor is needed.
+   `Pool::put_back` accepts ONLY this token, never a raw Connection, and compares an
+   internal shared pool identity (not DSN or pragma equality). Thus foreign read-only
+   or private-memory handles are structurally impossible to admit. A wrong-pool token
+   is closed and decrements its issuing pool's count. Effective-state comparison,
+   including cache_size, and SEEDEDRAND/NATSORT execution defend mutated issued tokens.
+   One `Arc<AtomicUsize>` counts idle + leased + issued-but-not-returned handles;
+   token Drop/rejection closes and decrements, while queue/lease transfers do not.
+   Capacity is structural, not enforced by unreachable arithmetic guards: new opens
+   exactly N handles, only one pool-bound token is issued, transfers mint nothing,
+   and foreign tokens cannot enter. Thus live>N and idle>=N while a valid token is
+   held are unreachable. The misleading over-capacity test was renamed to
+   `r6_f2_put_back_refuses_foreign_owner_and_updates_live_counts`; it exercises owner
+   rejection and counter side effects, not a capacity branch. Real capacity is
+   exercised by `r5_h3_live_capacity_includes_lease_and_transaction` (blocked checkout).
+   No public lease API yields `&mut Connection`: transactions borrow the lease and
+   return a Transaction with immutable Deref, so handles cannot be substituted.
+   `SQLStore::open` returns the same token, and exposes checked `put_back`,
+   `initialize(token, closure)` and `idle_count` on its facade. Initialization errors
+   or panics drop the token without queueing it. Size-1 store usability and full size-N
+   idle counts are tested, as are wrong-pool tokens, live checkouts/transactions,
+   dropped tokens, and failed initializer closures. Existing callers migrate the issued
+   token then handle the checked return result; none must access SQLStore's private pool.
+   FK error contract, verified against all five scenarios a reviewer probed with a
+   rusqlite `hooks` authorizer in a scratch copy (`nd-dbschema` does not enable `hooks`,
+   so the executed suite reproduces the same situations with mechanisms SQLite really
+   has: `PRAGMA foreign_keys` inside an open transaction is silently ignored because the
+   flag pragma's mask is cleared when `db->autoCommit == 0`, `sqlite3.c:139857-139861`,
+   and `PRAGMA max_page_count=1` makes the next CREATE fail with `database or disk is
+   full`):
+   * DDL OK + restore denied → `Error::OpenConfiguration` naming the state the handle is
+     actually left at (`foreign_keys=false`). This used to surface as `Error::Failed`.
+   * DDL denied + restore OK → `Error::Failed` carrying the DDL cause, FK restored.
+   * DDL denied + restore denied → `Error::OpenConfiguration` naming both the DDL failure
+     and the leaked state.
+   * disable denied (migration called inside a transaction) → `Error::OpenConfiguration`
+     naming the disable step; the handle never lost enforcement.
+   * nothing interfered → `Ok(())`, and the handle ends in its OWN configured FK state —
+     a deliberately FK-off handle stays off, which Go's unconditional
+     `foreign_keys=on` (`db/db.go:85-91`) would have overwritten. That unconditional exec
+     is unconditional because Navidrome's *default* DSN asks for FK on; a custom
+     `DbPath` without `_foreign_keys` leaves go-sqlite3 at `foreignKeys = -1` and its
+     handle at FK off.
+   The public test probe's read-only contract is not enforced by its type: a mutating
+   probe may return Ok if FK restoration succeeds. Panics are caught with
+   `catch_unwind(AssertUnwindSafe(...))`; FK restore is attempted and READ BACK before
+   resuming the original unwind payload. Only if restore fails/mis-reads does the
+   payload become `(original Box<dyn Any + Send>, Error::OpenConfiguration)` naming
+   the leaked state. Both paths are executed in tests; BEGIN inside the panicking
+   probe forces restore to be ignored, requiring no `hooks` feature.
+   Accepted facade divergence: StoreError::Open(String) erases the schema error's
+   InvalidDsn/OpenConfiguration discriminant and source chain. The FULL message
+   must survive; no error is swallowed and a failed token is closed (live=0, idle=0).
+   Callers requiring typed schema errors must inspect them before mapping.
+   Two mapped-error tests distinguish the fault-injection phases without hooks:
+   BEGIN **before** apply_fresh_schema prevents FK disable (FK remains true, restore
+   succeeds, DDL creates no objects after rollback). BEGIN **inside the mid-DDL
+   apply_fresh_schema_with probe**, after FK was disabled and a statement executed,
+   prevents restoring ON (actual leaked FK=false, error names failed restore). The
+   latter intentionally mutates the public test probe, violating its read-only
+   contract for fault injection; it is NOT a claim that BEGIN-before-apply leaks FK.
+   This covers the restore-failure branch in shipped tests without adding hooks.
+5. Point 5 of the contract asked for FK's origin to be pinned honestly. It is a
+   compile-time default, not an observed mystery and not go-sqlite3 behavior: the crate
+   builds `rusqlite 0.32.1` with the `bundled` feature (`nd-dbschema/Cargo.toml:14`), so
+   SQLite comes from `libsqlite3-sys` 0.30.1, which passes
+   `-DSQLITE_DEFAULT_FOREIGN_KEYS=1` (`build.rs:123`). Go's handle for a bare path reads
+   fk=0. The port leaves FK alone when the DSN names nothing, so that compiled default
+   stays in charge exactly as it did before DB-03; `foreign_keys: Some(_)` is applied and
+   verified.
+6. `cache=shared` reaches SQLite only through a `file:` URI. go-sqlite3 strips the whole
+   query for a non-`file:` DSN (`sqlite3.go:1599-1601`), so **Go's SQLite never receives
+   `cache=shared` for Navidrome's default DSN** (measured: the default DSN and the same
+   DSN minus `cache=shared` give byte-identical pragma state and file name). Forwarding
+   it anyway for that DSN ONLY — and only `cache=shared` — is a deliberate choice of the
+   D-OPEN decision above and of this round's measurements, not something inherited from
+   DB-02, whose section does not establish a shared-cache requirement. The tradeoff is
+   explicit and measured on this build: with a shared cache, two handles writing the same
+   table fail immediately with `SQLITE_LOCKED_SHAREDCACHE` (extended 262, "database table
+   is locked") instead of waiting out the busy timeout for `SQLITE_BUSY` (extended 5);
+   `nd_db::store::is_busy` classifies both as retryable.
+   Preset matching runs on the DECODED, order-insensitive parameter set, so
+   `navidrome.db?cache=shared&_busy%5Ftimeout=15000&_journal%5Fmode=WAL&_foreign%5Fkeys=on&synchronous=normal`
+   gets the same options and the same forwarded `cache=shared` as the plain spelling
+   (measured in Go: identical pragma state). Matching on raw items used to miss it and
+   silently changed the lock class (262 vs 5) for an identical configuration. The shape
+   caveat stands and is a documented divergence: a user-supplied
+   `/data/navidrome.db` with that query matches too and gets the forwarded shared cache,
+   which go-sqlite3 would not give it.
+   File: inputs are NEVER rebuilt from the Go map. Measured modeof traps prove the
+   distinction: literal `mask+a` (0711) and `mask a` (0755) coexist, and the URI with
+   literal '+' copies 0711, just like `%2B`. `%26` names `mask&a` (0700), never a
+   stray `mask` (0755); `%2526` names literal `mask%26a`, failing with disk I/O error
+   when absent. SQLite performs exactly one decode.
+   A non-URI path beginning with '//' stays a plain filename, not a synthesized
+   authority. SQLite's authority rejection is `sqlite3.c:182815-182824`.
+   Go extracts first-value `vfs` before stripping a non-URI query (`sqlite3.go:1595-1597`)
+   and passes it to `sqlite3_open_v2` (`:1607-1614`), mirrored by rusqlite's
+   `Connection::open_with_flags_and_vfs`. For URI inputs SQLite's ordered `vfs=`
+   occurrences OVERWRITE that zVfs argument (`sqlite3.c:182903-182908`).
+7. `:memory:` keeps Go's rewrite (`db/db.go:54-55`) as `file::memory:?cache=shared` with
+   FK on, and the boundary is Go's exact test `Path == ":memory:"` — no query, no `file:`
+   prefix. Measured with go-sqlite3, two handles per DSN: `:memory:` (rewritten) is
+   SHARED; `file::memory:` and `:memory:?_fk=off` are NOT-SHARED, because they do not
+   match the rewrite, so neither gets an injected `cache=shared` nor the FK-on default.
+   In particular `:memory:?cache=shared` and `:memory:?_fk=off&cache=shared` stay
+   PRIVATE because the non-URI query is stripped; `:memory:?mode=ro` is writable.
+   `file::memory:?cache=shared` is shared, but `file::memory:?mode=ro` is read-only.
+   `file:%3Amemory%3A?_journal_mode=wal` decodes to a memory path and accepts SQLite's
+   memory-journal downgrade (no backing file).
+   SQLite's bare `:memory:` (without the rewrite) is a private DB per handle; the
+   shared-cache URI names one shared DB. `mode=memory` counts ONLY for a genuine
+   `file:` URI: a non-URI `x.db?mode=memory` has its query stripped like any other
+   non-URI DSN, so SQLite's option reader never sees it and a REAL file is opened
+   (measured: journal `delete`, `PRAGMA database_list` names the file). SQLite fixes a
+   memory DB's journal at `memory`/`off` (`sqlite3.c:64459-64464`), so only a WAL request
+   is accepted as a downgrade; a DELETE/TRUNCATE/PERSIST request that reads back `memory`
+   is reported.
+
+Evidence lives in the executed suites, not in prose:
+`rust/crates/nd-dbschema/tests/dsn_open_options.rs` (parse/precedence/URI/state, the
+non-URI `mode=memory` case, the `:memory:` rewrite boundary with two handles per shape,
+the untouched URI grammar via `modeof` permission bits, the `//`-authority case, percent-encoded
+preset matching, the `busy_timeout` domain, and `vfs` handed to `open_with_flags_and_vfs`
+on both URI and plain inputs),
+`rust/crates/nd-dbschema/tests/fresh_schema.rs` (the five FK authorizer scenarios of the
+error contract above), and
+`rust/crates/nd-db/tests/runtime_pool_configuration.rs` (every pool handle, all leases
+held concurrently, `PRAGMA database_list` file names, directory listings, and
+`idle_count() == config.size` after initialization).
