@@ -36,20 +36,11 @@
 //! (`model/share.go:19,20`, `model/artist.go:39,45,46`); the zero-integer
 //! sentinel this port used before is gone.
 //!
-//! Converted here: `share_repo`, `radio_repo` (including the `artwork_queue`
-//! row its `Put` enqueues), `artist_repo`, and the `artwork_queue_repo`
-//! stamps/predicates (`retry_at <= now`, `artwork_queue_repository.go:167`).
-//! Remaining work, stated so nobody assumes it is done: `library_repo`,
-//! `mediafile_repo`, `folder_repo`, `album_repo`, `playqueue_repo`,
-//! `artwork_repo` and `plugin_repo` still bind epoch integers into
-//! `datetime`/`timestamp` columns, so their range predicates and ordering are
-//! still affected by the affinity rule above. `playlist_repo`,
-//! `smart_playlist_repo`, `sql_annotations`, `sql_bookmarks` and `user_repo`
-//! already bind TEXT through a caller-supplied `&str` stamp
-//! (`user_repo.rs:227-230`); their fixtures now use this module's shape, and
-//! their signatures are the natural next conversion. `user_repo`'s record
-//! keeps the stored TEXT opaquely on purpose (`user_repo.rs:490-492`); only
-//! the bytes it writes had to be unified.
+//! Converted here: `share_repo`, `radio_repo`, `artist_repo`,
+//! `artwork_queue_repo`, and (DB-02) scanner timestamp writers/read bounds in
+//! `library_repo`, `mediafile_repo`, `folder_repo`, and `album_repo`; timestamp
+//! writes in `playqueue_repo`, `artwork_repo`, and `plugin_repo` also use this
+//! format. `scrobble_repo.submission_time` deliberately remains Unix INTEGER.
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 
@@ -67,6 +58,12 @@ pub const SQLITE_DATETIME_FORMAT: &str = "%F %T%.f%:z";
 #[must_use]
 pub fn now() -> DateTime<Utc> {
     Utc::now()
+}
+
+/// The Go `time.Time{}` value in UTC (0001-01-01T00:00:00Z).
+#[must_use]
+pub fn zero() -> DateTime<Utc> {
+    DateTime::from_timestamp(-62_135_596_800, 0).expect("year-one timestamp is representable")
 }
 
 /// The stored TEXT for `dt`, byte-identical to what `params![dt]` binds.

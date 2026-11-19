@@ -893,11 +893,11 @@ pub fn put_marshalled_sql(
 /// chunk (`slices.Chunk(ids, 200)`, `:263`), setting `missing` and
 /// `updated_at` (the caller binds the timestamp).
 #[must_use]
-pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<Sql> {
+pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: &DateTime<Utc>) -> Vec<Sql> {
     ids.chunks(MARK_MISSING_CHUNK_SIZE)
         .map(|chunk| {
             let placeholders = vec!["?"; chunk.len()].join(", ");
-            let mut args = vec![Value::Bool(missing), Value::Integer(updated_at)];
+            let mut args = vec![Value::Bool(missing), crate::time::value(updated_at)];
             args.extend(chunk.iter().map(|id| Value::from(id.as_str())));
             (
                 format!(
@@ -1796,7 +1796,7 @@ mod tests {
         // Arrange: 201 ids → 2 chunks (:261-274, chunk 200 at :263).
         let ids = (0..201).map(|i| format!("f-{i}")).collect::<Vec<_>>();
         // Act:
-        let stmts = mark_missing_sql(true, &ids, 1_700_000_000);
+        let stmts = mark_missing_sql(true, &ids, &crate::time::zero());
         // Assert:
         assert_eq!(stmts.len(), 2);
         assert_eq!(
@@ -1807,7 +1807,7 @@ mod tests {
             )
         );
         assert_eq!(stmts[0].1[0], Value::Bool(true));
-        assert_eq!(stmts[0].1[1], Value::Integer(1_700_000_000));
+        assert_eq!(stmts[0].1[1], crate::time::value(&crate::time::zero()));
         assert_eq!(stmts[0].1.len(), 202);
         assert_eq!(stmts[1].1.len(), 3);
     }

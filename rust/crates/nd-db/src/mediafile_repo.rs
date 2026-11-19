@@ -1594,7 +1594,7 @@ pub const CHUNK_SIZE: usize = 200;
 /// Binding the ids first would put a media-file id in the `missing` slot and
 /// the timestamp in the `id` slot, making the UPDATE a silent no-op.
 #[must_use]
-pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<Sql> {
+pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: &DateTime<Utc>) -> Vec<Sql> {
     ids.chunks(CHUNK_SIZE)
         .map(|chunk| {
             let placeholders = vec!["?"; chunk.len()].join(", ");
@@ -1604,7 +1604,7 @@ pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<S
                 ),
                 [
                     crate::sqlrepo::Value::Bool(missing),
-                    crate::sqlrepo::Value::Integer(updated_at),
+                    crate::time::value(updated_at),
                 ]
                 .into_iter()
                 .chain(
@@ -1628,7 +1628,7 @@ pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: i64) -> Vec<S
 pub fn mark_missing_by_folder_sql(
     missing: bool,
     folder_ids: &[String],
-    updated_at: i64,
+    updated_at: &DateTime<Utc>,
 ) -> Vec<Sql> {
     folder_ids
         .chunks(CHUNK_SIZE)
@@ -1641,7 +1641,7 @@ pub fn mark_missing_by_folder_sql(
                 ),
                 [
                     crate::sqlrepo::Value::Bool(missing),
-                    crate::sqlrepo::Value::Integer(updated_at),
+                    crate::time::value(updated_at),
                 ]
                 .into_iter()
                 .chain(
@@ -1732,7 +1732,7 @@ pub struct RecentFileByMbz<'a> {
     /// The missing row's `suffix`.
     pub suffix: &'a str,
     /// `since` — `created_at` must be strictly greater.
-    pub since: i64,
+    pub since: &'a DateTime<Utc>,
 }
 
 /// `FindRecentFilesByMBZTrackID` (`:512-532`): the lightweight join-free
@@ -1758,7 +1758,7 @@ pub fn find_recent_files_by_mbz_track_id_sql(m: &RecentFileByMbz<'_>) -> Sql {
             crate::sqlrepo::Value::from(m.mbz_release_track_id),
             crate::sqlrepo::Value::from(""),
             crate::sqlrepo::Value::from(m.suffix),
-            crate::sqlrepo::Value::Integer(m.since),
+            crate::time::value(m.since),
             crate::sqlrepo::Value::Bool(false),
         ],
     )
@@ -1783,7 +1783,7 @@ pub struct RecentFileByProperties<'a> {
     /// The missing row's `album`.
     pub album: &'a str,
     /// `since` — `created_at` must be strictly greater.
-    pub since: i64,
+    pub since: &'a DateTime<Utc>,
 }
 
 /// `FindRecentFilesByProperties` (`:534-563`): same lightweight select,
@@ -1816,7 +1816,7 @@ pub fn find_recent_files_by_properties_sql(m: &RecentFileByProperties<'_>) -> Sq
             crate::sqlrepo::Value::Integer(m.track_number),
             crate::sqlrepo::Value::from(m.album),
             crate::sqlrepo::Value::from(""),
-            crate::sqlrepo::Value::Integer(m.since),
+            crate::time::value(m.since),
             crate::sqlrepo::Value::Bool(false),
         ],
     )
@@ -2393,7 +2393,7 @@ mod tests {
         // Arrange: MarkMissing (:455-469) — slice.CollectChunks(ids, 200) at :457.
         let ids: Vec<String> = (0..201).map(|i| format!("mf-{i}")).collect();
         // Act:
-        let chunks = mark_missing_sql(true, &ids, 99);
+        let chunks = mark_missing_sql(true, &ids, &crate::time::zero());
         // Assert:
         assert_eq!(chunks.len(), 2, "201 ids split at the 200 boundary");
         assert_eq!(
@@ -2409,7 +2409,7 @@ mod tests {
         // check can catch it.
         assert_eq!(chunks[0].1.len(), CHUNK_SIZE + 2);
         assert_eq!(chunks[0].1[0], Value::Bool(true));
-        assert_eq!(chunks[0].1[1], Value::Integer(99));
+        assert_eq!(chunks[0].1[1], crate::time::value(&crate::time::zero()));
         assert_eq!(
             chunks[0].1[2..],
             ids[..CHUNK_SIZE]
@@ -2423,7 +2423,7 @@ mod tests {
             chunks[1].1,
             vec![
                 Value::Bool(true),
-                Value::Integer(99),
+                crate::time::value(&crate::time::zero()),
                 Value::Text(format!("mf-{CHUNK_SIZE}")),
             ]
         );
@@ -2441,7 +2441,7 @@ mod tests {
     fn mark_missing_by_folder_gates_on_the_current_flag() {
         // Arrange: MarkMissingByFolder (:472-487) — Eq{"missing": !missing} at :479.
         // Act:
-        let chunks = mark_missing_by_folder_sql(true, &["f-1".to_string()], 5);
+        let chunks = mark_missing_by_folder_sql(true, &["f-1".to_string()], &crate::time::zero());
         // Assert:
         assert_eq!(
             chunks[0],
@@ -2451,7 +2451,7 @@ mod tests {
                     .to_string(),
                 vec![
                     Value::Bool(true),
-                    Value::Integer(5),
+                    crate::time::value(&crate::time::zero()),
                     Value::Text("f-1".to_string()),
                     Value::Bool(false),
                 ]
@@ -2511,11 +2511,12 @@ mod tests {
         // Arrange: FindRecentFilesByMBZTrackID (:512-532) and
         // FindRecentFilesByProperties (:534-563) — declaration-order Ands.
         // Act:
+        let since = crate::time::zero();
         let by_mbz = find_recent_files_by_mbz_track_id_sql(&RecentFileByMbz {
             library_id: 2,
             mbz_release_track_id: "mbz-1",
             suffix: "flac",
-            since: 100,
+            since: &since,
         });
         let by_props = find_recent_files_by_properties_sql(&RecentFileByProperties {
             library_id: 2,
@@ -2525,7 +2526,7 @@ mod tests {
             disc_number: 1,
             track_number: 2,
             album: "Album",
-            since: 100,
+            since: &since,
         });
         // Assert:
         assert_eq!(
@@ -2548,7 +2549,7 @@ mod tests {
                 Value::Text("mbz-1".to_string()),
                 Value::Text(String::new()),
                 Value::Text("flac".to_string()),
-                Value::Integer(100),
+                crate::time::value(&since),
                 Value::Bool(false),
             ]
         );

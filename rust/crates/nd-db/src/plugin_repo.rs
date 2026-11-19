@@ -11,6 +11,7 @@
 
 use crate::sql_restful::QueryOptions;
 use crate::sqlrepo::{Repository, Value};
+use chrono::{DateTime, Utc};
 
 /// A materialized statement: `(sql, args)`, the `toSQL()`
 /// (`sql_base_repository.go:358-372`) output shape.
@@ -120,7 +121,7 @@ pub fn get_all_sql(options: Option<&QueryOptions>) -> Sql {
 /// the atomic INSERT … ON CONFLICT(id) DO UPDATE (`:96-111`): dbx's named
 /// params bind positionally in listing order, and `created_at` is absent from
 /// the UPDATE list so a conflict keeps the original stamp.
-pub fn put_sql(plugin: Plugin, now: i64) -> Result<Sql, &'static str> {
+pub fn put_sql(plugin: Plugin, now: &DateTime<Utc>) -> Result<Sql, &'static str> {
     if plugin.id.is_empty() {
         return Err(ERR_PLUGIN_ID_EMPTY);
     }
@@ -180,8 +181,8 @@ pub fn put_sql(plugin: Plugin, now: i64) -> Result<Sql, &'static str> {
             Value::Bool(plugin.enabled),
             Value::Text(plugin.last_error.clone()),
             Value::Text(plugin.sha256.clone()),
-            Value::Integer(now),
-            Value::Integer(now),
+            crate::time::value(now),
+            crate::time::value(now),
         ],
     ))
 }
@@ -215,7 +216,7 @@ mod tests {
     fn empty_plugin_id_rejects_before_the_upsert_is_built() {
         // Arrange: Put with no id (plugin_repository.go:91-93).
         // Act:
-        let result = put_sql(Plugin::default(), 42);
+        let result = put_sql(Plugin::default(), &crate::time::zero());
         // Assert:
         assert_eq!(result.err(), Some(ERR_PLUGIN_ID_EMPTY));
     }
@@ -229,12 +230,12 @@ mod tests {
             ..Default::default()
         };
         // Act:
-        let (sql, args) = put_sql(plugin, 99).unwrap();
+        let (sql, args) = put_sql(plugin, &crate::time::zero()).unwrap();
         // Assert: 14 bound insert values, both timestamps Go's time.Now()
         // supplies, and created_at absent from the conflict clause (:99).
         assert_eq!(args.len(), 14);
         assert_eq!(args[0], Value::Text("pl-1".to_string()));
-        assert_eq!(args.last(), Some(Value::Integer(99)).as_ref());
+        assert_eq!(args.last(), Some(&crate::time::value(&crate::time::zero())));
         assert!(sql.starts_with("INSERT INTO plugin (id, path,"));
         assert!(sql.contains("ON CONFLICT(id) DO UPDATE SET"));
         assert!(!sql.contains("created_at = excluded.created_at"));

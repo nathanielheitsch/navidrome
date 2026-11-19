@@ -1141,12 +1141,12 @@ pub fn update_external_info_sql(
 /// `Touch` (`album_repository.go:360-374`): one `imported_at = ?` UPDATE per
 /// 200-id chunk (`slices.Chunk(ids, 200)`, `:264`).
 #[must_use]
-pub fn touch_sql(ids: &[String], imported_at: i64) -> Vec<Sql> {
+pub fn touch_sql(ids: &[String], imported_at: &DateTime<Utc>) -> Vec<Sql> {
     const CHUNK: usize = 200;
     ids.chunks(CHUNK)
         .map(|chunk| {
             let placeholders = vec!["?"; chunk.len()].join(", ");
-            let mut args = vec![Value::Integer(imported_at)];
+            let mut args = vec![crate::time::value(imported_at)];
             args.extend(chunk.iter().map(|id| Value::from(id.as_str())));
             (
                 format!("UPDATE {ALBUM_TABLE} SET imported_at = ? WHERE id IN ({placeholders})"),
@@ -1160,14 +1160,14 @@ pub fn touch_sql(ids: &[String], imported_at: i64) -> Vec<Sql> {
 /// whose EXISTS subquery walks `json_each(folder_ids)` into `folder` for
 /// missing folders. `imported_at` binds first.
 #[must_use]
-pub fn touch_by_missing_folder_sql(imported_at: i64) -> Sql {
+pub fn touch_by_missing_folder_sql(imported_at: &DateTime<Utc>) -> Sql {
     (
         format!(
             "UPDATE {ALBUM_TABLE} SET imported_at = ? WHERE folder_ids IS NOT NULL AND \
              EXISTS (SELECT 1 FROM json_each(folder_ids) AS je \
              JOIN main.folder AS f ON je.value = f.id WHERE f.missing = ?)"
         ),
-        vec![Value::Integer(imported_at), Value::Bool(true)],
+        vec![crate::time::value(imported_at), Value::Bool(true)],
     )
 }
 
@@ -2119,11 +2119,11 @@ mod tests {
         // (:273-286).
         let ids = (0..201).map(|i| format!("al-{i}")).collect::<Vec<_>>();
         // Act:
-        let stmts = touch_sql(&ids, 1_700_000_000);
-        let (mf_sql, mf_args) = touch_by_missing_folder_sql(1_700_000_000);
+        let stmts = touch_sql(&ids, &crate::time::zero());
+        let (mf_sql, mf_args) = touch_by_missing_folder_sql(&crate::time::zero());
         // Assert:
         assert_eq!(stmts.len(), 2);
-        assert_eq!(stmts[0].1[0], Value::Integer(1_700_000_000));
+        assert_eq!(stmts[0].1[0], crate::time::value(&crate::time::zero()));
         assert_eq!(stmts[0].1.len(), 201);
         assert_eq!(stmts[1].1.len(), 2);
         assert_eq!(
@@ -2134,7 +2134,7 @@ mod tests {
         );
         assert_eq!(
             mf_args,
-            vec![Value::Integer(1_700_000_000), Value::Bool(true)]
+            vec![crate::time::value(&crate::time::zero()), Value::Bool(true)]
         );
     }
 
