@@ -68,6 +68,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::runtime_error::DbOperationError;
 use crate::sql_annotations::ANNOTATION_TABLE;
 use crate::sql_participations::{participant_id_filter, Participants};
 use crate::sql_restful::{boolean_filter, Filter};
@@ -1169,6 +1170,105 @@ pub fn touch_by_missing_folder_sql(imported_at: &DateTime<Utc>) -> Sql {
         ),
         vec![crate::time::value(imported_at), Value::Bool(true)],
     )
+}
+
+/// Callback error of the executed album touch primitives, which have NO domain failure
+/// to carry: Go's `Touch`/`TouchByMissingFolder` return a bare `error` (or `(int64,
+/// error)`) that can only be a driver failure (`album_repository.go:360-387`) — no
+/// validation, no `NotFound`, no permission check. `Infallible` makes the `Domain` arm
+/// structurally uninhabited rather than reserved, as in `library_repo::LibraryScanError`
+/// and `tag_repo::TagWriteError`, and keeps every SQLite failure on the
+/// [`DbOperationError::Sqlite`] arm so `store::is_busy` still classifies `SQLITE_BUSY`
+/// for the executor's retry loop.
+///
+/// Go's `fmt.Errorf("error touching albums: %w", err)` (`:368`) and
+/// `"error touching albums by missing folder: %w"` (`:384`) are deliberately NOT
+/// reproduced: the port keeps the raw `rusqlite::Error` on the `Sqlite` arm so the
+/// executor's retry classifier can still see `SQLITE_BUSY` (`decisions.md` E1, same call
+/// `library_repo::assign_admins_in_tx` and `tag_repo::add_in_tx` record). The message
+/// text differs from Go's; the cause does not.
+pub type AlbumTouchError = DbOperationError<std::convert::Infallible>;
+
+/// `Touch` (`album_repository.go:360-373`) EXECUTED on the CALLER's transaction: one
+/// `imported_at = ?` UPDATE per 200-id chunk (`slices.Chunk(ids, 200)`, `:364`) in Go's
+/// loop order over the CALLER's id order, executing exactly what [`touch_sql`] renders
+/// rather than re-rendering it here. Go's `len(ids) == 0` guard (`:361-363`) and the
+/// chunker's empty-input arm agree: an empty id list runs NO statement and returns
+/// `Ok(0)`.
+///
+/// **Scope: exactly the supplied ids.** Go's statement is
+/// `UPDATE album SET imported_at = ? WHERE id IN (chunk)` (`:365`) with no library
+/// predicate, and its caller already hands it ids inside the job's library —
+/// `scanner/phase_1_folders.go:452-456` derives them from `entry.missingTracks`'
+/// `AlbumID`s. This primitive adds NO library filter and no auth guard: it is
+/// caller-trusted, so a caller that supplies another library's album id HAS it touched
+/// and the returned count includes it. Ownership is future SC typed authority
+/// (`docs/rust-port/subplans/db-runtime.md:264`). Unknown ids are a silent no-op — Go checks the
+/// count only for its `log.Debug("updated", c)` (`:370`) and never turns 0 into an error.
+///
+/// The affected-row total is returned for the caller's observability (Go logs it at
+/// `:370` and discards it; nd-db has no logger). No policy rides on the count.
+///
+/// `imported_at` is the caller's stamp where Go binds `time.Now()` (`:365`); the caller
+/// owns the clock and samples it outside any retry loop.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` from any chunk;
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`AlbumTouchError`]). A
+/// failed chunk fails the call and the caller's transaction rolls back earlier chunks.
+pub fn touch_albums_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    ids: &[String],
+    imported_at: &DateTime<Utc>,
+) -> Result<usize, AlbumTouchError> {
+    let mut total = 0usize;
+    for statement in touch_sql(ids, imported_at) {
+        total += crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(total)
+}
+
+/// `TouchByMissingFolder` (`album_repository.go:376-387`) EXECUTED on the CALLER's
+/// transaction: the ONE statement [`touch_by_missing_folder_sql`] renders.
+///
+/// **This one is GLOBAL — the name says so, and the scope is not an accident to be
+/// narrowed.** Go's predicate is `folder_ids IS NOT NULL` plus
+/// `EXISTS (SELECT 1 FROM json_each(folder_ids) AS je JOIN main.folder AS f ON
+/// je.value = f.id WHERE f.missing = true)` (`:377-381`): no id list, no library
+/// predicate, no `logged_user`/library filter anywhere in the method. It therefore
+/// touches albums of libraries OTHER than the one being scanned whenever an album's
+/// `folder_ids` references a folder that belongs to a different library and is flagged
+/// missing — the cross-library reach is real (the schema allows it: `album.folder_ids`
+/// is declared `jsonb default '[]' not null` with no FK (`nd-dbschema/src/schema_ddl.rs:58`),
+/// and a fixture pins the reach here. Go bounds the consequences on the READ side:
+/// `GetTouchedAlbums(ctx, libID)` (`:392-403`) scopes the follow-up to one library by
+/// `album.imported_at > library.last_scan_at`.
+///
+/// Narrowing this to the scan job's libraries would be a recorded product deviation and
+/// is NOT done here (parent decision, `nav-db07-db08-decisions.md` §A3/C1): the exact Go
+/// predicate is retained and the scope is stated in the name and this comment.
+///
+/// Returns the affected-row count. Go's own caller DISCARDS it
+/// (`scanner/phase_1_folders.go:541`, `if _, err := …`), so the number is for the
+/// caller's observability only. NULL `folder_ids` is skipped by `IS NOT NULL` (Go's
+/// `NotEq{"folder_ids": nil}`, `:379`); `'[]'` matches nothing through `json_each`;
+/// a malformed JSON cell is a HARD SQLite `malformed JSON` failure of the whole
+/// statement (executed: it touches 0 rows and errors), which the caller's transaction
+/// turns into a rollback of everything before it. Go fails the same way — there is no
+/// `json_valid` preflight and none is added here.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact — the malformed-JSON failure carries NO `SQLITE_CONSTRAINT_*` extended code,
+/// so callers must match on the concrete `rusqlite::Error`, not an extended-code class).
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`AlbumTouchError`]).
+pub fn touch_albums_with_missing_folders_globally_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    imported_at: &DateTime<Utc>,
+) -> Result<usize, AlbumTouchError> {
+    let rows = crate::execution::execute(tx, &touch_by_missing_folder_sql(imported_at))
+        .map_err(DbOperationError::sqlite)?;
+    Ok(rows)
 }
 
 /// `GetYears` (`album_repository.go:317-330`): the distinct non-missing

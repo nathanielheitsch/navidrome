@@ -79,6 +79,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::runtime_error::DbOperationError;
 use crate::sql_participations::Participants;
 use crate::sql_search::SearchConfig;
 use crate::sql_search::Sql;
@@ -1654,6 +1655,116 @@ pub fn mark_missing_by_folder_sql(
             )
         })
         .collect()
+}
+
+/// Callback error of the executed media-file missing primitives, which have NO domain
+/// failure to carry: Go's `MarkMissing`/`MarkMissingByFolder` return a bare `error` that
+/// can only be a driver failure (`mediafile_repository.go:463-466`, `:482-485`) — no
+/// validation, no `NotFound`, no permission check (the ADMIN check belongs to
+/// `DeleteMissing`, `:442-453`, which is not this method). `Infallible` makes the
+/// `Domain` arm structurally uninhabited rather than reserved, as in
+/// `library_repo::LibraryScanError` and `tag_repo::TagWriteError`, and keeps every
+/// SQLite failure on the [`DbOperationError::Sqlite`] arm so `store::is_busy` still
+/// classifies `SQLITE_BUSY` for the executor's retry loop.
+///
+/// A zero-row chunk is NOT a domain error here either — see
+/// [`mark_media_missing_in_tx`] for why Go's `c == 0` branch returns success.
+pub type MediaMarkError = DbOperationError<std::convert::Infallible>;
+
+/// `MarkMissing` (`mediafile_repository.go:455-469`) EXECUTED on the CALLER's
+/// transaction: one UPDATE per [`CHUNK_SIZE`] ids in Go's loop order over the CALLER's
+/// id order (`slice.CollectChunks(ids, 200)`, `:457`), executing exactly what
+/// [`mark_missing_sql`] renders rather than re-rendering it here. Empty ids run NO
+/// statement and return `Ok(0)`.
+///
+/// **Go's zero-row early return, ported literally.** The loop body reads
+/// (`:462-466`):
+/// ```go
+/// c, err := r.executeSQL(ctx, upd)
+/// if err != nil || c == 0 {   // :463
+///     log.Error(ctx, "Error setting mediafile missing flag", "ids", chunk, err)
+///     return err              // :465 — nil when c == 0
+/// }
+/// ```
+/// `executeSQL` (`sql_base_repository.go:336-354`) returns `0, err` only when the
+/// statement FAILED and `c, nil` otherwise, so the `|| c == 0` branch is reached with
+/// `err == nil` — and `return err` then returns NIL, i.e. SUCCESS, while also EXITING
+/// the chunk loop. So a chunk that matches zero rows is a silent PARTIAL application:
+/// the caller sees success and every LATER chunk is skipped, its rows never marked.
+/// There is no domain error to model, so this returns `Ok` (NOT a `NoRows` variant —
+/// none exists, and inventing one would flip Go's success into a failure). The returned
+/// total is the ACCUMULATED affected-row count of the chunks that ran, so it is 0 only
+/// when the FIRST chunk matched nothing; there is no separate early-stop indicator, and a
+/// caller that needs to know whether later chunks were skipped cannot infer it from the
+/// count alone. `mark_folders_missing_in_tx`
+/// deliberately does NOT share this behavior: Go's folder `MarkMissing` checks `err`
+/// only and keeps looping.
+///
+/// `updated_at` is the caller's stamp where Go binds `Set("updated_at", time.Now())
+/// (`:460`); the caller owns the clock. Go's `log.Debug("total", c)` (`:467`) and
+/// `log.Error` (`:464`) are not ported — nd-db has no logger — so the affected-row total
+/// is returned purely for the caller's observability and no policy rides on it.
+///
+/// Scope: caller-trusted. `WHERE id IN (chunk)` and nothing else (`:461`): no library
+/// predicate, no auth guard. A caller passing ids of another library HAS them written;
+/// future SC typed authority owns that.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` from the chunk
+/// that failed — Go returns that error RAW, with no `fmt.Errorf` prefix (`:465`), and
+/// the port likewise never wraps it in text. A zero-row chunk is `Ok`, not an error.
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`MediaMarkError`]).
+pub fn mark_media_missing_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    missing: bool,
+    ids: &[String],
+    updated_at: &DateTime<Utc>,
+) -> Result<usize, MediaMarkError> {
+    let mut total = 0usize;
+    for statement in mark_missing_sql(missing, ids, updated_at) {
+        let rows = crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+        total += rows;
+        // Go's `err != nil || c == 0` (:463): err is nil here, so this is a SUCCESSFUL
+        // early return that skips every remaining chunk. Do not `continue` — continuing
+        // would mark rows Go never marks.
+        if rows == 0 {
+            break;
+        }
+    }
+    Ok(total)
+}
+
+/// `MarkMissingByFolder` (`mediafile_repository.go:472-487`) EXECUTED on the CALLER's
+/// transaction: one UPDATE per [`CHUNK_SIZE`] folder ids in Go's loop order over the
+/// CALLER's folder-id order (`slices.Chunk(folderIDs, 200)`, `:473`), executing exactly
+/// what [`mark_missing_by_folder_sql`] renders. Empty ids run NO statement, and a chunk
+/// matching zero rows is a successful NO-OP whose loop CONTINUES — Go checks `err` only
+/// (`:482-484`), unlike [`mark_media_missing_in_tx`].
+///
+/// The `Eq{"missing": !missing}` gate (`:479`, rendered as the trailing
+/// `AND missing = ?` by [`mark_missing_by_folder_sql`]) is the whole point of this
+/// primitive: rows ALREADY carrying the target flag are neither re-stamped nor counted,
+/// so a repeated call with the same flag moves nothing. `updated_at` is the caller's
+/// stamp (`:476`), never a clock this function reads.
+///
+/// Scope: caller-trusted — `WHERE folder_id IN (chunk) AND missing = ?` and nothing
+/// else, so tracks of another library under a supplied folder id ARE updated. No
+/// library predicate is invented here.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` from any chunk,
+/// raw and unwrapped exactly like Go (`:484`). A zero-row chunk is `Ok`.
+pub fn mark_media_missing_by_folder_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    missing: bool,
+    folder_ids: &[String],
+    updated_at: &DateTime<Utc>,
+) -> Result<usize, MediaMarkError> {
+    let mut total = 0usize;
+    for statement in mark_missing_by_folder_sql(missing, folder_ids, updated_at) {
+        total += crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(total)
 }
 
 /// `GetAlbumIDsByFolder` (`mediafile_repository.go:293-316`): one chunked
