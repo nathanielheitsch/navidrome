@@ -550,6 +550,37 @@ it will fail on intentionally-partial shapes like `refresh_counters_sql`.
 9. **Validation:** `cargo test --locked -p nd-db --test runtime_scanner_persistence_contract`; G plus consumer-reported focused CLI commands chosen by SC/BOOT/API. Parent runs final combined workspace gates after every writer stops. Coverage failures/blockers explicitly retained.
 10. **Review/DoD:** fresh independent read-only integrated review at quiescent checkout, parent-selected fixes and final gates; final handoff lists P1-DB vs FULL-SCANNER-DB vs epoch readiness separately and remaining full#05 APIs. No authorization to commit/deploy/mutate production.
 
+## D-ERROR finding, independently reproduced: `#[error(transparent)]` skips one chain node
+
+W10 reported that thiserror 1.0.69's `#[error(transparent)]` does not forward `source()` to the
+wrapped error. I reproduced it myself (`/tmp/techeck`, rusqlite 0.32.1, thiserror 1.0.69 — which
+`cargo tree -p nd-db` confirms is the resolved version for this crate) with a real NOT NULL
+violation wrapped in `TranscodingError::Sqlite` (`transcoding_repo.rs:419`):
+
+```text
+raw rusqlite error: NOT NULL constraint failed: user.created_at
+raw downcast rusqlite::Error: Some("SqliteFailure(Error { code: ConstraintViolation, extended_co")
+raw downcast ffi::Error: None
+WRAPPED chain:
+  msg=NOT NULL constraint failed: user.created_at
+  msg=Error code 1299: A NOT NULL constraint failed
+WRAPPED downcast rusqlite::Error: false
+WRAPPED downcast ffi::Error: false
+chain-walk finds rusqlite::Error=false ffi::Error=true
+```
+
+Mechanism, from the vendored macro (`thiserror-impl-1.0.69/src/expand.rs:62-70`): the transparent
+`source()` body is `std::error::Error::source(self.<field>.as_dyn_error())` — it calls `source()`
+**on** the wrapped error instead of returning it, so the wrapped `rusqlite::Error` node is
+**skipped**. Consequences the seam must handle:
+- `downcast_ref::<rusqlite::Error>()` fails at **every** node of a transparent-wrapped chain; only
+  `rusqlite::ffi::Error` is reachable, and only at the second node.
+- The raw `rusqlite::Error` does **not** downcast to `rusqlite::ffi::Error` (it is not a transparent
+  wrapper of it — `source()` yields the ffi error as a child).
+- Therefore a busy predicate that walks `Error::source()` must test BOTH `rusqlite::Error` and
+  `rusqlite::ffi::Error`, exactly as Go's `errors.As` on `db.ErrorCodes` does at
+  `db/db.go:128-134`. Pin this with a test using a real crate error variant, not a synthetic one.
+
 ## DB-22 — Executed read parity for genre, scrobble, playqueue, artwork (parent-added, 2026-11-18)
 
 1. **Status: READY as a plan; BLOCKED on checkout** — run only after DB-03 (`19a5a57a`) and DB-00
