@@ -1,11 +1,13 @@
 # Component map — Rust port of this navidrome fork
 
-## Current scheduling amendment (2026-11-18, `60cdd184`)
+## Current scheduling amendment (2026-11-19, baseline integrated `master` `74ebd81c`)
 
 Ownership/product mapping below remains useful; **its component arrows and old parallel lanes are not an executable
-task DAG**. Current status is [`current-status.md`](current-status.md); milestone order is the current section of
-[`next-work.md`](next-work.md); exact prerequisites/decisions/ownership are in `subplans/`. One writer per shared
-checkout and verified inherited workspace supersede any historical per-file/worktree parallelism.
+task DAG**. Entry point is [`README.md`](README.md); status is [`current-status.md`](current-status.md); milestone order
+is the current section of [`next-work.md`](next-work.md); settled decisions are [`decisions.md`](decisions.md); exact
+prerequisites/decisions/ownership are in `subplans/`. **One writer per checkout** — the user-approved exception is
+parallel **isolated worktrees** with parent-controlled merges — and a verified inherited workspace supersede any
+historical per-file/worktree parallelism. Read-only planning and review may overlap.
 
 In particular: C10's cancelled C29 edge must not gate scanner work; C10/C19 scanner/playlist relationships must be
 split into phase-1 ingest, playlist import service, and later phase-4 integration; C22/C30 construction/service
@@ -27,9 +29,9 @@ retire — marked inline at the satellite graph and lane I below. Evidence in `s
 product scope. Owner-scoped `GET`/`PUT /api/player/{id}` is canonical, with immutable ownership
 (`nd-db` `PlayerRepo::read(id,user)` `player_repo.rs:1129` for reads, `update_owned` :1345/:961 for writes —
 `user_id`/`created_at` never in the SET, mirroring `persistence/sql_base_repository.go:506-514`) and the field
-whitelist at `:538-549`. That makes C15 depend on C02's **executing** transcoding read (`transcoding_repo.rs`
-renders SQL only) and on BOOT's default-profile seed (`nd-conf` `DEFAULT_TRANSCODINGS`, `consts.rs:242`), because
-a device picker with no rows cannot set `transcoding_id`; the read-only `GET /api/transcoding` profile list is now
+whitelist at `:538-549`. Its transcoding dependency is **executed since `f8ceeb8f`** (`read_all`/`count_all`, `command`
+masked for a non-admin); what remains is BOOT's default-profile seed (`nd-conf` `DEFAULT_TRANSCODINGS`, `consts.rs:242`),
+because a device picker with no rows cannot set `transcoding_id`. The read-only `GET /api/transcoding` profile list is now
 required surface, while transcoding profile **editing** stays dropped. Evidence in
 `subplans/README.md` "Per-device editing".
 
@@ -42,7 +44,7 @@ This fork (Go server, `go 1.27`, GPL-3.0) decomposes into **33 component rows �
 - Canonical API = the existing native surface (`server/nativeapi/**`): **C22 `nd-api` is the TRUNK** — the surface the owners' Flutter client and the MCP client artifact speak.
 - The Subsonic wire layer is **CANCELLED — clean API break** (C20): no compat shim, no wire translation; third-party Subsonic clients will not work against this server (deliberate product decision). The 126 `.snapshots/` goldens become reference data only, and the fixture *discipline* transfers to the canonical API. The port borrows Subsonic semantics where sound (typed-ID prefixes, artwork-ID composition, transcode-decision split) but no wire format. A future community adapter would consume the published OpenAPI spec (C22's regeneration output), not the server internals.
 - The WASM plugin host is **CANCELLED**: C28 has no crate; `plugins/capabilities/*.yaml` survive as the trait spec for a future Rust-native provider layer.
-- Credential model **B** is settled — hashed API keys + JWT sessions revoked via `token_epoch`; there is **no reversible AES-GCM password store anywhere**: decryption exists only inside the one-time `migrate-credentials` path (see #S4), then is deleted. With the shim gone, model A has no host at all.
+- Credential model **B** is settled — hashed API keys + JWT sessions revoked via `token_epoch`; there is **no reversible AES-GCM password store anywhere** and **no migration command ever exists** (fresh service, `issues.md` Revision item 6; see `credentials.md`). With the shim gone, model A has no host at all.
 - The bundled JS UI is **dropped by default**: C25 keeps only the server-side share-page HTML contract.
 
 Read this way:
@@ -51,7 +53,8 @@ Read this way:
 - **Lanes** (§3) are the parallel execution plan; §4 lists the artifacts several lanes need *designed before* they start.
 - Unresolved product decisions are **not** in this file — they are in `docs/rust-port/issues.md`, Part C.
 
-Progress state lives in `docs/rust-port/issues.md` ("Progress ledger"); this file stays the ownership/dependency contract only.
+Progress state lives in [`current-status.md`](current-status.md); this file stays the ownership/dependency contract
+only. Settled decisions are recorded in [`decisions.md`](decisions.md) and `issues.md` §Revision.
 
 Everything here is tied to exact Go paths in this checkout. Size classes are shard-reported estimates (the explorer lanes had no shell, so nothing was measured with `wc`); treat them as ordering hints, not budgets.
 
@@ -67,7 +70,7 @@ Everything here is tied to exact Go paths in this checkout. Size classes are sha
 | C04 | id-gen | `model/id/id.go` (48L: `NewRandom` = 16 rand bytes → `Encode`; `Encode` `:18-20` renders a 16-byte value as the canonical **22-char zero-padded base62** id), `model/artwork_id.go`, `model/participants.go`, PID rules `consts/consts.go` | byte-exact id/pid encoding, deterministic `NewHash` (MD5 + U+200B separator) | C03 | S | MED (kept for design shape, not compat: fresh service) | B |
 | C05 | util-primitives | `utils/` — 21 subdirs (`cache/ chrono/ gg/ gravatar/ hasher/ httpclient/ ioutils/ jsoncommentstrip/ merge/ nanoid/ natural/ netguard/ number/ pl/ random/ req/ run/ shellquote/ singleton/ slice/ str/`) + top-level modules `context.go encrypt.go files.go index_group_parser.go limiter.go time.go` | pure functions: natural sort/collation (`utils/natural`, backs the `NATSORT` SQL collation), seeded hash (`utils/hasher`, backs the `SEEDEDRAND` SQL function), AES-GCM (`utils/encrypt.go`), rate limiters (`limiter.go`), caches, HTTP client, DI singletons (`utils/singleton/`) | — (root) | M | LOW–MED | B |
 | C06 | model-data | `model/{searchable,get_entity,library_matcher,file_types,errors,lyrics,lyrics_lrc,lyrics_srt,lyrics_ttml,lyrics_normalize,lyrics_parse,lyrics_lyricsfile}.go`, `model/tag_mappings.go`, `model/tag.go`, `model/annotation.go`, `model/criteria/**`, `model/metadata/**` (shared with C09 by role), `model/scanner.go`, `model/{image,genre,radio,playqueue}.go` DTOs | DTO/struct shapes + pure transforms: tag vocabulary, criteria DSL ⇄ JSON, lyric parsing/normalization | C03, C04 | L | MED | B |
-| C07 | auth | `core/auth/auth.go`, `core/auth/claims.go`, `server/auth.go`, `server/initial_setup.go`, `server/subsonic/middlewares.go` (credential parsing), `server/subsonic/auth_limiter.go`, `utils/encrypt.go` (crypto only), `core/publicurl/**`, plus keying-only contact with `persistence/{user,user_props,player,share}_repository.go` | JWT HS256 dual-secret + token-epoch revocation; `p / t+s / jwt / apiKey / internal` credential switch; AES-GCM password store | C02, C03, C05 | L | **HIGH (security)** | D |
+| C07 | auth | `core/auth/auth.go`, `core/auth/claims.go`, `server/auth.go`, `server/initial_setup.go`, `server/subsonic/middlewares.go` (credential parsing), `server/subsonic/auth_limiter.go`, `utils/encrypt.go` (crypto only), `core/publicurl/**`, plus keying-only contact with `persistence/{user,user_props,player,share}_repository.go` | JWT HS256 dual-secret + token-epoch revocation; `p / t+s / jwt / apiKey / internal` credential switch; AES-GCM password store — **Go interface only: the `p`/`t+s` arms and the AES-GCM store are not ported** (#25 cancelled, fresh service; `credentials.md`) | C02, C03, C05 | L | **HIGH (security)** | D |
 | C08 | taglib-extractor | `adapters/gotaglib/gotaglib.go`, `core/storage/**` (`local/`, `extractors.go`), `go.mod:5-6` (`// Fork to implement raw tags support`, `replace go.senan.xyz/taglib => github.com/deluan/go-taglib v0.0.0-…`) | `Extractor{Parse → map[string]Info, Version}`, `RegisterExtractor("taglib")` | C06, C05 | S | HIGH (C/C++ taglib binding has no Rust 1:1 analogue) | C |
 | C09 | tag-mapping | `model/metadata/**` (`map_mediafile`, `map_participants`, `persistent_ids`, `legacy_ids`), `model/tag_mappings.go`, `model/file_types.go`, `model/participants.go`, format branches driven from `adapters/gotaglib` | `Info{FileInfo,Tags,AudioProperties,HasPicture}` → `MediaFile` / `ArtistRole`; PID + canonical-id assignment | C06, C08, C03 | M | HIGH (ID canonicalization) | F |
 | C10 | scanner | `scanner/**` — `controller.go scanner.go walk_dir_tree.go ignore_checker.go watcher.go external.go folder_entry.go image_changes.go phase_1_folders.go phase_2_missing_tracks.go phase_3_refresh_albums.go phase_4_playlists.go` + `README.md` + tests; plus `conf/buildtags`, `model/scanner.go` | `ScanAll / ScanFolders / Status`, `New / CallScan / IsScanning / LockForMaintenance`, `ProgressInfo` events | C02, C06, C09, C19, C29 (adapters), C24 | **XL** (~3.4k src / ~7k test) | HIGH (symlink chains, subprocess IPC, fsnotify watchers) | F |
@@ -140,23 +143,25 @@ Cuts that dominate the schedule:
 
 ---
 
-## 3. Parallel-lane build plan
+## 3. Ownership lanes (not a launchable schedule)
 
-Ownership rule: **one lane owns one crate boundary**; a lane consumes another crate's public API and never edits its sources. Crate names below are proposed (see `issues.md`), and map 1:1 onto the components in §1.
+Ownership rule: **one lane owns one crate boundary**; a lane consumes another crate's public API and never edits its
+sources. Crate names below are proposed (`issues.md` #S1) and map 1:1 onto the components in §1. This table states who may
+edit what. **Launch order, prerequisites and READY/BLOCKED status come from `subplans/README.md` and `next-work.md`'s
+current section**, not from here; the old `P0…P4` milestone sequence and its concurrency claims are superseded, and
+cancelled components (C20/C23/C28/C29/C32) own nothing.
 
-| Lane | Components → crates | Runs concurrently with | Block point (what it must not start before) |
-|---|---|---|---|
-| **L0 — shared artifacts** | design only: workspace layout, DB schema doc, ID scheme, config format, wire fixtures, credential model, tag vocabulary, test-mock specs | — | first; blocking by definition |
-| **A — substrate (serial spine)** | C03 `nd-conf` → C01 `nd-dbschema` → C02 `nd-db` | B, C | nothing; it is the spine. Split seam first: `persistence/criteria_sql.go` (→ `nd-db`) vs `model/criteria/` (→ `nd-model`) |
-| **B — leaf utilities** | C05 `nd-utils`, C04 `nd-id`, C06 `nd-model`, C26 `nd-events`, C27 `nd-sched` | A, C | no DB writes → safe in parallel |
-| **C — process/media adapters** | C11 `nd-ffmpeg`, C08 `nd-tagreader`, C18 lyric-parsers (pure half of `model/lyrics*`), ~~C15 mpv-IPC half~~ (dropped with `D-PLAYER26`) | A, B | consumes C05 only; none touch DB |
-| **D — credential model** | C07 `nd-auth` | — | after A(C02/C03) + B(C05). Must land before E/F/G ship **any** endpoint |
-| **E — media decision + serving** | C12 → C13 `nd-stream` → C24 `nd-public` (strict order inside the lane) | F | needs C11 + C07 |
-| **F — scan pipeline** | C09 `nd-mapping` → C10 `nd-scanner` → C14 `nd-artwork` | E | needs A(C02) + C(C08) |
-| **G — wire surfaces** | C22 `nd-api` (**TRUNK**), C25 `nd-ui-contract` | I | needs D + E + F. Sublane allowed early: DTO/serialization of the **canonical** surface, tested against response-shape goldens captured from the Go binary (the `.snapshots/` goldens gate nothing — C20 is CANCELLED; they are reference data only) |
-| **I — satellites (last, concurrent)** | C16 scrobbler, C17 external-metadata + matcher, C19 playlists, C15 players (player-session half only; mpv-IPC half dropped with `D-PLAYER26`), C21 `nd-http`, C31 diagnostics, C30 `nd-cli` (stub first) | — | needs D; C16 additionally needs C17 |
-
-Sequenced milestones: **P0** L0 → **P1** A ∥ B ∥ C → **P2** D → **P3** E ∥ F ∥ G(DTO sublane only) → **P4** G(handlers) ∥ I (no deferred tail: C23 CANCELLED).
+| Lane | Components → crates (ownership only) | Current note |
+|---|---|---|
+| L0 — shared artifacts | workspace layout, schema/ID/config/credential contracts, wire fixtures, tag vocabulary, mock specs | Frozen; see §4 and the contract files |
+| A — substrate | C03 `nd-conf`, C01 `nd-dbschema`, C02 `nd-db` | Substantial executed reads landed (incl. transcoding `f8ceeb8f`); DB-00 seam landed (`48e65806`/`ec84c176`), DB-02 timestamp contract landed (`6d9d984d`/`74ebd81c`); entity `Put` lifecycle, scanner queries and GC outstanding |
+| B — leaf utilities | C05 `nd-utils`, C04 `nd-id`, C06 `nd-model`, C26 `nd-events`, C27 `nd-sched` | Crate-level done except #12's maintenance/logging half (`OPS-04/05/06`) |
+| C — process/media adapters | C11 `nd-ffmpeg`, C08 `nd-tagreader`, C18 lyric parsers | mpv-IPC half retired with `D-PLAYER26`; declared tagreader gaps stand |
+| D — credential model | C07 `nd-auth` | Components landed; login-audience and HTTP key integration are BOOT-02/API-01 packages |
+| E — media decision + serving | C12 → C13 `nd-stream` → C24 `nd-public` | #15 complete at crate level, **not HTTP-ready** (API-04/API-05 seams); share surface is later work |
+| F — scan pipeline | C09 `nd-mapping` → C10 `nd-scanner` → C14 `nd-artwork` | Scanner scaffold; a local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (**not** SC-01/02 completion); aggregation/equality bridge owned by the scanner plan (`decisions.md` S4) |
+| G — wire surfaces | C22 `nd-api` (**TRUNK**), C25 `nd-ui-contract` | Scaffolds; capture native response-shape goldens from the Go binary before handlers (the Subsonic `.snapshots/` gate nothing — reference data only) |
+| I — satellites | C16 scrobbler, C17 external-metadata + matcher, C19 playlists, C15 players (session half only), C21 `nd-http`, C31 diagnostics, C30 `nd-cli` (stub) | Each needs its own scoped plan (`FRONT-*`); no mpv/socket/process-reap scope in any lane; deferrable C31 must not gate #27A |
 
 ---
 

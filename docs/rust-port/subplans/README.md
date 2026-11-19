@@ -1,24 +1,29 @@
-# Subplan index — the one dependency map (baseline `60cdd184`, 2026-11-18)
+# Subplan index — the one task/dependency map (baseline integrated `master` `74ebd81c`, updated 2026-11-19)
 
-**Planning authority, NOT implementation authorization.** This file is the parent-owned
-index that reconciles the four technical subplans into a single task graph, resolves the
-semantic prerequisite aliases each lane invented into actual package IDs, and records the
-launch order and the open decisions. `[planned]` everywhere; nothing here has been built,
-tested, or launched. Live facts and gates are in [`../current-status.md`](../current-status.md).
+**Planning authority, NOT implementation authorization.** This file is the parent-owned index that reconciles the four
+technical subplans into a single task graph, resolves the semantic prerequisite aliases each lane invented into actual
+package IDs, and records launch order and open decisions. Live facts and gates are in
+`../current-status.md`; binding decisions are in `../decisions.md`; milestone order is the current section of
+`../next-work.md`. A `[planned]` label means nothing has been built; packages listed LANDED below are dated parent
+measurements on pinned commits, and a package listed IN FLIGHT would be an unmerged branch that is **not** done. Live facts
+and gates are in [`../current-status.md`](../current-status.md).
 
 Lane files (verbatim planner output, parent-published):
 
 | File | Covers | Packages | Verdict |
 | --- | --- | --- | --- |
-| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-21 | READY for decisions/DB-01; most BLOCKED |
-| [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY |
+| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-21 | DB-01/02/03/00 LANDED and DB-15 render-only LANDED (partial); **no lane in flight**; DB-04 is the next assignable package, most later packages BLOCKED on it |
+| [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY; a local-FS storage subset LANDED `e9dd8230`/`ff5b9c92` (**not** SC-01/02 completion) |
 | [`boot-api.md`](boot-api.md) | #24, #33 graph, #27A | BOOT-00…04, API-00…06, API-F1…F7, BOOT-F1 | spec-first; #27A gated |
-| [`evidence-ops.md`](evidence-ops.md) | parity residual + #03/#31 | EVID-01…08, OPS-01…07, FRONT-* | mostly BLOCKED/decision |
+| [`evidence-ops.md`](evidence-ops.md) | parity residual + #03/#31 | EVID-01…08, OPS-01…07, FRONT-* | mostly BLOCKED/decision; EVID-01's snapshot/contract amendments largely folded into these docs |
 
-Rules that override any historical lane text: one writer per shared checkout; a child
-inherits the parent's verified workspace; review never races edits; every package gets a
-fresh review and parent CLI verification before it is claimed done; a green crate test is
-not proof of an integration.
+Rules that override any historical lane text: **one writer per checkout** — the user-approved exception is parallel
+*isolated worktrees* with parent-controlled merges (one writer inside each worktree; a branch is never called done from
+an agent message); a child inherits the parent's verified workspace; review never races edits; every package gets a
+fresh review and parent CLI verification before it is claimed done; a green crate test is not proof of an integration.
+The orders below are **dependency order**, not a ban on independent work with no unmet prerequisite: the approved
+isolated worktrees let prerequisite-independent packages (DB-00's additive seam, DB-15's render-only repair, a local-FS
+storage subset) proceed concurrently, while packages that genuinely need an earlier release still wait for it.
 
 ---
 
@@ -75,9 +80,9 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 
 | ID | Decision | Blocks | Owner |
 | --- | --- | --- | --- |
-| `D-ERROR` | Typed operation error + transaction seam (recommend one narrow enum, SQLite cause retained, no string loss) | DB-00 and all compound writes | DB |
-| `D-TIME` | Canonical scanner timestamps + idle sentinel vs fresh-DDL zero-date normalization | DB-02, DB-05/07/08/09/10 | DB |
-| `D-OPEN` | Effective per-connection path/DSN/PRAGMA policy (Go 15000 ms vs bundled 5000; WAL; FK-on) | DB-03, every runtime acceptance | BOOT-00 + DB |
+| `D-ERROR` | **DECIDED 2026-11-18 (parent, option B), LANDED `48e65806` + merge `ec84c176`.** Additive `try_with_tx`/`try_with_tx_retry` beside `with_tx*` (no signature churn): callback `DbOperationError<E>` (`Domain(E) / Sqlite{stage, source}`) and runtime `DbRuntimeError<E>` adds `RollbackFailed{original, rollback}` and `Pool(StoreError)`, SQLite cause retained through `Error::source()`, no string loss; COMMIT-stage busy is reachable so the Commit branch issues no second ROLLBACK. Retryable set is BUSY-only (H2, amended by review). Record: `../decisions.md` E1-E3, H2. | DB-00 (landed) and all compound writes | DB — resolved |
+| `D-TIME` | **DECIDED 2026-11-18 (parent), IN FLIGHT on `rust-wave1-db02` (the one pending lane).** Scanner stamps stored as TEXT via `time::value`; Go's `<> canonical zero` idle predicate kept verbatim (the DDL sentinel makes a fresh library count as in-progress — inherited, pinned); the real defect was INTEGER affinity. Record: `../decisions.md` T1-T4. | DB-02, DB-05/07/08/09/10 | DB — resolved |
+| `D-OPEN` | **DECIDED 2026-11-18 (user, option a), LANDED at `4a8aac9f`.** Typed `DbOpenOptions` as explicit per-connection PRAGMA statements with effective-state read-back before pooling; Go-compatible DSN parser (keeps genuine URI params, rejects unknown ones); defaults matching Go (WAL for file DBs, 15000 ms, NORMAL, FK on; `:memory:` keeps the memory journal). Record: `../decisions.md` P1. | DB-03, every runtime acceptance | BOOT-00 + DB — resolved |
 | `D-CURSOR` | Borrowed visitor vs bounded-owned cursor; cancel + backpressure ownership | DB-11 | DB + SC |
 | `D-SCOPE` | Scoped-query authorization / library-alias construction; deny-on-empty | DB-11, API-02 | DB + API |
 | `D-REVOKE` | Epoch-only revoke semantics, overflow, post-commit token observation | DB-13, API-03 | DB + BOOT/API |
@@ -87,7 +92,8 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 | `SC-06/07` | Inaccessible-vs-deleted destructive-finalization policy; selective purge/GC scope; deterministic tie order | SC-06/SC-07 | SC + parent |
 | `SC-12/13` | Watcher backend + external progress-IPC mode (deferred, not first-slice gates) | SC-12/13/SC-14 mode ledger | SC + parent |
 | `D-PLAYER26` | **DECIDED 2026-11-18 — user-approved in-session (explicit): split #26.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `PlayerRepo`); **drop** the mpv/jukebox device service. Canonical register/touch placement belongs to API-01. See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F1/F5, player wiring — resolved | parent/user |
-| `D-PLAYER-EDIT` | **DECIDED 2026-11-18 — user-approved in-session (explicit): per-device preference editing is retained product scope.** A device profile is editable by its owner: `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`user_id` immutable, field whitelist enforced), and the profile list a client picks `transcoding_id` from needs a **read-only** `GET /api/transcoding` (profile *creation/editing* stays dropped, Part C item 1). See "Per-device editing (D-PLAYER-EDIT)" below. | API-00 registry capture, API-01, API-03, API-F1/F5, `FRONT-26`, #05 transcoding read/seed | parent/user |
+| `D-PLAYER-EDIT` | **DECIDED 2026-11-18 — user-approved in-session (explicit): per-device preference editing is retained product scope.** A device profile is editable by its owner: `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`user_id` immutable, field whitelist enforced), and the profile list a client picks `transcoding_id` from needs a **read-only** `GET /api/transcoding` (profile *creation/editing* stays dropped, Part C item 1). The executing `transcoding_repo` read **landed at `f8ceeb8f`**, so the remaining prerequisites are the BOOT-owned `DEFAULT_TRANSCODINGS` seed and the route. See "Per-device editing (D-PLAYER-EDIT)" below. | API-00 registry capture, API-01, API-03, API-F1/F5, `FRONT-26` — read resolved; seed + route remain | parent/user |
+| `plugin_repo` scope | **OPEN — parent's call, not resolved by the docs lane.** Whether `plugin_repo.rs` belongs in the port at all: the `plugin` table is dropped (`../schema-contract.md`, Part C item 14) and every statement it renders fails with `no such table: plugin`. Options/recommendation: [`../next-work.md`](../next-work.md) §"Decision ask". | Any lane touching `plugin_repo.rs`; plugin surface in `FRONT-*` | parent |
 | Oracle harness | Approve new tracked Go harness under `testdata` (no Go-source edits) or an approved alternative; toolchain availability | EVID-02/03, SC-00 durable captures | parent |
 | Fixture/toolchain | Durable fixture location/recipe, synthetic-only credentials, `ffmpeg`/`ffprobe` provenance, native path disclosure/redaction | EVID-03, SC-00, API-06 | parent |
 
@@ -106,23 +112,29 @@ Two independent milestones from the boot-api lane, kept separate:
 ### Step 0 — decisions & spec freeze (no code, parallel read-only)
 
 `BOOT-00`, `API-00` (native wire-contract capture), `SC-00` (oracle/manifest prep),
-`SC-01` (seam/dependency ratify), `EVID-01` (snapshot + contract amendments incl. the
-`DefaultGet`/gob/ProgressInfo corrections already folded into the docs), `EVID-02` (oracle
-authorization gate), and the `#26` scope decision.
+`SC-01` (seam/dependency ratify), `EVID-02` (oracle authorization gate), and the `plugin_repo` scope decision.
+`D-ERROR`/`D-TIME`/`D-OPEN`/`D-PLAYER26`/`D-PLAYER-EDIT` are recorded above, and `EVID-01`'s snapshot plus the
+`DefaultGet`/gob/ProgressInfo contract amendments are already folded into these docs — its remaining part is durable
+evidence capture, not new planning.
 
-### Step 1 — DB persistence spine (serial, one writer)
+### Step 1 — DB persistence spine (one writer per checkout; isolated worktrees allowed where prerequisites are absent)
 
-`DB-01` (READY) → `DB-02` → `DB-03` → `DB-00` → `DB-04` → `DB-05` → `DB-06` → `DB-07` →
+Dependency order: `DB-01` (**LANDED `f57ae050`**) → `DB-02` (IN FLIGHT `rust-wave1-db02`) → `DB-03` (**LANDED
+`4a8aac9f`**) → `DB-00` (**LANDED `48e65806`/`ec84c176`, additive seam**) → `DB-04` → `DB-05` → `DB-06` → `DB-07` →
 `DB-08` → `DB-09` → `DB-10` → `DB-11` → `DB-12` → `DB-15` → `DB-14` → `DB-21(P1-DB)`.
+`DB-15`'s **render-only** rating repair LANDED at `ab466928` and does **not** complete DB-15: the typed
+annotation reassignment, disposition of the three public renderers, and executed read-back remain.
 `DB-13` is inserted when BOOT/API needs revoke, after `DB-00/03`. `DB-16 → 17 → 18 → 19 → 20`
 extend phase 2+/GC for the full-scanner exit.
 
-### Step 2 — scanner (serialized in same checkout, gated on DB releases)
+### Step 2 — scanner (gated on DB releases; a local-FS subset is already in flight)
 
 `SC-00/01` decisions → `SC-02` → `SC-03` → **`SC-05` first vertical** (needs the DB phase-1
 write subset + DB-11/typed folder query) → `SC-04` → `SC-06` complete phase 1 → `SC-07` →
 `SC-08` → (`PL-SERVICE` #23, then) `SC-09` → (`DB-20` released, then) `SC-10` → `SC-11` →
 `SC-14` integrated in-process release. `SC-12/13` recorded early but off the critical path.
+A local-filesystem storage/symlink-safe-classification subset LANDED at `e9dd8230`/`ff5b9c92` (std-`fs` list/stat/read/`read_link`/resolve/exists, `file://` URI parsing — no walker, `.ndignore`, hashing or cancellation); it is a
+prerequisite-independent slice, **not** SC-01 ratification or SC-02 completion.
 
 ### Step 3 — boot/API (Track A early; Track B last)
 
@@ -151,17 +163,32 @@ step now that code has landed.
 
 ---
 
-## First assignable packages right now
+## Current assignable packages (as of `74ebd81c`)
 
-* **`DB-01`** (READY): fix `mark_missing_sql` bind order + a real function-invoking regression
-  test. Smallest, highest-value, and G0-gates DB-07/14.
-* **`EVID-01`** (READY): commit the current-state snapshot and the contract amendments already
-  drafted (parent-owned docs) — durable record, no code.
-* **`SC-00` / `API-00`** (READY, read-only/spec): oracle manifest + native wire-contract
-  capture, pending the oracle-authorization decision.
+**In flight:** none. `DB-02` LANDED `6d9d984d`/`74ebd81c` (canonical TEXT stamps/cutoffs, `library_repo::zero_time_value()`,
+artwork-purge cutoff fixed with executed coverage) after review and parent-measured gates. Residuals it left open —
+scrobble-buffer integer stamps and no executed pin for `find_recent_files_by_properties_sql` — belong to the lane that owns
+those statements, not to a pending merge.
 
-Everything else waits on a recorded decision above. Implementation assignments go one writer
-at a time in the existing workspace, each with its own fresh review and parent verification.
+**Landed since `ff900d3e`, partial scopes:** `DB-15` render-only repair `ab466928` (full annotation service NOT done),
+scanner local-FS subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02), `DB-00` typed seam `48e65806`/`ec84c176` (seam only).
+
+**Ready now:**
+
+* **`DB-04`** — executed property writes. Prerequisites `DB-00` (`48e65806`/`ec84c176`), `DB-02` (`6d9d984d`/`74ebd81c`) and
+  `DB-03` (`4a8aac9f`) are all landed, so **DB-04 is the next assignable package**; then DB-05 library, DB-06 tag,
+  DB-07 folder in that order.
+* **`SC-00` / `API-00`** (read-only/spec) — oracle manifest + native wire-contract capture, pending the
+  oracle-authorization decision above.
+* **`OPS-01`** — re-derive the schema golden and keep DDL/data-seeding separate; prerequisite-independent and it also
+  settles where the `DEFAULT_TRANSCODINGS` seed belongs (BOOT/#05 policy, never static DDL).
+* **`BOOT-00`** — the construction/dependency/launch decision, which unblocks the whole boot/API track.
+
+**Done (dated parent measurements):** `DB-01` `f57ae050`, `DB-03`/`D-OPEN` `4a8aac9f`, sort gate `62789ba2`,
+executed transcoding reads `f8ceeb8f`.
+
+Everything else waits on a recorded decision or an earlier release. Implementation assignments go one writer per
+checkout (or one per approved isolated worktree), each with its own fresh review and parent verification.
 
 ---
 
@@ -188,8 +215,10 @@ behavior inherited from a live path. Its fields feed services that survive the p
 - `TranscodingId` → Go's `refresh` also loads the transcoding row alongside the player
   (`core/players.go:87-91`). This is a real second dependency, and with `D-PLAYER-EDIT` it is a
   **first-class** one — a device cannot choose a profile it cannot list:
-  * `nd-db/src/transcoding_repo.rs` **only renders SQL** (`get_sql` :77, `find_by_format_sql` :87,
-    `read_all_sql` :114, `put_sql` :147, `delete_sql` :202) and never executes — #05 work.
+  * `nd-db/src/transcoding_repo.rs` rendered SQL only when this analysis was written (`get_sql` :77,
+    `find_by_format_sql` :87, `read_all_sql` :114, `put_sql` :147, `delete_sql` :202). **Correction 2026-11-19:** the
+    executed reads **landed at `f8ceeb8f`** — `read_all`/`count_all` execute and mask `command` for a non-admin; `put` and
+    `delete` remain renderers. The seed gap below is still open.
   * `nd-dbschema/src/schema_ddl.rs:56` creates the `transcoding` table but inserts nothing, so a fresh
     Rust DB has **zero profiles**. Go seeds them (`db/migrations/20200706231659_add_default_transcodings.go:33`,
     one `id.NewRandom()` per row when the table is empty; `20260309203355_ensure_default_transcodings.go`
@@ -319,8 +348,9 @@ persisted row — no new decision logic.
    `tests/loader.rs:27`, and `config-contract.md` §1 "TOML root keys (carried)" lists it at `:60`), so the key
    is accepted and parsed — it simply has **no consumer** outside `nd-conf`. Do not describe it as removed:
    unknown keys are fatal, so dropping it later would be its own contract change.
-2. **No executing transcoding read, and no seeded profiles** — see the `TranscodingId` bullet above.
-   Without rows a picker renders empty. `DEFAULT_TRANSCODINGS` already exists in
+2. **No seeded profiles; the executing read landed** — see the `TranscodingId` bullet above. Without rows a picker
+   renders empty, and `transcoding_repo::read_all`/`count_all` have executed since `f8ceeb8f`, so only the seed remains.
+   `DEFAULT_TRANSCODINGS` already exists in
    `nd-conf/src/consts.rs:242` (exactly 4 entries — mp3, opus, aac, flac — with commands byte-identical to
    `consts/consts.go:176-206`), so this is wiring, not missing data. Seeding belongs to BOOT/#05 policy;
    static DDL stays data-free (`OPS-01`).
@@ -338,7 +368,7 @@ owns principal resolution and ownership enforcement; **API-03 owns the player ro
 `nd-api/src/player.rs`** (key issuance plus profile `GET`/`PUT` — no PATCH verb in this contract);
 API-F1/F5 own the read-only transcoding list and `nd-api/src/player_preferences.rs`, and must not
 duplicate that route; FRONT-26 owns the service semantics and `player-service-contract.md` (to be
-authored). #05 owns the executing `transcoding_repo` read; #04/#05 the seed policy. **#27A is unchanged:**
+authored). #05 owns the executing `transcoding_repo` read (**landed `f8ceeb8f`**); #04/#05 the seed policy. **#27A is unchanged:**
 its exit criteria remain fresh DB → real track scan → authenticated lookup → direct Range → forced
 transcode (`subplans/boot-api.md` §1), and a fixture-inserted player only proves the stream-cap hook. No
 part of `D-PLAYER-EDIT` gates that slice.
@@ -347,7 +377,9 @@ part of `D-PLAYER-EDIT` gates that slice.
 editing as canonical scope — owner-scoped player `GET`/`PUT` with immutable ownership and an enforced
 field whitelist, a read-only transcoding profile list, an executing `transcoding_repo` read, and a
 BOOT-owned default-profile seed. Transcoding profile **editing**, `ReportRealPath` semantics, and any
-jukebox surface stay out of scope; `EnableTranscodingConfig` keeps its carried-but-unused status.
+jukebox surface stay out of scope; `EnableTranscodingConfig` keeps its carried-but-unused status. Recorded update
+2026-11-19: the executing read in that prerequisite list **landed at `f8ceeb8f`**; the seed and the canonical routes
+remain.
 
 **Status-code parity (measured, not assumed).** Go distinguishes the two failure kinds and the port
 already mirrors both: a cross-owner **read** yields `model.ErrNotFound` (the ownership-restricted select

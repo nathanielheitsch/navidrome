@@ -1,5 +1,13 @@
 # DB runtime implementation subplan — assignment contracts, NOT implementation authorization
 
+**Package `Status:` lines below are the planner's state at `60cdd184` and are superseded where they conflict with**
+[`../current-status.md`](../current-status.md) **and** [`../subplans/README.md`](../subplans/README.md) **(2026-11-19):**
+DB-01 LANDED `f57ae050`, DB-03 LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only repair LANDED
+`ab466928` (full DB-15 NOT done), scanner local-FS subset LANDED `e9dd8230`/`ff5b9c92` (not SC-01/SC-02), **DB-02 LANDED
+`6d9d984d`/`74ebd81c`** (canonical TEXT stamps, `zero_time_value()`, artwork-purge cutoff; scrobble-buffer integer stamps and
+the un-pinned `find_recent_files_by_properties_sql` cutoff remain open). **No lane is in flight; DB-04 is next.** Settled decisions now live in
+[`../decisions.md`](../decisions.md); the record blocks in this file stay as evidence.
+
 Baseline: `master 60cdd18402c0fd4b09b65e0b64ca494330501c02`. Parent owns orchestration/integration. Workspace `wks_7bb3344766422a39`, host `srv_QsD9e1TgIsNq`. This plan was produced read-only; no code, tests, formatting, delegates, commits or workspaces were created. Only this `/tmp` report was authored. Parent documentation changes appeared during planning; source references below remain pinned to the baseline, not to their evolving status prose.
 
 Read the full mandatory `/tmp/navidrome-subplan-template.md`. This document applies all ten required fields to each package. Stable IDs are `DB-00` through `DB-21`; external semantic aliases `SC.*`, `BOOT.*`, `API.*` await parent normalization. READY means no unresolved design prerequisite, NOT permission to edit. BLOCKED means dependencies must land first. DECISION REQUIRED means the parent must record an explicit contract before implementation begins. No package authorizes production DB mutation.
@@ -76,7 +84,7 @@ SQLITE_BUSY from a second connection holding a write lock, never a hand-built
 a domain error, so an implementation that commits `Ok(Err(…))`-style results fails.
 
 
-1. **Status: DECISION REQUIRED.** Goal: freeze and implement a no-string-loss policy for domain failures crossing SQLStore callbacks. Prerequisites: parent decision `D-ERROR`. Non-goals: wholesale repository error migration, scheduler, mapping, new dependencies.
+1. **Status: DONE — DECIDED (parent, option B) and LANDED at `48e65806` + merge `ec84c176`.** Scope is the additive seam only (`try_with_tx`/`try_with_tx_retry`), not the DB lane; the retryable set is BUSY-only (`../decisions.md` H2, amended by review). The `D-ERROR DECISION` block below is the settled contract (`../decisions.md` E1-E3). Goal: freeze and implement a no-string-loss policy for domain failures crossing SQLStore callbacks. Prerequisites: parent decision `D-ERROR`. Non-goals: wholesale repository error migration, scheduler, mapping, new dependencies.
 2. **Starting evidence (V):** existing `with_tx<T>(..., FnOnce(&Transaction)->Result<T,rusqlite::Error>)` and retry variant are `B/store.rs:83-138`; SQLStore sync/async counterparts `:196-264`. Entity repos return domain wrappers, e.g. `AlbumError`, `MediaFileError`; marshal errors cannot simply use `?` into those callbacks. `StoreError::BusyRetriesExhausted` retains a String cause (`:35-41`), not the actual final error. Existing tests `runtime_execution::store_transaction_commits_and_rolls_back_without_executor_blocking`, `store_transaction::with_tx_retry_runs_block_once_on_not_busy_failure`, `busy_retry_mapping::busy_lock_exhausts_tx_retry_at_tx_max_retries` cover the current SQLite-only seam.
 3. **Ownership:** `rust/crates/nd-db/src/{store.rs,lib.rs}`, NEW `src/runtime_error.rs`, NEW `tests/runtime_typed_transactions.rs`; no repo docs. Shared collisions: store/lib with DB-03/11/14/18/20, error module with all new consumers. Keep existing public callbacks compatible unless parent explicitly approves migration.
 4. **Contract proposal / gate:** choose either (A) generic typed `try_with_tx[_retry]` returning `OperationError<E>` with original E plus original SQLite begin/commit/retry causes and a trait for extracting a retryable SQLite cause, or (B) one `DbRuntimeError` enum for the new persistence seam with explicit SQLite/Marshal/NotFound/PermissionDenied/InvalidInput variants. **Recommend B at the narrow new seam**, additive typed store verbs, while existing callbacks remain; DB errors keep `rusqlite::Error` as typed source and retry classifier walks that variant only, never Display text. Gate decides final enum, Send/'static async bounds, warnings/outcome, retry-exhaustion typed cause and begin mode. No nested `Ok(Err(domain_error))` in transactions: it commits accidentally. No conversion to `Other(error.to_string())` or opaque boxed wrapper that hides busy classification.
@@ -110,7 +118,7 @@ MarkMissing aborts on `err != nil || c == 0` (`:463-466`) while MarkMissingByFol
 checks `err` (`:482`) — a documented difference, not implemented here.
 
 
-1. **Status: READY.** No package prerequisites. Goal: repair `mark_missing_sql` and prove real Rust-generated statements target only intended rows. Non-goals: timestamps/signature conversion, scanner, production missing-file operations.
+1. **Status: DONE — LANDED at `f57ae050`,** so its executed oracle evidence exists and the sibling-renderer question is settled (below). No package prerequisites. Goal: repair `mark_missing_sql` and prove real Rust-generated statements target only intended rows. Non-goals: timestamps/signature conversion, scanner, production missing-file operations.
 2. **V:** `B/mediafile_repo.rs:1587-1605` renders SET/WHERE but binds IDs before SET values; sibling folder `B/folder_repo.rs:896-910` and media mark-by-folder `:1613-1642` differ. Existing lib test `mark_missing_chunks_at_200_and_binds_the_flip` (`mediafile_repo.rs:2377-2398`) explicitly pins timestamp LAST. Go `persistence/mediafile_repository.go:456-483` sets missing/time before Where. **E (parent, not this planner):** a SQL-only reproduction using source-derived SQL/args changed decoy `id=99` instead of `mf-1`; no Rust function execution yet. That is NOT an executed regression test of `mark_missing_sql`.
 3. **Ownership:** `src/mediafile_repo.rs` narrow renderer/lib test; NEW `tests/runtime_missing_state.rs`; oracle O directory. Read-only sibling renderers until a failing executed test justifies a concrete scoped correction; parent approval before unrelated fixes. Collisions: media file with DB-02/07/10/11/16; oracle shared.
 4. **Contract:** keep existing signature `(missing:bool, ids:&[String], updated_at:i64)->Vec<Sql>` until DB-02 deliberately converts stamps. Every statement bind order `[missing,stamp,chunk IDs...]`; chunks200; empty IDs => no SQL. ID values bound, not interpolated. Existing no-permission builder is not an endpoint; synthetic DB only. Do not introduce new autocommit production mutations here.
@@ -183,7 +191,7 @@ Non-vacuity controls stay as planned (bind INTEGER deliberately and show the wro
 result on identical fixtures).
 
 
-1. **Status: DECISION REQUIRED.** Prerequisite: parent `D-TIME` (canonical idle + DDL-sentinel interpretation); integrate after DB-01 because same renderer file. Goal: one Rust storage/comparison contract across scanner paths, not Go migration support. Non-goals: plugin/playqueue timestamp cleanup, wire JSON-error parity, schema seeding.
+1. **Status at plan time: DECISION REQUIRED; DECIDED (`../decisions.md` T1-T4) and LANDED `6d9d984d`/`74ebd81c`.** Prerequisite: parent `D-TIME` (canonical idle + DDL-sentinel interpretation); integrate after DB-01 (landed `f57ae050`) because same renderer file. Goal: one Rust storage/comparison contract across scanner paths, not Go migration support. Non-goals: plugin/playqueue timestamp cleanup, wire JSON-error parity, schema seeding.
 2. **V:** `B/time.rs:1-52,76-84` defines chrono TEXT; record maps write it. `library_repo.rs:118-120,480,592,622-690,763-809` still bind epoch seconds (including ZERO_TIME0); `album_repo.rs:1144-1170` touch INTEGER; `mediafile_repo.rs:1587,1613,1716-1805` missing stamps/recent bounds INTEGER; `folder_repo.rs:896` likewise. Cross-table comparisons `album_repo.rs:1315-1335`, `mediafile_repo.rs:1691-1707`, folder touched playlists and artist touched stats. Hydration `hydrate.rs:1533-1549,3608-3638` reads INTEGER0 as 1970 not year1. Existing `library_scan_in_progress_follows_the_stamps_this_port_writes` pins TEXT=>started/INTEGER0=>idle, not lifecycle. Go `library_repository.go:162-193`, scanner `scanner.go:209-215` use zero time.
 3. **Ownership:** `src/{time.rs,library_repo.rs,album_repo.rs,mediafile_repo.rs,folder_repo.rs}` only scanner-facing timestamp signatures/binds; `tests/runtime_timestamp_convention.rs`, `tests/runtime_hydrate_library_property_tag.rs`, DB-01 `runtime_missing_state.rs`; NEW `tests/runtime_scan_clock.rs`; oracle O. `hydrate.rs` read-only unless D-TIME needs a specific model-zero fix; ownership expansion requires parent. Collisions: most DB write packages.
 4. **Proposal/gate:** use `DateTime<Utc>`/borrowed chrono input for all non-NULL scanner stamps/bounds; `time::value` only. Non-pointer idle remains `hydrate::go_zero_time()` rendered canonically, not INTEGER0/Unix epoch/NULL. **Recommend** typed library inserts initialize both scan fields explicitly; `scan_in_progress` recognizes canonical zero AND existing fresh-DDL zero-date sentinel as idle (or BOOT normalizes defaults before use). Parent must choose exact predicate/normalization policy: ordinary `<> canonicalZero` would misclassify DDL sentinel. Genuine malformed timestamp tolerance in row mapping does not license silently treating arbitrary SQL text as idle. No blanket manual parser rewrite.
@@ -196,7 +204,7 @@ result on identical fixtures).
 
 ## DB-03 — Every-handle effective connection/path contract (G2)
 
-1. **Status: DECISION REQUIRED.** Prerequisite `BOOT.db-open-policy` + parent `D-OPEN`; independent of DB-00 implementation. Goal: apply and verify explicit settings on every pool handle. Non-goals: deciding configured music library existence, implicit seeds, changing bundled SQLite/dependencies.
+1. **Status: DONE — DECIDED (user, option a) and LANDED at `4a8aac9f`,** review findings closed (`../decisions.md` P1). Prerequisite `BOOT.db-open-policy` + parent `D-OPEN`; independent of DB-00 implementation. Goal: apply and verify explicit settings on every pool handle. Non-goals: deciding configured music library existence, implicit seeds, changing bundled SQLite/dependencies.
 2. **V:** `nd-dbschema/src/schema.rs:57-88` forwards effective path and registers extensions; migration toggles FK only on its supplied conn `:126-147`; `B/pool.rs:120-135` opens all via schema::open. **Contrary evidence:** libsqlite3-sys0.30.1/build.rs123 defaults FK ON, rusqlite inner_connection.rs119 installs busy_timeout5000. Go default DSN `consts/consts.go:14` specifies15000/WAL/FK-on/synchronous-normal. Thus FK-off/no-timeout claims are false; actual effective state is U. Existing player test opens two handles but migrates/reuses one (`runtime_player_repo.rs:39-44`); pool `pool_round_trip_hands_out_and_takes_back_every_lease` does not assert pragmas/path.
 3. **Ownership:** `rust/crates/nd-dbschema/src/schema.rs`, `rust/crates/nd-db/src/pool.rs`, possibly additive SQLStore::open config propagation `store.rs`; NEW `nd-db/tests/runtime_pool_configuration.rs`; appropriate existing `nd-dbschema/tests/` open test (identify exact existing path before edit or use NEW `tests/open_configuration.rs`). Shared collisions DB-00/store, BOOT/schema, DB-11/pool/resource tests. No manifests/lockfiles.
 4. **Proposal/gate:** explicit typed open options, e.g. `DbOpenOptions { path, busy_timeout, journal_mode, synchronous, foreign_keys }`, validated before pool creation; final type/defaults chosen BOOT. Recommend FK required-on, WAL for file-backed concurrent service, explicit timeout default (Go15000 recommended unless parent approves5000) and normal synchronous; memory DB may return memory journal mode with documented exception. Decide translate accepted Go DSN keys vs reject clearly; never forward driver-only flags and assume they apply. Verify effective filename for ordinary path versus `file:` URI, no accidental literal query-suffix database. Reject unsupported/contradictory options, not arbitrary SQL PRAGMA strings.
@@ -209,7 +217,9 @@ result on identical fixtures).
 
 ## DB-04 — Executed property mutations
 
-1. **Status: BLOCKED.** Prereqs DB-00, DB-03. Goal: small typed property put/delete on a transaction; no scanner state/controller policy.
+1. **Status: READY — the next assignable package.** Prereqs DB-00 (`48e65806`/`ec84c176`), DB-02 (`6d9d984d`/`74ebd81c`,
+   canonical TEXT stamps) and DB-03 (`4a8aac9f`) are all landed; the checkout has no concurrent writer. Goal: small typed
+   property put/delete on a transaction; no scanner state/controller policy.
 2. **V:** existing `PropertyRepo::get/default_get` `B/property_repo.rs:162,188`, builders put60/delete87; `T/runtime_hydrate_library_property_tag.rs:626-661` manually executes writes. Existing tests `property_put_update_then_insert_pair_runs_in_go_order`, `property_delete_removes_the_row_and_get_then_reports_not_found` are test helpers, not runtime API. Go `persistence/property_repository.go:15-45` source to re-read on assignment.
 3. **Own:** `src/property_repo.rs`, NEW `tests/runtime_property_writes.rs`, O property cases. Collisions DB-00 typed errors, DB-14 orchestration; no docs.
 4. **Proposal:** `put_in_tx(tx,key:&str,value:&str)->Result<(),DbRuntimeError>`, `delete_in_tx(tx,key)->Result<(),...>`; bound keys/values; update first then insert iff affected0. Empty string value is stored value, missing read is NotFound; DefaultGet folds only NotFound. Delete absent key no-op per Go, not fabricated permission. Typed key constants in SC may wrap strings; no SQL fragments.
@@ -437,7 +447,7 @@ Two facts the fix must preserve, both now proven by execution:
   Fragments must be wrapped before preparation (it also found `artwork_queue_filter_sql` and
   `child_playlist_filter_sql` are fragments).
 
-### Parent verification of DB-15's premise (2026-11-18, DB-03 lane running)
+### Parent verification of DB-15's premise (2026-11-18, while the DB-03 lane was running; DB-03 has since landed at `4a8aac9f`)
 
 Confirmed independently, not copied from the plan:
 - `sql_annotations.rs:301` `update_avg_rating_sql` emits `UPDATE {t} SET average_rating = ?
@@ -523,7 +533,7 @@ costs one test file. Do not add it before the mutation renderers stabilize (DB-0
 it will fail on intentionally-partial shapes like `refresh_counters_sql`.
 
 
-1. **Status: BLOCKED for runtime; repair portion READY.** Prereqs DB-00/03 for executed tx helper; render-only regression can be assigned first independently. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation average on ID changes. Non-goals: general rating/starring endpoints.
+1. **Status: repair portion LANDED at `ab466928` (render-only rating repair — this does NOT complete DB-15); runtime half BLOCKED.** Prereqs DB-00 (landed `48e65806`/`ec84c176`) / DB-03 (landed `4a8aac9f`) for the executed tx helper; the render-only regression shipped first. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation average on ID changes. Non-goals: general rating/starring endpoints.
 2. **V, newly found during planning:** `B/sql_annotations.rs:301-309` `update_avg_rating_sql` emits `SET average_rating=? WHERE id=?` but args `[itemId,table,itemId]`; the actual aggregate expression is separately `average_rating_expr_sql:314-316`, not embedded. Existing `update_avg_rating_binds_subquery_args_before_where_id`602-620 pins that inconsistent shape. Go `persistence/sql_annotations.go:151-162` embeds coalesced rounded avg positive ratings; `ReassignAnnotation:185-196` UPDATE OR IGNORE then update average. No execution by planner/parent claimed for this new renderer defect.
 3. **Own:** `src/sql_annotations.rs`, NEW `tests/runtime_annotation_transfers.rs`, O annotation fixtures. Prefer new runtime helper in this file or fixed registered entity enum in runtime_error/types; no arbitrary table input. Collision DB-16/20, shared helpers potential external API later.
 4. **Proposal:** repair SQL to embed average_rating_expr_sql and exactly3 ordered binds; `reassign_annotation_in_tx(tx,EntityKind,old,new)->Result<(),DbRuntimeError>` short-circuits empty/equal IDs per Go, moves OR IGNORE, recalculates target average in same tx. Duplicate per-user target annotation wins; do not merge or delete source conflict rows silently. Preserve zero/NULL/unrated average rule and type string `album` vs artwork prefix (not interchangeable).
@@ -670,7 +680,7 @@ Mechanism, from the vendored macro (`thiserror-impl-1.0.69/src/expand.rs:62-70`)
 ### Resolved: go-sqlite3's "WAL forces NORMAL" is a no-op (2026-11-18, parent-read vendor source)
 
 W9 raised whether the port must mimic go-sqlite3 coupling `synchronous` to WAL. Read the vendor
-source directly (`/Users/nathanielheitsch/go/pkg/mod/github.com/mattn/go-sqlite3@v1.14.52/sqlite3.go`):
+source directly (`github.com/mattn/go-sqlite3@v1.14.52/sqlite3.go`):
 - `synchronousMode := "NORMAL"` is the default (`:1241`).
 - The journal block sets `synchronousMode = "NORMAL"` on WAL (`:1450-1454`).
 - The synchronous block runs **later** and overwrites it whenever `_synchronous`/`_sync` is
@@ -684,8 +694,9 @@ a later reviewer does not re-open it as a missing behavior.
 
 ## DB-22 — Executed read parity for genre, scrobble, playqueue, artwork (parent-added, 2026-11-18)
 
-1. **Status: READY as a plan; BLOCKED on checkout** — run only after DB-03 (`19a5a57a`) and DB-00
-   (`5b8c42a4`) land: this lane edits `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}`
+1. **Status: READY as a plan; BLOCKED on checkout** — run only after DB-03 (**landed `4a8aac9f`**; the `19a5a57a` cited here is a
+   superseded pre-review commit), DB-00 (**landed `48e65806`/`ec84c176`**) and DB-02 (**landed `6d9d984d`/`74ebd81c`**) have
+   landed, so it is assignable now: this lane edits `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}`
    and runs the whole workspace, so a concurrent writer would poison its numbers.
 2. **Goal:** execute the four repos' read statements against `apply_fresh_schema` and pin Go's
    observed results. Zero executed reads today (measured: 0 execution calls in each module).
@@ -741,7 +752,7 @@ DB-01 ------------------------------------> DB-07
 D-TIME -> DB-02 ---------------------------> DB-05/07/08/09/10/11/12/14/16/17/18/19
 BOOT.db-open-policy + D-OPEN -> DB-03 -----> every runtime write/read acceptance
 DB-00 + DB-03 -> DB-04
-DB-00 + DB-02 + DB-03 -> DB-05
+DB-00 + DB-02 + DB-03 -> DB-05 (all landed)
 DB-00 + DB-03 + DB-05 -> DB-06
 DB-00/01/02/03/05 -> DB-07
 DB-00/02/03/05 -> DB-08
@@ -763,7 +774,8 @@ DB-16/17/18/19/20 + SC.full-phase-contract + SC.playlist-import-contract -> DB-2
 
 DB-21's P1 exit requires only genuinely consumed phase1 APIs; e.g. API visible-point test and future phase2 reads in DB-11 need not delay a parent-approved narrower DB-11 phase1 handoff, but cannot be reported complete. If split, retain stable IDs with explicit acceptance checklist states; do not silently delete the unimplemented obligations. DB-14 needs DB-15 for phase1 album-ID transitions; a no-transition first fixture may demonstrate only a strictly narrower exit, not general phase1 parity.
 
-Recommended **serial** writer order: approve error/time/open decisions; DB-01 -> DB-02 -> DB-03 -> DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03. Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates.
+Recommended **serial** writer order (DB-01/02/03/00 are done, so the sequence resumes at DB-04): DB-01 -> DB-02 -> DB-03 ->
+DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03. Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates.
 
 ## MUST-answer questions before relevant launch
 
@@ -914,12 +926,15 @@ artwork, genre, playqueue, plugin, scrobble, share, smart_playlist, user_props.
 Note `annotation_repo.rs` does not exist while `persistence/` has no annotation file
 either — annotations ride album/mediafile (`DB-15`), so no gap there.
 
-Near-term order after this commit, all DB-owned:
+Near-term order after this commit, all DB-owned **(superseded 2026-11-19: DB-01 LANDED `f57ae050`,
+DB-03 / D-OPEN LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only LANDED `ab466928`, DB-02 LANDED
+`6d9d984d`/`74ebd81c` — **no lane is in flight**; read
+`../subplans/README.md` and `../next-work.md`'s current section for the live order)**:
 1. **Sort-gate parity** for player, library, tag, radio — **done** at `62789ba2`.
-2. **DB-01** missing-state bind repair — already READY, no prerequisites, and G0 gates
+2. **DB-01** missing-state bind repair — READY then, no prerequisites, and G0 gates
    DB-07/14. Unrelated to the gates, so it can run in a separate lane only if the
    checkout is free; otherwise keep it serial after the gate work.
-3. **DB-03 / D-OPEN** — DECISION REQUIRED. This is where the reproduced
+3. **DB-03 / D-OPEN** — DECISION REQUIRED then. This is where the reproduced
    DB-path/pragma divergence (`docs/rust-port/subplans/db-runtime.md` above the DAG and
    `current-status.md`) gets resolved: a `DbOpenOptions` typed open plus effective-state
    read-back per handle. Needs the user's call on defaults (WAL for file DBs, FK on,
@@ -1217,7 +1232,9 @@ Measured against go-sqlite3 v1.14.52 (`sql.Open` + `SELECT 1` + pragma read-back
    explicit and measured on this build: with a shared cache, two handles writing the same
    table fail immediately with `SQLITE_LOCKED_SHAREDCACHE` (extended 262, "database table
    is locked") instead of waiting out the busy timeout for `SQLITE_BUSY` (extended 5);
-   `nd_db::store::is_busy` classifies both as retryable.
+   `nd_db::store::is_busy` classifies **only** primary BUSY (5, including extended BUSY codes) as retryable, so
+   LOCKED_SHAREDCACHE (262) fails immediately — asserted by `nd-db/tests/busy_retry_mapping.rs`'s shared-cache test and
+   matching Go, whose `db.IsBusy` compares the primary code only (`db/db.go:137-140`, `persistence/persistence.go:218`).
    Preset matching runs on the DECODED, order-insensitive parameter set, so
    `navidrome.db?cache=shared&_busy%5Ftimeout=15000&_journal%5Fmode=WAL&_foreign%5Fkeys=on&synchronous=normal`
    gets the same options and the same forwarded `cache=shared` as the plain spelling

@@ -1,111 +1,119 @@
-# Handoff — audited Rust port, bounded-task workflow
+# Handoff — bounded-task workflow for the Rust port
 
-This replaces the obsolete worktree/model/phase-completion handoff. Read it with the assigned technical subplan;
-it does not authorize implementation, commits, new workspaces, or completion claims.
+Read the entry point [`README.md`](README.md) first. This file states how a bounded task is launched, executed,
+reviewed and reported. It does **not** carry status: current milestone order is the current section of
+[`next-work.md`](next-work.md), measured evidence is [`current-status.md`](current-status.md), binding decisions are
+[`decisions.md`](decisions.md), and bounded assignments are the [`subplans/`](subplans/) contracts. It authorizes
+nothing — no implementation, no commits, no new workspaces, no completion claims.
 
 ## Locate and verify
 
-- Repository: `/Users/nathanielheitsch/projects/barnstorm/navidrome`; Go sources at the root; Rust workspace `rust/`.
-- Audited code baseline: `master`, `60cdd18402c0fd4b09b65e0b64ca494330501c02` (2026-11-18).
-- Plan order: [`next-work.md`](next-work.md), current section only.
-- Measured capabilities/evidence: [`current-status.md`](current-status.md).
-- Assignment contracts and launch decisions: [`subplans/`](subplans/). Read the index, required task template,
-  selected package, and its prerequisites before editing. Proposed API signatures are not automatically frozen contracts.
-- Product scope/ownership: [`issues.md`](issues.md) and [`component-map.md`](component-map.md), as amended by the
-  current plan. Dated historical status/lane tables do not override the current snapshot or orchestration rules.
-- Source contracts: `schema-contract.md`, `config-contract.md`, `credentials.md`, `entity-write-contract.md`,
-  `hydrate-contract.md`, `hydrate-scan-contract.md`. Their current amendments override historical scout assertions.
+- Repository: this navidrome fork checkout (Go sources at the root, Rust workspace `rust/`). Resolve paths from the
+  working directory — never a developer's absolute path, and never a hardcoded worktree name.
+- Authoritative source baseline: integrated `master` at `74ebd81c`. A docs lane may be cut from an earlier boundary
+  (`ff900d3e`) — say so, and cite integrated behavior from `master` instead of measuring it in your own worktree.
+  Earlier audited boundaries are listed in `current-status.md`'s landed-history table; older handoff baselines are
+  history.
+- Read order: `README.md` → `next-work.md` **current section only** → `current-status.md` → `decisions.md` → the
+  subplan index → the assigned package and its prerequisites → the relevant source contract. Contracts
+  (`schema-contract.md`, `config-contract.md`, `credentials.md`, `entity-write-contract.md`, `hydrate-contract.md`,
+  `hydrate-scan-contract.md`) carry source history; their **current amendments** override historical scout assertions.
+  Product scope/ownership lives in `issues.md` and `component-map.md`, as amended by the current plan — dated
+  historical tables there do not override the snapshot or these orchestration rules. Proposed API signatures in a
+  subplan are not automatically frozen contracts.
+- Start every assignment with `git log -5 --oneline`, `git status --porcelain --untracked-files=all`, and the assigned
+  method/test sources. Report baseline drift, existing changes, unmet prerequisites and missing decisions **before**
+  editing. Never discard another writer's work. Resolve fixtures from `CARGO_MANIFEST_DIR`/repository discovery.
 
-Start with `git log -5 --oneline`, `git status --porcelain --untracked-files=all`, and the assigned method/test sources.
-Report baseline drift, existing changes, unmet prerequisites or missing decisions before editing. Never discard another
-writer's work. Resolve fixtures from `CARGO_MANIFEST_DIR`/repository discovery, not a developer's absolute paths.
+## Current reality (see `current-status.md` for numbers)
 
-## Current reality
+The workspace passes its regression gates and is **not** a runnable server or scanner: `nd-scanner`, `nd-http`,
+`nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row hooks and substantial
+executed reads are landed; scanner transactional entity writes, specialized typed queries and GC are not. Tests that
+manually execute SQL bundles are not production repository methods. DB-01 (missing-state bind order), DB-03/D-OPEN
+(effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`) and
+DB-15's **render-only** rating repair (`ab466928`) are landed with executed regressions — the DB-15 annotation service and
+the full DB lane are **not**; DB-02 (scanner timestamps) landed at `6d9d984d`/`74ebd81c`, so no lane is in flight and DB-04 is next. Login/native-audience and HTTP key integration, plus
+stream prepare/header/`Send`/body ownership, each need their own bounded package. Do not connect existing renderers
+unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and
+non-target/user-data preservation tests.
 
-At the audited baseline the parent ran formatting, locked workspace build/clippy, DB and workspace tests, docs,
-and diff checks: all exited 0. Workspace **1816 passed / 0 failed / 1 ignored** (69 groups); DB **737 / 0 / 0**
-(26 groups). `cargo doc -p nd-db` succeeded with **22 warnings**, not warning-free. Exact commands and toolchain
-are in `current-status.md`; these are dated results, not proof for a later diff.
+Scope facts that keep agents from re-litigating settled things: #26 is split (`D-PLAYER26`) — the player-session service
+(`Get`/`Register`/`Touch` over the landed `PlayerRepo`, canonical placement chosen by API-01) is retained and the
+mpv/jukebox playback-device scope is **dropped** unported; #26 is not DONE and no player route is mounted. Per-device
+preference editing is retained scope (`D-PLAYER-EDIT`): owner-scoped `GET`/`PUT /api/player/{id}` with immutable
+`user_id` and an enforced field whitelist, plus a **read-only** `GET /api/transcoding` list; profile **editing** stays
+dropped. The executing transcoding read landed at `f8ceeb8f`, so only the BOOT-owned `DEFAULT_TRANSCODINGS` seed and the
+route remain. Go registered/touched players only in the now-cancelled Subsonic/Jellyfin middlewares, so canonical
+placement is a deliberate API-01 decision, not inherited behavior; Go has no player expiry (only `LastSeen` stamping and
+a 1-minute write limiter), and key issuance needs `PlayerRepo::set_api_key`, not the service. Full evidence:
+`subplans/README.md`.
 
-- S-D3g1 `f210431f`, S-D3g2 `a8e4d57c`, follow-up `60cdd184` are in this baseline. Do not re-port/cherry-pick them.
-- Codecs, typed write builders/records, eight row hooks and many read methods exist. Scanner transactional entity
-  writes and specialized queries/GC do not. Tests manually executing SQL bundles are not production repository methods.
-- Wrong missing-update bind ordering, mixed timestamp/idle semantics and pool configuration contracts are explicit
-  pre-scanner gates. Do not connect existing renderers unchanged. Missing-state, move, annotation and cleanup operations
-  require executed read-back, rollback/retry and non-target/user-data preservation tests.
-- Tagreader/mapping and auth/stream components work at crate level. Scanner/HTTP/API are scaffolds; CLI main is empty.
-  Login/native-audience and HTTP key integration, plus stream prepare/header/Send/body ownership, need bounded packages.
-- #26 is split (`D-PLAYER26`, 2026-11-18): retain the player-session service (`Get`/`Register`/`Touch` over the landed
-  `nd-db` `PlayerRepo`, canonical placement chosen by API-01 — the resolved player plus its transcoding row reach the
-  request context and then the stream `MaxBitRate` cap and scrobbler gate); the mpv/jukebox playback-device scope is
-  **DROPPED** unported. Do not add mpv/socket/process-reap work or revive `jukeboxControl`, and do not treat #26 as DONE —
-  its retained half is not yet implemented, and no player route is mounted (`nd-api` is a scaffold). Per-device preference editing is **retained scope**
-  (`D-PLAYER-EDIT`, 2026-11-18): owner-scoped `GET`/`PUT /api/player/{id}` over maxBitRate/transcodingId/
-  scrobbleEnabled with immutable `user_id`, plus a **read-only** `GET /api/transcoding` profile list that needs
-  #05's executing transcoding read and BOOT's `DEFAULT_TRANSCODINGS` seed; profile editing stays dropped. Go registered/touched players only in the now-dropped Subsonic/Jellyfin
-  middlewares and the native API never did, so placement on the canonical surface is a deliberate API-01 decision, not
-  inherited behavior. Go has no player expiry — only `LastSeen` stamping and a 1-minute write limiter; key issuance needs
-  `PlayerRepo::set_api_key`, not this service.
-- First runnable slice is fresh DB -> configured library -> real track scan -> canonical authenticated lookup ->
-  direct Range/forced transcode/disconnect cleanup. Phase-1-only ingest is not complete #17. Repair, full maintenance,
-  metrics and every full-API service are not automatic prerequisites for this deliberately limited slice.
-- Go external scanner gob carries progress events, not metadata/tag-reader results. In-process fixture ingest can
-  explicitly defer watcher/process protocol. Complete scanner claims still require its later lifecycle packages.
+The first runnable slice (#27A) is fresh DB → configured library → real track scan → canonical authenticated lookup →
+direct Range/forced transcode/disconnect cleanup. Phase-1-only ingest is not a complete #17; repair, full maintenance,
+metrics and every full-API service are not automatic prerequisites for that slice.
 
 ## Non-negotiable task boundaries
 
 1. The parent owns decomposition, decisions, integration and final verification. Children do not delegate unless
-   expressly authorized. Each implementation assignment must specify exact task ID, baseline, file ownership,
-   prerequisite APIs/decisions, acceptance tests, exclusions and report format. Stop when scope must expand.
-2. Use the installed **Paseo** skill. Discover tools/hosts/profiles, read all profile notes, materialize the selected
-   provider/model/mode/thinking/features. Do not hard-code a model from this document or substitute Pi-local agents.
-3. Keep the issue in the parent's **verified existing workspace**. Prefer inherited agent-scoped creation; verify
-   returned workspace ID. Same directory is not proof of workspace identity. No new worktree/workspace, remote
-   placement, archive/delete/cleanup or isolation without explicit user approval. No blind expansion of unset IDs.
-4. **One writer for the entire shared checkout**, even for disjoint files or different workspace IDs. Parallel work
-   is read-only by default. Serialize writers and tests that mutate fixtures. Scratch/probe artifacts only in `/tmp`.
-5. Freeze writes before a fresh read-only review. A parent source check is useful but is not a substitute for the
-   required independent reviewer. On provider failure, report incomplete coverage and resume/replace the review;
-   do not silently declare approval. Use completion notifications; do not poll or send hurry-ups.
+   expressly authorized. Every implementation assignment specifies exact task ID, baseline, file ownership, prerequisite
+   APIs/decisions, acceptance tests, exclusions and report format. Stop when scope must expand.
+2. Use the installed **Paseo** skill. Discover tools/hosts/profiles, read all profile notes, and materialize the
+   selected provider/model/mode/thinking/features into the creation settings. Do not hard-code a model from this
+   document or substitute Pi-local agents.
+3. Keep the issue in the parent's **verified existing workspace**. Prefer inherited agent-scoped creation and verify the
+   returned workspace ID; the same directory is not proof of workspace identity. No new workspace/worktree, remote
+   placement, archive/delete/cleanup or isolation without explicit user approval, and no blind expansion of unset IDs.
+4. **One writer per checkout**, even for disjoint files. Parallel work is read-only by default. The user-approved
+   exception is **parallel isolated worktrees with parent-controlled merges**: one writer inside each worktree, and no
+   claim that a branch is done from an agent message. Serialize writers and any tests that mutate fixtures or generated
+   files. Scratch/probe artifacts only in `/tmp`.
+5. Freeze writes before a fresh read-only review. A parent source check is useful but not a substitute for the required
+   independent reviewer. On provider failure, report incomplete coverage and resume or replace the review; never
+   silently declare approval. Use completion notifications; do not poll or send hurry-ups.
 6. No existing Go-source, Cargo manifest/lockfile or generated-file changes unless the particular assignment explicitly
    authorizes them. Plans needing new dependencies or tracked Go harnesses must resolve that gate first. No `unsafe`,
-   lint bypasses, auto-formatting or auto-fixes. Apply deliberate minimal edits only.
-7. No commits or push without fresh explicit authorization. Any authorized commit must be GPG signed; never disable
-   signing or add AI attribution trailers. Verify `git cat-file commit HEAD | grep -q '^gpgsig'`. Pushing needs
-   separate authorization. Do not archive a workspace/agent merely because its work was committed.
-8. Destructive/irreversible changes, credentials/secrets, production DB/file mutations and ambiguous cleanup require
-   user confirmation. Test only fresh synthetic fixtures; do not read or expose real credentials to build fixtures.
+   no lint bypasses, no auto-formatting or auto-fixes — deliberate minimal edits only.
+7. No commits or pushes without fresh explicit authorization. Any authorized commit must be GPG signed — never disable
+   signing or add AI attribution trailers — and verified with
+   `git cat-file commit HEAD | grep -q '^gpgsig'`. Pushing needs separate authorization. Do not archive a
+   workspace/agent merely because its work was committed, and never archive one holding uncommitted work.
+8. Destructive or irreversible changes, credentials/secrets, production DB/file mutations and ambiguous cleanup require
+   user confirmation. Test only fresh synthetic fixtures; never read or expose real credentials to build fixtures.
 
 ## Technical rules and acceptance
 
-- Rust edition/workspace conventions: snake_case functions, documented public types/fields/functions and pinned Go
-  symbol/path citations where behavior is ported. `thiserror` in libraries, `anyhow` at CLI boundary, Tokio async,
-  explicit typed DI in the CLI. DTO ownership stays as assigned; no opportunistic cross-crate model refactor.
+- Rust conventions: snake_case functions, documented public types/fields/functions, pinned Go symbol/path citations
+  where behavior is ported. `thiserror` in libraries, `anyhow` at the CLI boundary, Tokio async, explicit typed DI in the
+  CLI. DTO ownership stays as assigned (`nd-db`-local DTOs; do not touch `nd-model` for hydration); no opportunistic
+  cross-crate model refactors.
 - SQLite uses pinned rusqlite (not sqlx); connections are single-owner and blocking work goes through SQLStore's
-  `spawn_blocking` boundary. Transaction callbacks share one leased connection; never recursively check out the pool.
-  Retry closures may run again: no repeated filesystem/network/event side effects inside them. Dropping an async
-  await does not cancel an already-started blocking SQLite transaction. Compose domain errors without string loss.
-- Values are parameterized; sort identifiers/options use allowlists. Library/user restrictions are deliberate typed
-  inputs, never raw request SQL. Assert SQL **and ordered binds**, then execute on a fresh schema and read stored
-  rows/side tables/FTS back. Renderer-only comparisons missed real data-corruption and syntax defects before.
+  `spawn_blocking` boundary. Transaction callbacks share one leased connection — never recursively check out the pool.
+  Retry closures may run again, so no repeated filesystem/network/event side effects inside them. Dropping an async await
+  does not cancel an already-started blocking SQLite transaction. Compose domain errors without string loss.
+- Values are parameterized; sort identifiers/options use allowlists; restful filter keys require a registered field
+  whitelist. Library/user restrictions are deliberate typed inputs, never raw request SQL. Assert SQL **and ordered
+  binds**, then execute on a fresh schema and read stored rows, side tables and FTS back. Renderer-only comparisons
+  missed real data-corruption and syntax defects before (`decisions.md` W0/W1).
 - Pin zero/NULL/malformed/default behavior, transaction rollback/retry, empty/one/many and chunk boundaries, stable
-  identity, created/birth immutability, first-error order and cross-user/library non-target behavior as relevant.
+  identity, created/birth immutability, first-error order, and cross-user/library non-target behavior as relevant.
 - Do not weaken strict native audience, session expiry/refresh/epoch, key hashing/ownership or trusted-proxy boundaries.
   First-admin atomicity is a retained deliberate improvement over Go, not parity debt to undo.
-- Stream/network tests must exercise real body backpressure/drop, child cleanup and recovered slots. Require external
-  tool/codecs for acceptance; an early-returning test is not lifecycle evidence. Keep post-header failures distinct
-  from pre-header error responses and preserve cache/lease/cancellation ownership.
-- Label evidence EXECUTED / SOURCE-VERIFIED / INFERRED / UNVERIFIED. Verify reports against files/history/logs.
+- Stream/network tests must exercise real body backpressure/drop, child cleanup and recovered slots, and must require
+  their external tools/codecs. Keep post-header failures distinct from pre-header error responses and preserve
+  cache/lease/cancellation ownership.
+- Label evidence EXECUTED / SOURCE-VERIFIED / INFERRED / UNVERIFIED and verify reports against files, history and logs.
   Use real pinned Go behavior, not a copied algorithm or Rust-produced expected output. Record nondeterministic set
-  normalization, output hashes, exact commands/exits and toolchain versions. `/tmp`-only oracles are local evidence,
-  not clean-clone reproducibility. Do not regenerate expectations to make a failing implementation pass.
-- Product decisions stay settled: fresh service/no Go upgrade path, canonical API only, no reversible passwords;
-  Subsonic/Jellyfin/plugin/sonic cancelled; bundled JS UI/backgrounds dropped; `/` is 404; Quick-Connect belongs to
-  later canonical API work. Borrow Go behavior without resurrecting cancelled wire surfaces.
+  normalization, output hashes, exact commands/exits and toolchain versions. `/tmp`-only oracles are local evidence, not
+  clone-reproducible reproducibility; regenerate expectations only from the Go side, never to make a failing
+  implementation pass.
+- Product decisions stay settled (`decisions.md` C1): fresh service with no Go upgrade path, canonical API only, no
+  reversible passwords; Subsonic/Jellyfin/plugin/sonic cancelled; bundled JS UI and backgrounds dropped; `/` is 404;
+  Quick-Connect belongs to later canonical API work. Borrow Go behavior without resurrecting cancelled wire surfaces.
 
 ## Validation and completion report
 
-From `rust/`, use focused build/tests after small steps and the package's full acceptance matrix. Integrated gates:
+From `rust/`, use focused build/tests after small steps, then the package's full acceptance matrix. Integrated gates:
 
 ```sh
 cargo fmt --all -- --check
@@ -117,9 +125,10 @@ cargo doc --locked -p nd-db --all-features --no-deps
 ```
 
 At the repository root run `git diff --check` and `git status --porcelain --untracked-files=all`. Compare rustdoc
-warning messages to the baseline; do not call a successful build warning-free. Record failures/flakes and coverage
-limits, not just the last green rerun. Parent validates the integrated result after selected review fixes.
+warnings against the recorded baseline (22 for `nd-db`) and never call a successful doc build warning-free. Record
+failures and flakes, not just the last green rerun. The parent validates the integrated result after selected review
+fixes.
 
-Report: **verdict; exact files changed; actual commands/exits/test totals/ignored and tool versions; evidence and
-non-vacuity; deviations closed/retained; blockers; exact next package**. No implementation is complete merely because
+Report: **verdict; exact files changed; actual commands/exits/test totals/ignored and tool versions; evidence labels and
+non-vacuity; deviations closed or retained; blockers; exact next package.** No implementation is complete merely because
 a child says it is or the current suite passes.

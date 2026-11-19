@@ -4,6 +4,11 @@
 
 **NOT IMPLEMENTATION AUTHORIZATION.** Read-only plan for #24 + the minimum #33 construction graph, #27A, and bounded later #27 packages. Baseline `60cdd18402c0fd4b09b65e0b64ca494330501c02`, existing workspace `wks_7bb3344766422a39`, host `srv_QsD9e1TgIsNq`, parent `4920ad4e-8f0f-4982-92e6-8fceee49afdd`. No repository edits, tests, server/oracle launches, delegation, worktrees, commits, or pushes were performed. Only this report was written in `/tmp`. All implementation signatures below explicitly called **proposed** are designs, not existing public API.
 
+> **Status pointer (2026-11-19):** baseline below is `60cdd184`; the source baseline is now integrated `master`
+> `74ebd81c`, and package
+> statuses here are planner-time. Live status: [`../current-status.md`](../current-status.md); dependency order and
+> IN-FLIGHT waves: [`../subplans/README.md`](../subplans/README.md) and the current section of
+> [`../next-work.md`](../next-work.md); settled decisions: [`../decisions.md`](../decisions.md).
 **Two independent milestones:** (a) runnable boot + fixture-backed, authenticated read/stream HTTP tests can proceed without the scanner; (b) the actual #27A exit gate is **fresh DB -> real track scan -> authenticated lookup -> direct Range -> forced transcode -> disconnect -> zero surviving children**. An HTTP fixture insert does not satisfy (b). #18/#19/#20/#21/#22/#23/#26/Quick-Connect/#28, repair/full maintenance, and #32 do not gate (a) or the narrow (b).
 
 Parent-reported fresh gates at this HEAD: all exit 0; nd-db 737 passed / 0 failed / 0 ignored (26 groups), workspace 1816 / 0 / 1 (69 groups), doc 22 warnings (8 unresolved + 14 private). These were **not rerun by this planner**. Existing green crate tests are not proof that anything listens or accepts a login token on the API.
@@ -12,7 +17,7 @@ Read inputs: `/tmp/navidrome-subplan-template.md`, `/tmp/navidrome-plan-runtime-
 
 ### Settled product constraints (do not reopen)
 
-`issues.md:654-670` governs over stale prose elsewhere: native `/api` is the trunk; Subsonic/Jellyfin/plugin host/UI/backgrounds/sonic are dropped; `/` is 404; plugin routes are 404; no `/inspect`, `/config/*`, or transcoding-config editor. Native playback endpoints are **new canonical contracts** transcribing Go stream behavior, not pre-existing Go-native routes. No XML, `.view`, `u/t/s`, reversible passwords, migration command, or legacy password detector. Argon2id passwords, `native` JWTs + user epoch, high-entropy hashed per-player keys, no key scopes, owner-only key issuance and owner-or-admin revocation. Separate verifying public-link secret survives session-secret rotation. Public shares/HTML remain later work. Conflicting credentials fail closed. Login AND key issuance are guarded; nonpositive auth limit is a startup error, not a bypass.
+`issues.md` Part C (settled product decisions) governs over stale prose elsewhere: native `/api` is the trunk; Subsonic/Jellyfin/plugin host/UI/backgrounds/sonic are dropped; `/` is 404; plugin routes are 404; no `/inspect`, `/config/*`, or transcoding-config editor. Native playback endpoints are **new canonical contracts** transcribing Go stream behavior, not pre-existing Go-native routes. No XML, `.view`, `u/t/s`, reversible passwords, migration command, or legacy password detector. Argon2id passwords, `native` JWTs + user epoch, high-entropy hashed per-player keys, no key scopes, owner-only key issuance and owner-or-admin revocation. Separate verifying public-link secret survives session-secret rotation. Public shares/HTML remain later work. Conflicting credentials fail closed. Login AND key issuance are guarded; nonpositive auth limit is a startup error, not a bypass.
 
 ### External dependency aliases (parent must resolve to actual DB-/SC- IDs before launch)
 

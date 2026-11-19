@@ -1,18 +1,18 @@
 # Config-Format Contract (#S3) — Fresh TOML key set
 
 Status: **FROZEN** for the Rust port. This is the contract consumed by `nd-conf`
-(Part B #03). It is a *fresh-service* contract per Part C item 12 (issues.md:502):
+(Part B #03). It is a *fresh-service* contract per Part C item 12 (`issues.md`):
 there are no existing user TOML files to stay compatible with, so this document
 enumerates the Go `configOptions` key set and then **applies the settled
 decisions** rather than recording a compatibility story.
 
 - Go source of truth: `conf/configuration.go` (`configOptions` struct at :33-165,
   nested sections :167-306, viper defaults `setViperDefaults` :974-1155).
-- Settled decisions (Part C item 12, issues.md:502):
+- Settled decisions (Part C item 12, `issues.md`):
   - **No `Subsonic.*` keys** (`subsonicOptions` conf/configuration.go:188-196;
     the whole Subsonic API is out of scope for the fresh service).
   - **No `Plugins.*` keys** (`pluginsOptions` conf/configuration.go:284-290;
-    plugin host cancelled per Part C item 14, issues.md:504).
+    plugin host cancelled per Part C item 14, `issues.md`).
   - **No `Jukebox.*` keys** (`jukeboxOptions` conf/configuration.go:259-264;
     the MPV jukebox is not ported).
   - **No `PasswordEncryptionKey`** (conf/configuration.go:113, default at :1051;
@@ -210,21 +210,21 @@ Cites give struct and viper-default line ranges in `conf/configuration.go`.
 
 **Dropped Dev keys** (sole consumers are removed subsystems):
 `DevEnablePluginsInsights` (:159, :1150) and `DevPluginCompilationTimeout`
-(:160, :1151) — plugins host cancelled (issues.md:504); dropped together with
+(:160, :1151) — plugins host cancelled (Part C item 14, `issues.md`); dropped together with
 `Plugins.*`.
 
 ## 4. Dropped keys — complete list with citations
 
 | Dropped key | Go cite | Reason (settled decision) |
 |---|---|---|
-| `Subsonic.AppendSubtitle`, `Subsonic.AppendAlbumVersion`, `Subsonic.ArtistParticipations`, `Subsonic.DefaultReportRealPath`, `Subsonic.EnableAverageRating`, `Subsonic.LegacyClients`, `Subsonic.MinimalClients` | conf/configuration.go:188-196, defaults :1074-1080 | Subsonic API absent from the fresh service (issues.md:502) |
-| `Plugins.Enabled`, `Plugins.Folder`, `Plugins.CacheSize`, `Plugins.AutoReload`, `Plugins.LogLevel` | conf/configuration.go:284-290, defaults :1111-1115; folder defaults :395-401 | Plugin host cancelled (issues.md:504) |
-| `Jukebox.Enabled`, `Jukebox.Devices`, `Jukebox.Default`, `Jukebox.AdminOnly` | conf/configuration.go:259-264, defaults :1058-1061 | Jukebox not ported (issues.md:502) |
-| `MPVPath`, `MPVCmdTemplate` | conf/configuration.go:80-81, defaults :1016-1017 | Only consumer is the dropped jukebox; dropped with it (consequence of issues.md:502 — flagged for the verifier as an inference) |
-| `PasswordEncryptionKey` | conf/configuration.go:113, default :1051 | Dead config; keys the never-ported AES-GCM store (issues.md:502; credentials.md) |
-| `DevEnablePluginsInsights`, `DevPluginCompilationTimeout` | conf/configuration.go:159-160, defaults :1150-1151 | Plugins cancelled (issues.md:504) |
+| `Subsonic.AppendSubtitle`, `Subsonic.AppendAlbumVersion`, `Subsonic.ArtistParticipations`, `Subsonic.DefaultReportRealPath`, `Subsonic.EnableAverageRating`, `Subsonic.LegacyClients`, `Subsonic.MinimalClients` | conf/configuration.go:188-196, defaults :1074-1080 | Subsonic API absent from the fresh service (Part C item 12/13/17, `issues.md`) |
+| `Plugins.Enabled`, `Plugins.Folder`, `Plugins.CacheSize`, `Plugins.AutoReload`, `Plugins.LogLevel` | conf/configuration.go:284-290, defaults :1111-1115; folder defaults :395-401 | Plugin host cancelled (Part C item 14, `issues.md`) |
+| `Jukebox.Enabled`, `Jukebox.Devices`, `Jukebox.Default`, `Jukebox.AdminOnly` | conf/configuration.go:259-264, defaults :1058-1061 | Jukebox not ported (Part C item 12/13/17, `issues.md`) |
+| `MPVPath`, `MPVCmdTemplate` | conf/configuration.go:80-81, defaults :1016-1017 | Only consumer is the dropped jukebox; dropped with it (consequence of `issues.md` Part C items 12-13 — flagged for the verifier as an inference) |
+| `PasswordEncryptionKey` | conf/configuration.go:113, default :1051 | Dead config; keys the never-ported AES-GCM store (`issues.md` Part C item 12; credentials.md) |
+| `DevEnablePluginsInsights`, `DevPluginCompilationTimeout` | conf/configuration.go:159-160, defaults :1150-1151 | Plugins cancelled (Part C item 14, `issues.md`) |
 | `Scanner.GenreSeparators`, `Scanner.GroupAlbumReleases` | conf/configuration.go:175-176, defaults :1069-1070; deprecated entries :540-541 | Already deprecated upstream; only the replacements (`Tags.genre.Split`, `PID.*`) are carried |
-| All 10 legacy aliases (`SearchFullString`, `ReverseProxyWhitelist`, `ReverseProxyUserHeader`, `HTTPSecurityHeaders.CustomFrameOptionsValue`, `CoverJpegQuality`, `SimilarSongsMatchThreshold`, `EnableTranscodingCancellation`, and the three ignored ones above) | conf/configuration.go:539-550 | No deprecation table in the fresh service (issues.md:502); only canonical spellings exist |
+| All 10 legacy aliases (`SearchFullString`, `ReverseProxyWhitelist`, `ReverseProxyUserHeader`, `HTTPSecurityHeaders.CustomFrameOptionsValue`, `CoverJpegQuality`, `SimilarSongsMatchThreshold`, `EnableTranscodingCancellation`, and the three ignored ones above) | conf/configuration.go:539-550 | No deprecation table in the fresh service (Part C item 12/13/17, `issues.md`); only canonical spellings exist |
 | `Spotify.ID`, `Spotify.Secret` | conf/configuration.go:552 | Already removed upstream; not resurrected |
 
 The `ConfigFile` field (conf/configuration.go:34, `conf:"-"`) and the computed
@@ -251,7 +251,7 @@ and are **not** TOML keys.
 4. **Unknown keys are a startup error.** `unknownConfigKeys` (:676-698)
    computed the unknown set (minus INI `default.*` passthrough and resolvable
    `nd_*` keys); the Go loader only warned (:645-653). **The Rust loader must
-   `logFatal`/exit on any unknown key** (issues.md:502). Fixtures for the
+   `logFatal`/exit on any unknown key** (Part C item 12/13/17, `issues.md`). Fixtures for the
    error behavior: `conf/testdata/cfg_unknown_keys.toml`,
    `cfg_unknown_casing.{toml,ini,json,yaml}`, `cfg_nd_bogus.toml`,
    `cfg_nd_conflict.toml`.
