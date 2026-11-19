@@ -52,10 +52,21 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    Sqlite{stage, source} / BusyExhausted{attempts, stage, source}`, preserving typed SQLite causes through
    `Error::source()`. Go's `WithTxRetry` (`persistence/persistence.go:207-228`) retries only `db.IsBusy`
    errors on a 5s/10s/15s schedule (`:203,:205,:225`) and never retries a domain error — verified.
-   This unblocks DB-04 onward, which all list DB-00 as a prerequisite.
+   This unblocks DB-04 onward, which all list DB-00 as a prerequisite. W10's design is settled and
+   reviewed: it adds `Pool(StoreError)` so checkout/JoinError failures are not stringified, and it
+   measured that COMMIT-stage busy is reachable (a reader tx on one handle makes the other's COMMIT
+   fail with extended 5), so the Commit branch must not issue a second ROLLBACK. Its
+   `#[error(transparent)]` finding is independently reproduced at `608f8784`. W10 holds until W9
+   (DB-03) commits, because both lanes run the whole workspace.
 6. **Then the mutation packages DB-04…DB-10** — the real critical path into the scanner slice.
 
-7. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
+7. **DB-15 render-only repair is fully specified and READY to launch when the checkout frees**
+   (`subplans/db-runtime.md`, "DB-15 fix design"): embed `average_rating_expr_sql()` into the SET,
+   keep the existing 3-arg list, add an executed test proving `average_rating = 4` for ratings
+   5/3/0 across three users, and redocument-plus-pin the `annotation.id` prepare failure rather
+   than deleting the public renderers. Related findings recorded for DB-16: share's empty-`cols`
+   divergence and the `refresh_counters_sql` five-arg bind.
+8. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
    goldens (artist/album/mediafile/playlist_tracks/plugin/scrobble). Lowest priority.
 
 Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin`, `scrobble`, `share`, `smart_playlist`,
