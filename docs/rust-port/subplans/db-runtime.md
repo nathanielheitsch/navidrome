@@ -693,6 +693,34 @@ Near-term order after this commit, all DB-owned:
    binary in one run, clean in the other three runs and isolated. Needs its own
    investigation in `nd-stream`, not a DB change.
 
+## Coverage audit: renderers with no executed coverage (2026-11-18, parent-measured)
+
+Two independent measurements, both mechanical, so the next lanes target real gaps:
+
+**(1) Repos with zero executed reads** (`grep -c 'with_connection_sync\|prepare\|query_row\|execute('`
+per module): `genre_repo` 0, `scrobble_repo` 0, `scrobble_buffer_repo` 0 (its entry model hydrates
+but nothing runs), `smart_playlist_repo` 0, `user_props_repo` 0 (it has 6 exec calls but zero
+read-path coverage), `playqueue_repo` 0, `artwork_repo` 0, `artwork_queue_repo` 0 (hydrates via
+`RowGet` inside `runtime_hydrate_folder_artwork_queue.rs`, but its own statements never execute),
+`tag_repo` 0, `plugin_repo` 0 (unreachable — table dropped). Executed today: share 8, property 1,
+radio 1, library 1, plus user/player/transcoding/album/artist/mediafile/folder/playlist paths.
+
+**(2) Public functions never named by any test** (script over `src/*.rs` vs `tests/*.rs`):
+303 `pub fn` total, 176 named somewhere. Modules with large blind spots:
+`sql_annotations.rs` 19/0 and `sql_bookmarks.rs` 9/0 — **zero** test coverage of any kind;
+`criteria_sql.rs` 7/22; `sql_search*` 3/23; `sql_tags.rs` 2/15; `sql_participations.rs` 5/14;
+`sql_restful.rs` 6/18; `sqlrepo.rs` 8/17; `playqueue_repo.rs` 1/6; `artwork_repo.rs` 1/10;
+`smart_playlist_repo.rs` 2/7; `scrobble_buffer_repo.rs` 5/13; `hydrate.rs` 26/36 (post-scan hooks
+`folder_post_scan`, `playlist_post_scan`, `playlist_track_post_scan`, `scrobble_buffer_post_scan`,
+`row_to_*` untested).
+
+**Reading:** the annotation/bookmark seams are both untested and (per the R2 audit) partly without
+a Go counterpart, so they are the highest-value cleanup, not a coverage gap to fill with tests.
+For the read-only repos, the gap is that no lane has executed their statements against
+`apply_fresh_schema` — DB-04..DB-17 own the mutation half; a read-parity lane should cover
+genre/scrobble/scrobble_buffer/smart_playlist/playqueue/artwork/user_props reads with Go-cited
+fixtures. Do not schedule that lane while DB-03/DB-00 are writing in this checkout.
+
 ## D-OPEN DECISION (2026-11-18, user-approved: option a)
 
 **Decision:** typed open options applied as explicit per-connection PRAGMA statements, with
