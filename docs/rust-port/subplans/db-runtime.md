@@ -140,18 +140,42 @@ Chosen, with a Go oracle measured just now (`/tmp/tz`, go-sqlite3 v1.14.52, real
   verbatim and pinned by a test.** Do NOT "normalize" the sentinel to idle: that would be a
   deliberate divergence needing its own approval, and it changes scan-boot behavior.
 - `ZERO_TIME: i64 = 0` (`library_repo.rs:125`) and every `Value::Integer(stamp)` in the
-  scanner paths are removed: binding an INTEGER into a `datetime` column stores INTEGER
-  (`time.rs:5-14`, SQLite affinity §3), INTEGER sorts before TEXT, so Go's
-  `Gt{"created_at": since}` predicates and `ORDER BY … DESC` silently skip integer rows.
+  scanner paths are removed. **Affinity, stated precisely (measured 2026-11-18, `/tmp/db02b`):**
+  a column declared `datetime` has **NUMERIC** affinity under SQLite's rules (the type name
+  contains none of INT/CHAR/CLOB/TEXT/BLOB/REAL), so an integer bind is stored as INTEGER —
+  `typeof(folder.updated_at)` after binding `1725000000` into a `datetime` column is `integer`.
+  Comparing an INTEGER cell against a TEXT value is always false (numbers sort before all text),
+  and `ORDER BY` puts integer rows first in ASC / last in DESC.
+  Executed proof on the migrated schema, identical fixtures, one variable changed:
+  ```text
+  folder TEXT stamp    -> ["f1"]     # Go's GetTouchedWithPlaylists predicate matches
+  folder INTEGER stamp -> []         # same row, epoch bound instead: silently dropped
+  direct compare result (0=false): 0
+  typeof folder.updated_at = integer (column declared datetime; NUMERIC affinity keeps INTEGER)
+  ```
+  plus album/artist equivalents (`/tmp/db02`): `album.imported_at > library.last_scan_at` returns
+  `["a1"]` for the TEXT row and never the INTEGER row even though it is chronologically later, and
+  `ORDER BY imported_at DESC` lists `a1` (2024-09-01) before `a2` (2024-08-30 epoch). Artist
+  `updated_at > (SELECT last_scan_at …)` returns `["ar1"]` as TEXT and `[]` as INTEGER.
   That is the real defect D-TIME fixes; the idle predicate is only its visible symptom.
 
-Inventory the package must convert (measured, not guessed): `library_repo.rs:531,628/636,
-658/664,674/681/683,725,741,839,1398` (`LibraryUpdate.updated_at`, `store_music_folder_sql`,
-`scan_begin_sql`, `scan_end_sql`, `scan_in_progress*`, `refresh_stats_update_sql`, ZERO_TIME
-uses), `mediafile_repo.rs:1597/1607,1644` (mark-missing stamps), `folder_repo.rs:896/900`,
-`playqueue_repo.rs:136-137`, `artwork_repo.rs:77/85,166/182`, `plugin_repo.rs:123,183-184`.
-Already TEXT: share/radio/artist/artwork_queue, and playlist/smart_playlist/sql_annotations/
-sql_bookmarks/user_repo via caller `&str` stamps — do not churn those.
+Inventory the package must convert — **every cited line verified to exist and to bind an integer
+stamp** (`awk NR==<line>` over each file), plus a crate-wide grep for `Value::Integer` on a
+timestamp column. The grep found **two lines the original inventory missed**:
+`album_repo.rs:1149` (`touch_sql`, binds `Value::Integer(imported_at)` into `album.imported_at`,
+which Go stamps with `time.Now()` at `persistence/album_repository.go:365`) and
+`album_repo.rs:1170` (`touch_by_missing_folder_sql`, same column, Go `:377`). Those two are the
+exact columns in the executed comparison above, so they are not optional.
+Full list: `library_repo.rs:531,628/636,658/664,674/681/683,725,741,839,1398`
+(`LibraryUpdate.updated_at`, `store_music_folder_sql`, `scan_begin_sql`, `scan_end_sql`,
+`scan_in_progress*`, `refresh_stats_update_sql`, ZERO_TIME uses), `mediafile_repo.rs:1597/1607,1644`
+(mark-missing stamps), `folder_repo.rs:896/900`, `album_repo.rs:1149,1170`,
+`playqueue_repo.rs:136-137`, `artwork_repo.rs:77/85,166/182`, `plugin_repo.rs:123,183-184`
+(unreachable module — see the plugin scope ask, but convert it anyway for consistency or delete it).
+**Not in scope, by design:** `scrobble_repo.rs:100` binds `submission_time` as an epoch integer,
+which is correct — Go stores `submissionTime.Unix()` (`persistence/scrobble_repository.go:52`) and
+the column is an integer; converting it would be a divergence. `sql_annotations.rs:271/291/342`
+bind `rating`/`1` as integers alongside TEXT `rated_at`/`played_at` — already correct.
 
 Sequencing: DB-02 runs **after** DB-03 (this lane) completes, because both gates run the whole
 workspace in one checkout and a second concurrent writer would corrupt the other's numbers.
