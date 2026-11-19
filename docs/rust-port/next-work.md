@@ -31,14 +31,23 @@ S-D3g2 (`a8e4d57c`) and follow-up (`60cdd184`) are landed. All eight row hooks e
    args now follow Go's `.Set`/`.Where` order (`mediafile_repository.go:459-461`) and
    `runtime_missing_state.rs` executes 7 real-schema tests plus a pre-fix control. Reverting the fix fails 5 of 7,
    so the gate is non-vacuous. G0 now unblocks DB-07/14.
-3. **DB-03 / D-OPEN (DECISION REQUIRED — awaiting user choice)** — probe at `a4f03812` shows a `file:` URI alone is
-   not enough: rusqlite honors real SQLite URI params (`mode=`, `cache=`) but NOT go-sqlite3's `_journal_mode`,
-   `_busy_timeout`, `_foreign_keys`, `synchronous=` conventions, so every open keeps journal=delete, busy_timeout
-   5000, synchronous=2. Explicit per-connection PRAGMA statements do work (measured `wal`/15000/1). Option (a):
-   typed `DbOpenOptions` applied as pragmas with per-handle read-back; option (b): DSN pass-through, which still
-   needs the same pragma translation. Also: Rust's `foreign_keys=1` default is not yet attributed (system sqlite
-   vs compile-time default) and `db.rs::NewSqliteDb` self-compares `db` to `db` (`:100-103`).
-4. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
+3. **DB-03 / D-OPEN — decided (user: option a), lane running `19a5a57a`.** rusqlite honors real SQLite URI params
+   (`mode=`, `cache=`) but NOT go-sqlite3's `_journal_mode`/`_busy_timeout`/`_foreign_keys`/`synchronous=`
+   conventions, so every open keeps journal=delete, busy_timeout 5000, synchronous=2. Chosen: typed `DbOpenOptions`
+   applied as explicit per-connection PRAGMA statements with effective-state read-back before pooling, defaults
+   matching Go (WAL for file DBs, 15000, NORMAL, FK on; `:memory:` keeps memory journal), while the config string
+   stays Go-compatible via a DSN parser that keeps genuine URI params and rejects unknown ones. The earlier
+   `db.rs::NewSqliteDb` note was a bad citation — that symbol does not exist here (Go uses the `db.Db()`
+   singleton, `db/db.go:41-68`).
+4. **DB-02 / D-TIME — decided (parent): store scanner stamps as TEXT via `time::value`, keep Go's
+   `<> canonical zero` idle predicate verbatim.** Measured with a Go oracle: `time.Time{}` binds as
+   `0001-01-01 00:00:00+00:00`, and the DDL sentinel `0000-00-00 00:00:00` makes Go's own
+   `ScanInProgress` count a fresh library as in-progress — inherited behavior, pinned not "fixed".
+   The real defect is INTEGER affinity (integer stamps sort before TEXT and are skipped by Go's
+   range predicates). Inventory in `subplans/db-runtime.md`. Runs after DB-03 lands (one writer).
+   Also ready for a later lane: DB-15's render-only repair (`update_avg_rating_sql` cannot execute —
+   2 placeholders, 3 args) and the renderer `parameter_count` gate idea.
+5. **Count-renderer `ORDER BY <table>.id` parity** — renderer-only, nil value impact, one reviewed package with the
    goldens (artist/album/mediafile/playlist_tracks/plugin/scrobble). Lowest priority.
 5. **Then the mutation packages DB-04…DB-10** — the real critical path into the scanner slice.
 

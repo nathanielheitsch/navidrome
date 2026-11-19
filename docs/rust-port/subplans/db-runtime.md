@@ -94,6 +94,42 @@ checks `err` (`:482`) — a documented difference, not implemented here.
 10. **Review/DoD:** fresh reviewer checks function actually invoked, unrelated IDs unchanged, chunk boundary and old-control are non-vacuous. G0 blocks DB-07/14 activation.
 
 ## DB-02 — Unified scanner timestamps and idle lifecycle (G1)
+### D-TIME DECISION (2026-11-18, parent decision: faithful Go parity, TEXT canonical)
+
+Chosen, with a Go oracle measured just now (`/tmp/tz`, go-sqlite3 v1.14.52, real SQLite):
+
+- Go binds `time.Time{}` as the TEXT `"0001-01-01 00:00:00+00:00"`. Go's own scan of a
+  `datetime` column re-formats values as `"0001-01-01T00:00:00Z"`, so a Go-side read-back is
+  NOT the stored bytes — tests must compare against the Rust storage shape
+  (`time::value`, rusqlite `%F %T%.f%:z`), not against Go's decoded string.
+- The DDL sentinel is `default '0000-00-00 00:00:00'` (Rust `schema_ddl.rs:52`; Go
+  `db/migrations/20241026183640_support_new_scanner.go:36`). It is **not** the model zero, so
+  Go's `ScanInProgress` = `NotEq{"last_scan_started_at": time.Time{}}` (`db/../persistence/library_repository.go:190-194`)
+  counts a freshly created library as **scan in progress** — measured: count = 1 for a row
+  holding only the DDL default. That is inherited Go behavior, not our bug.
+- Decision: **store every non-NULL scanner stamp as TEXT via `crate::time::value`; the idle
+  predicate stays `<> canonical zero` so the DDL sentinel misclassification is preserved
+  verbatim and pinned by a test.** Do NOT "normalize" the sentinel to idle: that would be a
+  deliberate divergence needing its own approval, and it changes scan-boot behavior.
+- `ZERO_TIME: i64 = 0` (`library_repo.rs:125`) and every `Value::Integer(stamp)` in the
+  scanner paths are removed: binding an INTEGER into a `datetime` column stores INTEGER
+  (`time.rs:5-14`, SQLite affinity §3), INTEGER sorts before TEXT, so Go's
+  `Gt{"created_at": since}` predicates and `ORDER BY … DESC` silently skip integer rows.
+  That is the real defect D-TIME fixes; the idle predicate is only its visible symptom.
+
+Inventory the package must convert (measured, not guessed): `library_repo.rs:531,628/636,
+658/664,674/681/683,725,741,839,1398` (`LibraryUpdate.updated_at`, `store_music_folder_sql`,
+`scan_begin_sql`, `scan_end_sql`, `scan_in_progress*`, `refresh_stats_update_sql`, ZERO_TIME
+uses), `mediafile_repo.rs:1597/1607,1644` (mark-missing stamps), `folder_repo.rs:896/900`,
+`playqueue_repo.rs:136-137`, `artwork_repo.rs:77/85,166/182`, `plugin_repo.rs:123,183-184`.
+Already TEXT: share/radio/artist/artwork_queue, and playlist/smart_playlist/sql_annotations/
+sql_bookmarks/user_repo via caller `&str` stamps — do not churn those.
+
+Sequencing: DB-02 runs **after** DB-03 (this lane) completes, because both gates run the whole
+workspace in one checkout and a second concurrent writer would corrupt the other's numbers.
+Non-vacuity controls stay as planned (bind INTEGER deliberately and show the wrong cutoff/idle
+result on identical fixtures).
+
 
 1. **Status: DECISION REQUIRED.** Prerequisite: parent `D-TIME` (canonical idle + DDL-sentinel interpretation); integrate after DB-01 because same renderer file. Goal: one Rust storage/comparison contract across scanner paths, not Go migration support. Non-goals: plugin/playqueue timestamp cleanup, wire JSON-error parity, schema seeding.
 2. **V:** `B/time.rs:1-52,76-84` defines chrono TEXT; record maps write it. `library_repo.rs:118-120,480,592,622-690,763-809` still bind epoch seconds (including ZERO_TIME0); `album_repo.rs:1144-1170` touch INTEGER; `mediafile_repo.rs:1587,1613,1716-1805` missing stamps/recent bounds INTEGER; `folder_repo.rs:896` likewise. Cross-table comparisons `album_repo.rs:1315-1335`, `mediafile_repo.rs:1691-1707`, folder touched playlists and artist touched stats. Hydration `hydrate.rs:1533-1549,3608-3638` reads INTEGER0 as 1970 not year1. Existing `library_scan_in_progress_follows_the_stamps_this_port_writes` pins TEXT=>started/INTEGER0=>idle, not lifecycle. Go `library_repository.go:162-193`, scanner `scanner.go:209-215` use zero time.
