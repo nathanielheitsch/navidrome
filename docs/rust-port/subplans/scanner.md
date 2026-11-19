@@ -1,7 +1,9 @@
 # #17 scanner: staged vertical implementation contracts (SC-*)
 
-Baseline: `master` / `60cdd184`, `/Users/nathanielheitsch/projects/barnstorm/navidrome`.
-Issue workspace: `wks_7bb3344766422a39`, host `srv_QsD9e1TgIsNq`; parent `4920ad4e-8f0f-4982-92e6-8fceee49afdd`.
+Baseline: `master` / `60cdd184` (package `Status:` lines below are planner-time and are superseded where they conflict
+with [`../current-status.md`](../current-status.md) and [`../subplans/README.md`](../subplans/README.md), 2026-11-19;
+the source baseline has since advanced to integrated `master` `74ebd81c` and settled decisions live in [`../decisions.md`](../decisions.md)).
+Issue workspace `wks_7bb3344766422a39` on host `srv_QsD9e1TgIsNq`; the parent owns integration.
 Prepared READ-ONLY. Source inspection only; **no builds, tests, probes, formatting, repository edits, commits, or pushes were executed**. Only `/tmp` report/index files were written. Test names below are inspected source, not passing-test claims. All new signatures, modules, tests and recipes below are **proposals**, not existing public APIs or approved dependency changes.
 
 ## Verdict / scope boundaries
@@ -116,6 +118,12 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 10. **Review/done/report:** R, signed-off interface/error/dependency decision table and no unintended manifest/lock delta. Do not launch dependent writers until ratified.
 
 ## SC-02 — Local storage, symlink-safe classification, ignore/walk snapshots — BLOCKED
+
+> **2026-11-19:** a **local-FS storage/symlink-safe-classification subset** LANDED at `e9dd8230` (merge `ff5b9c92`).
+> It is a scoped subset — std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI
+> parsing and symlink classification only; the walker, `.ndignore`/ignore policy, folder hashing and cancellation are
+> **not implemented**. **Not** SC-01 ratification and **not** SC-02 completion; the contract items below still stand as
+> the acceptance bar for the full package.
 
 1. **Goal/non-goals/prereqs:** real local MusicFS-equivalent and bounded postorder walker; prereq SC-01. No DB writes, remote/object storage plugin implementation, watcher or subprocess. Storage URI registry may reuse existing descriptor but cannot pretend it is fs I/O.
 2. **Starting evidence:** Go `core/storage/interface.go:10-33`, `storage.go:32-83`, `local/local.go:30-109,120-153`; walk `scanner/walk_dir_tree.go:23-351`; ignores `ignore_checker.go:35-161`; hashes `folder_entry.go:72-163`. Rust descriptor `nd-tagreader/src/storage.rs:53-99` preserves paths and only targets Unix; `Extractor::parse(&self,Vec<String>)->HashMap<...>` (`extractors.rs:77`) rejects invalid components and silently skips bad files. Existing Go tests: `walk_dir_tree_test.go:234` nonexistent target retained; `:393` chain resolved; `:403` loop rejected; `:520` legitimate out-of-library audio; `:557` reject non-audio escape; `folder_entry_test.go:392,409` playlist size/mtime hash changes.

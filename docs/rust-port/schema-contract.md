@@ -15,7 +15,7 @@ Rust port. Every table cites the Go source that defines its final shape.
   the 138-file history (`db/db.go:32-35` embeds only `migrations/*.sql`; `.go` migrations
   carry Go logic, e.g. `db/migrations/20241026183640_support_new_scanner.go:106`).
 - Exactly **ONE fresh Rust migration** ships as the basis and is edited in place as the
-  schema evolves — **Part C item 16, DECIDED: regenerate** (`docs/rust-port/issues.md:506`).
+  schema evolves — **Part C item 16, DECIDED: regenerate** (`docs/rust-port/issues.md`, Part C item 16).
   The 138-file Go migration history is never replayed; no upgrade path exists.
 - Internal PK/column names, ANALYZE scheduling (`db/optimize.go:19-40`), and backup naming
   (`db/backup.go`) are all free — they are implementation, not contract.
@@ -90,7 +90,7 @@ fresh-service deltas are listed in §1.2 / §1.3.
 
 ### 1.5 Fresh-service deltas (deliberate, Part-C-driven)
 
-- **`plugin` is DROPPED.** Part C item 14 (`docs/rust-port/issues.md:504`) removes
+- **`plugin` is DROPPED.** Part C item 14 (`docs/rust-port/issues.md`) removes
   `/api/plugin*` and does not port `persistence/plugin_cleanup.go`, and #S3's settled
   config contract carries no `Plugins.*` keys — there is no host left to own the table
   (`db/migrations/20260106000620_create_plugin_table.sql` is therefore not ported).

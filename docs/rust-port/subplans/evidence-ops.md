@@ -4,6 +4,11 @@
 
 **Parent-measured baseline, not tests run by this planner:** `/tmp/navidrome-plan-gates.5F9XLv`, measured `2026-11-18T14:28:28Z`, head recorded as `60cdd184`; fmt/build/clippy/nd-db/workspace/doc/diff-check all exit 0. Parent reports nd-db **737/0/0 across 26 groups**, workspace **1816/0/1 across 69**, rustdoc **22 = 8 unresolved + 14 private**; I inspected the saved head/exits/doc summary. These are not warning-free docs. Source-inspected claims below are marked S; recorded executed evidence is P (parent/saved probe), and unexecuted implications are I. I ran no tests, oracles, generators, builds or formatting.
 
+> **Status pointer (2026-11-19):** baseline below is `60cdd184` and the gate block is a dated parent measurement, not
+> current status. The DB-path/pragma divergence described in the boundaries block below **is resolved** (D-OPEN option a,
+> LANDED `4a8aac9f`; [`../decisions.md`](../decisions.md) P1). Live status:
+> [`../current-status.md`](../current-status.md); order: [`../subplans/README.md`](../subplans/README.md).
+
 ## Boundaries and how to use this plan
 
 Each later agent must receive this preamble, the validation/review contract below, its entire package and the relevant approved decisions. READY means a bounded assignment can be authorized, not permission to start now. BLOCKED and DECISION REQUIRED are substantive launch gates. Parent will normalize exact cross-plan IDs; external references below deliberately use semantic namespaces, not invented sibling task numbers:
@@ -59,7 +64,9 @@ At repository root: `git diff --check`, `git status --short`, baseline/current c
 
 **Status READY (documentation only).** Prerequisites: parent's supplied measured baseline; no implementation prerequisites. Goal: remove contradictory executable instructions without rewriting history. Non-goals: code fixes, reopening settled product decisions or substituting a new coordinator for parent.
 
-**Starting state S/P:** `next-work.md:3-9,349-355` labels older state current and a landed slice uncommitted; `hydrate-contract.md:325-581` alone records g1/g2, with pre-follow-up gate arithmetic at :575-581. Commits f210431f/a8e4d57c/60cdd184 establish actual deltas. `entity-write-contract.md:198-223`, `hydrate-contract.md:41,216,288`, `hydrate-scan-contract.md:110-122,236-241` retain competing participant, field-map and closed-decoder instructions. The IPC correction is directly source-verified: `scanner/external.go:86-96` decodes **ProgressInfo**, `cmd/scan.go:71-76` encodes progress; it is not tag-reader-result gob. DB pragma defaults/configuration are owned by DB; do not invent FK-off defaults. Parent traced bundled FK-on and 5000ms busy defaults, while Go's configured WAL/15000ms/synchronous-normal need an intentional executed configuration decision.
+**Starting state S/P:** the pre-curation `next-work.md` (its old `:3-9` and `:349-355`, now superseded by that file's
+current section and its "Historical index and compatibility pointers" separator) labelled older state current and a landed
+slice uncommitted; `hydrate-contract.md:325-581` alone records g1/g2, with pre-follow-up gate arithmetic at :575-581. Commits f210431f/a8e4d57c/60cdd184 establish actual deltas. `entity-write-contract.md:198-223`, `hydrate-contract.md:41,216,288`, `hydrate-scan-contract.md:110-122,236-241` retain competing participant, field-map and closed-decoder instructions. The IPC correction is directly source-verified: `scanner/external.go:86-96` decodes **ProgressInfo**, `cmd/scan.go:71-76` encodes progress; it is not tag-reader-result gob. DB pragma defaults/configuration are owned by DB; do not invent FK-off defaults. Parent traced bundled FK-on and 5000ms busy defaults, while Go's configured WAL/15000ms/synchronous-normal need an intentional executed configuration decision.
 
 **Ownership:** modify only `docs/rust-port/{next-work.md,HANDOFF.md,issues.md,component-map.md,entity-write-contract.md,hydrate-contract.md,hydrate-scan-contract.md}`; proposed new `docs/rust-port/current-state.md` and `docs/rust-port/deviations.md`. Shared collision: every planner's eventual documentation integration; parent serializes this lane and distributes amended references. No Rust/Go edits. The old immutable measurements stay attached to original hashes; corrections are explicit superseding notes, not retroactive claim editing.
 
@@ -184,7 +191,10 @@ The normative Go expectation remains in immutable oracle data. If current Rust d
 
 ### OPS-01 — Re-derive schema golden and separate data seeding from DDL
 
-**Status BLOCKED on EVID-02's schema-harness authorization; DECISION REQUIRED on regeneration input/output contract.** Goal: reproducible final-schema comparison and intentional seed boundary. Non-goals: replaying Go history in Rust runtime, seeding libraries/admin/transcodings, changing connection pragmas, fixing transactional writes, or dropping orphan columns opportunistically.
+**Status BLOCKED on EVID-02's schema-harness authorization; DECISION REQUIRED on regeneration input/output contract.**
+The shipped fresh DDL is already derived-and-landed (`schema_ddl.rs`, secondary indexes at `15426bbc`) — this package is
+about a reproducible regeneration recipe and the seed boundary, not about DDL that does not exist yet. Goal: reproducible
+final-schema comparison and intentional seed boundary. Non-goals: replaying Go history in Rust runtime, seeding libraries/admin/transcodings, changing connection pragmas, fixing transactional writes, or dropping orphan columns opportunistically.
 
 **S starting state:** schema_ddl.rs:1-8 forbids hand edits; :46 has current `FRESH_STATEMENTS`123 =31 ordinary+3 FTS+9 triggers+80 indexes. `gen_ddl.py:1-16,70-end` hardcodes `/tmp/nddump/*`, prints obsolete `FRESH_SCHEMA` and does not recreate current index-bearing output. `schema_diff.rs::harness::rust_fresh_schema_matches_migrated_go_schema` :362-668 compares vendored dump (names/columns/FTS/index-name+uniqueness), uses one fixed `/tmp/nd-db-schema-diff.sqlite` and `/usr/bin/sqlite3`; this is not a complete shape proof. Fresh tests `fresh_table_set_matches_golden`, `schema_is_idempotent`, `fts5_feeder_columns_survive_writes`; migrate `open_db_is_idempotent`, `ensure_on_migrated_connection_is_noop`.
 
