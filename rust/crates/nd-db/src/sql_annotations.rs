@@ -3,18 +3,29 @@
 //!
 //! Every Go method builds an `Update`/`Insert`/`Delete` squirrel statement and
 //! hands it to `executeSQL`, which materializes it through `toSQL()`
-//! (`sql_base_repository.go:358-372`) as `(sql, args)`. Execution, `WithTx` and
-//! logging stay with `store.rs`/later slices, so the port stops at the same
-//! `(sql, args)` pairs — the WithTx-only statements (`annUpsert`, `SetRating`'s
-//! follow-up `updateAvgRating` and `IncPlayCount` run inside one transaction,
-//! Go `:98-209`) are shaped here and composed there.
+//! (`sql_base_repository.go:336-354,358-372`) as `(sql, args)`. Execution,
+//! transactions and logging stay with `store.rs`/later slices, so the port stops
+//! at the same `(sql, args)` pairs. Nothing in `sql_annotations.go` opens a
+//! transaction: every statement is a separate `executeSQL`, and running it inside
+//! one is the caller's choice. Only `ReassignAnnotation` (`:185-197`) needs its
+//! UPDATE and `updateAvgRating` atomic, and its callers wrap it in a tx:
+//! `WithTx` (`core/maintenance.go:79,89,102`), `WithTxRetry` around
+//! `persistFolder` (`scanner/phase_1_folders.go:353`, call at `:490`) and
+//! `WithTxRetry` (`scanner/phase_2_missing_tracks.go:291`, call at `:313`).
+//! `SetStar` runs in a caller `WithTxImmediate`
+//! (`server/subsonic/media_annotation.go:116-144`) and `IncPlayCount` in a
+//! `WithTx` (`core/scrobbler/play_tracker.go:506-516`); `SetRating`
+//! (`server/subsonic/media_annotation.go:63`) runs its upsert and the follow-up
+//! `updateAvgRating` as separate statements with no transaction.
 //!
 //! `Repository::to_sql` (`sqlrepo.rs`) renders only `SELECT`, so the
 //! `UPDATE`/`INSERT`/`DELETE` statements are rendered here directly, while their
 //! `WHERE` clause reuses [`ann_id`] — the same rendering the builder's
-//! conditions produce — and the `SELECT` accessors of `sql_base_repository.go`
+//! conditions produce. The three standalone annotation `SELECT` renderers
 //! ([`get_annotations_sql`], [`annotation_exists_sql`],
-//! [`annotation_count_sql`]) build with `Repository` and call `to_sql()`.
+//! [`annotation_count_sql`]) build with `Repository` and call `to_sql()`, but
+//! they are an **invented seam** with no production call site — see their docs
+//! and `tests/runtime_annotation_rating.rs`.
 //!
 //! Not ported (different slices): `annotationColumns`/`annotationColumnRE`
 //! (`:15-35`) and `filtersNeedAnnotation` (`:37-42`) reflect over
@@ -292,24 +303,42 @@ pub fn set_rating_insert_sql(
     ann_insert_sql(table, user_id, item_id, &["rating", "rated_at"], value_args)
 }
 
-/// `updateAvgRating` (`sql_annotations.go:153-162`): recompute the base table's
-/// cached `average_rating` from the ratings still on the annotation table. The
-/// subquery is squirrel `Expr`, so its two `?` args come before the outer
-/// `WHERE`'s `id` arg, and `rating > 0` drops unrated rows from the average —
-/// the reason a zero rating never lowers an album's average.
+/// `updateAvgRating` (`sql_annotations.go:151-160`): recompute the base table's
+/// cached `average_rating` from the ratings still on the annotation table.
+///
+/// Go's `Set("average_rating", Expr(…))` (`:154-157`) puts the aggregate
+/// *inside* the SET as raw SQL, so the statement carries three `?`: two from
+/// the subquery and one from the outer `WHERE id = ?`. This renderer embeds
+/// [`average_rating_expr_sql`] at that position instead of binding it as a
+/// value — a `SET average_rating = ?` placeholder cannot execute against the 3
+/// args Go's `toSQL()` produces. Arg order follows squirrel rendering SET before
+/// WHERE: `[item_id, table, id]`.
+///
+/// Parity facts the shape must keep: `rating > 0` drops unrated rows, so a
+/// zero rating never lowers an average, and there is no `user_id` predicate —
+/// Go aggregates across **all** users (`:155-156`), so the cached value is a
+/// cross-user average, not a per-user one. `table` is bound as a value
+/// (`item_type = ?`), never interpolated, and `coalesce(…, 0)` makes an item
+/// with no positive ratings read 0 (the column is `REAL NOT NULL DEFAULT 0`).
 #[must_use]
 pub fn update_avg_rating_sql(table: &str, item_id: &str) -> Sql {
     let subquery_args = vec![Value::from(item_id), Value::from(table)];
     let where_args = vec![Value::from(item_id)];
     (
-        format!("UPDATE {table} SET average_rating = ? WHERE id = ?"),
+        format!(
+            "UPDATE {table} SET average_rating = {expr} WHERE id = ?",
+            expr = average_rating_expr_sql()
+        ),
         concat_args(subquery_args, where_args),
     )
 }
 
-/// The `coalesce((select …), 0)` squirrel `Expr` [`update_avg_rating_sql`] binds
-/// as its SET value (`sql_annotations.go:157-160`), exposed separately so the
-/// tests pin the raw SQL apart from the arg order.
+/// The `coalesce((select …), 0)` squirrel `Expr` [`update_avg_rating_sql`]
+/// embeds as its SET value (`sql_annotations.go:155-157`), exposed separately so
+/// the tests pin the raw SQL apart from the arg order. It carries two `?`
+/// placeholders; production embeds it as text and never binds it (the runtime
+/// test's negative control substitutes it deliberately to reproduce the pre-fix
+/// shape).
 #[must_use]
 pub fn average_rating_expr_sql() -> String {
     "coalesce((select round(avg(rating), 2) from annotation where item_id = ? and item_type = ? and rating > 0), 0)".to_string()
@@ -374,9 +403,21 @@ pub fn clean_annotations_sql(table: &str) -> Sql {
     )
 }
 
-/// The annotation repository's `Select().From(annotation).Where(annId(...))`:
-/// the SELECT over the annotation rows the lazy `annotation()` repository
-/// (`persistence.go:17-40`) serves.
+/// Invented seam, not a Go read: `SELECT * FROM annotation WHERE annId(…)`.
+///
+/// Go has **no annotation repository**: `SQLStore` has no annotation field
+/// (`persistence/persistence.go`) and nothing does `Select().From(annotation)`
+/// anywhere. Go's annotation surface is the `AnnotatedRepository` mixin
+/// (`model/annotation.go:18-23`) implemented by `sqlRepository`
+/// (`persistence/sql_annotations.go:137,142,162,185`), and this file reaches
+/// `annotation` only through the `withAnnotation` LEFT JOIN (`:63-91`) and the
+/// `updateAvgRating` subquery (`:151-160`). Other repositories join `annotation`
+/// too — playlist (`playlist_repository.go:390`), playlist_tracks
+/// (`playlist_track_repository.go:101`), smart-playlist criteria
+/// (`criteria_sql.go:838,843`) and the play-count CTEs (`album_repository.go:416`,
+/// `artist_repository.go:446`) — but none is this standalone read, so this
+/// renderer asserts a shape Go never produces. It has no production call site:
+/// only this crate's unit tests and `tests/runtime_annotation_rating.rs`.
 #[must_use]
 pub fn get_annotations_sql(table: &str, user_id: &str, item_ids: &[&str]) -> Sql {
     let (where_sql, args) = ann_id(table, user_id, item_ids);
@@ -386,8 +427,13 @@ pub fn get_annotations_sql(table: &str, user_id: &str, item_ids: &[&str]) -> Sql
     )
 }
 
-/// `sqlRepository.exists()` (`sql_base_repository.go:488-499`) over the
-/// annotation table: `Select("count(*) as exist").From(annotation).Where(cond)`.
+/// Invented seam, not a Go read: the approximate shape `sqlRepository.exists()`
+/// (`sql_base_repository.go:488-493`) would take over `annotation`, i.e.
+/// `Select("count(*) as exist").From(annotation).Where(annId(…))`. Go cannot
+/// instantiate that generic helper here at all (no annotation repository exists),
+/// and `annotation` has no `id` column (`schema_ddl.rs:59`, PK
+/// `unique(user_id, item_id, item_type)`). Kept as a documented seam; see
+/// [`annotation_count_sql`] for the prepare failure this family pins.
 #[must_use]
 pub fn annotation_exists_sql(table: &str, user_id: &str, item_ids: &[&str]) -> Sql {
     let (where_sql, args) = ann_id(table, user_id, item_ids);
@@ -397,10 +443,23 @@ pub fn annotation_exists_sql(table: &str, user_id: &str, item_ids: &[&str]) -> S
     materialize(repo)
 }
 
-/// `sqlRepository.count()` (`sql_base_repository.go:565-575`) over the
-/// annotation rows: `RemoveColumns().Columns("count(distinct <table>.id) as count")`.
-/// The DISTINCT aggregate is what keeps a page's total right when the
-/// annotation JOIN could otherwise multiply rows.
+/// Invented seam, **deliberately non-executable**: the approximate shape
+/// `sqlRepository.count()` (`sql_base_repository.go:565-575`) would take over
+/// `annotation` — `count(distinct annotation.id) as count`. `annotation` has
+/// **no `id` column** (nd-dbschema fresh DDL `schema_ddl.rs:59`; the PK is
+/// `unique(user_id, item_id, item_type)`), so SQLite rejects preparation with
+/// `no such column: annotation.id`. That is the parity fact worth pinning: the
+/// generic `count`/`exists` helpers cannot be instantiated over `annotation`, and
+/// Go never tries. The renderer stays so the latent defect is pinned by
+/// `tests/runtime_annotation_rating.rs` rather than silently shipped; do not
+/// "fix" it by inventing an id column or swapping to `count(distinct item_id)`,
+/// which is a different number and not Go's aggregate.
+///
+/// Not full-shape parity: Go's `count` also strips offset/limit and appends
+/// `OrderBy(annotation.id)` (`:568-569`), which `sqlrepo::Repository::count` does
+/// not emit. Both forms fail preparation for the same missing-column reason, so
+/// the pinned fact is unaffected; the ORDER BY gap is tracked separately in
+/// `docs/rust-port/next-work.md`.
 #[must_use]
 pub fn annotation_count_sql(table: &str, user_id: &str, item_ids: &[&str]) -> Sql {
     let (where_sql, args) = ann_id(table, user_id, item_ids);
@@ -600,13 +659,21 @@ mod tests {
 
     #[test]
     fn update_avg_rating_binds_subquery_args_before_where_id() {
-        // Arrange: updateAvgRating (sql_annotations.go:153-162), squirrel
-        // renders the SET Expr's args before the WHERE Eq's.
+        // Arrange: updateAvgRating (sql_annotations.go:151-160). squirrel
+        // renders the SET Expr's args before the WHERE Eq's, and the Expr text
+        // itself is embedded in the SET (never bound as a value).
         // Act:
         let (sql, args) = update_avg_rating_sql(TABLE, "mf1");
         let expr = average_rating_expr_sql();
-        // Assert:
-        assert_eq!(sql, "UPDATE media_file SET average_rating = ? WHERE id = ?");
+        // Assert: 3 placeholders (2 from the embedded subquery, 1 from the
+        // outer WHERE) for the 3 args. Executed end-to-end in
+        // tests/runtime_annotation_rating.rs.
+        assert_eq!(
+            sql,
+            "UPDATE media_file SET average_rating = coalesce((select round(avg(rating), 2) from annotation where item_id = ? and item_type = ? and rating > 0), 0) WHERE id = ?"
+        );
+        assert_eq!(sql.split('?').count(), 4);
+        assert!(sql.contains(&expr));
         assert_eq!(
             args,
             vec![
@@ -617,6 +684,8 @@ mod tests {
         );
         assert_eq!(expr.split('?').count(), 3);
         assert!(expr.contains("rating > 0"));
+        // Go's subquery has no user_id predicate: the average spans all users.
+        assert!(!expr.contains("user_id"));
     }
 
     #[test]
