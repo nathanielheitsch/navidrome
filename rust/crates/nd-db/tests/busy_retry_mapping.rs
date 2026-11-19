@@ -2,9 +2,9 @@
 //! exhaust `txMaxRetries` (`persistence.go:205`).
 //!
 //! Go port target: `WithTxRetry` (`persistence.go:207`) reruns the block while
-//! `db.IsBusy(err)` — `SQLITE_BUSY` and `SQLITE_LOCKED` are the lock-class
-//! failures (`db/db.go:128-140` `ErrorCodes`/`IsBusy`) — and gives up once the
-//! `txMaxRetries` retries (`persistence.go:205`) spaced by `txRetryDelay`
+//! Go's `db.IsBusy` retries primary `SQLITE_BUSY` (5) only; `SQLITE_LOCKED` (6)
+//! is not retryable (`db/db.go:128-140`). `is_busy` masks extended result codes
+//! back to their primary code, and `WithTxRetry` gives up after `txMaxRetries`
 //! (`persistence.go:203`) are spent; the ambient `withBusyRetry` marker
 //! (`persistence.go:234`) is replaced by error-site classification
 //! ([`nd_db::store::is_busy`] / [`nd_db::store::classify`]).
@@ -15,10 +15,10 @@
 //! `nd-dbschema/src/schema.rs:58-61` opens with `SQLITE_OPEN_NO_MUTEX`). `conn_a`
 //! keeps an open rusqlite transaction (`Connection::transaction`, rusqlite
 //! `transaction.rs:416`) that has already INSERTed, so the sqlite-level write
-//! state is held for the whole test; beginning the driver's transaction on `conn_b`
-//! is refused with a lock-class code (the `SQLITE_LOCKED` 17 family `store.rs:66`
-//! matches), which `with_tx` maps through `classify` into `StoreError::Other` and
-//! the retry loop re-classifies via `is_busy` (`store.rs:122`).
+//! state is held for the whole test; the second connection uses the same ordinary
+//! file-backed database with shared cache disabled, so SQLite reports BUSY (primary
+//! code 5) rather than LOCKED (primary code 6). The retry loop's `is_busy` guard
+//! retries only BUSY; the companion shared-cache test verifies LOCKED fails once.
 
 use std::fs;
 use std::time::Duration;
@@ -61,8 +61,8 @@ fn contended_value() -> String {
 
 /// The `put_property` statement (`nd-dbschema/src/migrate.rs:104-110`) run on
 /// whatever transaction the driver opened, with the value the caller supplies.
-/// Both connections use the same statement, so a lock-class refusal is the only
-/// difference between them.
+/// Both connections use the same statement, so a SQLITE_BUSY refusal is the only
+/// difference between a successful and blocked write.
 fn put_value_on(tx: &Transaction<'_>, want: String) -> Result<(), RsError> {
     let sql = "INSERT INTO property(id, value) VALUES(?, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value";
     let args = [lock_probe_key(), want];
@@ -90,6 +90,8 @@ fn busy_lock_exhausts_tx_retry_at_tx_max_retries() {
     let mut conn_a = open(path).unwrap();
     apply_fresh_schema(&conn_a).unwrap();
     let mut conn_b = open(&db_path).unwrap();
+    conn_a.busy_timeout(Duration::ZERO).unwrap();
+    conn_b.busy_timeout(Duration::ZERO).unwrap();
 
     // Arrange: `conn_a` opens a rusqlite transaction (rusqlite transaction.rs:416)
     // and writes inside it WITHOUT committing, so the sqlite-level write state
@@ -108,10 +110,9 @@ fn busy_lock_exhausts_tx_retry_at_tx_max_retries() {
     // the real busy-class failure the retry loop must classify.
     let probe = with_tx(&mut conn_b, try_contended_write);
 
-    // Assert: the refusal is `StoreError::Other` whose cause `is_busy` calls
-    // busy (`db/db.go:128-140` `ErrorCodes`/`IsBusy`, the `SQLITE_LOCKED` extended
-    // code 17 family — the retry-loop guard at `store.rs:122`). The rendered
-    // cause is kept for the retry-loop comparison below.
+    // Assert: the refusal is `StoreError::Other` with a real file-lock BUSY error
+    // (primary code 5), and the legacy retry classifier recognizes it. The rendered
+    // cause is kept for comparing the last error after exhaustion.
     let probe_cause = match probe {
         Ok(()) => panic!("conn_b must be refused while conn_a holds the write lock, got Ok"),
         Err(StoreError::Other(ref cause)) => {
@@ -133,7 +134,7 @@ fn busy_lock_exhausts_tx_retry_at_tx_max_retries() {
     // Assert: retries were spent on busy-class failures — the error is
     // `BusyRetriesExhausted` with `attempts == TX_MAX_RETRIES + 1`
     // (1 try + `txMaxRetries` retries, `persistence.go:205`/`:207-228`), and
-    // every attempt surfaced the SAME lock-class refusal the probe saw.
+    // every attempt surfaced the same SQLITE_BUSY refusal as the probe.
     let attempts_seen: u32 = match exhausted {
         Ok(()) => panic!("conn_b write must not succeed while conn_a holds the lock, got Ok"),
         Err(StoreError::BusyRetriesExhausted { attempts, cause }) => {
@@ -144,7 +145,7 @@ fn busy_lock_exhausts_tx_retry_at_tx_max_retries() {
             );
             assert_eq!(
                 cause, probe_cause,
-                "the last busy cause is the lock refusal itself"
+                "the last busy cause is the SQLITE_BUSY refusal itself"
             );
             attempts
         }

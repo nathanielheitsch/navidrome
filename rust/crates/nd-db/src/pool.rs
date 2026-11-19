@@ -35,12 +35,23 @@
 //!     `consts.DefaultDbPath` needs an explicit pragma.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
 
 use nd_dbschema::schema::{effective_state, DbOpenOptions, EffectiveState, SEEDEDRAND_SQL};
 use rusqlite::Connection;
 
 use crate::store::StoreError;
+
+#[derive(Debug)]
+struct PoolShared {
+    live: AtomicUsize,
+    idle: Mutex<Vec<Connection>>,
+    available: Condvar,
+    #[cfg(test)]
+    wait_observer: Mutex<Option<Sender<()>>>,
+}
 
 /// Pool size: `max(4, available_parallelism())` — `conf/configuration.go:1217-1219`
 /// `MaxOpenConns()`. NOT 1: the `SetMaxOpenConns(1)` in the Go tree is the e2e
@@ -136,7 +147,7 @@ impl PoolConfig {
 #[derive(Debug)]
 pub struct Initializer {
     conn: Option<Connection>,
-    live: Arc<AtomicUsize>,
+    shared: Arc<PoolShared>,
 }
 
 impl std::ops::Deref for Initializer {
@@ -152,7 +163,16 @@ impl std::ops::Deref for Initializer {
 impl Drop for Initializer {
     fn drop(&mut self) {
         if self.conn.take().is_some() {
-            self.live.fetch_sub(1, Ordering::AcqRel);
+            match self.shared.idle.lock() {
+                Ok(_idle) => {
+                    self.shared.live.fetch_sub(1, Ordering::AcqRel);
+                    drop(_idle);
+                }
+                Err(_poisoned) => {
+                    self.shared.live.fetch_sub(1, Ordering::AcqRel);
+                }
+            }
+            self.shared.available.notify_all();
         }
     }
 }
@@ -218,11 +238,7 @@ pub struct Pool {
     /// State of a freshly configured handle, before the migration temporarily
     /// disables FK. Returned external handles must match this snapshot.
     initial_state: EffectiveState,
-    /// Also serves as unforgeable pool identity; counts idle + leased + held-out.
-    live: Arc<AtomicUsize>,
-    idle: Mutex<Vec<Connection>>,
-    /// Signalled whenever a connection is returned to [`Pool::idle`].
-    available: Condvar,
+    shared: Arc<PoolShared>,
 }
 
 impl Pool {
@@ -264,10 +280,16 @@ impl Pool {
         }
         let first = first.expect("at least one connection is opened");
         let initial_state = effective_state(&first).map_err(|e| StoreError::Open(e.to_string()))?;
-        let live = Arc::new(AtomicUsize::new(config.size.max(1)));
+        let shared = Arc::new(PoolShared {
+            live: AtomicUsize::new(config.size.max(1)),
+            idle: Mutex::new(idle),
+            available: Condvar::new(),
+            #[cfg(test)]
+            wait_observer: Mutex::new(None),
+        });
         let first = Initializer {
             conn: Some(first),
-            live: Arc::clone(&live),
+            shared: Arc::clone(&shared),
         };
         let pool = Self {
             config: PoolConfig {
@@ -275,9 +297,7 @@ impl Pool {
                 ..config.clone()
             },
             initial_state,
-            live,
-            idle: Mutex::new(idle),
-            available: Condvar::new(),
+            shared,
         };
         Ok((pool, first))
     }
@@ -328,7 +348,7 @@ impl Pool {
                 .expect("validated initializer holds a connection"),
         );
         drop(idle);
-        self.available.notify_one();
+        self.shared.available.notify_one();
         Ok(())
     }
 
@@ -348,7 +368,7 @@ impl Pool {
     }
 
     fn check_owner(&self, first: &Initializer) -> Result<(), StoreError> {
-        if !Arc::ptr_eq(&self.live, &first.live) {
+        if !Arc::ptr_eq(&self.shared, &first.shared) {
             return Err(StoreError::Open(
                 "initializer does not belong to this pool".to_string(),
             ));
@@ -359,30 +379,38 @@ impl Pool {
     /// Live owned handles, including leases and the issued initializer token.
     #[must_use]
     pub fn live_count(&self) -> usize {
-        self.live.load(Ordering::Acquire)
+        self.shared.live.load(Ordering::Acquire)
     }
 
-    /// Borrows one idle connection, blocking until one is returned. The
-    /// [`Lease`] guard releases it on drop.
+    /// Borrows one idle connection, blocking until one is returned. Depletion and
+    /// mutex poisoning are reported distinctly rather than waiting forever.
     ///
     /// # Errors
-    /// [`StoreError::Poisoned`] when the idle queue mutex was poisoned by a
-    /// panic in a previous lease holder.
+    /// [`StoreError::Poisoned`] for poisoned state; [`StoreError::Depleted`] when
+    /// no owned connections remain and none can be returned.
     pub fn checkout(&self) -> Result<Lease<'_>, StoreError> {
         let mut idle = self.lock_idle()?;
-        while idle.is_empty() {
-            match self.available.wait(idle) {
-                Ok(guard) => idle = guard,
+        loop {
+            if let Some(conn) = idle.pop() {
+                return Ok(Lease {
+                    pool: self,
+                    conn: Some(conn),
+                });
+            }
+            if self.shared.live.load(Ordering::Acquire) == 0 {
+                return Err(StoreError::Depleted);
+            }
+            #[cfg(test)]
+            if let Ok(observer) = self.shared.wait_observer.lock() {
+                if let Some(observer) = observer.as_ref() {
+                    let _observed = observer.send(());
+                }
+            }
+            idle = match self.shared.available.wait(idle) {
+                Ok(guard) => guard,
                 Err(_poisoned) => return Err(StoreError::Poisoned),
             };
         }
-        let conn = idle
-            .pop()
-            .expect("idle non-empty is guaranteed by the loop above");
-        Ok(Lease {
-            pool: self,
-            conn: Some(conn),
-        })
     }
 
     /// Number of currently idle connections (tests and metrics).
@@ -406,36 +434,95 @@ impl Pool {
     }
 
     fn lock_idle(&self) -> Result<std::sync::MutexGuard<'_, Vec<Connection>>, StoreError> {
-        match self.idle.lock() {
+        match self.shared.idle.lock() {
             Ok(guard) => Ok(guard),
             Err(_poisoned) => Err(StoreError::Poisoned),
         }
     }
 
     fn checkin(&self, conn: Connection) {
-        match self.idle.lock() {
-            Ok(mut idle) => {
-                idle.push(conn);
-                drop(idle);
-                self.available.notify_one();
-            }
+        let mut idle = match self.shared.idle.lock() {
+            Ok(idle) => idle,
             Err(_poisoned) => {
-                // The pool is unusable after a panic in a lease holder: dropping
-                // the connection here closes it, and the next `checkout` reports
-                // the poison instead of silently lending from a broken queue.
                 drop(conn);
-                self.live.fetch_sub(1, Ordering::AcqRel);
+                self.shared.live.fetch_sub(1, Ordering::AcqRel);
+                self.shared.available.notify_all();
+                return;
             }
+        };
+        if !conn.is_autocommit() {
+            drop(conn);
+            self.shared.live.fetch_sub(1, Ordering::AcqRel);
+            drop(idle);
+            self.shared.available.notify_all();
+            return;
         }
+        idle.push(conn);
+        drop(idle);
+        self.shared.available.notify_one();
     }
 }
 
 impl Drop for Pool {
     fn drop(&mut self) {
-        let idle = self
+        let mut idle = self
+            .shared
             .idle
-            .get_mut()
+            .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.live.fetch_sub(idle.len(), Ordering::AcqRel);
+        let removed = idle.len();
+        idle.clear();
+        self.shared.live.fetch_sub(removed, Ordering::AcqRel);
+    }
+}
+
+#[cfg(test)]
+mod checkout_wait_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn dropping_initializer_notifies_a_checkout_known_to_be_waiting() {
+        let (pool, initializer) = Pool::new(&PoolConfig::with_size(":memory:", 1)).unwrap();
+        let pool = Arc::new(pool);
+        let (wait_started_tx, wait_started_rx) = mpsc::channel();
+        let (completed_tx, completed_rx) = mpsc::channel();
+        *pool.shared.wait_observer.lock().unwrap() = Some(wait_started_tx);
+
+        let waiter_pool = Arc::clone(&pool);
+        let waiter = std::thread::spawn(move || {
+            let depleted = matches!(waiter_pool.checkout(), Err(StoreError::Depleted));
+            completed_tx.send(depleted).unwrap();
+            depleted
+        });
+        let wait_started = wait_started_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+
+        if wait_started {
+            // This same mutex cannot be acquired until Condvar::wait has atomically
+            // released it, proving the waiter is blocked before the initializer drops.
+            let idle = pool.shared.idle.lock().unwrap();
+            drop(idle);
+        }
+        drop(initializer);
+
+        let completed = match completed_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(result) => Some(result),
+            Err(_timeout) => {
+                // A missing notification is the mutation under test. Wake the worker
+                // only for bounded cleanup, then fail the assertion below.
+                pool.shared.available.notify_all();
+                let _cleanup = completed_rx.recv_timeout(Duration::from_secs(1));
+                None
+            }
+        };
+        let joined_result = waiter.join().unwrap();
+        assert!(wait_started, "checkout reached its wait boundary");
+        assert_eq!(
+            completed,
+            Some(true),
+            "initializer drop notified the blocked waiter"
+        );
+        assert!(joined_result);
     }
 }

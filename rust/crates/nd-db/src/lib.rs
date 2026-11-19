@@ -36,6 +36,8 @@ pub mod plugin_repo;
 pub mod pool;
 pub mod property_repo;
 pub mod radio_repo;
+pub mod runtime_error;
+pub use runtime_error::{DbOperationError, DbRuntimeError, TransactionStage};
 pub mod scrobble_buffer_repo;
 pub mod scrobble_repo;
 pub mod share_repo;
