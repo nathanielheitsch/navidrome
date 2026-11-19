@@ -5,12 +5,15 @@
 //! Go's repository is a bare `sqlRepository` over `property (id, value)`;
 //! every method builds one squirrel statement and hands it to
 //! `executeSQL`/`queryOne`/`delete`, which materialize through `toSQL()`
-//! (`sql_base_repository.go:358-372`) as `(sql, args)`. The WRITE legs stop at
-//! those [`Sql`] pairs, as in the sibling `sql_*` ports; the READ legs are
-//! EXECUTED: [`PropertyRepo`] is `propertyRepository` bound to one leased
-//! connection and runs through [`crate::execution`], the port of `queryOne`
+//! (`sql_base_repository.go:358-372`) as `(sql, args)`. BOTH legs are EXECUTED:
+//! the READ legs through [`PropertyRepo`] — `propertyRepository` bound to one leased
+//! connection, running via [`crate::execution`], the port of `queryOne`
 //! (`sql_base_repository.go:375-388`), in the shape `radio_repo::RadioRepo`
-//! establishes.
+//! establishes — and the WRITE legs through the transaction-bound free functions
+//! [`put_in_tx`] and [`delete_in_tx`] (DB-04), which run the SAME rendered [`Sql`]
+//! pairs, in Go's order, on the caller's `rusqlite::Transaction`; there is no
+//! connection-bound write, so the caller always owns BEGIN/commit/rollback and
+//! any busy retry (the DB-00 typed seam in [`crate::store`]).
 //!
 //! Values are plain TEXT (`value string` on both the read and the write,
 //! `:10,30,33`); Go stores JSON only when a caller hands it a JSON string —
@@ -33,6 +36,7 @@
 //! the schema; were one present, Go's scan errors and `get_text` errors the same
 //! way (the decision is recorded on [`PropertyError::Sqlite`]).
 
+use crate::runtime_error::DbOperationError;
 use crate::sqlrepo::Value;
 
 /// `r.tableName` (`NewPropertyRepository`, `property_repository.go:12`).
@@ -89,6 +93,70 @@ pub fn delete_sql(id: &str) -> Sql {
         format!("DELETE FROM {PROPERTY_TABLE} WHERE id = ?"),
         vec![Value::from(id)],
     )
+}
+
+/// Callback/operation error of the executed property writes: it carries only the
+/// concrete SQLite failure, because `Put`/`Delete` have no domain error to carry
+/// (`property_repository.go:23-35,60-62` return a bare `error` that can only be a
+/// driver failure — no `ErrNotFound`, no validation). `Infallible` is the honest
+/// domain type: the `Domain` arm is structurally uninhabited rather than reserved
+/// for a case that cannot happen, and a caller that DOES have a domain error wraps
+/// this with its own `E` inside the same transaction closure.
+///
+/// The executor (`crate::store::try_with_tx`/`try_with_tx_retry`) is the only place
+/// that assigns a [`crate::TransactionStage`], so `Body`/`Begin`/`Commit` cannot be
+/// forged here; the repository layer never manufactures one.
+pub type PropertyWriteError = crate::runtime_error::DbOperationError<std::convert::Infallible>;
+
+/// `Put` (`property_repository.go:23-35`) EXECUTED on the caller's transaction:
+/// UPDATE `value` for the id, and the INSERT runs only when the update matched no
+/// row (`:29-31` returns as soon as `count > 0`). Statements, bind order and the
+/// branch come from [`put_sql`], so the rendered pair is literally what runs.
+///
+/// The transaction is the caller's: this neither begins, commits, nor retries, and
+/// there is no connection-bound variant — a write outside a transaction is a
+/// single-statement autocommit mutation, which the DB-00 seam forbids. Go's
+/// ambient-ctx repository (`persistence.go:192`, where a tx wraps Put/Delete
+/// around its `tmp_lock_flag`) is modelled by the caller holding the tx.
+///
+/// Retryable: Go reruns only busy failures (`persistence.go:218`), and a rerun of
+/// this function is idempotent — the UPDATE arm makes an existing row converge and
+/// the INSERT arm only fires when no row exists.
+///
+/// # Errors
+/// [`crate::runtime_error::DbOperationError::Sqlite`] carrying the concrete
+/// `rusqlite::Error` (extended code intact, so `store::is_busy` still classifies
+/// it) when either statement fails to prepare, bind, or execute. Never a
+/// [`PropertyError`]: wrapping `Sqlite` in `Domain` would hide `SQLITE_BUSY` from
+/// the retry loop, which only retries the SQLite arm.
+pub fn put_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    value: &str,
+) -> Result<(), PropertyWriteError> {
+    let statements = put_sql(id, value);
+    // Go's order (`:24-34`): the UPDATE first, and its affected-row count decides
+    // whether the INSERT is reached at all.
+    if crate::execution::execute(tx, &statements.update).map_err(DbOperationError::sqlite)? > 0 {
+        return Ok(());
+    }
+    crate::execution::execute(tx, &statements.insert).map_err(DbOperationError::sqlite)?;
+    Ok(())
+}
+
+/// `Delete` (`property_repository.go:60-62`) EXECUTED on the caller's transaction:
+/// `r.delete(Eq{"id": id})` — `sql_base_repository.go:644-648`, which discards the
+/// affected-row count. A missing id is therefore a successful no-op, NOT
+/// `ErrNotFound`: `deleteByID` (`:650-658`) is the arm that reports a miss, and
+/// `propertyRepository.Delete` does not use it. Callers detect removal through
+/// [`PropertyRepo::get`] afterwards.
+///
+/// # Errors
+/// [`crate::runtime_error::DbOperationError::Sqlite`] when the statement fails to
+/// prepare, bind, or execute (a malformed schema, not a missing row).
+pub fn delete_in_tx(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), PropertyWriteError> {
+    crate::execution::execute(tx, &delete_sql(id)).map_err(DbOperationError::sqlite)?;
+    Ok(())
 }
 
 /// Failures of the executed property reads ([`PropertyRepo`]).
