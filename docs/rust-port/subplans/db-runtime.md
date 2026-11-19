@@ -709,7 +709,7 @@ per module): `genre_repo` 0, `scrobble_repo` 0, `scrobble_buffer_repo` 0 (its en
 but nothing runs), `smart_playlist_repo` 0, `user_props_repo` 0 (it has 6 exec calls but zero
 read-path coverage), `playqueue_repo` 0, `artwork_repo` 0, `artwork_queue_repo` 0 (hydrates via
 `RowGet` inside `runtime_hydrate_folder_artwork_queue.rs`, but its own statements never execute),
-`tag_repo` 0, `plugin_repo` 0 (unreachable — table dropped). Executed today: share 8, property 1,
+`tag_repo` 0, `plugin_repo` 0 (its renderers are callable — `lib.rs:35` exports the module — but no statement can run against the shipped schema because the table is dropped). Executed today: share 8, property 1,
 radio 1, library 1, plus user/player/transcoding/album/artist/mediafile/folder/playlist paths.
 
 **(2) Public functions never named by any test** (script over `src/*.rs` vs `tests/*.rs`):
@@ -720,6 +720,17 @@ radio 1, library 1, plus user/player/transcoding/album/artist/mediafile/folder/p
 `smart_playlist_repo.rs` 2/7; `scrobble_buffer_repo.rs` 5/13; `hydrate.rs` 26/36 (post-scan hooks
 `folder_post_scan`, `playlist_post_scan`, `playlist_track_post_scan`, `scrobble_buffer_post_scan`,
 `row_to_*` untested).
+
+**Scope limits, stated honestly.** (a) R2's probe covered 180 renderer names / 189 statement
+records — 173 non-plugin complete-renderer names — and does **not** prove global exclusivity: it
+omits complicated signatures, return types, and multi-shape inputs. (b) My count above measures
+whether a function is *named* in a test, not whether its SQL executes; at least three reads are
+executed that my grep attributed elsewhere (`mediafile_repo::get_all_ids_sql`
+`runtime_hydrate_album_mediafile.rs:923-928`, `album_repo::get_all_ids_sql` `:1444-1453`,
+`playlist_repo::load_tracks_sql` `runtime_hydrate_playlist_track_scrobble.rs:631-633`). Treat
+these as an inventory of suspected gaps to confirm per lane, not as a certified coverage number.
+(c) The two annotation defects have unit-test *string* assertions only and no non-test source
+references, which is why they never surfaced.
 
 **Reading:** the annotation/bookmark seams are both untested and (per the R2 audit) partly without
 a Go counterpart, so they are the highest-value cleanup, not a coverage gap to fill with tests.

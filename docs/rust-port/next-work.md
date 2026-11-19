@@ -67,9 +67,10 @@ gap. Non-DB follow-up: the `nd-stream` teardown flake (see the gate table).
 `schema-contract.md:93-96` says the `plugin` table is **dropped** — Part C item 14 removes
 `/api/plugin*` and does not port `persistence/plugin_cleanup.go`, so
 `db/migrations/20260106000620_create_plugin_table.sql` is not ported. `plugin_repo.rs` was
-ported anyway (`:11-14` notes the table is absent), so every statement it renders — including
-the executed path I probed (`DELETE FROM plugin WHERE id = ?`) — fails with `no such table:
-plugin` against the Rust schema. Options: (a) delete `plugin_repo.rs` and its tests as
+ported anyway (`:11-14` notes the table is absent, yet claims the schema slice will add it) and is
+exported publicly (`lib.rs:35`), so callers can invoke its renderers — but every statement it
+renders fails with `no such table: plugin` against the shipped schema, including the path I
+probed (`DELETE FROM plugin WHERE id = ?`). Options: (a) delete `plugin_repo.rs` and its tests as
 out-of-scope dead code (my recommendation: it can never run against the schema we ship, and its
 tests only assert rendered strings); (b) keep it and mark the module `#[cfg(feature =
 "plugin-table")]`/documented-unreachable until a schema decision reverses §1.5. Needs your call
