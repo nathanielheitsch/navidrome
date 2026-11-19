@@ -55,7 +55,17 @@ use nd_dbschema::schema::apply_fresh_schema;
 /// Deterministic `updated_at` stand-in for Go's `time.Now()` (`:460`, `:476`).
 /// Deliberately not 5, except where a test wants the mis-bound stamp to collide with
 /// the numeric decoy id (see `pre_fix_ids_first_bind_is_a_no_op_and_hits_the_wrong_row`).
-const STAMP: i64 = 1234;
+fn stamp() -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339("2024-01-02T03:04:05Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+fn stamp_value() -> Value {
+    Value::Text(nd_db::time::to_text(&stamp()))
+}
+fn stamp_raw() -> rusqlite::types::Value {
+    rusqlite::types::Value::Text(nd_db::time::to_text(&stamp()))
+}
 
 /// The numeric-looking decoy id. `media_file.id` is `varchar` (TEXT affinity), so
 /// SQLite compares a bound INTEGER `5` against the text `'5'` and matches it —
@@ -216,7 +226,7 @@ fn single_id_marks_the_target_and_leaves_siblings_untouched() {
     // Act: the real renderer, executed.
     let counts = execute_all(
         &store,
-        &mark_missing_sql(true, &["mf-target".to_string()], STAMP),
+        &mark_missing_sql(true, &["mf-target".to_string()], &stamp()),
     );
     // Assert: one statement, one row affected. Pre-fix this was 0 rows affected
     // and nothing below would hold.
@@ -224,10 +234,7 @@ fn single_id_marks_the_target_and_leaves_siblings_untouched() {
     // Assert: the target carries the flip and the stamp.
     assert_eq!(
         state(&store, "mf-target"),
-        (
-            rusqlite::types::Value::Integer(1),
-            rusqlite::types::Value::Integer(STAMP),
-        )
+        (rusqlite::types::Value::Integer(1), stamp_raw())
     );
     // Assert: no sibling moved, and the aggregate missing set is the target alone.
     assert_eq!(missing_ids(&store), vec!["mf-target".to_string()]);
@@ -244,7 +251,7 @@ fn multiple_ids_in_one_statement_mark_every_named_row() {
     let statements = mark_missing_sql(
         true,
         &["mf-1".to_string(), "mf-2".to_string(), "mf-3".to_string()],
-        STAMP,
+        &stamp(),
     );
     assert_eq!(statements.len(), 1, "three ids stay in one chunk");
     let counts = execute_all(&store, &statements);
@@ -270,7 +277,7 @@ fn chunk_boundary_at_200_executes_two_statements_with_exact_counts() {
     seed_ids.push(DECOY);
     seed(&store, "f-1", &seed_ids);
     // Act:
-    let statements = mark_missing_sql(true, &ids, STAMP);
+    let statements = mark_missing_sql(true, &ids, &stamp());
     // Assert: 2 statements, 200 and 1 placeholders (`slice.CollectChunks(ids, 200)`,
     // `:457`), each with the flip + stamp ahead of its ids.
     assert_eq!(statements.len(), 2);
@@ -279,7 +286,7 @@ fn chunk_boundary_at_200_executes_two_statements_with_exact_counts() {
     assert_eq!(statements[0].1.len(), 202);
     assert_eq!(statements[1].1.len(), 3);
     assert_eq!(statements[0].1[0], Value::Bool(true));
-    assert_eq!(statements[0].1[1], Value::Integer(STAMP));
+    assert_eq!(statements[0].1[1], stamp_value());
     assert_eq!(statements[0].1[2], Value::Text("mf-0".to_string()));
     assert_eq!(statements[1].1[2], Value::Text("mf-200".to_string()));
     let counts = execute_all(&store, &statements);
@@ -311,7 +318,7 @@ fn missing_flips_both_directions_and_stamps_the_rows_it_touches() {
     // Act 1: flip 1 → 0.
     let counts = execute_all(
         &store,
-        &mark_missing_sql(false, &["mf-target".to_string()], STAMP),
+        &mark_missing_sql(false, &["mf-target".to_string()], &stamp()),
     );
     // Assert: the row is un-flagged and re-stamped (pre-fix: 0 rows affected, so
     // `missing` would have stayed 1 forever and the scanner could never restore a
@@ -325,7 +332,7 @@ fn missing_flips_both_directions_and_stamps_the_rows_it_touches() {
     // Act 2: flip 0 → 1 with a new stamp.
     let counts = execute_all(
         &store,
-        &mark_missing_sql(true, &["mf-target".to_string()], 2222),
+        &mark_missing_sql(true, &["mf-target".to_string()], &stamp()),
     );
     // Assert:
     assert_eq!(counts, vec![1]);
@@ -334,10 +341,7 @@ fn missing_flips_both_directions_and_stamps_the_rows_it_touches() {
         rusqlite::types::Value::Integer(1)
     );
     assert_eq!(missing_ids(&store), vec!["mf-target".to_string()]);
-    assert_eq!(
-        state(&store, "mf-target").1,
-        rusqlite::types::Value::Integer(2222)
-    );
+    assert_eq!(state(&store, "mf-target").1, stamp_raw());
     // Assert: the siblings never moved in either direction.
     assert_eq!(unstamped_ids(&store), vec![DECOY, "mf-a"]);
     cleanup(store, path);
@@ -375,10 +379,10 @@ fn mark_by_folder_gates_on_the_current_flag() {
     // Act: mark-by-folder for f-1 and f-2 with missing = true; the gate binds
     // `missing = !missing` = false, so only un-flagged rows flip.
     let statements =
-        mark_missing_by_folder_sql(true, &["f-1".to_string(), "f-2".to_string()], STAMP);
+        mark_missing_by_folder_sql(true, &["f-1".to_string(), "f-2".to_string()], &stamp());
     assert_eq!(statements.len(), 1, "two folder ids stay in one chunk");
     assert_eq!(statements[0].1[0], Value::Bool(true));
-    assert_eq!(statements[0].1[1], Value::Integer(STAMP));
+    assert_eq!(statements[0].1[1], stamp_value());
     assert_eq!(statements[0].1[2], Value::Text("f-1".to_string()));
     assert_eq!(statements[0].1[3], Value::Text("f-2".to_string()));
     assert_eq!(
@@ -407,9 +411,9 @@ fn mark_by_folder_gates_on_the_current_flag() {
     );
     // Act 2: the reverse flip (missing = false, gate `missing = true`) un-marks only
     // the flagged rows of f-2 and leaves f-1's alone.
-    let statements = mark_missing_by_folder_sql(false, &["f-2".to_string()], 2222);
+    let statements = mark_missing_by_folder_sql(false, &["f-2".to_string()], &stamp());
     assert_eq!(statements[0].1[0], Value::Bool(false));
-    assert_eq!(statements[0].1[1], Value::Integer(2222));
+    assert_eq!(statements[0].1[1], stamp_value());
     assert_eq!(
         statements[0].1[3],
         Value::Bool(true),
@@ -431,7 +435,7 @@ fn empty_id_list_renders_no_statements_and_touches_nothing() {
     let (store, path) = fresh_store();
     seed(&store, "f-1", &["mf-a", DECOY]);
     // Act:
-    let statements = mark_missing_sql(true, &[], STAMP);
+    let statements = mark_missing_sql(true, &[], &stamp());
     // Assert: no statement at all (Go's chunker iterates zero times, `:457`), so
     // nothing executes and no row changes. A renderer that emitted `IN ()` would
     // be a SQLite syntax error here, not a silent no-op.
@@ -441,7 +445,7 @@ fn empty_id_list_renders_no_statements_and_touches_nothing() {
     assert_eq!(missing_ids(&store), Vec::<String>::new());
     assert_eq!(unstamped_ids(&store), vec![DECOY, "mf-a"]);
     // Assert: same for the folder variant.
-    assert_eq!(mark_missing_by_folder_sql(true, &[], STAMP).len(), 0);
+    assert_eq!(mark_missing_by_folder_sql(true, &[], &stamp()).len(), 0);
     cleanup(store, path);
 }
 
@@ -456,7 +460,7 @@ fn pre_fix_ids_first_bind_is_a_no_op_and_hits_the_wrong_row() {
     let (store, path) = fresh_store();
     seed(&store, "f-1", &["mf-target", DECOY, "mf-a"]);
     // Act 1: ids-first on a single id whose text cannot equal the stamp.
-    let statements = mark_missing_sql(true, &["mf-target".to_string()], STAMP);
+    let statements = mark_missing_sql(true, &["mf-target".to_string()], &stamp());
     let mis_bound = ids_first(&statements[0].1);
     let counts = execute_all(&store, &[(statements[0].0.clone(), mis_bound)]);
     // Assert: it EXECUTES without an error but changes nothing — 0 rows affected,
@@ -468,10 +472,20 @@ fn pre_fix_ids_first_bind_is_a_no_op_and_hits_the_wrong_row() {
     );
     assert_eq!(state(&store, "mf-target").1, rusqlite::types::Value::Null);
     assert_eq!(missing_ids(&store), Vec::<String>::new());
-    // Act 2: ids-first with `updated_at = 5` and the id set `["mf-target", "5"]`,
-    // so the stamp lands in `IN (…)` and matches the decoy.
-    let statements = mark_missing_sql(true, &["mf-target".to_string(), DECOY.to_string()], 5);
-    let mis_bound = ids_first(&statements[0].1);
+    // Act 2: explicit legacy INTEGER stamp control, with the pre-fix ids-first
+    // argument arrangement. This preserves the DB-01 negative control without
+    // making production timestamp renderers emit integers.
+    let statements = mark_missing_sql(
+        true,
+        &["mf-target".to_string(), DECOY.to_string()],
+        &stamp(),
+    );
+    let mis_bound = vec![
+        Value::Text("mf-target".to_string()),
+        Value::Integer(5),
+        Value::Bool(true),
+        Value::Integer(5),
+    ];
     let counts = execute_all(&store, &[(statements[0].0.clone(), mis_bound)]);
     // Assert: exactly one row affected, and it is the WRONG one (`5`).
     assert_eq!(
@@ -502,21 +516,19 @@ fn pre_fix_ids_first_bind_is_a_no_op_and_hits_the_wrong_row() {
     // Act 3: the FIXED order on the same mixed set marks both rows correctly.
     let counts = execute_all(
         &store,
-        &mark_missing_sql(true, &["mf-target".to_string(), DECOY.to_string()], STAMP),
+        &mark_missing_sql(
+            true,
+            &["mf-target".to_string(), DECOY.to_string()],
+            &stamp(),
+        ),
     );
     // Assert: 2 rows affected, both really flagged with the stamp, and the decoy's
     // corrupted `missing` TEXT replaced by the real flip (so `missing_ids` now
     // reports both).
     assert_eq!(counts, vec![2]);
     assert_eq!(state(&store, DECOY).0, rusqlite::types::Value::Integer(1));
-    assert_eq!(
-        state(&store, DECOY).1,
-        rusqlite::types::Value::Integer(STAMP)
-    );
-    assert_eq!(
-        state(&store, "mf-target").1,
-        rusqlite::types::Value::Integer(STAMP)
-    );
+    assert_eq!(state(&store, DECOY).1, stamp_raw());
+    assert_eq!(state(&store, "mf-target").1, stamp_raw());
     assert_eq!(
         missing_ids(&store),
         vec![DECOY.to_string(), "mf-target".to_string()]

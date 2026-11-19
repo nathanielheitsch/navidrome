@@ -3593,10 +3593,9 @@ fn json_type_name(value: &JsonValue) -> &'static str {
 /// `last_scan_at = 1704067200` and `last_scan_started_at = 0`:
 /// `2024-01-01 00:00:00 +0000 UTC` and `1970-01-01 00:00:00 +0000 UTC`, and
 /// `IsZero()` on the latter is **false** — the epoch integer is NOT Go's zero
-/// time. That is the read-side half of the write-side epoch-integer divergence
-/// recorded in `library_repo`'s module header; [`crate::library_repo::ZERO_TIME`]
-/// and [`crate::library_repo::scan_in_progress_sql`] are where it changes a
-/// result.
+/// time. Scanner writes now bind TEXT through [`crate::time::value`], and the
+/// idle predicate compares against [`crate::library_repo::zero_time_value`];
+/// the integer decoder remains for legacy/external INTEGER cells.
 ///
 /// `ID` is Go's `int` (`model/library.go:15`), read with [`RowGet::get_i64`] —
 /// Go's `int` is 64-bit, so the record's `i64` carries it without narrowing.

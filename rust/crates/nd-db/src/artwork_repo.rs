@@ -16,6 +16,8 @@
 //! raw strings; the emitted SQL here is the same statement on one line —
 //! whitespace-equivalent to squirrel's join, pinning content not layout.
 
+use chrono::{DateTime, Utc};
+
 use crate::sqlrepo::{Repository, SqlError, Value};
 
 /// A materialized statement: `(sql, args)`, the `toSQL()`
@@ -74,7 +76,7 @@ pub fn get_image_sql(hash: &str) -> Sql {
 /// columns — with the conflict suffix that resets `created_at` so reacquiring
 /// an orphan moves its prune-grace window (`:49`, `:50`).
 #[must_use]
-pub fn put_image_sql(a: &ArtworkRow, now: i64) -> Sql {
+pub fn put_image_sql(a: &ArtworkRow, now: &DateTime<Utc>) -> Sql {
     // squirrel SetMap sorts the model's column names (verified in the mediafile
     // slice against squirrel@v1.5.4), so the insert lists them alphabetically.
     (
@@ -82,7 +84,7 @@ pub fn put_image_sql(a: &ArtworkRow, now: i64) -> Sql {
             "INSERT INTO {TABLE} (blur_hash, created_at, dominant_color, hash, height, mime, size_bytes, thumb_hash, width) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (hash) DO UPDATE SET mime=excluded.mime, width=excluded.width, height=excluded.height, size_bytes=excluded.size_bytes, blur_hash=excluded.blur_hash, thumb_hash=excluded.thumb_hash, dominant_color=excluded.dominant_color, created_at=excluded.created_at"
         ),
         vec![
-            Value::Text(a.blur_hash.clone()), Value::Integer(now),
+            Value::Text(a.blur_hash.clone()), crate::time::value(now),
             Value::Text(a.dominant_color.clone()), Value::Text(a.hash.clone()),
             Value::Integer(a.height), Value::Text(a.mime.clone()),
             Value::Integer(a.size_bytes), Value::Text(a.thumb_hash.clone()),
@@ -120,16 +122,16 @@ pub fn get_mime_by_hash_sql() -> Sql {
     (format!("SELECT hash, mime FROM {TABLE}"), Vec::new())
 }
 
-/// `PurgeOrphans` (`:74-80`): `Delete(artwork).Where(And{Lt{created_at},
-/// Expr("hash NOT IN (SELECT hash FROM item_artwork WHERE hash <> '')")})`
-/// — `createdBefore` (epoch seconds) binds, the subquery fragment is fixed.
+/// `PurgeOrphans` (`:74-80`): delete unreferenced artwork older than the supplied
+/// chrono cutoff. Its TEXT bound matches the `created_at` TEXT written by
+/// [`put_image_sql`].
 #[must_use]
-pub fn purge_orphans_sql(created_before: i64) -> Sql {
+pub fn purge_orphans_sql(created_before: &DateTime<Utc>) -> Sql {
     (
         format!(
             "DELETE FROM {TABLE} WHERE created_at < ? AND hash NOT IN (SELECT hash FROM {ITEMS_TABLE} WHERE hash <> '')"
         ),
-        vec![Value::Integer(created_before)],
+        vec![crate::time::value(created_before)],
     )
 }
 
@@ -159,27 +161,27 @@ pub fn get_item_artwork_sql(kind: &str, id: &str, image_type: &str) -> Sql {
 
 /// `PutItemArtwork` (`:122-139`): the caller applies the defaults Go does —
 /// `image_type = cmp.Or(image_type, primary)` (`:123`) and
-/// `attempted_at = updated_at` when unset (`:125-128`) — then this emits
+/// `attempted_at = updated_at` when unset or Go-zero (`:125-128`) — then this emits
 /// `Insert(item_artwork).SetMap(values)` (sorted columns) with the recorded
 /// outcome's conflict suffix (`:133-136`).
 #[must_use]
-pub fn put_item_artwork_sql(ia: &ItemArtworkRow, now: i64) -> Sql {
-    let attempted = if ia.attempted_at == 0 {
-        now
-    } else {
-        ia.attempted_at
-    };
+pub fn put_item_artwork_sql(ia: &ItemArtworkRow, now: &DateTime<Utc>) -> Sql {
+    let attempted = ia
+        .attempted_at
+        .as_ref()
+        .filter(|attempted| **attempted != crate::time::zero())
+        .unwrap_or(now);
     (
         format!(
             "INSERT INTO {ITEMS_TABLE} (attempted_at, hash, image_type, item_id, item_kind, last_failure, ref_mtime, source, source_path, trace, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (item_kind, item_id, image_type) DO UPDATE SET hash=excluded.hash, source=excluded.source, source_path=excluded.source_path, ref_mtime=excluded.ref_mtime, trace=excluded.trace, last_failure=excluded.last_failure, attempted_at=excluded.attempted_at, updated_at=excluded.updated_at",
         ),
         vec![
-            Value::Integer(attempted), Value::Text(ia.hash.clone()),
+            crate::time::value(attempted), Value::Text(ia.hash.clone()),
             Value::Text(ia.image_type.clone()), Value::Text(ia.item_id.clone()),
             Value::Text(ia.item_kind.clone()), Value::Text(ia.last_failure.clone()),
             Value::Integer(ia.ref_mtime), Value::Text(ia.source.clone()),
             Value::Text(ia.source_path.clone()), Value::Text(ia.trace.clone()),
-            Value::Integer(now),
+            crate::time::value(now),
         ],
     )
 }
@@ -206,9 +208,9 @@ pub struct ItemArtworkRow {
     pub trace: String,
     /// The exhausted-retry walk (`PutLastFailure`).
     pub last_failure: String,
-    /// Epoch seconds, nullable per schema but always set on insert (`:44`);
-    /// 0 marks "unset" so `put_item_artwork_sql` substitutes `now`.
-    pub attempted_at: i64,
+    /// Go's `IsZero()` is equivalent to `None` or the year-one zero; either
+    /// means `put_item_artwork_sql` substitutes the supplied `now`.
+    pub attempted_at: Option<DateTime<Utc>>,
 }
 
 /// `PutLastFailure` (`:143-148`): update-only (a fresh row would write an
@@ -300,11 +302,11 @@ mod tests {
             ..Default::default()
         };
         // Act:
-        let (sql, args) = put_image_sql(&a, 42);
+        let (sql, args) = put_image_sql(&a, &crate::time::zero());
         // Assert: sorted-column SetMap insert, and created_at in the
         // conflict clause (PutImage :50 — unlike a plain upsert).
         assert_eq!(args.len(), 9);
-        assert_eq!(args[1], Value::Integer(42));
+        assert_eq!(args[1], crate::time::value(&crate::time::zero()));
         assert!(sql.contains("ON CONFLICT (hash) DO UPDATE SET"));
         assert!(sql.contains("created_at=excluded.created_at"));
     }
@@ -312,13 +314,14 @@ mod tests {
     #[test]
     fn purge_orphans_keys_on_the_grace_cutoff() {
         // Act: PurgeOrphans (:74-80).
-        let (sql, args) = purge_orphans_sql(1000);
-        // Assert: the NOT IN subquery is fixed, cutoff binds.
+        let cutoff = DateTime::from_timestamp(1_000, 0).unwrap();
+        let (sql, args) = purge_orphans_sql(&cutoff);
+        // Assert: the NOT IN subquery is fixed, cutoff binds as timestamp TEXT.
         assert_eq!(
             sql,
             "DELETE FROM artwork WHERE created_at < ? AND hash NOT IN (SELECT hash FROM item_artwork WHERE hash <> '')"
         );
-        assert_eq!(args, vec![Value::Integer(1000)]);
+        assert_eq!(args, vec![crate::time::value(&cutoff)]);
     }
 
     #[test]
@@ -381,7 +384,7 @@ mod tests {
                 item_id: "al-1".to_string(),
                 ..Default::default()
             },
-            55,
+            &crate::time::zero(),
         );
         assert_eq!(
             put.1[4],
@@ -406,11 +409,11 @@ mod tests {
             ..Default::default()
         };
         // Act:
-        let (sql, args) = put_item_artwork_sql(&ia, 55);
+        let (sql, args) = put_item_artwork_sql(&ia, &crate::time::zero());
         // Assert: attempted_at falls back to updated_at's now, and image_type
         // is the caller's (cmp.Or at :123 is caller-side; empty here pinned).
-        assert_eq!(args[0], Value::Integer(55));
-        assert_eq!(args.last(), Some(Value::Integer(55)).as_ref());
+        assert_eq!(args[0], crate::time::value(&crate::time::zero()));
+        assert_eq!(args.last(), Some(&crate::time::value(&crate::time::zero())));
         assert!(sql.contains("ON CONFLICT (item_kind, item_id, image_type) DO UPDATE SET"));
     }
 

@@ -495,20 +495,9 @@ fn library_count_all_keeps_filters_and_appends_the_reset_order_leg() {
     std::fs::remove_file(&path).ok();
 }
 
-/// `ScanInProgress` (`library_repository.go:190-194`): `count > 0` over
-/// `last_scan_started_at <> ZERO_TIME`, executed. The bound is `Value::Integer(0)`
-/// because this repo still writes epoch integers into that `datetime` column
-/// (`ZERO_TIME` and the `scan_*` binds, with `time.rs:42-49` declaring the
-/// conversion unconverted), so the comparison is INTEGER-vs-stored-value.
-///
-/// Executed here: rows stamped with a TEXT instant count (SQLite ranks INTEGER and
-/// TEXT apart, so `<> 0` is true for every TEXT value), rows stamped with the
-/// integer zero do not, and one stamped row flips it back. The mirror-image
-/// divergence is recorded, NOT asserted as parity: Go binds `time.Time{}`, which its
-/// driver renders as the TEXT zero instant, so a row stored as INTEGER 0 would also
-/// satisfy `<> '0001-…'` and Go would report in-progress where the port reports
-/// none. That arm is INFERRED from SQLite affinity rules plus Go's bind shape
-/// (`library_repository.go:191`), not executed against the Go repository.
+/// `ScanInProgress` uses canonical year-one TEXT, exactly matching Go's `time.Time{}`.
+/// A fresh DDL sentinel intentionally remains nonzero under this predicate; INTEGER
+/// zero controls likewise compare unequal and report in-progress rather than idle.
 #[test]
 fn library_scan_in_progress_follows_the_stamps_this_port_writes() {
     let (store, path) = fresh_store();
@@ -523,19 +512,31 @@ fn library_scan_in_progress_follows_the_stamps_this_port_writes() {
         "UPDATE library SET last_scan_started_at = ?",
         &[i64(0)],
     );
+    let integer_zero = lease(&store, |conn| LibraryRepo::new(conn).scan_in_progress())
+        .expect("the count statement executes");
+    assert!(
+        integer_zero,
+        "INTEGER zero is not canonical TEXT year-one zero"
+    );
+
+    insert(
+        &store,
+        "UPDATE library SET last_scan_started_at = ?",
+        &[v("0001-01-01 00:00:00+00:00")],
+    );
     let idle = lease(&store, |conn| LibraryRepo::new(conn).scan_in_progress())
         .expect("the count statement executes");
-    assert!(!idle, "integer-zero rows are excluded");
+    assert!(!idle, "canonical TEXT zero rows are excluded");
 
     insert(
         &store,
         "UPDATE library SET last_scan_started_at = ? WHERE id = 2",
-        &[i64(1_704_067_200)],
+        &[v(T0)],
     );
     assert!(
         lease(&store, |conn| LibraryRepo::new(conn).scan_in_progress())
             .expect("the count statement executes"),
-        "one stamped row is enough, so this is a real count"
+        "one typed started stamp is enough, so this is a real count"
     );
     std::fs::remove_file(&path).ok();
 }

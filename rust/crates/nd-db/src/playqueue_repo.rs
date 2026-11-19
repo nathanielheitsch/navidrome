@@ -10,6 +10,8 @@
 //! items (de)serialisation (`:94-129` — comma-joined ids), and `loadTracks`
 //! (`:133-166` — 500-id chunks of `media_file.id IN (…)`).
 
+use chrono::{DateTime, Utc};
+
 use crate::sqlrepo::{Repository, SqlError, Value};
 
 /// A materialized statement: `(sql, args)`, the `toSQL()`
@@ -25,7 +27,7 @@ pub const TRACK_CHUNK_SIZE: usize = 500;
 
 /// `playQueue` struct (`:27-36`): the row shape. `items` holds comma-joined
 /// media-file ids (`fromModel`, `:108`).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlayQueueRow {
     /// Queue row id.
     pub id: String,
@@ -39,11 +41,26 @@ pub struct PlayQueueRow {
     pub changed_by: String,
     /// Comma-joined media-file ids in queue order (`:33`).
     pub items: String,
-    /// Epoch seconds; Go stamps `created_at` only for a brand-new row
+    /// TEXT timestamp; Go stamps `created_at` only for a brand-new row
     /// (`:66-68`) and always refreshes `updated_at` (`:69`).
-    pub created_at: i64,
-    /// Epoch seconds, refreshed on every Store (Store :69).
-    pub updated_at: i64,
+    pub created_at: DateTime<Utc>,
+    /// TEXT timestamp, refreshed on every Store (Store :69).
+    pub updated_at: DateTime<Utc>,
+}
+
+impl Default for PlayQueueRow {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            user_id: String::new(),
+            current: 0,
+            position: 0,
+            changed_by: String::new(),
+            items: String::new(),
+            created_at: crate::time::zero(),
+            updated_at: crate::time::zero(),
+        }
+    }
 }
 
 /// `Retrieve` / `RetrieveWithMediaFiles`' select (`:79-80`, `:88-89`):
@@ -100,7 +117,7 @@ pub fn store_sql(
     existing_found: bool,
     existing_id: String,
     cols_to_update: &[&str],
-    now: i64,
+    now: &DateTime<Utc>,
 ) -> Vec<Sql> {
     let mut stmts = Vec::new();
     let id = if existing_found && !existing_id.is_empty() {
@@ -133,8 +150,8 @@ pub fn store_sql(
         Value::Integer(q.position),
         Value::Text(q.changed_by),
         Value::Text(q.items),
-        Value::Integer(q.created_at),
-        Value::Integer(now),
+        crate::time::value(&q.created_at),
+        crate::time::value(now),
     ];
     let mut set_cols: Vec<String> = Vec::new();
     let mut set_args: Vec<Value> = Vec::new();
@@ -211,7 +228,7 @@ mod tests {
             ..Default::default()
         };
         // Act:
-        let stmts = store_sql(q2, true, "pq-old".to_string(), &[], 99);
+        let stmts = store_sql(q2, true, "pq-old".to_string(), &[], &crate::time::zero());
         // Assert: the DELETE clears first, then UPDATE (kept id) then INSERT
         // legs of the base put (:55-75).
         assert_eq!(stmts.len(), 3);
@@ -237,7 +254,7 @@ mod tests {
         // return before the put).
         let q = PlayQueueRow::default();
         // Act:
-        let stmts = store_sql(q, false, "".to_string(), &[], 42);
+        let stmts = store_sql(q, false, "".to_string(), &[], &crate::time::zero());
         // Assert:
         assert_eq!(stmts.len(), 1);
         assert!(stmts[0].0.starts_with("DELETE FROM playqueue"));

@@ -35,23 +35,11 @@
 //! `Get`/`GetPath`/`GetAll`/`CountAll`/`ScanInProgress`/
 //! `GetUsersWithLibraryAccess`.
 //!
-//! Timestamps: Go binds `time.Time`, which go-sqlite3 renders as TEXT using the
-//! first of its `SQLiteTimestampFormats` (`sqlite3.go:331-338`, `:2265-2272`); the
-//! executed trace of Go's `ScanBegin`/`ScanEnd` binds
-//! `2026-11-17 23:40:58.976772 -0500 EST` and `0001-01-01 00:00:00 +00:00 UTC`.
-//! This repository's WRITE legs still bind epoch-second integers — a documented
-//! divergence from [`crate::time`]'s TEXT convention, listed as remaining work
-//! there — with [`ZERO_TIME`] as the zero `time.Time` constant [`scan_end_sql`]
-//! writes (`:171-179`). Converting it is a separate lane, and both sides must move
-//! together: `library` timestamps feed `artist`'s `RefreshStats` comparison
-//! (`artist_repository.go:479`). The READ side decodes exactly as Go does — a
-//! declared-`datetime` column whose INTEGER cell goes through
-//! [`crate::hydrate::driver_integer_dt`] — so it is parity for either storage
-//! spelling (executed Go: integer `1704067200` reads as 2024-01-01 and integer `0`
-//! as 1970-01-01, NOT Go's zero time). The one place the integer-write convention
-//! changes a READ result is [`scan_in_progress_sql`]'s comparison bound; see that
-//! function and the executed test
-//! `scan_in_progress_agrees_with_the_stamps_this_port_writes`.
+//! Scanner timestamps now follow the crate-wide TEXT convention through
+//! [`crate::time::value`], including scan begin/end and the model year-one zero.
+//! `scan_in_progress` keeps Go's `last_scan_started_at <> time.Time{}` predicate
+//! verbatim; the fresh DDL zero-date sentinel is intentionally still counted as
+//! in progress.
 //!
 //! Safety rule (`sqlrepo.rs`): identifiers (table/column names) are this
 //! repository's registered constants; every value binds to a `?`.
@@ -120,9 +108,10 @@ pub const LIBRARY_ARTIST_TABLE: &str = "library_artist";
 /// and `StoreMusicFolder` rewrites.
 pub const DEFAULT_LIBRARY_ID: i64 = 1;
 
-/// Go's zero `time.Time` (`time.Time{}`) as the crate's epoch-seconds unit:
-/// the stamp `ScanEnd` writes and `ScanInProgress` compares against.
-pub const ZERO_TIME: i64 = 0;
+/// Canonical Go zero-time storage shape used by scan-end and idle comparisons.
+pub fn zero_time_value() -> Value {
+    crate::time::value(&crate::time::zero())
+}
 
 /// One materialized statement: `(sql, args)`, the `toSQL()`
 /// (`sql_base_repository.go:358-372`) output shape.
@@ -513,7 +502,7 @@ pub struct LibraryUpdate<'a> {
     /// `library.pid_track`.
     pub pid_track: &'a str,
     /// `library.updated_at` (`l.UpdatedAt = time.Now()`, `:74`).
-    pub updated_at: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 impl LibraryUpdate<'_> {
@@ -528,7 +517,7 @@ impl LibraryUpdate<'_> {
             ("default_new_users", Value::Bool(self.default_new_users)),
             ("pid_album", Value::from(self.pid_album)),
             ("pid_track", Value::from(self.pid_track)),
-            ("updated_at", Value::Integer(self.updated_at)),
+            ("updated_at", crate::time::value(&self.updated_at)),
         ];
         if cols_to_update.is_empty() {
             return all;
@@ -625,7 +614,7 @@ pub fn assign_admins_sql() -> Sql {
 /// by `NotEq{"path": …}` so an unchanged config writes nothing (the
 /// `rowsAffected > 0` cache update is the caller's).
 #[must_use]
-pub fn store_music_folder_sql(path: &str, updated_at: i64) -> Sql {
+pub fn store_music_folder_sql(path: &str, updated_at: &DateTime<Utc>) -> Sql {
     (
         format!(
             "UPDATE {TABLE} SET path = ?, updated_at = ? \
@@ -633,7 +622,7 @@ pub fn store_music_folder_sql(path: &str, updated_at: i64) -> Sql {
         ),
         vec![
             Value::from(path),
-            Value::Integer(updated_at),
+            crate::time::value(updated_at),
             Value::Integer(DEFAULT_LIBRARY_ID),
             Value::from(path),
         ],
@@ -655,13 +644,13 @@ pub fn add_artist_sql(id: i64, artist_id: &str) -> Sql {
 
 /// `ScanBegin` (`:147-153`): stamp the scan start and its mode.
 #[must_use]
-pub fn scan_begin_sql(id: i64, now: i64, full_scan: bool) -> Sql {
+pub fn scan_begin_sql(id: i64, now: &DateTime<Utc>, full_scan: bool) -> Sql {
     (
         format!(
             "UPDATE {TABLE} SET last_scan_started_at = ?, full_scan_in_progress = ? WHERE id = ?"
         ),
         vec![
-            Value::Integer(now),
+            crate::time::value(now),
             Value::Bool(full_scan),
             Value::Integer(id),
         ],
@@ -671,16 +660,16 @@ pub fn scan_begin_sql(id: i64, now: i64, full_scan: bool) -> Sql {
 /// `ScanEnd` (`:155-168`): stamp the finish, clear the flag and reset the
 /// start stamp to the zero time.
 #[must_use]
-pub fn scan_end_sql(id: i64, now: i64) -> Sql {
+pub fn scan_end_sql(id: i64, now: &DateTime<Utc>) -> Sql {
     (
         format!(
             "UPDATE {TABLE} SET last_scan_at = ?, full_scan_in_progress = ?, \
              last_scan_started_at = ? WHERE id = ?"
         ),
         vec![
-            Value::Integer(now),
+            crate::time::value(now),
             Value::Bool(false),
-            Value::Integer(ZERO_TIME),
+            zero_time_value(),
             Value::Integer(id),
         ],
     )
@@ -708,21 +697,14 @@ pub fn set_scanned_pid_sql(id: i64, pid_album: &str, pid_track: &str) -> Sql {
 /// what reaches SQLite. The executed form is [`scan_in_progress_count_sql`], which is
 /// what [`LibraryRepo::scan_in_progress`] runs.
 ///
-/// **Write-side hazard, recorded not fixed:** Go binds Go's zero `time.Time`, which
-/// go-sqlite3 renders as TEXT (`0001-01-01 00:00:00 +0000 UTC`, executed trace in
-/// oracle `/tmp/sd3g1_oracle4`). This port binds the INTEGER `ZERO_TIME` instead —
-/// the same convention `scan_end_sql` writes, so the two agree WITHIN the port. A
-/// row stamped by the Go binary with the TEXT zero time is still `<> 0` for SQLite,
-/// which orders TEXT above INTEGER by storage class, so the port would report it as
-/// in-progress. Executed on the Go side: with every row set to INTEGER 0, Go's
-/// `ScanInProgress` returned `true`, because its bound is the TEXT zero time and
-/// `0 <> '0001-01-01 00:00:00'` is true — the mirror image of the same fault. Moving
-/// both sides is the timestamp lane's job (see the module header).
+/// Both stamps and the comparison bound use the canonical year-one TEXT value. The
+/// fresh DDL zero-date sentinel is intentionally not normalized and therefore still
+/// satisfies this Go-faithful non-equality predicate.
 #[must_use]
 pub fn scan_in_progress_sql() -> Sql {
     (
         format!("SELECT * FROM {TABLE} WHERE last_scan_started_at <> ?"),
-        vec![Value::Integer(ZERO_TIME)],
+        vec![zero_time_value()],
     )
 }
 /// `ScanInProgress` as EXECUTED (`:190-194` through `count`,
@@ -738,7 +720,7 @@ pub fn scan_in_progress_count_sql() -> Sql {
             "SELECT count(distinct {TABLE}.id) as count FROM {TABLE} \
              WHERE last_scan_started_at <> ? ORDER BY {TABLE}.id"
         ),
-        vec![Value::Integer(ZERO_TIME)],
+        vec![zero_time_value()],
     )
 }
 
@@ -816,7 +798,7 @@ pub struct RefreshStatsTotals {
     /// `total_duration` (probe 7).
     pub duration: f64,
     /// `updated_at` (Go's `time.Now()`).
-    pub updated_at: i64,
+    pub updated_at: DateTime<Utc>,
 }
 
 /// See [`RefreshStatsTotals`].
@@ -836,7 +818,7 @@ pub fn refresh_stats_update_sql(totals: &RefreshStatsTotals) -> Sql {
             Value::Integer(totals.missing),
             Value::Integer(totals.size),
             Value::Real(totals.duration),
-            Value::Integer(totals.updated_at),
+            crate::time::value(&totals.updated_at),
             Value::Integer(totals.id),
         ],
     )
@@ -1103,7 +1085,7 @@ impl<'a> LibraryRepo<'a> {
     }
 
     /// `ScanInProgress` (`:190-194`): `count > 0` over
-    /// `last_scan_started_at <> ZERO_TIME`.
+    /// `last_scan_started_at <> canonical year-one TEXT zero`.
     ///
     /// Go's `count` returns `(count, err)` and Go's caller inspects the bool even when
     /// the error is set (`:193-194` returns both); the port folds that to
@@ -1261,7 +1243,7 @@ mod tests {
             default_new_users: true,
             pid_album: "alb",
             pid_track: "trk",
-            updated_at: 1_700_000_000,
+            updated_at: crate::time::zero(),
         };
         // Act:
         let (sql, args) = put_update_sql(2, &update, &[]);
@@ -1280,7 +1262,7 @@ mod tests {
                 Value::Text("alb".to_string()),
                 Value::Text("trk".to_string()),
                 Value::Text("/remote/original".to_string()),
-                Value::Integer(1_700_000_000),
+                crate::time::value(&crate::time::zero()),
                 Value::Integer(2),
             ]
         );
@@ -1297,7 +1279,7 @@ mod tests {
             default_new_users: true,
             pid_album: "alb",
             pid_track: "trk",
-            updated_at: 99,
+            updated_at: crate::time::zero(),
         };
         // Act:
         let (sql, args) = put_update_sql(2, &update, &["name", "path"]);
@@ -1311,7 +1293,7 @@ mod tests {
             vec![
                 Value::Text("Renamed".to_string()),
                 Value::Text("/music/original".to_string()),
-                Value::Integer(99),
+                crate::time::value(&crate::time::zero()),
                 Value::Integer(2),
             ]
         );
@@ -1358,7 +1340,7 @@ mod tests {
     fn store_music_folder_guards_on_unchanged_path() {
         // Arrange: StoreMusicFolder (:117-133) — Set order is call order.
         // Act:
-        let (sql, args) = store_music_folder_sql("/music", 5);
+        let (sql, args) = store_music_folder_sql("/music", &crate::time::zero());
         // Assert:
         assert_eq!(
             sql,
@@ -1368,7 +1350,7 @@ mod tests {
             args,
             vec![
                 Value::Text("/music".to_string()),
-                Value::Integer(5),
+                crate::time::value(&crate::time::zero()),
                 Value::Integer(DEFAULT_LIBRARY_ID),
                 Value::Text("/music".to_string()),
             ]
@@ -1380,22 +1362,22 @@ mod tests {
         // Arrange: ScanBegin/ScanEnd/SetScannedPID (:147-178) — .Set call order.
         // Act + Assert:
         assert_eq!(
-            scan_begin_sql(1, 7, true),
+            scan_begin_sql(1, &crate::time::zero(), true),
             (
                 "UPDATE library SET last_scan_started_at = ?, full_scan_in_progress = ? WHERE id = ?".to_string(),
-                vec![Value::Integer(7), Value::Bool(true), Value::Integer(1)]
+                vec![crate::time::value(&crate::time::zero()), Value::Bool(true), Value::Integer(1)]
             )
         );
         assert_eq!(
-            scan_end_sql(1, 8),
+            scan_end_sql(1, &crate::time::zero()),
             (
                 "UPDATE library SET last_scan_at = ?, full_scan_in_progress = ?, \
                  last_scan_started_at = ? WHERE id = ?"
                     .to_string(),
                 vec![
-                    Value::Integer(8),
+                    crate::time::value(&crate::time::zero()),
                     Value::Bool(false),
-                    Value::Integer(ZERO_TIME),
+                    zero_time_value(),
                     Value::Integer(1)
                 ]
             )
@@ -1419,7 +1401,7 @@ mod tests {
         // Arrange: ScanInProgress (:180-184) — the NotEq against time.Time{}.
         // The constant must be the one scan_end_sql binds, or a finished
         // scan reads as in-progress.
-        let (_, end_args) = scan_end_sql(1, 8);
+        let (_, end_args) = scan_end_sql(1, &crate::time::zero());
         // Act:
         let (sql, args) = scan_in_progress_sql();
         // Assert:
@@ -1483,7 +1465,7 @@ mod tests {
             missing: 6,
             size: 7,
             duration: 8.5,
-            updated_at: 9,
+            updated_at: crate::time::zero(),
         };
         // Act:
         let (sql, args) = refresh_stats_update_sql(&totals);
@@ -1505,7 +1487,7 @@ mod tests {
                 Value::Integer(6),
                 Value::Integer(7),
                 Value::Real(8.5),
-                Value::Integer(9),
+                crate::time::value(&crate::time::zero()),
                 Value::Integer(1),
             ]
         );
