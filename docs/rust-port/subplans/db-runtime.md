@@ -347,6 +347,29 @@ Accepted conclusions (I re-checked each against source myself):
   standalone read renderers (`get_annotations_sql`, `annotation_exists_sql`, `annotation_count_sql`)
   or re-document them as an invented seam with the missing-id parity fact stated. Do not "fix" the
   count by inventing an id column.
+### Parent executed reproduction (2026-11-18, `/tmp/w11check`, fresh schema + FK-enforced seed)
+
+Fixture: library 1, folder f1, media_file mf1, three users each annotating mf1 with ratings
+**5, 3, 0**. Actual output:
+
+```text
+RENDERED: UPDATE media_file SET average_rating = ? WHERE id = ?
+ARGS    : 3
+EXECUTE ERROR: InvalidParameterCount(3, 2)
+GO SQL rows=1 average_rating=4  (expected 4.0: ratings 5,3 counted, 0 excluded)
+COUNT RENDERED: SELECT count(distinct annotation.id) as count FROM annotation WHERE ...
+COUNT PREPARE ERROR: no such column: annotation.id ... at offset 22
+count(distinct item_id) = 1 (the only id-ish column available)
+```
+
+Two facts the fix must preserve, both now proven by execution:
+1. Go's `updateAvgRating` filters by `item_id`/`item_type` and `rating > 0` only — **not** by
+   `user_id` — so the average spans every user's ratings for that item (3 annotators → 4.00,
+   not a per-user average). A Rust fix that adds a user filter would be a silent behavior change.
+2. `annotation` has no id column and its PK is `unique(user_id, item_id, item_type)`
+   (`schema_ddl.rs:59`), so `count(distinct annotation.id)` can never prepare. Do not invent an
+   id column to make it pass; the disposition is delete-or-redocument.
+
 - R2's coverage claim is explicitly **bounded**: complex signatures and multi-shape inputs were
   sampled loosely, so "no other fixed-shape mismatch" is unproven globally, not disproved.
   Fragments must be wrapped before preparation (it also found `artwork_queue_filter_sql` and
