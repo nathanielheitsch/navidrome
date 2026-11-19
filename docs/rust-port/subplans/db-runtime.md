@@ -667,6 +667,21 @@ Mechanism, from the vendored macro (`thiserror-impl-1.0.69/src/expand.rs:62-70`)
   `rusqlite::ffi::Error`, exactly as Go's `errors.As` on `db.ErrorCodes` does at
   `db/db.go:128-134`. Pin this with a test using a real crate error variant, not a synthetic one.
 
+### Resolved: go-sqlite3's "WAL forces NORMAL" is a no-op (2026-11-18, parent-read vendor source)
+
+W9 raised whether the port must mimic go-sqlite3 coupling `synchronous` to WAL. Read the vendor
+source directly (`/Users/nathanielheitsch/go/pkg/mod/github.com/mattn/go-sqlite3@v1.14.52/sqlite3.go`):
+- `synchronousMode := "NORMAL"` is the default (`:1241`).
+- The journal block sets `synchronousMode = "NORMAL"` on WAL (`:1450-1454`).
+- The synchronous block runs **later** and overwrites it whenever `_synchronous`/`_sync` is
+  present (`:1534-1556`, assignment at `:1546-1549`).
+
+Therefore WAL-forces-NORMAL can never change Go's observable state: `_journal_mode=wal` alone →
+NORMAL (already the default), and `_journal_mode=wal&synchronous=full` → **FULL**, because the
+later block wins. `DbOpenOptions` with `journal_mode=Wal, synchronous=Full` therefore **matches**
+Go rather than diverging — no coupling to implement, and no divergence to record. Recorded here so
+a later reviewer does not re-open it as a missing behavior.
+
 ## DB-22 — Executed read parity for genre, scrobble, playqueue, artwork (parent-added, 2026-11-18)
 
 1. **Status: READY as a plan; BLOCKED on checkout** — run only after DB-03 (`19a5a57a`) and DB-00
