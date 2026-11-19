@@ -550,6 +550,55 @@ it will fail on intentionally-partial shapes like `refresh_counters_sql`.
 9. **Validation:** `cargo test --locked -p nd-db --test runtime_scanner_persistence_contract`; G plus consumer-reported focused CLI commands chosen by SC/BOOT/API. Parent runs final combined workspace gates after every writer stops. Coverage failures/blockers explicitly retained.
 10. **Review/DoD:** fresh independent read-only integrated review at quiescent checkout, parent-selected fixes and final gates; final handoff lists P1-DB vs FULL-SCANNER-DB vs epoch readiness separately and remaining full#05 APIs. No authorization to commit/deploy/mutate production.
 
+## DB-22 — Executed read parity for genre, scrobble, playqueue, artwork (parent-added, 2026-11-18)
+
+1. **Status: READY as a plan; BLOCKED on checkout** — run only after DB-03 (`19a5a57a`) and DB-00
+   (`5b8c42a4`) land: this lane edits `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}`
+   and runs the whole workspace, so a concurrent writer would poison its numbers.
+2. **Goal:** execute the four repos' read statements against `apply_fresh_schema` and pin Go's
+   observed results. Zero executed reads today (measured: 0 execution calls in each module).
+3. **Go ground truth (verified this turn, cite in code):**
+   - genre: `selectGenre` = `newSelect().Columns("tag.tag_value as name")`
+     (`persistence/genre_repository.go:22-24`); `GetAll` `:26-31`; `Get` adds `Where(Eq{"tag.id": id})`
+     `:33-38`; `Read` delegates to `Get` `:42-44`; `ReadAll` = `GetAll(parseRestOptions)` `:46-48`.
+     Genre is a tag-repository override, so **verify** whether the tag library filter reaches
+     `GetAll` before asserting an unfiltered row set — Rust's `get_all_sql(user_id: Option<&str>)`
+     currently takes a user id, and that parameter's meaning must be proven against Go, not assumed.
+   - scrobble: `baseQuery` = `newSelect().Columns("id","media_file_id","submission_time")
+     .Where(Eq{"scrobbles.user_id": user.ID})` (`persistence/scrobble_repository.go:25-31`); model
+     registers `from`/`to` filter fns (`:37-40`) and the `submission_time` sort mapping (`:41-43`);
+     `CountAll` `:59-61`, `GetAll` `:74-79`, `Read` `:81-83`. `submission_time` is stored as
+     **Unix seconds** (`RecordScrobble` `:47-54`, `submissionTime.Unix()`), so `from`/`to` mapping
+     and ordering must be pinned against epoch integers, not TEXT.
+   - playqueue: `RetrieveWithMediaFiles` and `Retrieve` both
+     `newSelect().Columns("*").Where(Eq{"user_id": userId})` + `queryOne`
+     (`persistence/playqueue_repository.go:78-92`); `Retrieve` wraps with `new(...)` (a
+     nil-tolerant copy) while `RetrieveWithMediaFiles` calls `loadTracks` (`:83`, `:133-166`).
+     Rust `retrieve_sql`/`load_tracks_sql` must be executed and the items-column encode/decode
+     (`column_to_items`/`items_to_column`) pinned with real JSON round-trips.
+   - artwork: `GetImage` = `Select("*").From(artwork).Where(Eq{"hash": hash})`
+     (`persistence/artwork_repository.go:33-40`); `GetItemArtwork` =
+     `Select("*").From(artwork_items).Where(Eq{"item_kind","item_id","image_type"})` `:112-120`;
+     `GetMimeByHash` `:58-72` returns a hash→mime map (multi-row aggregate read); `GetInfoForItems`
+     `:159+` chunks ids. `PutImage`/`PutItemArtwork` stamp `created_at`/`updated_at` from the clock
+     (`:44`, `:123-125`) — DB-02's D-TIME decision (TEXT via `time::value`) governs those columns, so
+     this lane must land **after** DB-02 or state clearly which storage shape its assertions use.
+4. **Own:** `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}` plus NEW
+   `tests/runtime_hydrate_genre_scrobble_playqueue_artwork.rs`. Do NOT touch `sql_annotations.rs`
+   (DB-15 owns it) or `store.rs`/`runtime_error.rs` (DB-00 owns them).
+5. **Tests:** per repo, at least one executed read on seeded rows plus one empty-table read;
+   scrobble from/to epoch bounds; playqueue JSON items round-trip; artwork hash and
+   item-kind/id/image_type lookups including the not-found error shape.
+6. **Non-vacuity:** each test must assert a value that a wrong column list, wrong user filter, or
+   wrong epoch mapping would change — state it per test.
+7. **Validation:** `cargo test --locked -p nd-db --test runtime_hydrate_genre_scrobble_playqueue_artwork --all-features`,
+   then `cargo test -p nd-db --all-targets --all-features --no-fail-fast`, workspace tests,
+   clippy, fmt, `cargo doc -p nd-db --all-features --no-deps` (expect 22 warnings), `git diff --check`.
+8. **Oracle:** Go `GenreRepository`/`ScrobbleRepository`/`PlayQueueRepository`/`ArtworkRepository`
+   against a migrated SQLite DB; deterministic IDs and epoch stamps; record actual dynamic values.
+9. **Review/DoD:** fresh read-only reviewer confirms Go citations, executed (not string-only)
+   assertions, and that no repo error variant was flattened into a String.
+
 ## Dependency DAG and serial execution policy
 
 Logical dependencies (these do NOT authorize simultaneous editing):
