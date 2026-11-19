@@ -38,18 +38,26 @@ pub struct Claims {
     /// Username for session tokens (`claims.go:14`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sub: String,
-    /// Which API may accept this token; empty means any (`claims.go:15`).
-    /// In the fresh service this is only ever empty (session tokens) or
-    /// [`AUDIENCE_NATIVE`] (API tokens) — no other audience is minted, and
-    /// the decoded claim is subject to the consumer's audience discipline.
+    /// Which API may accept this token. In the fresh service this is either
+    /// [`AUDIENCE_NATIVE`] — the only audience a minted session or API token
+    /// ever carries (`create_native_session_token`, `create_api_token`) — or
+    /// empty, which is only the LEGACY Go-parity `create_token` shape: Go's
+    /// `CheckClaims` treated empty as "any API", but the strict API gate here
+    /// rejects it ([`super::credentials::AuthError::MissingAudience`], Part C
+    /// #10), so "empty means any" is NOT an acceptance rule on this surface.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aud: Vec<String>,
     /// Seconds since the Unix epoch, matching Go's `UTC().Unix()` stamp
     /// (`claims.go:47,52`).
     #[serde(default, skip_serializing_if = "is_zero_ts")]
     pub iat: i64,
-    /// Ditto — `exp` is zero only on non-expiring API tokens
-    /// (`auth.go:85-88`).
+    /// Ditto. `exp` is zero — and therefore *omitted from the wire*, since
+    /// `is_zero_ts` skips exactly zero and NOT any other non-positive value —
+    /// only on non-expiring API tokens (`auth.go:85-88`). A negative `exp`
+    /// therefore stays on the wire; whether it is subsequently rejected is the
+    /// dependency's parser/validation policy, not this struct's. Every expiring
+    /// mint and `touch_claims` refuses a non-positive or overflowing expiry so
+    /// neither shape is ever produced here.
     #[serde(default, skip_serializing_if = "is_zero_ts")]
     pub exp: i64,
 

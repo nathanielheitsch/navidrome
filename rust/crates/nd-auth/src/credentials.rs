@@ -73,6 +73,13 @@ pub enum AuthError {
     /// crate detail or claim text can leak into logs.
     #[error("invalid token")]
     InvalidToken,
+    /// The configured session timeout cannot yield a valid positive expiry
+    /// (BOOT-02): non-positive timeout, overflowing `now + timeout`, or a
+    /// non-positive resulting `exp`. Static text — no timeout, claim, token, or
+    /// secret in the message. Login sanitizes it to the generic 500; refresh
+    /// simply emits no header.
+    #[error("invalid session expiry")]
+    InvalidSessionExpiry,
 }
 
 /// The dual signing secrets — `core/auth/auth.go:23-29,50`. Current +
@@ -120,9 +127,12 @@ impl Authenticator {
         self.session_timeout_secs
     }
 
-    /// `CreateToken` (`auth.go:90-95`): a session token with no audience
-    /// and the session timeout stamped (`TouchToken`'s `exp` is the only
-    /// difference from `CreateAPIToken`).
+    /// `CreateToken` (`auth.go:90-95`): the LEGACY Go-parity session token —
+    /// expiring but with **no audience**, which the strict API gate rejects
+    /// ([`AuthError::MissingAudience`], Part C #10). Login and first-admin do
+    /// NOT mint with this: they use [`Self::create_native_session_token`].
+    /// Kept for compatibility with the aud-less Go wire shape and as a
+    /// deliberate negative control.
     pub fn create_token(
         &self,
         subject: &TokenSubject,
@@ -131,13 +141,66 @@ impl Authenticator {
         now: i64,
     ) -> Result<String, AuthError> {
         let claims = Claims::for_user(subject, username, is_admin, None, now)
-            .with_expires_at(now + self.session_timeout_secs);
+            .with_expires_at(self.session_expires_at(now)?);
         self.encode_session_claims(&claims)
+    }
+
+    /// The BOOT-02 native **expiring** session token: `aud = [native]`,
+    /// `iss = ND`, `uid`/`adm`/`sub`/`ep` from the subject, and a checked
+    /// positive `exp` (`now + session_timeout_secs`). This is what `POST
+    /// /auth/login` and the first-admin path mint, so the token the UI gets
+    /// back actually authenticates at the strict API gate instead of dying at
+    /// [`Self::check_api_claims`] with `MissingAudience`.
+    ///
+    /// # Errors
+    /// [`AuthError::InvalidSessionExpiry`] when the configured session timeout
+    /// is not positive, or when `now + timeout` overflows or lands at or below
+    /// zero. `exp == 0` is omitted from the payload (`claims.rs` `is_zero_ts`
+    /// skips only zero), which silently yields a non-expiring session token; a
+    /// negative `exp` IS serialized, but whether the dependency's `u64` expiry
+    /// parser rejects it is not a guarantee this mint may rely on. Both are
+    /// refused at mint time rather than saturated.
+    pub fn create_native_session_token(
+        &self,
+        subject: &TokenSubject,
+        username: &str,
+        is_admin: bool,
+        now: i64,
+    ) -> Result<String, AuthError> {
+        let exp = self.session_expires_at(now)?;
+        let claims = Claims::for_user(subject, username, is_admin, Some(AUDIENCE_NATIVE), now)
+            .with_expires_at(exp);
+        self.encode_session_claims(&claims)
+    }
+
+    /// Checked positive `exp` shared by every expiring mint and by
+    /// [`Self::touch_claims`]. A non-positive timeout, an overflowing sum, and
+    /// a non-positive result are all refused. Two distinct hazards, not one:
+    /// `exp == 0` is *omitted* from the payload, so the token is silently
+    /// immortal; a negative `exp` is serialized (serde skips only zero), and
+    /// rejection of it then depends on the dependency's expiry parser rather
+    /// than on anything here. Unchecked `now + timeout` would additionally
+    /// panic (debug) or wrap (release). The constructor is deliberately
+    /// unchanged — `Authenticator::new` stays infallible and the misconfigured
+    /// timeout surfaces per mint as a typed error.
+    fn session_expires_at(&self, now: i64) -> Result<i64, AuthError> {
+        if self.session_timeout_secs <= 0 {
+            return Err(AuthError::InvalidSessionExpiry);
+        }
+        let exp = now
+            .checked_add(self.session_timeout_secs)
+            .ok_or(AuthError::InvalidSessionExpiry)?;
+        if exp <= 0 {
+            return Err(AuthError::InvalidSessionExpiry);
+        }
+        Ok(exp)
     }
 
     /// `CreateAPIToken` (`auth.go:85-88`): a non-expiring token scoped to
     /// one API — revocation is by epoch, not expiry. Audience is always
-    /// [`AUDIENCE_NATIVE`]; no other value is mintable in this port.
+    /// [`AUDIENCE_NATIVE`]; no other value is mintable in this port. This is
+    /// NOT a login substitute: it carries no `exp` and must never be handed
+    /// to the UI in place of [`Self::create_native_session_token`].
     pub fn create_api_token(
         &self,
         subject: &TokenSubject,
@@ -149,14 +212,19 @@ impl Authenticator {
         self.encode_session_claims(&claims)
     }
 
-    /// `TouchClaims` (`auth.go:110-114`): re-sign a verified token's
-    /// claims with a fresh session timeout. The epoch claim is NOT
-    /// re-stamped here — the refreshing-writer path (`server/auth.go:310-327`)
-    /// owns that and supplies fresh claims.
+    /// `TouchClaims` (`auth.go:110-114`): re-sign a verified token's claims
+    /// with a fresh session timeout. Always re-stamps `exp` — including over
+    /// previously non-expiring claims — and preserves every other claim by
+    /// cloning, so a native session token stays `aud = [native]` across
+    /// refresh. The epoch claim is NOT re-stamped here: the refreshing-writer
+    /// path (`server/auth.go:310-327`) owns that and supplies fresh claims.
+    ///
+    /// # Errors
+    /// [`AuthError::InvalidSessionExpiry`] under the same checked-expiry rule
+    /// as the mints, so a refresh can never turn a session token immortal.
     pub fn touch_claims(&self, claims: &Claims, now: i64) -> Result<String, AuthError> {
-        let touched = claims
-            .clone()
-            .with_expires_at(now + self.session_timeout_secs);
+        let exp = self.session_expires_at(now)?;
+        let touched = claims.clone().with_expires_at(exp);
         self.encode_session_claims(&touched)
     }
 
@@ -446,6 +514,11 @@ mod tests {
 
     fn test_auth() -> Authenticator {
         Authenticator::new(secrets(), DEFAULT_SESSION_TIMEOUT_SECS)
+    }
+
+    /// The current session signing key, for raw-payload assertions above.
+    fn session_key() -> jsonwebtoken::DecodingKey {
+        jsonwebtoken::DecodingKey::from_secret(b"session-secret-current")
     }
 
     fn valid_password_hash() -> String {
@@ -860,18 +933,276 @@ mod tests {
 
     #[test]
     fn touch_claims_restamps_expiry() {
-        // Arrange: a near-expiry session token.
+        // Arrange: a near-expiry session token. One captured clock per step —
+        // calling `now()` twice across an equality assertion flakes at a
+        // second boundary.
         let auth = test_auth();
         let subj = subject("u", 0);
-        let token = auth.create_token(&subj, "a", false, now()).unwrap();
+        let mint_now = now();
+        let token = auth.create_token(&subj, "a", false, mint_now).unwrap();
         let claims = auth.validate(&token).unwrap();
+        assert_eq!(claims.exp, mint_now + DEFAULT_SESSION_TIMEOUT_SECS);
+        let touch_now = mint_now + 10;
 
-        // Act: re-sign at now+10.
-        let touched = auth.touch_claims(&claims, now() + 10).unwrap();
+        // Act: re-sign at touch_now.
+        let touched = auth.touch_claims(&claims, touch_now).unwrap();
         let back = auth.validate(&touched).unwrap();
 
-        // Assert: exp = (now+10) + timeout, epoch preserved.
-        assert_eq!(back.exp, now() + 10 + DEFAULT_SESSION_TIMEOUT_SECS);
+        // Assert: exp = touch_now + timeout; epoch and iat preserved.
+        assert_eq!(back.exp, touch_now + DEFAULT_SESSION_TIMEOUT_SECS);
         assert_eq!(back.epoch, claims.epoch);
+        assert_eq!(back.iat, claims.iat);
+    }
+
+    // ---- BOOT-02: native expiring session mint ----
+
+    #[test]
+    fn create_native_session_token_mints_native_expiring_claims() {
+        // Arrange.
+        let auth = test_auth();
+        let subj = subject("user-abc", 3);
+        let mint_now = now();
+
+        // Act.
+        let token = auth
+            .create_native_session_token(&subj, "alice", true, mint_now)
+            .unwrap();
+        let claims = auth.validate(&token).unwrap();
+        let gate = auth.check_api_claims(&claims, &subj, "alice");
+
+        // Assert: aud=[native] AND a positive exp — the exact pair a login
+        // token needs, and why neither legacy create_token (no aud) nor
+        // create_api_token (no exp) can stand in for it.
+        assert_eq!(claims.aud, vec![AUDIENCE_NATIVE]);
+        assert_eq!(claims.iss, JWT_ISSUER);
+        assert_eq!(claims.sub, "alice");
+        assert_eq!(claims.user_id, "user-abc");
+        assert!(claims.is_admin);
+        assert_eq!(claims.epoch, 3);
+        assert_eq!(claims.iat, mint_now);
+        assert_eq!(claims.exp, mint_now + DEFAULT_SESSION_TIMEOUT_SECS);
+        assert!(gate.is_ok());
+    }
+
+    #[test]
+    fn session_expiry_helper_rejects_nonpositive_and_overflowing_expiry() {
+        // Asserted against the private helper, so historic/huge clocks do not
+        // depend on the wall-clock verifier (which cannot accept them).
+        let positive_now = now();
+        let auth = test_auth();
+
+        // Act: zero, negative, and both overflow directions.
+        for timeout in [0, -1, i64::MIN] {
+            let auth = Authenticator::new(secrets(), timeout);
+            assert_eq!(
+                auth.session_expires_at(positive_now),
+                Err(AuthError::InvalidSessionExpiry),
+                "timeout {timeout} must refuse the expiry",
+            );
+            assert_eq!(
+                auth.create_native_session_token(&subject("u", 0), "a", false, positive_now),
+                Err(AuthError::InvalidSessionExpiry),
+                "timeout {timeout} must refuse the native mint",
+            );
+            assert_eq!(
+                auth.create_token(&subject("u", 0), "a", false, positive_now),
+                Err(AuthError::InvalidSessionExpiry),
+                "timeout {timeout} must refuse the legacy mint",
+            );
+            assert_eq!(
+                auth.touch_claims(&Claims::default(), positive_now),
+                Err(AuthError::InvalidSessionExpiry),
+                "timeout {timeout} must refuse the touch",
+            );
+        }
+
+        // A positive timeout whose SUM is non-positive is refused too: exp == 0
+        // is omitted from the payload (immortal token), and exp < 0 is
+        // serialized but only rejected by the dependency's parser policy. Both
+        // are refused at mint time — see `nonpositive_expiry_is_refused_before_encoding`.
+        assert_eq!(
+            auth.session_expires_at(-DEFAULT_SESSION_TIMEOUT_SECS),
+            Err(AuthError::InvalidSessionExpiry),
+            "a zero-sum exp must be refused",
+        );
+        assert_eq!(
+            auth.session_expires_at(-DEFAULT_SESSION_TIMEOUT_SECS - 1),
+            Err(AuthError::InvalidSessionExpiry),
+            "a negative exp must be refused",
+        );
+        // Overflow errors instead of panicking (debug) or wrapping (release).
+        assert_eq!(
+            auth.session_expires_at(i64::MAX),
+            Err(AuthError::InvalidSessionExpiry),
+            "now + timeout overflow must be refused",
+        );
+        let huge = Authenticator::new(secrets(), i64::MAX);
+        assert_eq!(
+            huge.session_expires_at(1),
+            Err(AuthError::InvalidSessionExpiry),
+            "a huge timeout must be refused, never saturated",
+        );
+        assert_eq!(
+            huge.session_expires_at(i64::MAX),
+            Err(AuthError::InvalidSessionExpiry),
+            "huge timeout plus huge now must be refused",
+        );
+
+        // The largest representable boundary is accepted, and exp > now holds.
+        assert_eq!(
+            auth.session_expires_at(i64::MAX - DEFAULT_SESSION_TIMEOUT_SECS),
+            Ok(i64::MAX),
+        );
+        // One second past it overflows and is refused rather than wrapped.
+        assert_eq!(
+            auth.session_expires_at(i64::MAX - DEFAULT_SESSION_TIMEOUT_SECS + 1),
+            Err(AuthError::InvalidSessionExpiry),
+        );
+        assert_eq!(auth.session_expires_at(0), Ok(DEFAULT_SESSION_TIMEOUT_SECS));
+
+        // A real-time mint and touch agree on the expiry rule.
+        let mint_now = now();
+        let subj = subject("u", 0);
+        let token = auth
+            .create_native_session_token(&subj, "a", false, mint_now)
+            .unwrap();
+        let claims = auth.validate(&token).unwrap();
+        assert_eq!(claims.exp, mint_now + DEFAULT_SESSION_TIMEOUT_SECS);
+        let touched = auth.touch_claims(&claims, mint_now + 60).unwrap();
+        assert_eq!(
+            auth.validate(&touched).unwrap().exp,
+            mint_now + 60 + DEFAULT_SESSION_TIMEOUT_SECS,
+        );
+    }
+
+    #[test]
+    fn touch_preserves_claims_and_restamps_even_api_input() {
+        let auth = test_auth();
+        let subj = subject("user-abc", 4);
+
+        // Act: touch a native session token and an exp-less API token.
+        let session = auth
+            .create_native_session_token(&subj, "alice", true, now())
+            .unwrap();
+        let session_claims = auth.validate(&session).unwrap();
+        let api = auth.create_api_token(&subj, "alice", true, now()).unwrap();
+        let api_claims = auth.validate(&api).unwrap();
+        assert_eq!(api_claims.exp, 0);
+        let touch_now = now() + 30;
+        let touched_session = auth.touch_claims(&session_claims, touch_now).unwrap();
+        let touched_api = auth.touch_claims(&api_claims, touch_now).unwrap();
+
+        // Assert: only exp changes; aud/iss/uid/adm/sub/ep/iat survive.
+        let mut expected = session_claims.clone();
+        expected.exp = touch_now + DEFAULT_SESSION_TIMEOUT_SECS;
+        let back = auth.validate(&touched_session).unwrap();
+        assert_eq!(back, expected);
+        assert_eq!(back.aud, vec![AUDIENCE_NATIVE]);
+
+        // Touching an API token restamps it with a session expiry (Go
+        // `TouchClaims`, auth.go:110-114) while the original stays non-expiring.
+        let back = auth.validate(&touched_api).unwrap();
+        assert_eq!(back.exp, touch_now + DEFAULT_SESSION_TIMEOUT_SECS);
+        assert_eq!(back.aud, vec![AUDIENCE_NATIVE]);
+        assert_eq!(auth.validate(&api).unwrap().exp, 0);
+        assert_eq!(auth.validate(&session).unwrap().exp, session_claims.exp);
+
+        // A bad timeout makes touch fail for either input shape.
+        let broken = Authenticator::new(secrets(), 0);
+        assert_eq!(
+            broken.touch_claims(&session_claims, now()),
+            Err(AuthError::InvalidSessionExpiry)
+        );
+        assert_eq!(
+            broken.touch_claims(&api_claims, now()),
+            Err(AuthError::InvalidSessionExpiry)
+        );
+    }
+
+    #[test]
+    fn nonpositive_expiry_is_refused_before_encoding() {
+        // Wire-shape evidence for the helper's rationale, asserted rather than
+        // assumed: serde omits `exp` ONLY when it equals zero, so a zero-valued
+        // expiry really does disappear from the signed payload — an immortal
+        // session token that no expiry validation can enforce.
+        let auth = test_auth();
+        let permissive = || {
+            let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+            v.required_spec_claims.clear();
+            v.validate_exp = false;
+            v.validate_aud = false;
+            v.leeway = 0;
+            v
+        };
+
+        // A probe whose `exp` is an `Option` distinguishes *absent* from
+        // present-but-zero, which `Claims` cannot (its `exp` defaults to 0).
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            exp: Option<i64>,
+        }
+
+        let zero = Claims {
+            iss: JWT_ISSUER.to_string(),
+            exp: 0,
+            ..Claims::default()
+        };
+        let zero_token = auth.encode_session_claims(&zero).unwrap();
+        assert_eq!(
+            jsonwebtoken::decode::<Probe>(&zero_token, &session_key(), &permissive())
+                .unwrap()
+                .claims
+                .exp,
+            None,
+            "exp == 0 is omitted from the payload, so the token never expires"
+        );
+
+        // `exp < 0` is NOT omitted: it survives on the wire. Whether a signed
+        // negative expiry is then rejected is the dependency's policy —
+        // jsonwebtoken 9.3.1 parses `exp` as `u64`, so a failed parse counts as
+        // unparsed and optional-claim validation skips it — which is exactly why
+        // the helper refuses both cases at mint time rather than relying on it.
+        let negative = Claims {
+            iss: JWT_ISSUER.to_string(),
+            exp: -5,
+            ..Claims::default()
+        };
+        let negative_token = auth.encode_session_claims(&negative).unwrap();
+        assert_eq!(
+            jsonwebtoken::decode::<Probe>(&negative_token, &session_key(), &permissive())
+                .unwrap()
+                .claims
+                .exp,
+            Some(-5),
+            "a negative exp is serialized, not absent"
+        );
+        // No rejection asserted here: how the strict validator treats a signed
+        // negative expiry is outside this package's policy.
+
+        // Neither shape can be produced through the checked helper.
+        assert_eq!(
+            auth.session_expires_at(-DEFAULT_SESSION_TIMEOUT_SECS),
+            Err(AuthError::InvalidSessionExpiry),
+            "a zero-sum exp would serialize away"
+        );
+        assert_eq!(
+            auth.session_expires_at(-DEFAULT_SESSION_TIMEOUT_SECS - 1),
+            Err(AuthError::InvalidSessionExpiry),
+            "a negative exp is on the wire but must never be minted"
+        );
+    }
+
+    #[test]
+    fn bad_session_timeout_does_not_prohibit_the_nonexpiring_api_mint() {
+        // The API mint carries no exp and is independent of the session
+        // timeout: a misconfigured timeout must not newly prohibit it, and it
+        // must never be mistaken for a login substitute.
+        let auth = Authenticator::new(secrets(), 0);
+        let subj = subject("user-abc", 3);
+        let token = auth.create_api_token(&subj, "alice", false, now()).unwrap();
+        let claims = auth.validate(&token).unwrap();
+        assert_eq!(claims.aud, vec![AUDIENCE_NATIVE]);
+        assert_eq!(claims.exp, 0);
+        assert!(auth.check_api_claims(&claims, &subj, "alice").is_ok());
     }
 }
