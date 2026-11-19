@@ -3,36 +3,45 @@
 //!
 //! Every Go method builds a squirrel statement (or hands one to dbx's
 //! `Model(l).Insert()`) and materializes it through `toSQL()`
-//! (`sql_base_repository.go:358-372`) as `(sql, args)`. The WRITE legs stop at
-//! those [`Sql`] pairs: execution, `WithTx` and logging stay with the caller,
-//! following the sibling-lane split (see `album_repo.rs`). The READ legs are
-//! EXECUTED: [`LibraryRepo`] is `libraryRepository` bound to one leased
-//! connection and runs through [`crate::execution`], the port of
-//! `queryOne`/`queryAll`/`count` (`sql_base_repository.go:336-355,375-388,
-//! 441-457,565-576`), in the shape `radio_repo::RadioRepo` establishes.
+//! (`sql_base_repository.go:358-372`) as `(sql, args)`. Every statement here is
+//! still rendered as such a [`Sql`] pair, and the DB-05 WRITE legs additionally
+//! EXECUTE those same pairs on the CALLER's transaction ([`put_in_tx`],
+//! [`scan_begin_in_tx`], [`scan_end_in_tx`], [`set_scanned_pid_in_tx`],
+//! [`add_artist_in_tx`]): Begin/Commit/Body staging and busy retry belong to the
+//! executor (`crate::store::try_with_tx`/`try_with_tx_retry`), following
+//! `property_repo::put_in_tx` (DB-04) — this module never begins, commits, retries,
+//! or deletes a library. The READ legs are EXECUTED too: [`LibraryRepo`] is
+//! `libraryRepository` bound to one leased connection and runs through
+//! [`crate::execution`], the port of `queryOne`/`queryAll`/`count`
+//! (`sql_base_repository.go:336-355,375-388,441-457,565-576`), in the shape
+//! `radio_repo::RadioRepo` establishes.
 //!
 //! Ported here: `Get`'s id select (`:35-40`), `GetPath` (`:42-67`),
 //! `GetAll`/`CountAll` (`:283-292`), `ScanInProgress` (`:190-194`),
-//! `GetUsersWithLibraryAccess` (`:297-307`), `Put`'s update-then-insert legs plus
-//! the admin user-library CROSS JOIN upsert (`:72-127`), `StoreMusicFolder`'s
-//! config-change guard (`:138-152`), `AddArtist`'s library_artist insert
-//! (`:152-162`), the scan lifecycle updates `ScanBegin`/`ScanEnd`/`SetScannedPID`
-//! (`:162-189`), `RefreshStats`'s eight aggregate probes and its totals update
-//! (`:196-251`) and `Delete`'s row delete (`:253-270`).
+//! `GetUsersWithLibraryAccess` (`:297-307`), `Put` EXECUTED IN FULL — the ID-1 path
+//! guard (`:73-81`), the `UpdatedAt` stamp (`:84`), the autoincrement insert
+//! (`:85-88`), the update-then-insert-fallback legs (`:89-112`) and the admin
+//! user-library CROSS JOIN upsert (`:117-128`) — plus the `ScanBegin` (`:162-169`),
+//! `ScanEnd` (`:171-179`), `SetScannedPID` (`:181-188`) and `AddArtist` (`:152-160`)
+//! legs.
 //!
 //! Not ported, with the reason: Go's `libCache`/`libLock` PROCESS cache
-//! (`:25-29`, written by `GetPath` `:56-59` and `Put` `:126`) is runtime state with
-//! no SQL counterpart, so [`LibraryRepo::get_path`] re-runs its lookup on every
-//! call; its doc records the staleness divergence that produces. `Put`'s
-//! `ErrValidation` guard on library 1's path and `Delete`'s admin/ID-1 checks
-//! (`:73-80`, `:254-259`) are auth-layer policy the caller applies before issuing
-//! the statements here; `Delete`'s artist-orphan reconcile and plugin-reference
-//! cleanup (`:262-269`) belong to the artist/plugin lanes; the REST shims
-//! `Count`/`Read`/`ReadAll` (`:311-326`) are option parsing on top of
-//! [`count_all_sql`]/[`get_all_query_sql`], pinned by [`rest_repo`] and
-//! `sql_restful.rs`; `Read`'s `strconv.Atoi` of a string id (`:316-321`) is the
-//! REST lane's concern. [`LibraryRepo`] exposes the executed read side of
-//! `Get`/`GetPath`/`GetAll`/`CountAll`/`ScanInProgress`/
+//! (`:25-29`, written by `GetPath` `:56-59` and `Put` `:130-132`) is runtime state
+//! with no SQL counterpart, so [`LibraryRepo::get_path`] re-runs its lookup on every
+//! call and its doc records the staleness divergence that produces. `put_in_tx`
+//! keeps that rule in the other direction: the [`LibraryWriteResult`] id is
+//! ADVISORY until the caller commits, so nothing here caches a path and a rolled
+//! back Put publishes nothing. `Delete`'s admin/ID-1 checks (`:254-259`) stay
+//! auth-layer policy applied before [`delete_sql`] runs; its artist-orphan
+//! reconcile and plugin-reference cleanup (`:266-279`) belong to the artist/plugin
+//! lanes. `StoreMusicFolder` (`:138-150`) stays the privileged config-change
+//! renderer [`store_music_folder_sql`] rather than a bypass of [`put_in_tx`]'s
+//! guard, and `RefreshStats` (`:196-251`) keeps only its renderers (DB-17 owns the
+//! executed stats, `D-STATS` undecided). The REST shims `Count`/`Read`/`ReadAll`
+//! (`:311-326`) are option parsing on top of [`count_all_sql`]/[`get_all_query_sql`],
+//! pinned by [`rest_repo`] and `sql_restful.rs`; `Read`'s `strconv.Atoi` of a string
+//! id (`:316-321`) is the REST lane's concern. [`LibraryRepo`] exposes the executed
+//! read side of `Get`/`GetPath`/`GetAll`/`CountAll`/`ScanInProgress`/
 //! `GetUsersWithLibraryAccess`.
 //!
 //! Scanner timestamps now follow the crate-wide TEXT convention through
@@ -89,6 +98,7 @@
 //! `WHERE (name LIKE ? AND path LIKE ?) ORDER BY name desc LIMIT 3`, i.e. one
 //! parenthesized AND-group of the parsed filters ([`rest_repo`]).
 
+use crate::runtime_error::DbOperationError;
 use crate::sql_restful::RestRepository;
 use crate::sqlrepo::{Repository, Value};
 use crate::user_repo::UserRecord;
@@ -484,9 +494,12 @@ pub fn count_all_query_sql(
 }
 
 /// The `Put` update-map payload (`library_repository.go:91-99`): the six
-/// columns `selectUpdateColumns` filters plus the `updated_at` Go always
-/// writes (`:99`). `Put` also stamps `CreatedAt`/`UpdatedAt` and the
-/// ID-1 path validation (`:59-71`) — those are the caller's clock/policy.
+/// columns `selectUpdateColumns` filters (`sql_base_repository.go:593-610`) plus
+/// the `updated_at` Go always writes (`:99`). `created_at` is absent from the map
+/// literally, so immutability of the create stamp is STRUCTURAL — there is no
+/// filter to remember — and the six counters Go also omits stay owned by DB-17
+/// stats. [`put_in_tx`] builds this from the caller's record and stamps
+/// `updated_at` from the caller's clock.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LibraryUpdate<'a> {
     /// `library.name`.
@@ -501,14 +514,20 @@ pub struct LibraryUpdate<'a> {
     pub pid_album: &'a str,
     /// `library.pid_track`.
     pub pid_track: &'a str,
-    /// `library.updated_at` (`l.UpdatedAt = time.Now()`, `:74`).
+    /// `library.updated_at` (`l.UpdatedAt = time.Now()`, `:84`). [`put_in_tx`]
+    /// always fills it from the caller's clock, so a hand-set value here only ever
+    /// reaches the standalone renderer.
     pub updated_at: DateTime<Utc>,
 }
 
 impl LibraryUpdate<'_> {
-    /// The `selectUpdateColumns` map (`:76-82`) plus `updated_at` (`:83`),
-    /// restricted to `cols_to_update` (snake_cased by the caller) — all
-    /// columns when none are requested. `updated_at` always survives.
+    /// The `selectUpdateColumns` map (`:91-98`) plus `updated_at` (`:99`),
+    /// restricted to `cols_to_update` — all six when none are requested (Go's
+    /// `len(c2upd) == 0` arm, `sql_base_repository.go:600`), and `updated_at`
+    /// always survives. The names here are already snake_case, so Go's
+    /// `toSnakeCase` normalization (`:596-598`) has nothing to do; the write
+    /// boundary takes the typed [`LibraryColumn`] and reaches this through
+    /// [`LibraryColumn::column`].
     fn set_pairs(&self, cols_to_update: &[&str]) -> Vec<(&'static str, Value)> {
         let all: Vec<(&'static str, Value)> = vec![
             ("name", Value::from(self.name)),
@@ -528,10 +547,12 @@ impl LibraryUpdate<'_> {
     }
 }
 
-/// `Put`'s UPDATE leg (`:85-87`): `Update(library).SetMap(cols).Where(Eq{"id":
-/// l.ID})` — squirrel's `SetMap` renders the SET pairs in alphabetical key
-/// order (`squirrel@v1.5.4/update.go:237`). Only the requested columns set;
-/// zero rows affected is the caller's insert fallback (`:96-101`).
+/// `Put`'s UPDATE leg (`library_repository.go:100-101`):
+/// `Update(library).SetMap(cols).Where(Eq{"id": l.ID})` — squirrel's `SetMap`
+/// renders the SET pairs in alphabetical key order (`squirrel@v1.5.4/update.go:237`)
+/// and binds values positionally against that SAME sorted list, which is the W1
+/// invariant: columns and args are one unit. Only the requested columns set;
+/// zero rows affected is the insert fallback (`:106-111`), NOT a miss.
 #[must_use]
 pub fn put_update_sql(id: i64, update: &LibraryUpdate, cols_to_update: &[&str]) -> Sql {
     let mut pairs = update.set_pairs(cols_to_update);
@@ -549,11 +570,77 @@ pub fn put_update_sql(id: i64, update: &LibraryUpdate, cols_to_update: &[&str]) 
     (format!("UPDATE {TABLE} SET {set} WHERE id = ?"), args)
 }
 
-/// `Put`'s INSERT legs (`:78-79`, `:96-101` — `r.db.Model(l).Insert()`):
-/// the row columns in `model.Library`'s declaration order (`model/library.go:15-36`,
-/// the order dbx's reflection renders), with `id` bound first when the row
-/// carries one (the ID-999 insert case, `library_repository_test.go:113-137`)
-/// and omitted for the autoincrement path (`:77-79`).
+/// The six columns `Put`'s `selectUpdateColumns` map exposes
+/// (`library_repository.go:91-98`): the update leg's entire writable set, beside the
+/// `updated_at` stamp Go adds unconditionally (`:99`). `created_at` is not a member —
+/// `selectUpdateColumns` deletes it (`sql_base_repository.go:605`) and Go's map never
+/// carries it — and neither do the six counters (DB-17 stats) or the scan stamps
+/// (the [`scan_begin_in_tx`]/[`scan_end_in_tx`] legs).
+///
+/// This enum replaces Go's free-form `colsToUpdate ...string`: names come from here,
+/// so a caller cannot name a column outside the map, and Go's `toSnakeCase`
+/// normalization of caller strings (`:596-598`) has nothing to normalize. An empty
+/// slice is Go's empty variadic list — all six columns set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryColumn {
+    /// `library.name`.
+    Name,
+    /// `library.path`.
+    Path,
+    /// `library.remote_path`.
+    RemotePath,
+    /// `library.default_new_users`.
+    DefaultNewUsers,
+    /// `library.pid_album`.
+    PidAlbum,
+    /// `library.pid_track`.
+    PidTrack,
+}
+
+impl LibraryColumn {
+    /// The registered snake column name, i.e. the key of Go's map literal
+    /// (`library_repository.go:91-98`), handed to [`put_update_sql`]'s filter. Public
+    /// deliberately: it is the column identity of a variant, so a caller (or a
+    /// diagnostic) can name the column a `LibraryColumn` selects without going through
+    /// the private `column_names` rendering of a whole slice.
+    #[must_use]
+    pub const fn column(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Path => "path",
+            Self::RemotePath => "remote_path",
+            Self::DefaultNewUsers => "default_new_users",
+            Self::PidAlbum => "pid_album",
+            Self::PidTrack => "pid_track",
+        }
+    }
+}
+
+/// The typed column list of [`put_in_tx`]: `&[LibraryColumn]` is rendered as the
+/// snake names [`put_update_sql`] filters on. An empty slice selects all six.
+fn column_names(columns: &[LibraryColumn]) -> Vec<&'static str> {
+    columns.iter().map(|column| column.column()).collect()
+}
+
+/// The row columns of `Put`'s INSERT legs (`library_repository.go:85-88` and
+/// `:106-111`, both `r.db.Model(l).Insert()`), in `model.Library`'s declaration
+/// order (`model/library.go:15-36`) WITHOUT `id`: dbx drops the primary key from
+/// its column map when it is auto-incremental (`dbx@v1.12.0/model_query.go:74-82`)
+/// and otherwise inserts *all* public fields, empty ones included (`:62-66`).
+///
+/// This order is a deliberate Rust pairing of column names with values
+/// (`insert_pairs`), not a claim about the text Go emits. dbx renders its column
+/// map through `BaseBuilder.Insert`, which `sort.Strings(names)`
+/// (`dbx@v1.12.0/builder.go:166-198`) and quotes with SQLite backticks
+/// (`builder_sqlite.go:99-113`), so Go's EXECUTED column list is alphabetical,
+/// backtick-quoted, and carries `id` mid-list when the id is non-zero. Nothing
+/// depends on that spelling: dbx binds each value positionally against the SAME
+/// sorted list (`builder.go:176-185`, replaced in `db.go:302-317`), so what matters
+/// is that columns and args are emitted together as one unit (`decisions.md` W1 —
+/// "id binds first" was the invented rule that encoded the old bug). The executed
+/// DB-05 tests therefore assert STORED FIELD VALUES per column, never Go's column
+/// order or its SQL text; a rotation here shows up as a wrong value in a wrong
+/// column.
 pub const INSERT_COLUMNS: [&str; 21] = [
     "name",
     "path",
@@ -578,8 +665,13 @@ pub const INSERT_COLUMNS: [&str; 21] = [
     "scanned_pid_track",
 ];
 
-/// The INSERT with `id` bound first when given; `values` pair one-to-one with
-/// [`INSERT_COLUMNS`].
+/// The INSERT renderer with `id` bound first when given; `values` pair one-to-one
+/// with [`INSERT_COLUMNS`].
+///
+/// Kept public as a RENDERER only (its pins below stay green). The production write
+/// path never accepts a caller-built `Vec<Value>`: [`put_in_tx`] takes its values
+/// from `insert_pairs`, so no caller can hand-build a rotated argument list
+/// through the executed API.
 #[must_use]
 pub fn insert_sql(id: Option<i64>, values: Vec<Value>) -> Sql {
     let mut columns: Vec<&str> = Vec::with_capacity(INSERT_COLUMNS.len() + 1);
@@ -598,9 +690,54 @@ pub fn insert_sql(id: Option<i64>, values: Vec<Value>) -> Sql {
     )
 }
 
-/// `Put`'s admin assignment (`:105-111`): every admin user gains every
-/// library, idempotently. A `Sql` with no bound args — all identifiers;
-/// `ON CONFLICT … DO NOTHING` keeps re-`Put`s from duplicating rows.
+/// The INSERT values, index-for-index with [`INSERT_COLUMNS`]: every field of the
+/// record — empty ones included, because dbx inserts *all* public fields
+/// (`dbx@v1.12.0/model_query.go:62-66`) — with `updated_at` and `created_at` replaced
+/// by the caller's clock.
+///
+/// Go stamps both fields before the insert (`library_repository.go:84`, `:87`, and
+/// `:108-109` on the explicit-id fallback arm, which stamps both again); a single
+/// caller-supplied `now` covers both, so the record's own stamps are never inserted.
+/// Only `created_at` is excluded from the UPDATE leg and remains immutable.
+/// `updated_at` is overwritten on every successful Put because the update map
+/// always carries it (`library_repository.go:99`, mirrored by `put_update_sql`).
+/// Every non-timestamp insert value comes from the record verbatim,
+/// which is what makes the executed per-column rotation detector meaningful.
+///
+/// `remote_path` binds the record's `String` — never `Null` — matching Go's
+/// non-pointer field: a NULL cell breaks the read (`LibraryError::Sqlite`).
+fn insert_pairs(record: &LibraryRecord, now: &DateTime<Utc>) -> [Value; 21] {
+    [
+        Value::from(record.name.as_str()),
+        Value::from(record.path.as_str()),
+        Value::from(record.remote_path.as_str()),
+        crate::time::value(&record.last_scan_at),
+        crate::time::value(&record.last_scan_started_at),
+        Value::Bool(record.full_scan_in_progress),
+        crate::time::value(now),
+        crate::time::value(now),
+        Value::Integer(record.total_songs),
+        Value::Integer(record.total_albums),
+        Value::Integer(record.total_artists),
+        Value::Integer(record.total_folders),
+        Value::Integer(record.total_files),
+        Value::Integer(record.total_missing_files),
+        Value::Integer(record.total_size),
+        Value::Real(record.total_duration),
+        Value::Bool(record.default_new_users),
+        Value::from(record.pid_album.as_str()),
+        Value::from(record.pid_track.as_str()),
+        Value::from(record.scanned_pid_album.as_str()),
+        Value::from(record.scanned_pid_track.as_str()),
+    ]
+}
+
+/// `Put`'s admin assignment (`library_repository.go:117-128`): every admin user
+/// gains EVERY library row — the `CROSS JOIN library l` is not limited to the row
+/// just written — idempotently on the composite key. A `Sql` with no bound args (all
+/// identifiers), so `ON CONFLICT … DO NOTHING` keeps re-`Put`s from duplicating rows
+/// and a `Put` of library 3 also links library 1 to every admin. Go's behavior, is
+/// pinned as such rather than as a bug.
 #[must_use]
 pub fn assign_admins_sql() -> Sql {
     (
@@ -609,10 +746,12 @@ pub fn assign_admins_sql() -> Sql {
     )
 }
 
-/// `StoreMusicFolder` (`:117-133`): re-point library 1 at the configured
-/// music folder — `Set("path", …).Set("updated_at", …)` in call order, gated
-/// by `NotEq{"path": …}` so an unchanged config writes nothing (the
-/// `rowsAffected > 0` cache update is the caller's).
+/// `StoreMusicFolder` (`library_repository.go:138-150`): re-point library 1 at the
+/// configured music folder — `Set("path", …).Set("updated_at", …)` in call order,
+/// gated by `NotEq{"path": …}` so an unchanged config writes nothing. Kept as the
+/// PRIVILEGED renderer Go has (the parent's approved framing), so BOOT rewrites
+/// library 1's path without a `put_in_tx` guard bypass; Go's `rowsAffected > 0`
+/// cache write (`:144-148`) has no Rust counterpart.
 #[must_use]
 pub fn store_music_folder_sql(path: &str, updated_at: &DateTime<Utc>) -> Sql {
     (
@@ -629,8 +768,8 @@ pub fn store_music_folder_sql(path: &str, updated_at: &DateTime<Utc>) -> Sql {
     )
 }
 
-/// `AddArtist` (`:135-145`): the library↔artist link, idempotent on its
-/// unique key.
+/// `AddArtist` (`library_repository.go:152-160`): the library↔artist link, idempotent
+/// on its unique key (`library_artist_ux`) with no affected-row check.
 #[must_use]
 pub fn add_artist_sql(id: i64, artist_id: &str) -> Sql {
     (
@@ -642,7 +781,7 @@ pub fn add_artist_sql(id: i64, artist_id: &str) -> Sql {
     )
 }
 
-/// `ScanBegin` (`:147-153`): stamp the scan start and its mode.
+/// `ScanBegin` (`library_repository.go:162-169`): stamp the scan start and its mode.
 #[must_use]
 pub fn scan_begin_sql(id: i64, now: &DateTime<Utc>, full_scan: bool) -> Sql {
     (
@@ -657,8 +796,8 @@ pub fn scan_begin_sql(id: i64, now: &DateTime<Utc>, full_scan: bool) -> Sql {
     )
 }
 
-/// `ScanEnd` (`:155-168`): stamp the finish, clear the flag and reset the
-/// start stamp to the zero time.
+/// `ScanEnd` (`library_repository.go:171-179`): stamp the finish, clear the flag and
+/// reset the start stamp to the zero time.
 #[must_use]
 pub fn scan_end_sql(id: i64, now: &DateTime<Utc>) -> Sql {
     (
@@ -675,7 +814,8 @@ pub fn scan_end_sql(id: i64, now: &DateTime<Utc>) -> Sql {
     )
 }
 
-/// `SetScannedPID` (`:170-178`): record the PID specs the finished scan used.
+/// `SetScannedPID` (`library_repository.go:181-188`): record the PID specs the
+/// finished scan used. Two SET legs, no read-back of the effective PID.
 #[must_use]
 pub fn set_scanned_pid_sql(id: i64, pid_album: &str, pid_track: &str) -> Sql {
     (
@@ -688,8 +828,9 @@ pub fn set_scanned_pid_sql(id: i64, pid_album: &str, pid_track: &str) -> Sql {
     )
 }
 
-/// `ScanInProgress` (`:190-194`): `NotEq` on `last_scan_started_at` against the zero
-/// `time.Time` — the zero-time constant must match the one [`scan_end_sql`] writes,
+/// `ScanInProgress` (`library_repository.go:190-194`): `NotEq` on
+/// `last_scan_started_at` against the zero `time.Time` — the zero-time constant must
+/// match the one [`scan_end_sql`] writes,
 /// or a finished scan would read as in-progress.
 ///
 /// This is the statement Go builds BEFORE `count()` replaces its columns, bounds and
@@ -824,9 +965,9 @@ pub fn refresh_stats_update_sql(totals: &RefreshStatsTotals) -> Sql {
     )
 }
 
-/// `Delete` (`:242-270`): the row delete — the admin/ID-1 validation
-/// (`:244-249`) and the artist-orphan/plugin cleanups (`:252-266`) are the
-/// caller's (auth, artist/plugin lanes).
+/// `Delete` (`library_repository.go:253-281`): the row delete — the admin/ID-1
+/// validation (`:254-259`) and the artist-orphan/plugin cleanups (`:266-279`) are the
+/// caller's (auth, artist/plugin lanes). DB-05 deliberately executes NO delete.
 #[must_use]
 pub fn delete_sql(id: i64) -> Sql {
     (
@@ -835,9 +976,9 @@ pub fn delete_sql(id: i64) -> Sql {
     )
 }
 
-/// `GetUsersWithLibraryAccess` (`:198-208`): the user rows joined through
-/// `user_library`, ordered by name. Squirrel's plain `.Join` renders bare
-/// `JOIN` (`squirrel@v1.5.4/select.go:298`).
+/// `GetUsersWithLibraryAccess` (`library_repository.go:297-307`): the user rows
+/// joined through `user_library`, ordered by name. Squirrel's plain `.Join` renders
+/// bare `JOIN` (`squirrel@v1.5.4/select.go:298`).
 #[must_use]
 pub fn get_users_with_library_access_sql(library_id: i64) -> Sql {
     (
@@ -848,6 +989,241 @@ pub fn get_users_with_library_access_sql(library_id: i64) -> Sql {
             .to_string(),
         vec![Value::Integer(library_id)],
     )
+}
+
+/// The domain failure [`put_in_tx`] reports: Go's `ErrValidation` guard on library 1's
+/// path (`library_repository.go:73-81`, wrapped at `:78` as
+/// `fmt.Errorf("%w: path for library with ID 1 cannot be changed", model.ErrValidation)`
+/// where `model.ErrValidation` reads `validation error` (`model/errors.go:12`).
+///
+/// Deliberately a per-package enum rather than a global write-error type: the settled
+/// `D-ERROR` contract keeps SQLite causes on the [`DbOperationError::Sqlite`] arm, and
+/// wrapping them in a domain arm would hide `SQLITE_BUSY` from the executor's retry
+/// classifier. [`LibraryError`] keeps its read-path arms and gains nothing here.
+#[derive(Debug, thiserror::Error)]
+pub enum LibraryWriteError {
+    /// `library.id = 1` exists and the record's path differs from the stored one, so
+    /// the Put is refused BEFORE any statement runs. Creating library 1 is legal.
+    ///
+    /// Go's guard precedes `selectUpdateColumns` (`:73-81` versus `:91-98`), so the path
+    /// is rejected even when [`LibraryColumn::Path`] is NOT among the requested columns:
+    /// a filtered update carrying a different path still fails.
+    #[error("validation error: path for library with ID {id} cannot be changed")]
+    PathImmutable {
+        /// The guarded id ([`DEFAULT_LIBRARY_ID`]).
+        id: i64,
+        /// The path currently stored.
+        stored: String,
+        /// The path the record asks for.
+        requested: String,
+    },
+}
+
+/// What a successful [`put_in_tx`] reports.
+///
+/// `id` is ADVISORY until the caller commits. Go also writes
+/// `libCache[l.ID] = l.Path` inside the same call (`:130-132`); the port keeps no
+/// cache, so a rolled-back Put publishes nothing and a caller re-reads through
+/// [`LibraryRepo`] after the commit it owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LibraryWriteResult {
+    /// The written row's id: `record.id` when the UPDATE leg matched, the explicit id
+    /// of the fallback INSERT, or the generated rowid of the autoincrement insert
+    /// (dbx fills the model's primary key from `LastInsertId()`,
+    /// `dbx@v1.12.0/model_query.go:90-104,107-114`).
+    pub id: i64,
+    /// `true` when the INSERT leg ran rather than the UPDATE leg.
+    pub inserted: bool,
+}
+
+/// Callback error of the executed library writes that have NO domain failure to
+/// carry: the scan stamps and the artist link, whose Go methods return a bare `error`
+/// that can only be a driver failure (`library_repository.go:162-188`, `:152-160`).
+/// `Infallible` makes the `Domain` arm structurally uninhabited rather than reserved,
+/// as in `property_repo::PropertyWriteError`, and keeps every SQLite failure on the
+/// `Sqlite` arm so `store::is_busy` still classifies it.
+pub type LibraryScanError = DbOperationError<std::convert::Infallible>;
+
+/// `Put` (`library_repository.go:72-134`) EXECUTED on the caller's transaction, in
+/// Go's statement order:
+///
+/// 1. the ID-1 path guard (`:73-81`) — read the stored row and refuse a changed path
+///    before anything is written;
+/// 2. the stamp (`:84`) — `updated_at` comes from the caller's `now`, never from the
+///    record;
+/// 3. `record.id == 0` → INSERT with no `id` column, then this connection's
+///    [`rusqlite::Connection::last_insert_rowid`] (`:85-88`); otherwise UPDATE the
+///    [`LibraryColumn`] set plus `updated_at` (`:89-105`), and when that matches zero
+///    rows INSERT the full row carrying the explicit id (`:106-111`);
+/// 4. [`assign_admins_sql`] in the SAME transaction (`:117-128`) — every admin gains
+///    EVERY library, not only this row.
+///
+/// A zero-row update is the insert fallback, NOT a miss: Go inserts in that arm
+/// (`:106-111`) and `persistence/library_repository_test.go:115-137` pins the
+/// explicit-id insert of a row that does not exist. The record is borrowed and never
+/// mutated — the stamps travel as bound values.
+///
+/// The transaction is the caller's: this never begins, commits, retries, or runs in
+/// autocommit, and there is no connection-bound variant. Because step 4 shares the
+/// transaction, a failure there rolls the library row back, so an id from a failed
+/// `Result` was never a committed row.
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`LibraryWriteError::PathImmutable`] for the ID-1
+/// guard; [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error`
+/// (extended code intact) from the guard's lookup, the update, the insert, or the
+/// admin assignment — including the unique constraints on `name` and `path`.
+///
+/// Divergence, deliberate: Go's guard treats ANY `Get(1)` error as "row absent, so
+/// creating it is ok" (`library_repository.go:75-80`), so a SQL or scan failure is
+/// swallowed and the Put proceeds with its normal ID-1 branch — the UPDATE leg — which
+/// would then REPAIR the damaged row through the update map. The port hard-propagates
+/// every failure of that lookup — only the no-rows case means missing — so a broken
+/// statement surfaces instead of being mistaken for a create, and the damaged row keeps
+/// the cell that broke the read (`id` is an `INTEGER PRIMARY KEY`, so a second library 1
+/// is impossible either way).
+pub fn put_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    record: &LibraryRecord,
+    now: &DateTime<Utc>,
+    cols_to_update: &[LibraryColumn],
+) -> Result<LibraryWriteResult, DbOperationError<LibraryWriteError>> {
+    // Step 1 (:73-81): Go's `Get(ctx, 1)`; `query_optional`'s `None` is exactly that
+    // repository's `model.ErrNotFound` case, i.e. "creating library 1 is ok".
+    if record.id == DEFAULT_LIBRARY_ID {
+        let current = crate::execution::query_optional(
+            tx,
+            &get_sql(DEFAULT_LIBRARY_ID),
+            crate::hydrate::row_to_library,
+        )
+        .map_err(DbOperationError::sqlite)?;
+        if let Some(current) = current {
+            if current.path != record.path {
+                return Err(DbOperationError::Domain(LibraryWriteError::PathImmutable {
+                    id: DEFAULT_LIBRARY_ID,
+                    stored: current.path,
+                    requested: record.path.clone(),
+                }));
+            }
+        }
+    }
+
+    // Step 3 (:85-88): the autoincrement arm. `id` is omitted from the column list,
+    // exactly as dbx drops an auto-incremental primary key.
+    if record.id == 0 {
+        let statement = insert_sql(None, insert_pairs(record, now).to_vec());
+        crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+        // Step 4 (:117-128) runs for BOTH arms: `err` is nil here, so the assignment
+        // follows the insert exactly as it follows the update.
+        return assign_admins_in_tx(tx, tx.last_insert_rowid(), true);
+    }
+
+    // Step 3 (:89-111): update first, insert when no row matched. `created_at` is not
+    // in the update map at all, so it stays immutable; `updated_at` is always stamped.
+    let update = LibraryUpdate {
+        name: record.name.as_str(),
+        path: record.path.as_str(),
+        remote_path: record.remote_path.as_str(),
+        default_new_users: record.default_new_users,
+        pid_album: record.pid_album.as_str(),
+        pid_track: record.pid_track.as_str(),
+        updated_at: *now,
+    };
+    let statement = put_update_sql(record.id, &update, &column_names(cols_to_update));
+    if crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)? > 0 {
+        return assign_admins_in_tx(tx, record.id, false);
+    }
+    let statement = insert_sql(Some(record.id), insert_pairs(record, now).to_vec());
+    crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    assign_admins_in_tx(tx, record.id, true)
+}
+
+/// Step 4 (`:117-128`), shared by both arms: the assignment runs only after the row
+/// write succeeded, and its failure fails the whole Put.
+///
+/// Go wraps it as `failed to assign library to admin users: %w`. The port keeps the
+/// raw `rusqlite::Error` on the `Sqlite` arm instead, because the executor's retry
+/// classifier matches on that arm — a string wrapper would hide `SQLITE_BUSY`. The
+/// message difference is recorded here rather than paid for in retry fidelity.
+fn assign_admins_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    inserted: bool,
+) -> Result<LibraryWriteResult, DbOperationError<LibraryWriteError>> {
+    crate::execution::execute(tx, &assign_admins_sql()).map_err(DbOperationError::sqlite)?;
+    Ok(LibraryWriteResult { id, inserted })
+}
+
+/// `ScanBegin` (`library_repository.go:162-169`) EXECUTED on the caller's
+/// transaction: `last_scan_started_at = now`, `full_scan_in_progress = full_scan`.
+///
+/// Go checks no affected-row count, so an id with no row is a successful NO-OP rather
+/// than a miss — [`scan_begin_in_tx`] on a missing id returns `Ok` and changes
+/// nothing. The stamp is the caller's clock (`now`), sampled outside any retry loop,
+/// and reaches the column as canonical TEXT through [`crate::time::value`].
+pub fn scan_begin_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    now: &DateTime<Utc>,
+    full_scan: bool,
+) -> Result<(), LibraryScanError> {
+    crate::execution::execute(tx, &scan_begin_sql(id, now, full_scan))
+        .map_err(DbOperationError::sqlite)?;
+    Ok(())
+}
+
+/// `ScanEnd` (`library_repository.go:171-179`) EXECUTED on the caller's transaction:
+/// `last_scan_at = now`, `full_scan_in_progress = false`, `last_scan_started_at`
+/// reset to the canonical year-one TEXT zero — the same value
+/// [`LibraryRepo::scan_in_progress`] compares against, which is why a finished scan
+/// reads idle. Silent no-op on a missing id, like [`scan_begin_in_tx`].
+pub fn scan_end_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    now: &DateTime<Utc>,
+) -> Result<(), LibraryScanError> {
+    crate::execution::execute(tx, &scan_end_sql(id, now)).map_err(DbOperationError::sqlite)?;
+    Ok(())
+}
+
+/// `SetScannedPID` (`library_repository.go:181-188`) EXECUTED on the caller's
+/// transaction: the two PID spec strings, stored verbatim. No read-back of the
+/// effective PID — `EffectivePID`/`PIDChanged`/`NeedsPIDRescan`
+/// (`model/library.go:46-65`) are scanner/BOOT domain logic, deliberately not ported
+/// here. Silent no-op on a missing id.
+pub fn set_scanned_pid_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    pid_album: &str,
+    pid_track: &str,
+) -> Result<(), LibraryScanError> {
+    crate::execution::execute(tx, &set_scanned_pid_sql(id, pid_album, pid_track))
+        .map_err(DbOperationError::sqlite)?;
+    Ok(())
+}
+
+/// `AddArtist` (`library_repository.go:152-160`) EXECUTED on the caller's
+/// transaction: the `library_artist` link, idempotent on `library_artist_ux` and
+/// returning no value at all — Go checks no affected-row count either (`:155-159`).
+///
+/// Both legs are FK-enforced (`nd-dbschema/src/schema_ddl.rs:62`
+/// `REFERENCES library(id)`/`REFERENCES artist(id)`). Foreign keys are ON at runtime on
+/// both sides: Go's default DSN carries `_foreign_keys=on` (`consts/consts.go:14`, and
+/// `db/db.go:55` for the `:memory:` path — `Init` suspends them only around migrations
+/// and re-enables them, `db/db.go:84-92`), and this crate's handles enforce them too
+/// (`pool.rs` header: `libsqlite3-sys` compiles `SQLITE_DEFAULT_FOREIGN_KEYS=1`, and the
+/// tests open `_foreign_keys=on`). So a missing library or missing artist is a HARD
+/// `SQLITE_CONSTRAINT_FOREIGNKEY` on the `Sqlite` arm, matching Go's raw unwrapped error
+/// (`:156-158`). `library_artist.stats` is not written — it is dropped upstream
+/// (`decisions.md` S5).
+pub fn add_artist_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    library_id: i64,
+    artist_id: &str,
+) -> Result<(), LibraryScanError> {
+    crate::execution::execute(tx, &add_artist_sql(library_id, artist_id))
+        .map_err(DbOperationError::sqlite)?;
+    Ok(())
 }
 
 /// Failures of the executed library reads ([`LibraryRepo`]).
