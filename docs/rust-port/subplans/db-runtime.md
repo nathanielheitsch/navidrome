@@ -366,6 +366,39 @@ purge_empty_sql`, `mediafile_repo.rs:1514 find_by_paths_sql`, `artwork_queue_rep
 source_filter_sql`, `sql_annotations.rs:143 ann_id`, `sql_bookmarks.rs:56 bmk_id`, the
 `put_sql`/`put_update_sql` family (`artist/library/radio/user/playlist/album`, args built from
 the record), and `share_repo.rs:248 update_sql` (args from `cols`).
+**Mechanical execution of that audit (2026-11-18, `/tmp/paramcheck`, ~75 renderers against the
+migrated schema).** Result: exactly **one** placeholder/arg mismatch among fixed-shape
+statements — `annotations::update_avg_rating_sql` (2 placeholders, 3 args), confirming DB-15.
+`playlist::refresh_counters_sql`'s update leg shows 5 placeholders vs 2 args **by design** (the
+caller supplies duration/size/count); when DB-17 executes it, bind all five or the statement
+fails with `Wrong number of parameters`. Three other findings the by-inspection pass missed:
+- `sql_annotations.rs:381/392/405` (`get_annotations_sql`, `annotation_exists_sql`,
+  `annotation_count_sql`) have **no Go counterpart**: Go has no annotation repository and never
+  selects from `annotation` (`grep -rn 'annotation' persistence/persistence.go` is only the four
+  `cleanAnnotations` GC calls at `:267-270`; `SQLStore` has no annotation field). Worse,
+  `annotation_count_sql` emits `count(distinct annotation.id)` — `annotation` has **no id
+  column** (`schema_ddl.rs:59`, PK is `unique(user_id,item_id,item_type)`), so it fails
+  preparation outright: `no such column: annotation.id`. Its doc claim that these serve "the
+  lazy `annotation()` repository (`persistence.go:17-40`)" is false. Nothing calls them outside
+  their own unit tests, so they are dead code asserting a shape Go never produces; the DB-15
+  lane should delete them or re-document them as an invented seam (the generic
+  `sqlRepository.count`/`exists` cannot be instantiated over `annotation` precisely because of
+  the missing id column — that is the real parity fact).
+- Clause **fragments** cannot be prepared standalone by design (`ann_id`, `bmk_id`,
+  `with_bookmark`, `annotation_join`, `folder::library_filter`, `folder_subtree_filter`,
+  `playlist_track::library_filter_on`, `artwork_queue::source_filter_sql` all return WHERE/JOIN
+  pieces). A future param-count gate must wrap them in a statement instead of preparing them
+  directly — record that so the gate does not report false failures.
+- `plugin` is absent from the fresh DDL (already documented as deferred in
+  `plugin_repo.rs:11-14`); `DELETE FROM plugin` therefore fails until nd-dbschema adds it. Not a
+  repo bug.
+- `share::update_sql` with an empty `cols` renders `UPDATE share SET  WHERE id = ?`, a syntax
+  error. Go's `updateOwned` path can never produce an empty SET because `filterUpdateValues`
+  always adds `id` (`persistence/sql_base_repository.go:612-616`, `selectUpdateColumns :593-609`
+  keeps every key when `colsToUpdate` is empty). Low priority, but worth one assertion in the
+  share/DB-16 lane: an empty column list must not be handed to this renderer.
+
+
 Recommendation: when DB-21 integrates acceptance, add ONE executed gate that prepares every
 renderer's statement against the migrated schema and asserts `parameter_count() ==
 args.len()`. That would have caught DB-01 and DB-15 mechanically instead of by review, and it
