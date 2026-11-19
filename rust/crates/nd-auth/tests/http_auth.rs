@@ -24,8 +24,9 @@ const STAMP: &str = "2024-01-01T00:00:00Z";
 fn fixture() -> (SQLStore, std::path::PathBuf, Authenticator) {
     let path = std::path::PathBuf::from(nd_utils::files::temp_file_name("nd-auth-", ".db"));
     let dsn = format!("file:{}?mode=rwc&_foreign_keys=on", path.display());
-    let pool = Pool::new(&PoolConfig::with_size(dsn, 2)).unwrap();
-    apply_fresh_schema(pool.checkout().unwrap().conn()).unwrap();
+    let (pool, first) = Pool::new(&PoolConfig::with_size(dsn, 2)).unwrap();
+    apply_fresh_schema(&first).unwrap();
+    pool.put_back(first).expect("return configured handle");
     let store = SQLStore::new(pool);
     let hash = password::hash_password("password").unwrap();
     store

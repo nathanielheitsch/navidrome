@@ -51,11 +51,21 @@ fn store() -> (SQLStore, std::path::PathBuf) {
             .unwrap_or_else(|e| panic!("cannot clear stale {:?}: {e}", path));
     }
     let dsn = format!("file:{}?mode=rwc&_foreign_keys=on", path.display());
-    let pool = Pool::new(&PoolConfig::with_size(dsn, 2)).unwrap();
-    {
-        let conn = pool.checkout().unwrap();
-        apply_fresh_schema(conn.conn()).unwrap();
-    }
+    let (pool, first) = Pool::new(&PoolConfig::with_size(dsn, 2)).unwrap();
+    // G10: migrate the handle `Pool::new` handed out, not a pooled lease. A pooled
+    // checkout goes back into the idle queue WHILE the DDL pass has
+    // `foreign_keys` off, so a failed restore could poison a live handle; and the
+    // handle handed to the caller is then dropped, leaving the pool one short of its
+    // configured size for the whole run.
+    apply_fresh_schema(&first).unwrap_or_else(|cause| panic!("fresh schema: {cause}"));
+    pool.put_back(first).expect("return configured handle");
+    assert_eq!(
+        pool.idle_count()
+            .unwrap_or_else(|cause| panic!("idle_count: {cause}")),
+        2,
+        "the pool must hold its full configured size after initialization, not \
+         size - 1 (G10 regression guard)"
+    );
     (SQLStore::new(pool), path)
 }
 

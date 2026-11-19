@@ -25,7 +25,12 @@ pub const TX_MAX_RETRIES: u32 = 3;
 /// Failures surfaced by the nd-db store/pool layer.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
-    /// A pooled connection (or its per-connection extensions) failed to open.
+    /// Pool open/admission or an initializer's mapped schema failure.
+    /// Accepted API divergence: schema errors are stringified here, so InvalidDsn
+    /// and OpenConfiguration do not retain distinct discriminants or source chains.
+    /// Their complete messages (including leaked FK state) must survive. Failed
+    /// initializer tokens are still closed, never admitted; callers needing typed
+    /// schema errors must observe them before mapping into this variant.
     #[error("cannot open pooled connection: {0}")]
     Open(String),
 
@@ -183,10 +188,50 @@ impl SQLStore {
 
     /// Open a pool off the async executor. Does not apply migrations.
     ///
+    /// Returns the store plus its pool-bound [`crate::pool::Initializer`] token.
+    /// Apply the schema through its immutable connection access, then use this
+    /// facade's [`SQLStore::put_back`] or [`SQLStore::initialize`] before borrowing
+    /// from a size-1 store. Raw connections cannot enter the pool.
+    ///
     /// # Errors
     /// Returns pool-open or blocking-task failures.
-    pub async fn open(config: crate::pool::PoolConfig) -> Result<Self, StoreError> {
-        tokio::task::spawn_blocking(move || crate::pool::Pool::new(&config).map(Self::new)).await?
+    pub async fn open(
+        config: crate::pool::PoolConfig,
+    ) -> Result<(Self, crate::pool::Initializer), StoreError> {
+        let (store, conn) = tokio::task::spawn_blocking(move || {
+            let (pool, conn) = crate::pool::Pool::new(&config)?;
+            Ok::<_, StoreError>((Self::new(pool), conn))
+        })
+        .await??;
+        Ok((store, conn))
+    }
+
+    /// Checked return of the held-out token, without exposing the private pool.
+    ///
+    /// # Errors
+    /// Returns [`crate::pool::Pool::put_back`]'s ownership/state/admission error.
+    pub fn put_back(&self, first: crate::pool::Initializer) -> Result<(), StoreError> {
+        self.pool.put_back(first)
+    }
+
+    /// Run schema initialization and return the token; errors close it, never queue it.
+    ///
+    /// # Errors
+    /// Propagates the initializer's error or the pool's admission error.
+    pub fn initialize(
+        &self,
+        first: crate::pool::Initializer,
+        init: impl FnOnce(&rusqlite::Connection) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        self.pool.initialize(first, init)
+    }
+
+    /// Current initialized idle handles, for health checks and capacity assertions.
+    ///
+    /// # Errors
+    /// Returns [`StoreError::Poisoned`] if the queue mutex was poisoned.
+    pub fn idle_count(&self) -> Result<usize, StoreError> {
+        self.pool.idle_count()
     }
 
     /// Run synchronous repository work with one exclusive connection lease.

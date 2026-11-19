@@ -64,13 +64,21 @@ fn fts5_virtual_table_binds_on_a_pooled_connection() {
 
     // Arrange: pool pinned to two connections so the leased/idle split is exact.
     let config = PoolConfig::with_size(path, 2);
-    let pool = Pool::new(&config).unwrap();
+    let (pool, first) = Pool::new(&config).unwrap();
     // Assert
     assert_eq!(pool.size(), 2, "the probe pins the pool to two connections");
+    // `Pool::new` hands out its first handle so schema initialization runs outside
+    // the pool (DB-03 point 4), so a fresh pool holds size-1 idle connections.
+    assert_eq!(
+        pool.idle_count().unwrap(),
+        1,
+        "a fresh pool starts with size-1 idle connections, the first handle being held out"
+    );
+    pool.put_back(first).expect("return configured handle");
     assert_eq!(
         pool.idle_count().unwrap(),
         2,
-        "a fresh pool starts with size idle connections"
+        "putting the first handle back leaves size idle connections"
     );
 
     // Act: one leased pooled connection.

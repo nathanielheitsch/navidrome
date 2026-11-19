@@ -76,8 +76,9 @@ fn fresh_store() -> (SQLStore, std::path::PathBuf) {
             .unwrap_or_else(|e| panic!("cannot clear stale {:?}: {e}", path));
     }
     let dsn = format!("file:{}?mode=rwc&_foreign_keys=on", path.display());
-    let pool = Pool::new(&PoolConfig::with_size(dsn, 2)).unwrap();
-    apply_fresh_schema(pool.checkout().unwrap().conn()).unwrap();
+    let (pool, first) = Pool::new(&PoolConfig::with_size(dsn, 2)).unwrap();
+    apply_fresh_schema(&first).unwrap();
+    pool.put_back(first).expect("return configured handle");
     (SQLStore::new(pool), path)
 }
 

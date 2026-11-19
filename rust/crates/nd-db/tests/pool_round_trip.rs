@@ -109,7 +109,7 @@ fn pool_round_trip_hands_out_and_takes_back_every_lease() {
         "conf/configuration.go:1217-1218 floors the pool at 4"
     );
 
-    let pool = Pool::new(&config).unwrap();
+    let (pool, first) = Pool::new(&config).unwrap();
     // Assert
     assert_eq!(pool.path(), path, "the pool opens the configured file path");
     assert_eq!(
@@ -117,10 +117,18 @@ fn pool_round_trip_hands_out_and_takes_back_every_lease() {
         want_size,
         "Pool.size reports the configured pool size"
     );
+    // `Pool::new` hands its first handle to the caller so schema initialization can
+    // run on a connection the pool does not own (DB-03 point 4).
+    assert_eq!(
+        pool.idle_count().unwrap(),
+        want_size - 1,
+        "a fresh pool starts with size-1 idle connections, the first handle held out"
+    );
+    pool.put_back(first).expect("return configured handle");
     assert_eq!(
         pool.idle_count().unwrap(),
         want_size,
-        "a fresh pool starts with size idle connections"
+        "putting the first handle back leaves size idle connections"
     );
 
     // Act + Assert inside an explicit scope so the Lease vector's Drop runs before

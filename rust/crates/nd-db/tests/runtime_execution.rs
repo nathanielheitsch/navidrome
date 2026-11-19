@@ -20,8 +20,9 @@ fn store() -> SQLStore {
         "file:runtime-{}?mode=memory&cache=shared",
         nd_id::new_random()
     );
-    let pool = Pool::new(&PoolConfig::with_size(path, 1)).unwrap();
-    apply_fresh_schema(pool.checkout().unwrap().conn()).unwrap();
+    let (pool, first) = Pool::new(&PoolConfig::with_size(path, 1)).unwrap();
+    apply_fresh_schema(&first).unwrap();
+    pool.put_back(first).expect("return configured handle");
     SQLStore::new(pool)
 }
 
