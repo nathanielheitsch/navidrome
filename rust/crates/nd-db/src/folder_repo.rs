@@ -56,6 +56,7 @@
 //!
 use std::collections::BTreeMap;
 
+use crate::runtime_error::DbOperationError;
 use crate::sqlrepo::{Repository, SqlError, Value};
 use chrono::{DateTime, Utc};
 
@@ -908,6 +909,185 @@ pub fn mark_missing_sql(missing: bool, ids: &[String], updated_at: &DateTime<Utc
             )
         })
         .collect()
+}
+
+/// Callback error of the executed folder [`put_folder_in_tx`].
+///
+/// The builder arm is REAL and must stay separate from the SQLite arm: [`put_sql`]
+/// returns [`crate::marshal::MarshalError`], so a failure to materialize the UPDATE/INSERT
+/// legs is a domain failure, not a SQLite one. An `Infallible` domain type would make
+/// `Domain` uninhabited and force a builder failure onto the [`DbOperationError::Sqlite`]
+/// arm, which `D-ERROR` forbids: the concrete cause would be lost and `store::is_busy`
+/// would be asked to classify something that never was a driver failure.
+#[derive(Debug, thiserror::Error)]
+pub enum FolderWriteError {
+    /// The statement could not be materialized. The only reachable failure from
+    /// [`put_sql`] today is [`crate::marshal::MarshalError::EmptyUpdateSet`] — a `cols`
+    /// selection that leaves nothing settable after the `created_at`/`birth_time` drop
+    /// (e.g. `&["created_at"]`). Go has NO such error: its `filterUpdateValues`
+    /// (`sql_base_repository.go:612-616`) re-adds `id`, so Go renders the no-op
+    /// `UPDATE folder SET id = ? WHERE id = ?`. The port omits that no-op SET (id binds
+    /// only in `WHERE`) and errors instead — the typed error is the port's contract, not
+    /// a Go error. See [`crate::marshal::MarshalError::EmptyUpdateSet`].
+    #[error(transparent)]
+    Builder(#[from] crate::marshal::MarshalError),
+
+    /// [`FolderRecord::id`] is empty, so there is nothing to write. **DOCUMENTED
+    /// DEVIATION, not exact Go parity:** Go's `put` fills an empty id with
+    /// `id2.NewRandom()` (`sql_base_repository.go:635-638`) and SKIPS the UPDATE leg
+    /// entirely, returning the generated id with no error. This port refuses instead,
+    /// because folder identity comes from SC ([`folder_id`], `model/folder.go:44-51`) and
+    /// a DB-side id generator would be an invented policy nobody asked for. Accepted under
+    /// the supplied-SC-ID contract (parent decision); Go has no equivalent error here, so
+    /// do NOT describe this arm as Go-exact.
+    #[error("folder record has an empty id: the id comes from SC and is never generated here")]
+    EmptyId,
+}
+
+/// Callback error of the executed folder [`mark_folders_missing_in_tx`], which has NO
+/// domain failure to carry: Go's `MarkMissing` returns a bare `error` that can only be
+/// a driver failure (`folder_repository.go:268-271`) — no validation, no `NotFound`, no
+/// permission check. `Infallible` makes the `Domain` arm structurally uninhabited rather
+/// than reserved, as in `library_repo::LibraryScanError` and `tag_repo::TagWriteError`,
+/// and keeps every SQLite failure on the [`DbOperationError::Sqlite`] arm so
+/// `store::is_busy` still classifies `SQLITE_BUSY` for the executor's retry loop.
+pub type FolderMarkError = DbOperationError<std::convert::Infallible>;
+
+/// What a successful [`put_folder_in_tx`] reports.
+///
+/// Both fields are ADVISORY until the caller commits: a rolled-back Put publishes
+/// nothing. Go's `folderRepository` keeps no cache either, so unlike
+/// `library_repo::put_in_tx` there is nothing here to invalidate on rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderWriteResult {
+    /// The written row's id: [`FolderRecord::id`], which is always non-empty here.
+    /// Go's `put` returns `(newId, err)` (`sql_base_repository.go:618-642`) and
+    /// `folderRepository.Put` DISCARDS it (`folder_repository.go:255-259`); the port
+    /// reports it because DB-09/10 need it to order junction writes.
+    pub id: String,
+    /// `true` when the INSERT leg ran rather than the UPDATE leg, i.e. when the UPDATE
+    /// matched zero rows (`sql_base_repository.go:630-641`).
+    pub inserted: bool,
+}
+
+/// `Put` (`folder_repository.go:255-259`) EXECUTED on the CALLER's transaction: Go's
+/// `r.put(ctx, dbf.ID, &dbf)` upsert (`sql_base_repository.go:618-642`) in Go's own
+/// statement order — UPDATE by `id` FIRST, and the INSERT only when that matched zero
+/// rows. A zero-row UPDATE is the insert fallback (`:630-641`, the new record with a
+/// predefined id), NOT a miss and never a `NotFound`.
+///
+/// Identity: the id is the caller's — `record.id` is the UPDATE's `WHERE id = ?` and
+/// the INSERT's id column. This function never recomputes it from the path
+/// ([`folder_id`] is the authority for `NewFolder`/`GetByPath`, `model/folder.go:44-51`,
+/// and Go's `Put` never calls it) and invents no random-id arm. Go fills an empty id
+/// with `id2.NewRandom()` (`:635-638`), but a folder id always arrives from SC, so an
+/// empty `record.id` is refused as a typed contract violation BEFORE any statement runs
+/// rather than silently repaired — DB-side identity generation is not this port's. That
+/// refusal is a **port-side deviation from Go** (Go generates an id and succeeds), not a
+/// Go error; see [`FolderWriteError::EmptyId`].
+///
+/// Timestamps: `caller_scan_stamp` is Go's `UpdateAt`, sampled by the caller when it
+/// built the entry (`scanner/folder_entry.go:94-103` → `model.NewFolder`,
+/// `model/folder.go:65-74`) and NEVER the commit clock — the DB-07 plan step 5
+/// (`docs/rust-port/subplans/db-runtime.md:265`) requires the supplied caller stamp.
+/// step 5 forbids commit-time stamping here. It reaches [`put_sql`] as its `now`, which
+/// stamps `updated_at` on both legs and fills `created_at` ONLY when the record carries
+/// none (`[`put_sql`] above, lines 840-857`); `created_at` stays immutable on the UPDATE leg because
+/// `selectUpdateColumns` drops it (`sql_base_repository.go:593-610`; the port's
+/// `marshal::UPDATE_DROP` list). The record is borrowed and never mutated — the
+/// stamps travel as bound values.
+///
+/// Scope: a caller-trusted primitive. `WHERE id = ?` and nothing else, exactly like
+/// Go: no library predicate, no auth check, no ownership guard, so a caller that passes
+/// an id belonging to another library HAS it written — future SC typed authority
+/// (`docs/rust-port/subplans/db-runtime.md:264`) owns that, not this wrapper.
+///
+/// The transaction is the caller's: this never begins, commits, retries, or runs in
+/// autocommit, and there is no connection-bound variant.
+///
+/// `cols` is the legacy `&[&str]` seam contract (Go's `Put` passes no `colsToUpdate`
+/// today, `:255-259`): entries are `to_snake_case`-normalized by
+/// [`crate::marshal::MarshalledRow`], so `"UpdatedAt"` behaves like Go's camelCase entry.
+/// An empty selection applies no restriction. No typed folder column enum is introduced
+/// here — the shared marshal seam already owns that contract and this lane does not
+/// change it.
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`FolderWriteError::EmptyId`] for an empty
+/// [`FolderRecord::id`], and [`DbOperationError::Domain`]·[`FolderWriteError::Builder`]
+/// when the selection resolves to no settable column; [`DbOperationError::Sqlite`] carrying the concrete
+/// `rusqlite::Error` (extended code intact) from the UPDATE or the INSERT — the
+/// `folder.library_id` FK (`nd-dbschema/src/schema_ddl.rs:61`) included, which Go
+/// returns raw and unwrapped (`:257-258` adds no `fmt.Errorf`). There is no UNIQUE
+/// constraint on `folder`, so a repeated id is an UPDATE hit rather than a constraint
+/// failure; a zero-row UPDATE is NOT an error.
+pub fn put_folder_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    record: &FolderRecord,
+    caller_scan_stamp: &DateTime<Utc>,
+    cols: &[&str],
+) -> Result<FolderWriteResult, DbOperationError<FolderWriteError>> {
+    if record.id.is_empty() {
+        // Go's `id == ""` arm generates a random id (`:635-638`). The port refuses
+        // instead: folder identity belongs to SC, and inventing a DB-side id would be a
+        // policy nobody asked for.
+        return Err(DbOperationError::Domain(FolderWriteError::EmptyId));
+    }
+    let statements = put_sql(&record.id, record, *caller_scan_stamp, cols)
+        .map_err(|err| DbOperationError::Domain(FolderWriteError::Builder(err)))?;
+    // UPDATE first (:624-633): a row count > 0 ends the Put, so the INSERT never runs.
+    if crate::execution::execute(tx, &statements.update).map_err(DbOperationError::sqlite)? > 0 {
+        return Ok(FolderWriteResult {
+            id: record.id.clone(),
+            inserted: false,
+        });
+    }
+    // INSERT fallback (:634-641).
+    crate::execution::execute(tx, &statements.insert).map_err(DbOperationError::sqlite)?;
+    Ok(FolderWriteResult {
+        id: record.id.clone(),
+        inserted: true,
+    })
+}
+
+/// `MarkMissing` (`folder_repository.go:261-274`) EXECUTED on the CALLER's
+/// transaction: one UPDATE per [`MARK_MISSING_CHUNK_SIZE`] ids in Go's loop order over
+/// the CALLER's id order (`slices.Chunk(ids, 200)`, `:263`), executing exactly what
+/// [`mark_missing_sql`] renders rather than re-rendering it here. Empty ids run NO
+/// statement at all and return `Ok(0)`.
+///
+/// Go checks `err` only (`:268-271`) and DISCARDS the row count, so a chunk matching
+/// zero rows — every unknown id — is a successful NO-OP and the loop CONTINUES to the
+/// next chunk. Contrast [`crate::mediafile_repo::mark_media_missing_in_tx`], whose Go
+/// counterpart aborts the loop on a zero-row chunk; that asymmetry is Go's own and is
+/// preserved rather than unified. The total is returned for the caller's observability
+/// only (nd-db has no logger, so Go's `log.Debug` at `:262` is not ported); no policy
+/// rides on it.
+///
+/// `updated_at` is the caller's stamp, bound where Go binds `Set("updated_at",
+/// time.Now())` (`:266`) — the caller owns the clock, this function never reads one.
+///
+/// Scope: caller-trusted. `WHERE id IN (chunk)` and nothing else, exactly like Go
+/// (`:267` is `Where(Eq{"id": chunk})` and there is no library predicate): ids of
+/// another library in the input ARE updated, and a decoy id only stays untouched
+/// because it was not supplied.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` from any chunk;
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`FolderMarkError`] has no
+/// domain arm). A failed chunk fails the whole call, and because the chunks share the
+/// caller's transaction the ones that already ran roll back.
+pub fn mark_folders_missing_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    missing: bool,
+    ids: &[String],
+    updated_at: &DateTime<Utc>,
+) -> Result<usize, FolderMarkError> {
+    let mut total = 0usize;
+    for statement in mark_missing_sql(missing, ids, updated_at) {
+        total += crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(total)
 }
 
 /// The `And{Eq{missing}, Gt{num_playlists}}` arm shared by the two playlist
