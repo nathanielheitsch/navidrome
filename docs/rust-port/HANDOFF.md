@@ -39,11 +39,11 @@ DB-02 (`6d9d984d`/`74ebd81c`) and DB-15's **render-only** rating repair (`ab4669
 are the executed write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08
 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2` and DB-13 `eae4ba1d`/`4ab63cd5` — the DB-15 annotation service and the
 full DB lane are **not**. **DB-10 and DB-12's executed subset are LANDED** (commits above), with no production scanner caller; DB-12 is not
-worker/full scanner completion. SC-02 remains unmerged/uncommitted on `rust-sc02-local-walker`, 15 commits behind, with
-request-changes review on its uncommitted diff. DB-11 is next in the spine but remains decision-gated on unrecorded
-`D-CURSOR`/`D-SCOPE`. DB-22 is independently READY/assignable: DB-00/02/03 landed and DB-12 artwork ownership released;
-parent must authorize and serialize launch after this docs writer. Latest parent gates: 2159/0/1 across 87 workspace
-suites, fmt/clippy/docs succeed, `nd-db` docs retain 22 warnings; see `current-status.md` for attribution/logs. BOOT-02's login-session
+worker/full scanner completion. SC-02 remains unmerged/uncommitted on `rust-sc02-local-walker` (uncommitted diff has
+passed two review rounds; S9 merge gate closed `b1aeea2c`; small S9 fix round in flight). DB-11 is next in the spine but
+remains decision-gated on unrecorded `D-CURSOR`/`D-SCOPE` (scout drafting them). DB-22 LANDED `272c9c66`. Latest parent
+gates after DB-22: 2171/0/1 across 88 workspace suites, fmt/clippy pass, `nd-db` docs at 23 warnings (one pre-existing,
+not DB-22-introduced); see `current-status.md` for attribution/logs. BOOT-02's login-session
 native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middleware, a mounted router, and stream
 prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and

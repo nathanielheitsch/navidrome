@@ -71,9 +71,9 @@ ownership/product scope, **not** current implementation readiness or permission 
   **all four landed**, and DB-04…DB-10/12/13 are landed too. DB-10 signed `65072b89` / signed merge `6e5ca97d` executes
   identity/base/junction writes; DB-12 signed `e5d0592d` (fast-forward, rustdoc fix `f80b9704`) executes only artwork
   invalidation/enqueue, not worker/full scanner. Neither has a production scanner caller. The spine resumes at **DB-11**,
-  **not assignable** until `D-CURSOR`/`D-SCOPE` are recorded. DB-22 is independently READY/assignable: DB-00/02/03 landed,
-  former DB-12 artwork ownership block released; parent launch and exclusive checkout ownership remain required.
-  SC-02 remains unmerged/uncommitted with request-changes review. Full #17 also requires
+  **not assignable** until `D-CURSOR`/`D-SCOPE` are recorded. DB-22 LANDED `272c9c66` (executed genre/scrobble/
+  playqueue/artwork reads; C5 narrow-read boundary).
+  SC-02 remains unmerged/uncommitted (two review rounds passed; S9 gate closed `b1aeea2c`; S9 fix round in flight). Full #17 also requires
   moves/stats/playlists/GC/lifecycle.
 - #27A is a deliberately scoped first runnable slice. Repair, full maintenance, metrics and all full-API services do not
   automatically gate it. Cancelled routes/services stay cancelled. The old build-order list is historical.

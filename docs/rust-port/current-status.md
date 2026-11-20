@@ -1,8 +1,10 @@
 # Rust port — audited capability snapshot
 
-**Authoritative baseline: integrated `master` at `f80b9704`, dated 2026-11-19.** This extends the previously audited
-`4ab63cd5` (DB-04…DB-09/DB-13 and BOOT-02) with DB-12 signed implementation `e5d0592d` (fast-forward), DB-10 signed
-implementation `65072b89` / signed merge `6e5ca97d`, and DB-12 rustdoc fix `f80b9704`. Both executed subsets are LANDED.
+**Authoritative baseline: integrated `master` at `272c9c66` (DB-22), dated 2026-11-20.** This extends the previously audited
+`f80b9704` (DB-04…DB-10/12/13 and BOOT-02; DB-12 signed `e5d0592d`, rustdoc fix `f80b9704`; DB-10 signed `65072b89` / merge
+`6e5ca97d`) with **DB-22 signed `272c9c66`** — executed genre/scrobble/playqueue/artwork reads, parent-validated
+(88 suites, 2171/0/1). Decision records added the same day: S9 (SC-02 dependency set + close-out, `b1aeea2c`),
+D-CURSOR/D-SCOPE and D-PLUGIN (all in `decisions.md`). Both executed subsets are LANDED.
 Latest gates below are **parent integration evidence**, with log totals independently checked by this docs lane; this
 lane did not rerun Cargo at the new HEAD. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
 This document records **evidence**, not implementation authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
@@ -28,15 +30,22 @@ invalidation/enqueue subset, not a worker or full scanner. That is narrower than
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## Latest integrated gates (parent, code HEAD `f80b9704`, 2026-11-19)
+## Latest integrated gates (parent, code HEAD `272c9c66`, 2026-11-20)
 
-Parent reports fmt check, workspace clippy (`--all-targets --all-features -- -D warnings`), workspace tests and workspace
-docs all succeed. This lane independently tallied `/tmp/nav-db10-integrated-tests.log`: **87 suites, 2159 passed / 0 failed /
-1 ignored**. Clippy log: `/tmp/nav-db10-integrated-clippy.log`; docs: `/tmp/nav-db10-integrated-doc.log`. `nd-db` still has
+Parent validated on the DB-22 branch after rebase onto `276eec6c` (DB-22 is a fast-forward, no merge commit): fmt
+check, workspace clippy (`--all-targets --all-features -- -D warnings`), and workspace tests all succeed: **88 suites,
+2171 passed / 0 failed / 1 ignored**. `nd-db` docs report **23 rustdoc warnings** — the set compared against base at
+the same commit shows all 23 pre-existing (one new warning in `folder_repo.rs` came from already-integrated DB-07
+work, not DB-22); no warning in a DB-22-touched file. `git diff --check` clean. These are dated code-HEAD results, not
+proof for later diffs or mounted/end-to-end behavior. Prior dated block below.
+## Integrated gates history (code HEAD `f80b9704`, 2026-11-19)
+
+Parent reports fmt check, workspace clippy, workspace tests and workspace docs all succeed at `f80b9704`. This lane
+independently tallied `/tmp/nav-db10-integrated-tests.log`: **87 suites, 2159 passed / 0 failed / 1 ignored**.
+Clippy log: `/tmp/nav-db10-integrated-clippy.log`; docs: `/tmp/nav-db10-integrated-doc.log`. `nd-db` still has
 **22 rustdoc warnings** (pre-existing; no net increase after `f80b9704` fixed the DB-12 HTML-tag warning). Workspace docs
 success does not mean warning-free. No new standalone DB/doctest run is claimed. These are dated code-HEAD results, not
 proof for later diffs or mounted/end-to-end behavior.
-
 ## Earlier direct docs-lane gates (`4ab63cd5`, historical, 2026-11-19)
 
 Measured by **this docs lane** on a clean integrated tree from `rust/` with its default `rust/target` (`cargo 1.99.1`,

@@ -280,6 +280,45 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   deterministically reachable from a walk on this platform, that is stated, not papered over. Nothing here authorizes further scanner
   scope or claims SC-01/SC-02 completion or MusicFS readiness.
 
+## Cursor and scope (D-CURSOR, D-SCOPE; record PARENT DECIDED, DB-11 still not launched)
+
+- **D-CURSOR — Typed cursor seam shape (PARENT DECIDED 2026-11-20; unblocks DB-11).** Go has no cursor abstraction
+  (SOURCE-VERIFIED): `executeSQL` (`sql_base_repository.go:340-362`) runs one statement to completion; `queryAll`/`queryAllSlice`
+  (Go :453-497) buffer into a slice; only `streamByIDs` (`artwork_hydration.go:19-34`, chunk `artworkChunkSize` = 600, defined :16-
+  17) streams, as a one-shot `iter.Seq2` that closes early on consumer `false` and yields a **zero T plus error** on chunk failure —
+  it cannot resume. Scanner cursors re-issue `WHERE id > ?`/`WHERE pid > ?` from persisted resume state
+  (`scanner/phase_2_artists.go:64-77`, `scanner/phase_3_albums.go:78-111`), never a held resource; **the resume pointer is written to Go memory
+  only, not `library`** (`library_repository.go` has no such column), so it dies with the process.
+  Decision: the port keeps this shape — (1) a `Cursor<'c>` owns its `&'c Connection` lease for the whole iteration; a pool-leased
+  connection must not be shared across concurrent cursor chunks; (2) error taxonomy is three-way — `Err(CursorError::Sqlite)` for query
+  failures (zero-value + error, Go streamByIDs parity), `Err(CursorError::Closed)` when the API is used after a completed stream, and
+  plain `Ok`-return/None for true end-of-stream, which the scanner MUST treat as "stop this folder, keep progress" — folding a SQLite
+  error into end-of-stream is the one forbidden conflation; (3) chunks are 600, mirroring `artworkChunkSize`; scanner `pid`-cursor
+  re-issue stays caller-owned (resume pointer in-memory, matching Go, not persisted to `library`); (4) `SEEDEDRAND` random is NOT a
+  cursor: Go seeds `hasher.Reseed(seedKey)` when `Offset == 0` (`sql_base_repository.go:334-338`) and renders the full set at once
+  (:320-332, CAST(%s.id AS TEXT) gotcha pinned at :325-326 and `playlist_track_repository_test.go:50`), so the port renders the same
+  full-set SQL and may stream it in 600-ID pages ONLY while preserving the seedKey (`%s|%016x` = lowercased `tableName|xxh3(userId)`,
+  :313-318) and the per-connection `SEEDEDRAND`/`NATSORT` registration. Evidence basis: scout brief 43a749bd (2026-11-20) plus
+  parent re-verification of `sql_base_repository.go:320-338,313-318` and `artwork_hydration.go:12-54`. DB-11 must pin every cursor
+  with an executed test before it claims executed-read state.
+- **D-SCOPE — Library scope + `loggedUser` context (PARENT DECIDED 2026-11-20; unblocks DB-11).** SOURCE-VERIFIED Go truth:
+  (1) scope is a **filter predicate, not a join**: `buildLibraryFilter` (`sql_tags.go:47-68`) renders `1=1` for headless/admin AND admin,
+  `library.id IN (ids)` for normal users — admin gets `1=1` even when `user.Libraries` is empty; the `user_library` join (sql_tags.go
+  :154-176) is added by `registerModel` only for repositories that call `registerModelWhiteList` + `registerLibraryFilter`, and
+  **`buildLibraryFilter` applies to every repository that registered it, admin included** — the only branch that drops it is the
+  headless/invalid-user AND-admin path; (2) `loggedUser` is per-request (per-`context`) — one `id`/`libs` pair, no per-row
+  re-resolution: `queryOne`/`queryAll` re-read it only for the `ErrNotFound` message (`sql_base_repository.go:445-452`),
+  `count()` (:566-576) drops user entirely, and writes re-read it only for ownership (`classifyOwnedWriteMiss` :554-563, A7);
+  (3) the port's shape is right: `SQLStore` carries `pool + user + admin` (`store.rs`), repositories take `logged: &LoggedUser`,
+  **no ambient context**; per-request re-resolution (a second query to fetch the user inside each repo call) is FORBIDDEN as a
+  scope strategy — the caller resolves scope once and passes the predicate; (4) DB-11's `library_filter: Option<Sql>` parameter is
+  therefore **redundant-with-the-store and must be dropped** from the cursor API unless a caller genuinely needs a second,
+  independently-composed predicate (none does today); keep the parameter only on the already-shipped narrow reads that use it.
+  Decision: DB-11 executes scope as `Option<Sql>` (None = headless/admin `1=1`, Some = `library.id IN (?)`), resolved once by the
+  caller from the store's user, never re-queried per chunk; admin-AND-empty-libraries must execute as `1=1` and is pinned by an
+  executed test. Evidence basis: scout brief 43a749bd plus parent re-verification of `sql_tags.go:47-68,154-176` and
+  `sql_base_repository.go:445-452,554-563`.
+
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
 - **A1 — Offset-without-limit renders `LIMIT -1`**: squirrel's bare `OFFSET n` is a SQLite parse error and SQLite is
@@ -373,13 +412,20 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   raw SQL expression sorting is rejected rather than interpolated. These are intentional narrow-read safety/consistency choices, not full
   Go parity. Seeded `random` ordering and optioned `GenreRepo::get_all` remain unimplemented gaps; offset-only pagination is already the
   separately accepted A1 `LIMIT -1` behavior. Never describe DB-22's narrow executed subset as full read parity.
+## Plugin scope (D-PLUGIN)
 
-## Open decision (NOT resolved here)
-
-- **`plugin_repo.rs` scope** — unresolved and deliberately left for the parent. `schema-contract.md` says the
-  `plugin` table is **dropped** (Part C item 14 removes `/api/plugin*` and does not port
-  `persistence/plugin_cleanup.go`, so `db/migrations/20260106000620_create_plugin_table.sql` is not ported), yet
-  `plugin_repo.rs` was ported anyway and is exported publicly, so callers can invoke renderers that all fail with
-  `no such table: plugin` against the shipped schema. Options and the recommendation live in
-  `next-work.md` §"Decision ask". The source file is **not deleted** by this lane and the scope decision is still
-  pending.
+- **D-PLUGIN — Delete `plugin_repo.rs` and its tests (PARENT DECIDED 2026-11-20).** The `plugin` table is part C
+  item 14's dropped surface: `schema-contract.md` says the table is not ported, `nd-dbschema`'s fresh DDL carries no `plugin`
+  table (SOURCE-VERIFIED: zero `plugin` occurrences in `schema_ddl.rs` beyond the drop note at :7), and no Rust caller exists
+  (SOURCE-VERIFIED: the only mentions of `PluginRepo`/`plugin_repo` outside the file itself are the `pub mod` in `lib.rs:35` and a
+  doc reference in `time.rs`). Every renderer in `plugin_repo.rs` therefore fails with `no such table: plugin` against the shipped
+  schema, so the file is dead code, not a latent feature. Go's `cleanupPluginUserReferences`/`cleanupPluginLibraryReferences`
+  (`persistence/plugin_cleanup.go:8,50,74`) update the `plugin` table from `userRepository.Delete()`/`libraryRepository.Delete()`
+  to keep plugin permission arrays referentially intact; the Rust port must NOT port them — user/library delete simply has no
+  plugin-cleanup step, and any `delete_user_artifacts`/`delete_library_artifacts`-style hook is dropped with the plugin scope.
+  Decision: delete `rust/crates/nd-db/src/plugin_repo.rs`, its tests, and the `lib.rs` export in a follow-up lane (owner:
+  whichever lane next touches `nd-db`'s repo modules; no executor is required since the code is unreachable). The Go migrations
+  `20260106000620`/`20260228020813` are NOT ported (table dropped); do not add a `plugin` table to `nd-dbschema`.
+  Evidence basis: read-only audit `94589a34` (2026-11-20) plus parent re-verification of `plugin_cleanup.go`, `schema_ddl.rs`,
+  `lib.rs:35`, and the caller census. `next-work.md` §"Decision ask" option (a) is the decision recorded here; the option-
+  table's `delete_user_artifacts`/`delete_library_artifacts` names did not exist in the file — only the renderer functions do.

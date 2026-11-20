@@ -56,8 +56,5 @@ expiring login sessions `c6e220eb`/merge `162fae1d`; on the earlier audited boun
 `nd-db` docs still 22 warnings). Earlier standalone DB/doctest counts are historical, not re-runs at this HEAD, substantial executed
 reads **and executed transaction-bound writes** landed, **no runnable server or scanner**. None of the executed `*_in_tx`
 primitives has a production caller (`nd-auth` calls `UserRepo` methods outside them, mounted only in crate tests), and the
-partial scopes above are **not** full DB-15, not SC-01/SC-02, not full auth/API integration, and not the DB lane. **DB-10 and the DB-12 invalidation/enqueue subset are LANDED**, not a worker/full scanner. SC-02 remains uncommitted,
-unmerged, 15 commits behind with a request-changes review. The spine resumes at **DB-11**, decision-gated on unrecorded
-`D-CURSOR`/`D-SCOPE`. **DB-22 is independently ready/assignable**: DB-00/02/03 landed and DB-12's artwork ownership block
-is released; parent must serialize its launch after this docs writer. See
+partial scopes above are **not** full DB-15, not SC-01/SC-02, not full auth/API integration, and not the DB lane. **DB-10 and the DB-12 invalidation/enqueue subset are LANDED**, not a worker/full scanner; **DB-22 LANDED `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 narrow boundary). SC-02 remains uncommitted, unmerged, on `rust-sc02-local-walker` (two review rounds passed; S9 merge gate closed `b1aeea2c`; S9 fix round in flight). The spine resumes at **DB-11**; `D-CURSOR`/`D-SCOPE` are now **recorded** in `decisions.md` (PARENT DECIDED 2026-11-20), and **D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code). See
 `current-status.md` and `next-work.md` for the details.

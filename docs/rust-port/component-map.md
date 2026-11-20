@@ -8,9 +8,10 @@ is the current section of [`next-work.md`](next-work.md); settled decisions are 
 prerequisites/decisions/ownership are in `subplans/`. **One writer per checkout** — the user-approved exception is
 parallel **isolated worktrees** with parent-controlled merges — and a verified inherited workspace supersede any
 historical per-file/worktree parallelism. Read-only planning and review may overlap. At `f80b9704`, DB-10 (`65072b89`/`6e5ca97d`) and DB-12's executed artwork invalidation/enqueue subset (`e5d0592d`,
-rustdoc fix `f80b9704`) are LANDED, with no production scanner callers or worker/full-scanner completion. SC-02 is still
-unmerged/uncommitted. DB-12 no longer owns `artwork_repo.rs`; DB-22 is READY/assignable because DB-00/02/03 landed and
-that ownership block is released, subject to parent launch and exclusive checkout ownership. DB-11 remains decision-gated.
+rustdoc fix `f80b9704`) and **DB-22 `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 narrow boundary) are
+LANDED, with no production scanner callers or worker/full-scanner completion. SC-02 is still unmerged/uncommitted (two
+review rounds passed; S9 gate closed `b1aeea2c`; S9 fix round in flight). `D-CURSOR`/`D-SCOPE` are recorded (PARENT
+DECIDED 2026-11-20), so DB-11 is launchable; D-PLUGIN decided the same day (delete `plugin_repo.rs`).
 
 In particular: C10's cancelled C29 edge must not gate scanner work; C10/C19 scanner/playlist relationships must be
 split into phase-1 ingest, playlist import service, and later phase-4 integration; C22/C30 construction/service

@@ -91,10 +91,12 @@ Merges are parent-controlled; this docs lane is support work, not a rebalance of
 ### Next dependencies (order, not estimates)
 
 1. **DB-11 → DB-15(runtime) → DB-14 → DB-21(P1-DB)** — DB-04…DB-10/DB-12/DB-13 are landed; the spine resumes at
-   **DB-11**, typed filtered scanner reads/cursors, still gated on unrecorded `D-CURSOR` + `D-SCOPE`. DB-12 has already
-   released the artwork subset. DB-14 requires `SC.folder-write-batch-contract` and DB-15 for general album-ID transitions.
-   **DB-22 is independently ready/assignable**: DB-00/02/03 landed, former DB-12 `artwork_repo.rs` ownership released, no
-   code writer per parent. Parent must authorize and serialize its launch after this docs writer. DB-16…20 (move/reference,
+   **DB-11**, typed filtered scanner reads/cursors. `D-CURSOR`/`D-SCOPE` are now **recorded** in `decisions.md`
+   (PARENT DECIDED 2026-11-20, basis: scout brief + parent re-verification), so DB-11 is launchable once the parent
+   serializes its writer. DB-12 has already released the artwork subset; DB-14 requires
+   `SC.folder-write-batch-contract` and DB-15 for general album-ID transitions.
+   **DB-22 LANDED `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 documents the narrow boundary).
+   DB-16…20 (move/reference,
    tag counts, artist stats, playlist cleanup, GC) extend the phase-2+/full-scanner exit. Each lane consumes the landed
    DB-00 typed transaction/error seam, the DB-02 canonical TEXT stamp convention, and the DB-03 effective pool
    configuration — adopt them rather than re-deriving helper behavior. Add executed write→read-back regressions, not more
@@ -136,11 +138,12 @@ teardown flake (`current-status.md`).
 `plugin_repo.rs` was ported anyway (its header notes the table is absent yet claims the schema slice will add it) and is
 exported publicly (`lib.rs`), so callers can invoke its renderers — but every statement it renders fails with
 `no such table: plugin` against the shipped schema, including the probed path (`DELETE FROM plugin WHERE id = ?`).
-Options: (a) delete `plugin_repo.rs` and its tests as out-of-scope dead code (recommendation: it can never run against
-the schema we ship and its tests only assert rendered strings); (b) keep it and mark the module
-`#[cfg(feature = "plugin-table")]`/documented-unreachable until a schema decision reverses that section. Needs the
-parent's call before any lane touches it — deleting a public module is a deliberate divergence, not a fix. **No source
-deleted by the docs lane; decision still pending.**
+**DECIDED (D-PLUGIN, `decisions.md`, PARENT DECIDED 2026-11-20):** option (a) — delete `plugin_repo.rs`, its tests, and
+the `lib.rs` export as out-of-scope dead code; do not port `persistence/plugin_cleanup.go` (no `plugin` table in the shipped
+schema, so Go's cleanup updates have no referent and user/library delete simply drops that step). No source deleted by the docs
+lane; a follow-up lane that next touches `nd-db`'s repo modules owns the deletion. Evidence: audit `94589a34` + parent
+re-verification (`schema_ddl.rs` has no `plugin` table; `lib.rs:35` export and a `time.rs` doc reference are the only mentions
+outside the file; `plugin_cleanup.go:8,50` updates the `plugin` table from user/library delete).
 
 ### Revised milestones and dependencies
 
