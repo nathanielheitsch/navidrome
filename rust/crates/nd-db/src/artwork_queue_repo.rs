@@ -30,6 +30,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::runtime_error::DbOperationError;
 use crate::sqlrepo::{Repository, Value};
 use crate::time;
 
@@ -211,10 +212,26 @@ pub fn enqueue_all_missing_sql(
     )
 }
 
-/// `EnqueueIfMissing` (`:70-93`): chunked CTE inserts —
-/// `WITH new_items(...) AS (VALUES (?,?,?,?)…) SELECT n.… , 0, ?, ?
+/// `EnqueueIfMissing` (`:70-93`): chunked CTE inserts. Go composes the statement in
+/// `insertIfNotQueued` (`:99-102`), NOT in the loop:
+/// `Expr(with + "INSERT INTO " + r.tableName + " (" + join(enqueueColumns, ", ") + ") "
+/// + sql + skipIfQueued, args...)`, where `with` is the CTE prefix (`:81`) and `sql` is
+/// the SELECT (`:82-87`). The `INSERT INTO artwork_queue (<enqueueColumns>)` leg therefore
+/// sits BETWEEN the CTE and the SELECT. This renderer previously omitted it, producing a
+/// `WITH … SELECT … ON CONFLICT` statement that SQLite rejects outright at PREPARE
+/// (`near "ON": syntax error`), so the executed wrapper could never insert a row.
+///
+/// Render of that exact composite through pinned squirrel v1.5.4 (`Expr` passes the string
+/// through verbatim, `expr.go:53-66`; `/tmp/sqprobe/main.go` mirrors `:99-102`):
+/// ```text
+/// WITH new_items(item_kind, item_id, image_type, priority) AS (VALUES (?,?,?,?),(?,?,?,?))
+/// INSERT INTO artwork_queue (item_kind, item_id, image_type, priority, attempts, retry_at, enqueued_at)
+/// SELECT n.item_kind, n.item_id, n.image_type, n.priority, 0, ?, ?
 /// FROM new_items n WHERE NOT EXISTS (SELECT 1 FROM item_artwork ia
-/// WHERE ia.item_kind = n.item_kind AND …) skipIfQueued` (`:81-87`).
+///   WHERE ia.item_kind = n.item_kind AND ia.item_id = n.item_id AND ia.image_type = n.image_type)
+/// ON CONFLICT (item_kind, item_id, image_type) DO NOTHING
+/// ARGS: [al x primary 3 al y primary 3 now now]
+/// ```
 #[must_use]
 pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -> Vec<Sql> {
     items.chunks(CHUNK_SIZE)
@@ -240,14 +257,22 @@ pub fn enqueue_if_missing_sql(items: &[ArtworkQueueItem], now: &DateTime<Utc>) -
             let mut args_all = args;
             args_all.push(time::value(now));
             args_all.push(time::value(now));
-            let select = concat!(
-                ") SELECT n.item_kind, n.item_id, n.image_type, n.priority, 0, ?, ? ",
-                "FROM new_items n WHERE NOT EXISTS (SELECT 1 FROM item_artwork ia ",
-                "WHERE ia.item_kind = n.item_kind AND ia.item_id = n.item_id ",
-                "AND ia.image_type = n.image_type)",
+            let cols = ENQUEUE_COLUMNS
+                .iter()
+                .map(|c| (*c).to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let select = format!(
+                "INSERT INTO {TABLE} ({cols}) \
+                 SELECT n.item_kind, n.item_id, n.image_type, n.priority, 0, ?, ? \
+                 FROM new_items n WHERE NOT EXISTS (SELECT 1 FROM item_artwork ia \
+                 WHERE ia.item_kind = n.item_kind AND ia.item_id = n.item_id \
+                 AND ia.image_type = n.image_type)"
             );
             (
-                format!("WITH new_items(item_kind, item_id, image_type, priority) AS (VALUES {rows} {select}{SKIP_IF_QUEUED}"),
+                format!(
+                    "WITH new_items(item_kind, item_id, image_type, priority) AS (VALUES {rows}) {select}{SKIP_IF_QUEUED}"
+                ),
                 args_all,
             )
         })
@@ -736,6 +761,184 @@ impl<'a> ArtworkQueueRepo<'a> {
         let statement = purge_queued_sql(kinds, priorities);
         Ok(crate::execution::execute(self.conn, &statement)? as i64)
     }
+}
+
+/// Which conflict arm an executed enqueue uses — the ONE behavioural difference
+/// between Go's two upserting methods (`artwork_queue_repository.go:45-57`). The
+/// variants carry the existing rendered suffixes verbatim; no third arm is invented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueMode {
+    /// `Enqueue` (`:47-52`): a FRESH lifecycle. On conflict the row keeps the higher
+    /// priority but its lifecycle is reset — `attempts = 0`, `retry_at =` and
+    /// `enqueued_at =` the incoming `now`, `trace = '[]'` — so a new request does not
+    /// inherit a spent retry budget or a prior failure in explain (Go's comment
+    /// `:45-46`). Writers: `core/artwork/housekeeping.go:169`,
+    /// `scanner/image_changes.go:57`, `persistence/playlist_repository.go:368`,
+    /// `persistence/radio_repository.go:106`.
+    Reset,
+    /// `EnqueuePreservingBackoff` (`:53-57`): ONLY `priority = MAX(priority,
+    /// excluded.priority)`. An already-queued row keeps its `retry_at`, `attempts`,
+    /// `enqueued_at` and `trace`, so a read-through never resets a failed backoff
+    /// (Go's comment `:52-53`; the writer is `core/artwork/artwork.go:345`).
+    PreserveBackoff,
+}
+
+impl EnqueueMode {
+    /// The conflict suffix this mode executes: [`CONFLICT_ENQUEUE`] or
+    /// [`CONFLICT_PRESERVE_BACKOFF`], never a new statement.
+    #[must_use]
+    pub const fn conflict(self) -> &'static str {
+        match self {
+            Self::Reset => CONFLICT_ENQUEUE,
+            Self::PreserveBackoff => CONFLICT_PRESERVE_BACKOFF,
+        }
+    }
+}
+
+/// Callback error of the executed enqueues that have NO domain failure to carry:
+/// Go's `Enqueue`/`EnqueuePreservingBackoff` return a bare `error` that can only be a
+/// driver failure (`:47-52`, `:53-57`, `:158-160`) — no validation, no `NotFound`.
+/// `Infallible` makes the `Domain` arm structurally uninhabited rather than reserved
+/// (`library_repo::LibraryScanError`, `tag_repo::TagWriteError`), and keeps every
+/// SQLite failure on [`DbOperationError::Sqlite`] so `store::is_busy` still classifies
+/// `SQLITE_BUSY` for the executor's retry loop.
+pub type EnqueueFailure = DbOperationError<std::convert::Infallible>;
+
+/// Go's owner-table lookup failure (`:59-62`):
+/// `fmt.Errorf("artwork queue: no entity table for kind %q", kind.Prefix())`, typed
+/// here so it stays a `Domain` failure rather than a statement that matches nothing.
+#[derive(Debug, thiserror::Error)]
+#[error("artwork queue: no entity table for kind {kind:?}")]
+pub struct UnsupportedKind {
+    /// The rejected `item_kind` token (Go interpolates `kind.Prefix()`).
+    pub kind: String,
+}
+
+/// Callback error of the executed [`enqueue_all_missing_in_tx`]: the owner-table
+/// rejection on the `Domain` arm, every SQLite failure on the `Sqlite` arm.
+pub type EnqueueAllMissingFailure = DbOperationError<UnsupportedKind>;
+
+/// `Enqueue` / `EnqueuePreservingBackoff` (`:47-57`, both through the private
+/// `enqueue` `:150-163`) EXECUTED on the CALLER's transaction: one multi-row INSERT
+/// per [`CHUNK_SIZE`] items in Go's `slices.Chunk` order (`:152`), executing exactly
+/// what [`enqueue_sql`] renders with [`EnqueueMode::conflict`] as the suffix. Empty
+/// input runs NO statement at all (Go's chunk loop yields nothing for an empty slice).
+///
+/// `now` is Go's single `time.Now()` (`:151`), sampled ONCE before the loop and bound
+/// as BOTH `retry_at` and `enqueued_at` of EVERY row (`:155`); stamping per chunk
+/// would give later chunks a later lifecycle start than Go does. The caller owns the
+/// clock — this function reads none.
+///
+/// `items` is caller-trusted typed-domain data: `item_kind` is `Kind.Prefix()`
+/// (`nd_id::ARTWORK_KIND_*_PREFIX`), `priority` is Go's `int` as the renderer types it
+/// (`Value::Integer`), and an empty `image_type` defaults to [`IMAGE_TYPE_PRIMARY`]
+/// inside the renderer (`cmp.Or`, `:155`). None of it is HTTP-supplied, and this layer
+/// validates nothing, exactly as Go does.
+///
+/// Go checks no affected-row count (`:158` tests `err` only) and keeps looping, so a
+/// chunk that changes nothing is a successful NO-OP. There is no count to report.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact) from the chunk that failed, raw and unwrapped like Go (`:159`).
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`EnqueueFailure`]).
+pub fn enqueue_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    items: &[ArtworkQueueItem],
+    mode: EnqueueMode,
+    now: &DateTime<Utc>,
+) -> Result<(), EnqueueFailure> {
+    for statement in enqueue_sql(items, mode.conflict(), now) {
+        crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(())
+}
+
+/// `EnqueueAllMissing` (`:58-68`) EXECUTED on the CALLER's transaction: the single
+/// INSERT…SELECT [`enqueue_all_missing_sql`] renders, on the caller's lease.
+///
+/// `kind` is resolved through [`crate::artwork_repo::owner_table`] — Go's
+/// `artworkOwnerTables` lookup (`:59-62`): an unsupported token is the typed
+/// [`UnsupportedKind`] DOMAIN failure and NO statement runs, matching Go's early
+/// `return 0, fmt.Errorf(...)`. Because the resolved table name is INTERPOLATED into
+/// the statement, that whitelist is the injection boundary: no caller text can become
+/// an identifier.
+///
+/// `priority` is Go's `priority int` (`:58`), bound as the renderer's
+/// `Value::Integer`. It comes from repository code (`model.ArtworkPriorityScan`/
+/// `ArtworkPriorityRecheck`, `scanner/scanner.go:286`,
+/// `core/artwork/housekeeping.go:99`), never from a request.
+///
+/// [`SKIP_IF_QUEUED`] is `DO NOTHING` (`:96`), so an entity ALREADY queued keeps its
+/// existing row untouched — priority, attempts, retry_at and trace all survive. The
+/// anti-join excludes every entity with ANY `item_artwork` row of this kind (`:66`),
+/// whether resolved (`hash <> ''`) or settled-absent (`hash = ''`): Go does not
+/// distinguish the two here, and this call never touches `item_artwork`.
+///
+/// Returns `executeSQL`'s affected-row count (`sql_base_repository.go:336-354`), which
+/// is what Go hands its callers (`scanner/scanner.go:286` totals it for a log line
+/// only). No policy rides on it here.
+///
+/// **This is not a candidate count.** For this `INSERT…SELECT … DO NOTHING`, `sqlite3_changes()`
+/// equals the rows actually inserted; skipped conflicts and rows filtered out by the SELECT
+/// contribute zero. Verified with `sqlite3` over the fresh DDL: an anti-join select whose sole
+/// candidate is already queued reports `0`; one that inserts one row and skips one reports `1`.
+/// Go inherits the same driver semantics through `database/sql`'s `RowsAffected`, so the number
+/// is returned verbatim and no policy rides on it.
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`UnsupportedKind`] BEFORE any SQL for a kind with no
+/// owner table; [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error`
+/// from the statement, raw and unwrapped like Go (`:64-67`).
+pub fn enqueue_all_missing_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    kind: &str,
+    priority: i64,
+    now: &DateTime<Utc>,
+) -> Result<i64, EnqueueAllMissingFailure> {
+    let Some(entity_table) = crate::artwork_repo::owner_table(kind) else {
+        return Err(DbOperationError::Domain(UnsupportedKind {
+            kind: kind.to_string(),
+        }));
+    };
+    let rows = crate::execution::execute(
+        tx,
+        &enqueue_all_missing_sql(kind, entity_table, priority, now),
+    )
+    .map_err(DbOperationError::sqlite)?;
+    Ok(i64::try_from(rows).unwrap_or(i64::MAX))
+}
+
+/// `EnqueueIfMissing` (`:70-93`) EXECUTED on the CALLER's transaction: one CTE
+/// INSERT per [`CHUNK_SIZE`] items in Go's `slices.Chunk` order (`:72`), executing
+/// exactly what [`enqueue_if_missing_sql`] renders.
+///
+/// `now` is Go's single `time.Now()` per call (`:71`), sampled BEFORE the loop and bound
+/// as both `retry_at` and `enqueued_at` of every row in the chunk (`:83`); this port takes
+/// it from the caller and reads no clock.
+///
+/// Two filters make this mode different from [`enqueue_in_tx`], and both are tested:
+/// an entity with ANY `item_artwork` row of this kind+image_type is excluded by the
+/// `NOT EXISTS` anti-join (`:85-86`) — resolved or settled-absent alike, Go tests only
+/// for existence — and an entity ALREADY queued keeps its existing row untouched under
+/// [`SKIP_IF_QUEUED`], so a recheck cannot bump priority or retry_at (`:95`).
+///
+/// Go checks no affected-row count (`:89` tests `err` only) and keeps chunking, so there
+/// is no count to report. Empty input runs NO statement at all.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact) from the chunk that failed, raw and unwrapped like Go (`:90`).
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`EnqueueFailure`]).
+pub fn enqueue_if_missing_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    items: &[ArtworkQueueItem],
+    now: &DateTime<Utc>,
+) -> Result<(), EnqueueFailure> {
+    for statement in enqueue_if_missing_sql(items, now) {
+        crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]

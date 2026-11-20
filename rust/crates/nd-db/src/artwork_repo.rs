@@ -18,6 +18,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::runtime_error::DbOperationError;
 use crate::sqlrepo::{Repository, SqlError, Value};
 
 /// A materialized statement: `(sql, args)`, the `toSQL()`
@@ -230,23 +231,111 @@ pub fn put_last_failure_sql(kind: &str, id: &str, image_type: &str, trace: &str)
 
 /// `DeleteForItems` (`:150-157`): chunked `Eq{item_kind, item_id: chunk}`
 /// deletes (`slices.Chunk(ids, artworkBatchSize)`).
+///
+/// The rendered verb is `DELETE`, matching Go's `sqlRepository.delete`
+/// (`sql_base_repository.go:644-647`), which builds `Delete(r.tableName).Where(cond)` —
+/// NOT `newSelect`. This leg previously rendered `SELECT * FROM item_artwork …`, so the
+/// executed wrapper ran a query and deleted nothing.
+///
+/// Clause ORDER and bind order follow the pinned squirrel render: running
+/// `Delete("item_artwork").Where(Eq{"item_kind": "al", "item_id": ["a", "b"]})` against
+/// `github.com/Masterminds/squirrel@v1.5.4` — the builder `sql_base_repository.go:644-647`
+/// uses — yields
+/// ```text
+/// DELETE FROM item_artwork WHERE item_id IN (?,?) AND item_kind = ?
+/// ARGS: [a b al]
+/// ```
+/// `Eq.ToSql` sorts its keys (`expr.go:145-160`), so `IN` precedes `=` and the ids bind
+/// BEFORE the kind regardless of map-literal order (both key orders render identically).
+/// Built by hand because [`Repository`] models squirrel's SELECT chain only, exactly as
+/// `enqueue_all_missing_sql` does in `artwork_queue_repo`.
 #[must_use]
 pub fn delete_for_items_sql(kind: &str, ids: &[String]) -> Vec<Sql> {
     ids.chunks(BATCH_SIZE)
         .map(|chunk| {
-            Repository::new(ITEMS_TABLE)
-                .where_eq("item_kind", kind)
-                .where_in(
-                    "item_id",
-                    chunk
-                        .iter()
-                        .map(|id| Value::Text(id.clone()))
-                        .collect::<Vec<_>>(),
-                )
-                .to_sql()
-                .unwrap()
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let mut args = chunk
+                .iter()
+                .map(|id| Value::Text(id.clone()))
+                .collect::<Vec<_>>();
+            args.push(Value::Text(kind.to_string()));
+            (
+                format!(
+                    "DELETE FROM {ITEMS_TABLE} WHERE item_id IN ({placeholders}) AND item_kind = ?",
+                ),
+                args,
+            )
         })
         .collect::<Vec<_>>()
+}
+
+/// `artworkOwnerTables` (`:83-89`) as a LOOKUP — the map's only read in Go
+/// (`artwork_queue_repository.go:59-62`). The KEY is `Kind.Prefix()` (see
+/// [`OWNER_TABLES`]), and an unknown token is a typed REJECTION rather than a
+/// statement that matches nothing: Go returns
+/// `fmt.Errorf("artwork queue: no entity table for kind %q", kind.Prefix())` and runs
+/// NO SQL (`artwork_queue_repository.go:60-62`).
+///
+/// `dc` (`KindDiscArtwork`, `model/artwork_id.go:34`) is in Go's kind map but NOT in
+/// `artworkOwnerTables`, so it is rejected here exactly as in Go. A kind NAME
+/// (`"album"`) is rejected too: Go's typed `Kind` cannot carry a name into this
+/// lookup, and the `item_kind` column never stores one.
+///
+/// Because the resolved name reaches `artwork_queue_repo::enqueue_all_missing_sql` as
+/// an INTERPOLATED identifier, this whitelist is also the injection boundary: no
+/// caller-supplied text can ever become a table name.
+#[must_use]
+pub fn owner_table(kind: &str) -> Option<&'static str> {
+    OWNER_TABLES
+        .iter()
+        .find(|(key, _)| *key == kind)
+        .map(|(_, table)| *table)
+}
+
+/// Callback error of the executed [`delete_for_items_in_tx`], which has NO domain
+/// failure to carry: Go's `DeleteForItems` returns a bare `error` that can only be a
+/// driver failure (`artwork_repository.go:150-157`) — no validation, no `NotFound`, no
+/// permission check. `Infallible` makes the `Domain` arm structurally uninhabited
+/// rather than reserved (as `library_repo::LibraryScanError` and
+/// `tag_repo::TagWriteError`), and keeps every SQLite failure on
+/// [`DbOperationError::Sqlite`] so `store::is_busy` still classifies `SQLITE_BUSY`.
+pub type ArtworkDeleteFailure = DbOperationError<std::convert::Infallible>;
+
+/// `DeleteForItems` (`:150-157`) EXECUTED on the CALLER's transaction: one DELETE per
+/// [`BATCH_SIZE`] ids in Go's `slices.Chunk` order (`:151`), executing exactly what
+/// [`delete_for_items_sql`] renders. Empty input runs NO statement at all — Go's chunk
+/// loop yields nothing for an empty slice.
+///
+/// Scope is Go's two-key conjunction (`Eq{"item_kind": kind.Prefix(), "item_id":
+/// chunk}`, `:152`): `image_type` is deliberately NOT restricted, so every image slot
+/// of the named kind+id pair goes, and a row carrying the SAME id under a DIFFERENT
+/// kind is untouched.
+///
+/// `kind` is `Kind.Prefix()` typed-domain text from trusted repository code —
+/// `nd_id::ARTWORK_KIND_*_PREFIX` — never HTTP text. A kind NAME binds a token the
+/// column never holds, so it deletes zero rows; that is Go's own behavior for a
+/// mis-keyed bind, and this layer refuses nothing to enforce it.
+///
+/// Go's `sqlRepository.delete` (`sql_base_repository.go:644-647`) DISCARDS the
+/// affected-row count and checks only `err`, so a chunk matching zero rows is a
+/// successful NO-OP whose loop CONTINUES (unlike
+/// `mediafile_repo::mark_media_missing_in_tx`, which stops early). The accumulated
+/// count returned here is advisory observability only; no policy rides on it.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact) from the chunk that failed, raw and unwrapped exactly like Go (`:153`).
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`ArtworkDeleteFailure`]).
+pub fn delete_for_items_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    kind: &str,
+    ids: &[String],
+) -> Result<usize, ArtworkDeleteFailure> {
+    let mut total = 0usize;
+    for statement in delete_for_items_sql(kind, ids) {
+        total += crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(total)
 }
 
 /// `GetInfoForItems`' per-chunk hydration (`:159-182`): the COALESCE'd
@@ -393,7 +482,12 @@ mod tests {
         );
         let deleted =
             delete_for_items_sql(nd_id::ARTWORK_KIND_MEDIA_FILE_PREFIX, &["mf-1".to_string()]);
-        assert_eq!(deleted[0].1[0], Value::Text("mf".to_string()));
+        assert_eq!(
+            deleted[0].1[0],
+            Value::Text("mf-1".to_string()),
+            "squirrel's Eq sorts keys, so the IN list of ids binds before the kind"
+        );
+        assert_eq!(deleted[0].1[1], Value::Text("mf".to_string()));
         // GetItemArtwork's three-key Eq, also prefix-first.
         let got =
             get_item_artwork_sql(nd_id::ARTWORK_KIND_ALBUM_PREFIX, "al-1", IMAGE_TYPE_PRIMARY);
@@ -428,9 +522,17 @@ mod tests {
         assert_eq!(
             stmts[1].1,
             vec![
-                Value::Text("al".to_string()),
-                Value::Text("it-201".to_string())
+                Value::Text("it-201".to_string()),
+                Value::Text("al".to_string())
             ]
+        );
+        assert_eq!(
+            stmts[0].0,
+            format!(
+                "DELETE FROM {ITEMS_TABLE} WHERE item_id IN ({}) AND item_kind = ?",
+                vec!["?"; BATCH_SIZE].join(", ")
+            ),
+            "the verb is DELETE (sql_base_repository.go:644-647), not a SELECT"
         );
     }
 
