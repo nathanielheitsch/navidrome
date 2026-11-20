@@ -375,6 +375,49 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `folder_repository.go:77,275-299`, and `scanner/phase_*.go` scope sites. DB-11 must pin the empty-grant deny case,
   the all-grants fast path, and the headless skip with executed tests.
 
+## Bootstrap and stream seams (BOOT-00, API-04, ffmpeg; drafts 2026-11-20)
+
+- **B1 — Workspace `chrono` placeholder is dead and wrong (PARENT DECIDED 2026-11-20).** `rust/Cargo.toml:66`
+  declares `chrono = "^2"`, but no crate consumes the workspace entry (every real consumer pins `0.4` directly:
+  `nd-scanner`, `nd-db`, `nd-sched`, `nd-mapping`, `nd-events`) and the lock holds `chrono 0.4.45`. There is no chrono
+  2.x release, so any future crate that writes `chrono = { workspace = true }` gets a non-resolvable requirement.
+  Decision: correct the workspace entry to `chrono = "^0.4"` (features per consumer) in the BOOT-00 manifest pass, and
+  have consumers use `workspace = true` after that. This is a one-line manifest fix, not a new package; the lock edge
+  already exists. Rationale: S9-style "record it or it bites later" — a placeholder that silently disagrees with every
+  real pin is a trap for the first HTTP/consumer crate.
+
+- **B2 — ffmpeg path resolution ignores loaded config (PARENT DECIDED 2026-11-20).** `nd-ffmpeg/src/ffmpeg_cmd.rs:
+  63-95` resolves the ffmpeg binary from `nd_conf::Config::default().ffmpeg_path` (:76) — the hard-coded default struct
+  (`nd-conf/src/config.rs:687` `ffmpeg_path: String::new()`), NOT a loaded config — and memoizes the result in a
+  process-wide `OnceLock` (`FFMPEG_ONCE` :63). So a configured `FFMPEGPath` in the real TOML is invisible at runtime, and
+  even a passed-in config could not fix later calls. Go's `core/ffmpeg/ffmpeg.go:604-622` reads the ambient loaded
+  `conf.Server.FFmpegPath` under `sync.Once`; Rust has no ambient config, which is the actual gap. This is a prerequisite
+  for any forced-transcode / direct-stream gate (API-05/06, #27A step 5): the gate must FAIL, not silently use a
+  default-path ffmpeg, when the configured binary is absent.
+
+  Decision: replace the `Config::default()` read with config injected once at boot and held re-readable. Recommended
+  shape (a): `ffmpeg_cmd_from(&Config) -> (String, bool)` plus a boot-initialized `OnceLock` set by BOOT-01 from the
+  loaded config (closest to Go's `sync.Once`; keeps the existing free-function call sites in `transcode.rs`,
+  `probe_exec.rs`, and the nd-stream adapters unchanged). `ND_TEST_FFMPEG_PATH` remains the test-only override. The edit
+  lives in #07-owned `nd-ffmpeg` files (outside BOOT-00's authorized file list), so lane ownership is **BOOT-01** (which
+  already owns "construct singletons from committed config"); a standalone #07 micro-lane is the alternative. PARENT to
+  confirm the owner before the forced-transcode gate launches.
+
+- **B3 — `nd-stream` is not `Send`; the HTTP bridge is a DRAFT pending parent decision (API-04, 2026-11-20).**
+  Verified: `archiver.rs:78` `BoxFuture` has no `Send` bound; `StreamHandler`'s `source: Box<dyn TranscodeSource<D>>`
+  (`handler.rs:1022`) is a non-Send trait object; `serve` only yields status/headers AFTER the whole body is pumped and
+  the process torn down; and `SinkAdapter::poll_write` (`handler.rs:1570-1604`) re-creates the write future each poll,
+  dropping it on `Pending` (losing a parked mid-send). Go has no Send problem because the whole request runs on one
+  goroutine; its commit point is `Stream.Serve` returning with 0 bytes written (`core/stream/media_streamer.go:159-197`;
+  there is **no** `core/stream/stream.go`), after which it `panic(http.ErrAbortHandler)` and never emits a second status.
+  **Fixed by this record:** do NOT add `+Send` to the global `BoxFuture` alias and do NOT `unsafe impl Send` (workspace
+  `unsafe_code = "deny"`), both forbidden by boot-api.md API-04. **Still PARENT DECISION REQUIRED at the API-04 record:
+  the Send-boundary strategy — owner-task bridge (recommended: per-request owner holds `StreamHandler` locally and
+  `.await`s `Sink::write_all` directly, removing the re-poll defect; one-shot `Start{status,headers}` + bounded `Data`
+  frames + terminal `Completion` carrying the existing `StreamResponse` observability fields) vs two-phase prepared body
+  vs LocalSet actor — plus LocalSet vs dedicated `std::thread` for the non-Send owner, channel capacity/chunk bound
+  (recommendation: capacity 2, 32 KiB chunks), and whether the transport module lives in `nd-stream` (boot-api.md:239)
+  vs `nd-http`. This blocks API-05/BOOT-03 stream-lifecycle claims.
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
 - **A1 — Offset-without-limit renders `LIMIT -1`**: squirrel's bare `OFFSET n` is a SQLite parse error and SQLite is

@@ -1,8 +1,8 @@
 # DB runtime implementation subplan — assignment contracts, NOT implementation authorization
 
-**Package `Status:` lines below are the planner's state at `60cdd184`, amended to integrated `master` `f80b9704`**
+**Package `Status:` lines below are the planner's state at `60cdd184`, amended to integrated `master` `e3e0770a`**
 and superseded where they conflict with
-[`../current-status.md`](../current-status.md) **and** [`../subplans/README.md`](../subplans/README.md) **(2026-11-19):**
+[`../current-status.md`](../current-status.md) **and** [`../subplans/README.md`](../subplans/README.md) **(2026-11-20):**
 DB-01 LANDED `f57ae050`, DB-03 LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only repair LANDED
 `ab466928` (full DB-15 NOT done), scanner local-FS subset LANDED `e9dd8230`/`ff5b9c92` (not SC-01/SC-02), DB-02 LANDED
 `6d9d984d`/`74ebd81c` (canonical TEXT stamps, `zero_time_value()`, artwork-purge cutoff; scrobble-buffer integer stamps and
@@ -12,9 +12,13 @@ transaction-bound primitive: DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca
 `eae4ba1d`/merge `4ab63cd5`.** None of those `*_in_tx` primitives has a **production** caller; the nd-auth code that calls
 `UserRepo` methods (`find_by_username`, `count_all`, `count_by_username`, `put`, `update_last_login_at`) does not use them,
 and that auth router is mounted only in crate tests, not in a server. DB-10 is LANDED (`65072b89`, signed merge `6e5ca97d`); DB-12's executed artwork invalidation/enqueue subset is LANDED
-(`e5d0592d`, fast-forward; rustdoc follow-up `f80b9704`). Neither has a production scanner caller; DB-12 is not a worker
-or full scanner. The DB spine resumes at **DB-11, next in order but not assignable** until `D-CURSOR`/`D-SCOPE` are recorded in
-`../decisions.md`. Settled decisions now live in
+(`e5d0592d`, fast-forward; rustdoc follow-up `f80b9704`); DB-22 is LANDED `272c9c66` (executed genre/scrobble/playqueue/
+artwork reads, C5 narrow boundary). Neither has a production scanner caller; DB-12 is not a worker
+or full scanner. The DB spine resumes at **DB-11, next in order and launchable** — `D-CURSOR`/`D-SCOPE` are recorded in
+`../decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`) — with the parent still serializing its writer.
+The scanner side is unchanged by this plan: the SC-02 partial landed at `e3e0770a` (local walker, `.ndignore`, folder hash,
+cancellation) is a partial slice — not SC-01 ratification, SC-02 completion or MusicFS readiness — and still gives no
+`*_in_tx` write a production caller. Settled decisions now live in
 [`../decisions.md`](../decisions.md); the record blocks in this file stay as evidence.
 
 Baseline: `master 60cdd18402c0fd4b09b65e0b64ca494330501c02`. Parent owns orchestration/integration. Workspace `wks_7bb3344766422a39`, host `srv_QsD9e1TgIsNq`. This plan was produced read-only; no code, tests, formatting, delegates, commits or workspaces were created. Only this `/tmp` report was authored. Parent documentation changes appeared during planning; source references below remain pinned to the baseline, not to their evolving status prose.
@@ -346,7 +350,7 @@ result on identical fixtures).
 
 ## DB-11 — Typed scanner reads, cancellation/resource decision and API-safe point read
 
-1. **Status: DECISION REQUIRED.** Prereqs DB-00/02/03/05/07/09/10 plus parent `D-CURSOR` and `D-SCOPE`; handshake `SC.query-consumption`, `API.visible-media-contract`. Goal: executed scanner query shapes and explicit resource contract; not full REST/artist index/search, artwork cursor everywhere, mapping bridge or worker scheduler.
+1. **Status: decisions RECORDED, launchable (parent serializes the writer).** `D-CURSOR` and `D-SCOPE` are recorded in `../decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`); prereqs DB-00/02/03/05/07/09/10 are landed. Remaining handshakes `SC.query-consumption`, `API.visible-media-contract` are the consumer-side bindings to resolve at assignment. Goal: executed scanner query shapes and explicit resource contract; not full REST/artist index/search, artwork cursor everywhere, mapping bridge or worker scheduler.
 2. **V:** Media get_all634 lacks QueryOptions filters, album get_all1508 likewise. Go scanner per-folder cursor `phase_1_folders.go:231`, per-album media `phase_3_refresh_albums.go:79`, missing/matching74/recent235/254 in phase2, touched albums50 in phase3, image changes80/93. Builders exist: media1691/1727/1777/1651/1514, album1315/1290; execution query_all collects Vec (`execution.rs:53-60`), folder CursorDrain1284-1340 is full drain only. Go cursor protocol `sql_base_repository.go:392-438`. Existing `mediafile_repo_get_random_phase_two_reapplies_the_library_filter`, g2 cursor prefix test and two-library tests are narrow precedents.
 3. **Own:** NEW `src/scanner_queries.rs`, NEW `tests/runtime_scanner_queries.rs`, `src/lib.rs`; add typed wrappers/internal renderer changes only in `mediafile_repo.rs`, `album_repo.rs`, `folder_repo.rs`, `artist_repo.rs` as enumerated before assignment. Existing raw SQL functions remain low-level trusted builders, not API inputs. Collision major repo files plus SC/BOOT consumers; no nd-model/mapping changes.
 4. **Proposal/gate:** typed methods for `media_in_folder`, `media_in_album`, `missing_and_matching(libraryId)`, `recent_candidates(Mbz/Properties,since)`, `touched_albums(libraryId)`, `album_ids_by_folders`, `sole_album_artist_ids_in_subtrees`, `media_by_paths` (phase4). Registered filter enums/typed IDs and chrono bounds; explicit stable PID order. **Recommend synchronous row visitor** `FnMut(OwnedRecord)->ControlFlow<()>` on a leased conn, per-row PostScan inside callback, then close before returning. SC may adapt to bounded channel in spawn_blocking; SC owns backpressure, DB visitor owns early-stop/cancel closure and cannot recheck out store. Approve bounded per-folder owned Vec only as an explicit phase1 alternative, not a complete cursor. General external callbacks must not retain Row/Statement/lease or perform nested DB writes. Decide first-error/prefix return and use typed `VisitOutcome{visited,stopped}` + Err; no false cursor parity.
@@ -743,12 +747,13 @@ a later reviewer does not re-open it as a missing behavior.
 
 ## DB-22 — Executed read parity for genre, scrobble, playqueue, artwork (parent-added, 2026-11-18)
 
-1. **Status: READY / assignable from `f80b9704`, subject to parent launch and exclusive checkout ownership.** Its DB
+1. **Status: LANDED `272c9c66`** (parent-validated 2026-11-20: workspace tests 88 suites, 2171/0/1 at that HEAD; fmt and
+   workspace clippy clean). Executed genre/scrobble/playqueue/artwork reads; C5 records the narrow boundary. Its DB
    prerequisites DB-03 (`4a8aac9f`; `19a5a57a` was superseded), DB-00 (`48e65806`/`ec84c176`) and DB-02
-   (`6d9d984d`/`74ebd81c`) are landed. DB-12 (`e5d0592d`) is now integrated, releasing the former `artwork_repo.rs`
-   ownership block; the parent reports no code writer there. DB-22 has no DB-11 decision prerequisite. Serialize its
-   `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}` writes and workspace gates after this docs writer
-   stops. Readiness is not implementation authorization.
+   (`6d9d984d`/`74ebd81c`) are landed, and DB-12 (`e5d0592d`) released the former `artwork_repo.rs` ownership block before
+   the lane launched; the lane's writer serialized its
+   `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}` writes and workspace gates, and the parent
+   merged the result. Landing this subset is not repository/service completion.
 2. **Goal:** execute the four repos' still-unexecuted repository reads against `apply_fresh_schema` and pin Go's
    observed results. Artwork coverage is already partial: `artwork_hydration::hydrate_item_images` executes
    `get_info_for_items_sql` in chunks, but flattens failures to text; it is not the strict typed repository API targeted here.
@@ -827,9 +832,9 @@ DB-16/17/18/19/20 + SC.full-phase-contract + SC.playlist-import-contract -> DB-2
 
 DB-21's P1 exit requires only genuinely consumed phase1 APIs; e.g. API visible-point test and future phase2 reads in DB-11 need not delay a parent-approved narrower DB-11 phase1 handoff, but cannot be reported complete. If split, retain stable IDs with explicit acceptance checklist states; do not silently delete the unimplemented obligations. DB-14 needs DB-15 for phase1 album-ID transitions; a no-transition first fixture may demonstrate only a strictly narrower exit, not general phase1 parity.
 
-Recommended **serial** writer order (DB-01/02/03/00, DB-04…DB-10/DB-12/DB-13 are landed at `f80b9704`; the spine now
-resumes at decision-gated **DB-11**): DB-01 -> DB-02 -> DB-03 ->
-DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**). Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10 and the DB-12 subset are landed; DB-11 remains **not assignable** until `D-CURSOR`/`D-SCOPE` are recorded. DB-22 is independently ready: its prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`; parent must serialize the next writer.
+Recommended **serial** writer order (DB-01/02/03/00, DB-04…DB-10/DB-12/DB-13 are landed at `f80b9704`, DB-22 at `272c9c66`;
+the spine now resumes at **DB-11**, launchable because `D-CURSOR`/`D-SCOPE` are recorded in `../decisions.md` (`8b5b3925`)):
+DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**). Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10, the DB-12 subset and DB-22 `272c9c66` are landed, and the SC-02 partial landed at `e3e0770a` (a partial slice: no scanner entrypoint or ingest, not SC-01/SC-02 completion); DB-11 is launchable once the parent serializes its writer. DB-22's prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`.
 
 ## MUST-answer questions before relevant launch
 
@@ -984,7 +989,9 @@ either — annotations ride album/mediafile (`DB-15`), so no gap there.
 > inventory. Re-measured at `4ab63cd5`, `share` and `user_props` execute on **raw connections** outside the shared
 > `execution` helper, so they are no longer zero-execution; at that historical boundary the render-only set was `artwork`,
 > `genre`, `playqueue`, `plugin` (scope pending), `scrobble`, `smart_playlist`. At `f80b9704`, DB-12 executes artwork
-> invalidation, leaving five render-only modules (artwork reads still pending). See `../current-status.md` for the re-count.
+> invalidation, leaving five render-only modules (artwork reads still pending); DB-22 `272c9c66` then executed genre,
+> scrobble and playqueue reads, and D-PLUGIN (`decisions.md`, record `89b72894`) decided `plugin_repo.rs` is out-of-scope
+> dead code to delete (not yet executed). See `../current-status.md` for the re-count.
 
 Near-term order after this commit, all DB-owned **(superseded 2026-11-19: DB-01 LANDED `f57ae050`,
 DB-03 / D-OPEN LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only LANDED `ab466928`, DB-02 LANDED

@@ -4,13 +4,17 @@
 
 **NOT IMPLEMENTATION AUTHORIZATION.** Read-only plan for #24 + the minimum #33 construction graph, #27A, and bounded later #27 packages. Baseline `60cdd18402c0fd4b09b65e0b64ca494330501c02`, existing workspace `wks_7bb3344766422a39`, host `srv_QsD9e1TgIsNq`, parent `4920ad4e-8f0f-4982-92e6-8fceee49afdd`. No repository edits, tests, server/oracle launches, delegation, worktrees, commits, or pushes were performed. Only this report was written in `/tmp`. All implementation signatures below explicitly called **proposed** are designs, not existing public API.
 
-> **Status pointer (2026-11-19):** baseline below is `60cdd184`; the source baseline is now integrated `master`
-> `f80b9704`: DB-10 `65072b89`/`6e5ca97d` and DB-12 artwork invalidation/enqueue subset `e5d0592d` (rustdoc fix
-> `f80b9704`) are LANDED, still no production scanner caller or artwork worker/full scanner. SC-02 remains outstanding,
-> DB-11 remains gated on unrecorded `D-CURSOR`/`D-SCOPE`; DB-22's former DB-12 ownership block is released (see index).
-> Latest parent gates: fmt/workspace clippy/tests/docs pass, 2159/0/1 across 87 workspace suites, `nd-db` docs retain 22
-> warnings; named logs and historical measurements are in `../current-status.md`. Package
-> statuses here are planner-time. **One planner-time row below is superseded:** the "Login integration defect" entry in §1
+> **Status pointer (2026-11-20):** baseline below is `60cdd184`; the source baseline is now integrated `master`
+> `e3e0770a`: DB-10 `65072b89`/`6e5ca97d`, DB-12 artwork invalidation/enqueue subset `e5d0592d` (rustdoc fix
+> `f80b9704`), DB-22 `272c9c66` and the **SC-02 partial `e3e0770a`** (local walker, `.ndignore`, folder hash,
+> cancellation — a partial slice: no scanner entrypoint, `MusicFS`/`ReadTags` dispatch or tag-to-DB ingest, and **not**
+> SC-01/SC-02 completion) are LANDED; still no production scanner caller or artwork worker/full scanner.
+> `D-CURSOR`/`D-SCOPE` are recorded in `../decisions.md` (corrected record `8b5b3925`), so DB-11 is launchable once the
+> parent serializes its writer; DB-22's former DB-12 ownership block is released (see index).
+> Latest parent gates at `e3e0770a`: fmt, workspace clippy and workspace tests pass — **2276/0/1 across 92 workspace
+> suites**; `nd-scanner` docs report 4 pre-existing warnings. Named logs and historical measurements are in
+> `../current-status.md`. Package statuses here are planner-time. **One planner-time row below is superseded:** the
+> "Login integration defect" entry in §1
 > (audience-less `create_token`, `check_api_claims` rejecting it, `http_auth.rs` expecting rejection) described `60cdd184`.
 > **BOOT-02 LANDED at `c6e220eb` + merge `162fae1d`**: `login.rs` now mints through
 > `Authenticator::create_native_session_token` (`credentials.rs:163`, native audience + checked positive `exp`), so a login

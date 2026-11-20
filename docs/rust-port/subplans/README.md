@@ -1,4 +1,4 @@
-# Subplan index — the one task/dependency map (baseline integrated `master` `f80b9704`, updated 2026-11-19)
+# Subplan index — the one task/dependency map (baseline integrated `master` `e3e0770a`, updated 2026-11-20)
 
 **Planning authority, NOT implementation authorization.** This file is the parent-owned index that reconciles the four
 technical subplans into a single task graph, resolves the semantic prerequisite aliases each lane invented into actual
@@ -12,8 +12,8 @@ Lane files (verbatim planner output, parent-published):
 
 | File | Covers | Packages | Verdict |
 | --- | --- | --- | --- |
-| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` (partial). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** **DB-22 LANDED `272c9c66` (executed genre/scrobble/playqueue/artwork reads; narrow-read subset per C5 — not full Go parity).** DB-11 is next in spine order but NOT assignable: unrecorded `D-CURSOR`/`D-SCOPE`. DB-14 stays blocked on `SC.folder-write-batch-contract` |
-| [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY; a local-FS storage subset LANDED `e9dd8230`/`ff5b9c92` (**not** SC-01/02 completion). The SC-02 remainder is IN FLIGHT on `rust-sc02-local-walker` (base `60be7534`, behind `master`, all work **uncommitted**): two review rounds passed (second-round verdict: all S8 items fixed; S9 merge gate closed at `b1aeea2c`), and a small S9 test/doc fix round is in progress. Unmerged and unreviewed-on-integrated-tree, so it is not done. |
+| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` (partial). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** **DB-22 LANDED `272c9c66` (executed genre/scrobble/playqueue/artwork reads; narrow-read subset per C5 — not full Go parity).** The **SC-02 partial LANDED `e3e0770a`** (local walker, `.ndignore`, folder hash, cancellation — not SC-01/SC-02 completion, no scanner entrypoint or ingest). DB-11 is next in spine order and launchable: `D-CURSOR`/`D-SCOPE` are recorded in `../decisions.md` (`8b5b3925`), with the parent serializing its writer. DB-14 stays blocked on `SC.folder-write-batch-contract` |
+| [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY. A local-FS storage subset LANDED `e9dd8230`/`ff5b9c92`, and the **SC-02 partial LANDED `e3e0770a`** (fast-forwarded onto `2e7026b2`): bounded local walker, `.ndignore`/ignore policy, folder hashing and cancellation with executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`, and the six approved dependencies recorded in `../decisions.md` S9 (`b1aeea2c`, corrected at `2e7026b2`). **Partial scope**: no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB ingest, full-scan orchestration or watcher — **not** SC-01 ratification, not SC-02 completion, not MusicFS readiness. `SC-01` ratification remains unrecorded, so SC-03+ stay gated. |
 | [`boot-api.md`](boot-api.md) | #24, #33 graph, #27A | BOOT-00…04, API-00…06, API-F1…F7, BOOT-F1 | spec-first; #27A gated. **BOOT-02 landed** `c6e220eb`/`162fae1d` (login mints a native expiring session) — the login-session correction only, **not** full auth/API integration: BOOT-00 and API-04 are `DECISION REQUIRED`, API-00 is READY for specification with launches blocked on BOOT-00, and BOOT-01/03/04 plus API-01/02/03/05/06 are BLOCKED; no router is mounted. |
 | [`evidence-ops.md`](evidence-ops.md) | parity residual + #03/#31 | EVID-01…08, OPS-01…07, FRONT-* | mostly BLOCKED/decision; EVID-01's snapshot/contract amendments largely folded into these docs |
 
@@ -123,7 +123,8 @@ Dependency order: `DB-01` (**LANDED `f57ae050`**) → `DB-02` (**LANDED `6d9d984
 `4a8aac9f`**) → `DB-00` (**LANDED `48e65806`/`ec84c176`, additive seam**) → `DB-04` (**LANDED `c791dbc1`**) → `DB-05`
 (**LANDED `60be7534`**) → `DB-06` (**LANDED `bfdcfeca`**) → `DB-07` (**LANDED `2911b9ab`/`9be6ad0e`**) →
 `DB-08` (**LANDED `32c4fa5b`/`320b8b03`**) → `DB-09` (**LANDED `d938d159`/`842c32a2`**) → `DB-10` (**LANDED
-`65072b89`/`6e5ca97d`**) → `DB-11` (**decision-gated, unrecorded `D-CURSOR`/`D-SCOPE`, not assignable**) → `DB-12`
+`65072b89`/`6e5ca97d`**) → `DB-11` (**next, launchable: `D-CURSOR`/`D-SCOPE` recorded in `../decisions.md`
+(PARENT DECIDED 2026-11-20, corrected record `8b5b3925`); parent still serializes its writer**) → `DB-12`
 (**LANDED executed subset `e5d0592d`, rustdoc fix `f80b9704`**) → `DB-15` → `DB-14` → `DB-21(P1-DB)`.
 `DB-15`'s **render-only** rating repair LANDED at `ab466928` and does **not** complete DB-15: the typed
 annotation reassignment/merge transactions, annotation reads, and executed read-back remain.
@@ -131,20 +132,12 @@ annotation reassignment/merge transactions, annotation reads, and executed read-
 `DB-16 → 17 → 18 → 19 → 20`
 extend phase 2+/GC for the full-scanner exit.
 
-### Step 2 — scanner (gated on DB releases; a local-FS subset has landed, the walker remainder is in flight)
-
+### Step 2 — scanner (gated on DB releases; a local-FS subset and the SC-02 partial have landed)
 `SC-00/01` decisions → `SC-02` → `SC-03` → **`SC-05` first vertical** (needs the DB phase-1
 write subset + DB-11/typed folder query) → `SC-04` → `SC-06` complete phase 1 → `SC-07` →
 `SC-08` → (`PL-SERVICE` #23, then) `SC-09` → (`DB-20` released, then) `SC-10` → `SC-11` →
 `SC-14` integrated in-process release. `SC-12/13` recorded early but off the critical path.
-A local-filesystem storage/symlink-safe-classification subset LANDED at `e9dd8230`/`ff5b9c92` (std-`fs` list/stat/read/`read_link`/resolve/exists, `file://` URI parsing — no walker, `.ndignore`, hashing or cancellation); it is a
-prerequisite-independent slice, **not** SC-01 ratification or SC-02 completion. The SC-02 remainder (walker, ignore policy,
-folder hashing) is IN FLIGHT on `rust-sc02-local-walker` in an approved isolated worktree — **uncommitted, 0 commits ahead
-of `master`, and based on `60be7534`, i.e. 15 commits behind the `f80b9704` baseline**, so it needs a rebase/merge before
-integration and its scoped `Cargo.toml`/`Cargo.lock` edges must be re-checked against the integrated lockfile. It is
-**blocked, not done**: the only review artifact is a `/tmp` report on that uncommitted diff (`/tmp/nav-sc02-final-review.md`,
-verdict **request changes**), and nothing in this docs lane confirms any of its findings is fixed. `SC-01` ratification is
-also still unrecorded, so SC-03+ remain gated.
+A local-filesystem storage/symlink-safe-classification subset LANDED at `e9dd8230`/`ff5b9c92` (std-`fs` list/stat/read/`read_link`/resolve/exists, `file://` URI parsing); it was a prerequisite-independent slice, **not** SC-01 ratification or SC-02 completion. **The SC-02 remainder (bounded walker, `.ndignore` ignore policy, folder hashing, cancellation) LANDED at `e3e0770a`**, fast-forwarded onto `2e7026b2` after rebase and re-review; the parent's gates at that HEAD are recorded in `../current-status.md`. That is still **partial**, not SC-02 completion: no scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration or watcher. `SC-01` ratification remains unrecorded, so SC-03+ remain gated.
 
 ### Step 3 — boot/API (Track A early; Track B last)
 
@@ -173,16 +166,18 @@ step now that code has landed.
 
 ---
 
-## Current assignable packages (as of `f80b9704`)
+## Current assignable packages (as of `e3e0770a`)
 
 **LANDED:** DB-10 signed implementation `65072b89` / signed merge `6e5ca97d`; DB-12 signed implementation `e5d0592d`
 fast-forwarded, rustdoc fix `f80b9704`. Parent reports DB-10 review APPROVE with P3s fixed and DB-12 APPROVE after test fixes.
 Neither has a production scanner caller; DB-12 is not a worker/full scanner. Former DB-10/12 worktrees and branches are
 absent on the final verified worktree/ref check (external cleanup during this refresh, not performed by this lane).
 
-**Outstanding:** SC-02 at `rust-sc02-local-walker`, base `60be7534`, 15 behind / 0 ahead, 5 modified tracked and 8 untracked
-files. Request-changes review is on the uncommitted diff, not the integrated tree. Rebase/merge onto `f80b9704`, re-check
-manifest/lock edges and re-review before integration; no findings claimed fixed. See `../next-work.md` for worktree details.
+**LANDED since that row, partial scopes:** the **SC-02 partial** at `e3e0770a` (fast-forwarded onto `2e7026b2`): local
+walker, `.ndignore`/ignore policy, folder hash and cancellation in `nd-scanner` with executed walker/ignore/hash/seam tests,
+manifest/lock delta limited to the six approved dependencies (`decisions.md` S9, `b1aeea2c`; corrected S9b `2e7026b2`).
+It is a partial slice — **not** SC-01 ratification, SC-02 completion or MusicFS readiness — and the former
+`rust-sc02-local-walker` worktree and branch are now absent (parent-controlled merge, then cleanup).
 
 **Landed since `ff900d3e`, partial scopes:** `DB-15` render-only repair `ab466928` (full annotation service NOT done),
 scanner local-FS subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02), `DB-00` typed seam `48e65806`/`ec84c176` (seam only),
@@ -199,8 +194,9 @@ statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` wr
 **Ready now:**
 
 * **DB-22 LANDED `272c9c66`** (parent-validated 2026-11-20): executed genre/scrobble/playqueue/artwork reads with Go-compatible scalar codecs, strict timestamp scanning, BLOB-coercion fixtures, an allowlisted safe sort, and all-or-error queue chunks. C5 documents the narrow boundary (no expression/random sorts, no optioned Genre reads).
-* **DB-11 is next in the spine but decision-gated:** all code prerequisites including DB-10 landed, but `D-CURSOR` and
-  `D-SCOPE` remain unrecorded in `../decisions.md`. DB-14 stays blocked on `SC.folder-write-batch-contract`; DB-15 runtime
+* **DB-11 is next in the spine and now launchable:** all code prerequisites including DB-10 landed, and `D-CURSOR` and
+  `D-SCOPE` are recorded in `../decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`); the parent still
+  serializes its writer. DB-14 stays blocked on `SC.folder-write-batch-contract`; DB-15 runtime
   is READY but parent-sequenced after DB-11, not technically blocked; DB-16…20 retain later decisions (`D-STATS`, `D-GC`) and DB-11 dependencies.
 * **`SC-00` / `API-00`** (read-only/spec) — oracle manifest + native wire-contract capture, pending the
   oracle-authorization decision above.
@@ -212,7 +208,8 @@ statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` wr
 executed transcoding reads `f8ceeb8f`, `DB-00` `48e65806`/`ec84c176`, `DB-02` `6d9d984d`/`74ebd81c`, `DB-04` `c791dbc1`,
 `DB-05` `60be7534`, `DB-06` `bfdcfeca`, `DB-07` `2911b9ab`/`9be6ad0e`, `DB-08` `32c4fa5b`/`320b8b03`, `DB-09`
 `d938d159`/`842c32a2`, `DB-13` `eae4ba1d`/`4ab63cd5`, `BOOT-02` `c6e220eb`/`162fae1d`. Historical gates at `4ab63cd5` are
-recorded in [`../current-status.md`](../current-status.md); latest parent gates at `f80b9704` are recorded there as well.
+recorded in [`../current-status.md`](../current-status.md); the latest parent gates at `e3e0770a` (92 suites, 2276/0/1) and
+the earlier `f80b9704` block are recorded there as well.
 
 Everything else waits on a recorded decision or an earlier release. Implementation assignments go one writer per
 checkout (or one per approved isolated worktree), each with its own fresh review and parent verification.

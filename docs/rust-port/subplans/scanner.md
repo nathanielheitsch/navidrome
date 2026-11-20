@@ -2,12 +2,14 @@
 
 Baseline: `master` / `60cdd184` (package `Status:` lines below are planner-time and are superseded where they conflict
 with [`../current-status.md`](../current-status.md) and [`../subplans/README.md`](../subplans/README.md), 2026-11-19;
-the source baseline has since advanced to integrated `master` `f80b9704` — DB-04…DB-09 `c791dbc1`/`60be7534`/`bfdcfeca`/
+the source baseline has since advanced to integrated `master` `e3e0770a` — DB-04…DB-09 `c791dbc1`/`60be7534`/`bfdcfeca`/
 `2911b9ab`+`9be6ad0e`/`32c4fa5b`+`320b8b03`/`d938d159`+`842c32a2`, DB-13 `eae4ba1d`+`4ab63cd5` and BOOT-02
-`c6e220eb`+`162fae1d` are landed there, as are DB-10 `65072b89`/signed merge `6e5ca97d` and DB-12 artwork
-invalidation/enqueue subset `e5d0592d` (fast-forward, rustdoc fix `f80b9704`), no production scanner callers — and settled
-decisions live in [`../decisions.md`](../decisions.md); note that `D-CURSOR`, `D-SCOPE` and `SC-01` ratification still have
-no canonical record there, so packages gated on them stay blocked).
+`c6e220eb`+`162fae1d` are landed at the `f80b9704` boundary, as are DB-10 `65072b89`/signed merge `6e5ca97d` and DB-12
+artwork invalidation/enqueue subset `e5d0592d` (fast-forward, rustdoc fix `f80b9704`), no production scanner callers;
+`272c9c66` adds DB-22, and `e3e0770a` adds the **SC-02 partial** (local walker, `.ndignore`, folder hash, cancellation —
+a partial slice, **not** SC-01 ratification, SC-02 completion or MusicFS readiness). Settled decisions live in
+[`../decisions.md`](../decisions.md): `D-CURSOR`/`D-SCOPE` are recorded there (PARENT DECIDED 2026-11-20, corrected record
+`8b5b3925`), but **`SC-01` ratification still has no canonical record**, so packages gated on SC-01 stay blocked).
 Issue workspace `wks_7bb3344766422a39` on host `srv_QsD9e1TgIsNq`; the parent owns integration.
 Prepared READ-ONLY. Source inspection only; **no builds, tests, probes, formatting, repository edits, commits, or pushes were executed**. Only `/tmp` report/index files were written. Test names below are inspected source, not passing-test claims. All new signatures, modules, tests and recipes below are **proposals**, not existing public APIs or approved dependency changes.
 
@@ -53,7 +55,8 @@ For SQL predicates the scanner supplies typed inputs only. DB owns ordered binds
 > DB-12 delete-for-items and enqueue variants (`e5d0592d`, rustdoc fix `f80b9704`). DB-10 empty-ID Match miss mints inside
 > each tx attempt; retries may mint different GUIDs, failed attempts publish no ID, only committed result returns ID.
 > BUSY coverage rejects initial INSERT before junction/FTS, not commit failure after a completed bundle. DB-12 is not
-> worker/full scanner completion. **Still unreleased:** typed filtered reads/cursors (DB-11, unrecorded `D-CURSOR`/`D-SCOPE`)
+> worker/full scanner completion. **Still unreleased:** typed filtered reads/cursors (DB-11 — `D-CURSOR`/`D-SCOPE` are
+> recorded in `../decisions.md` (`8b5b3925`), so it is launchable once the parent serializes its writer)
 > and GC (DB-20). Released primitives remain caller-trusted (no scope/auth/commit), with no production scanner caller.
 
 Source refinements for assignments below: existing `nd-db/Cargo.toml:18-23` actually pins `rusqlite=0.32` with bundled/chrono/etc and `chrono=0.4`; proposed scanner dependencies must match that compatible type/features, not workspace's unused `chrono="^2"` placeholder. Actual schema junction names are confirmed `library_artist` and `library_tag` (`nd-dbschema/src/schema_ddl.rs:62-63`). Queue assertions concern `(item_kind,item_id,image_type)`, priority and retry/enqueued timestamps (`schema_ddl.rs:50`); artwork `source` is checked on `item_artwork` (`:51`), not an invented queue source column. Pure aggregate source-test anchors include `model/mediafile_test.go:221` frequency/appearance order, `:272,284,293` ReplayGain non-NULL/real-zero/absent, `:324` participants, and `:373,394,415,441` cover selection. Every dependency expression referring to “DB phase1 subset” also requires **DB every-handle connection policy** above.
@@ -134,23 +137,34 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** `cargo test --locked -p nd-scanner --test contract`; V. Any dependency unavailable offline/locked is a decision blocker, not permission to resolve new packages.
 10. **Review/done/report:** R, signed-off interface/error/dependency decision table and no unintended manifest/lock delta. Do not launch dependent writers until ratified.
 
-## SC-02 — Local storage, symlink-safe classification, ignore/walk snapshots — **IN FLIGHT, UNMERGED** (planner-time status BLOCKED; only the local-FS subset is on `master`)
+## SC-02 — Local storage, symlink-safe classification, ignore/walk snapshots — **PARTIAL LANDED `e3e0770a`** (planner-time status BLOCKED; local-FS subset `e9dd8230`/`ff5b9c92`, then the walker/ignore/hash/cancellation slice at `e3e0770a`)
 
+> **2026-11-20 (SC-02 partial LANDED at `e3e0770a`):** the walker remainder — bounded postorder local walker, `.ndignore`
+> ignore policy, folder hashing and cancellation — is **LANDED on `master`** at `e3e0770a` (fast-forwarded onto `2e7026b2`
+> after rebase), as `contract.rs`/`walk.rs`/`ignore.rs`/`folder.rs` plus the `lib.rs`/`storage.rs` seam and executed
+> `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`; the six approved dependencies and the manifest/lock
+> delta are recorded in `../decisions.md` S9 (`b1aeea2c`, corrected at `2e7026b2`). Parent gates at that HEAD are in
+> `../current-status.md`. **This is a partial slice, not SC-02 completion:** there is still no scanner entrypoint,
+> `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration or watcher, and `SC-01` ratification
+> remains unrecorded — so the contract items below remain the acceptance bar for the full package and SC-03+ stay gated.
+> The `2026-11-19` lane-state block below is **historical**.
+>
 > **2026-11-19:** a **local-FS storage/symlink-safe-classification subset** LANDED at `e9dd8230` (merge `ff5b9c92`).
 > It is a scoped subset — std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI
-> parsing and symlink classification only; the walker, `.ndignore`/ignore policy, folder hashing and cancellation are
-> **not implemented**. **Not** SC-01 ratification and **not** SC-02 completion; the contract items below still stand as
-> the acceptance bar for the full package.
+> parsing and symlink classification only; at that commit the walker, `.ndignore`/ignore policy, folder hashing and
+> cancellation were **not implemented** (they landed later at `e3e0770a`). **Not** SC-01 ratification and **not** SC-02
+> completion; the contract items below still stand as the acceptance bar for the full package.
 >
-> **2026-11-19 (lane state at `f80b9704`):** the remainder is IN FLIGHT on `rust-sc02-local-walker` in a user-approved
+> **2026-11-19 (historical lane state at `f80b9704`; superseded by `e3e0770a`):** the remainder was then IN FLIGHT on
+> `rust-sc02-local-walker` in a user-approved
 > isolated worktree — base `60be7534`, **15 commits behind `master`**, 0 commits ahead, and **everything uncommitted**
 > (`contract.rs`, `walk.rs`, `ignore.rs`, `folder.rs` and four new test files are untracked; `Cargo.toml`/`Cargo.lock`,
 > `lib.rs`, `storage.rs`, `tests/local_storage.rs` are modified). It has **no integrated-tree review**: the only review
 > artifact is `/tmp/nav-sc02-final-review.md` on that uncommitted worktree diff, verdict **request changes** (two P1
 > findings — ancestor-`.ndignore` preload fed an absolute OS path, and a `CancelToken` await that can hang — plus P2
 > coverage/observability items). This document records that state only; it does **not** claim any finding is fixed, and it
-> makes no scanner design decision. It must be rebased/merged onto `f80b9704`, re-reviewed after fixes, and parent-merged before
-> any SC-02 claim; its manifest/lock edges need re-checking against the integrated lockfile.
+> makes no scanner design decision. It was rebased and parent-merged at `e3e0770a`, whose manifest/lock edges were
+> re-checked against the integrated lockfile; the findings above are recorded as history, not as an open gate.
 
 1. **Goal/non-goals/prereqs:** real local MusicFS-equivalent and bounded postorder walker; prereq SC-01. No DB writes, remote/object storage plugin implementation, watcher or subprocess. Storage URI registry may reuse existing descriptor but cannot pretend it is fs I/O.
 2. **Starting evidence:** Go `core/storage/interface.go:10-33`, `storage.go:32-83`, `local/local.go:30-109,120-153`; walk `scanner/walk_dir_tree.go:23-351`; ignores `ignore_checker.go:35-161`; hashes `folder_entry.go:72-163`. Rust descriptor `nd-tagreader/src/storage.rs:53-99` preserves paths and only targets Unix; `Extractor::parse(&self,Vec<String>)->HashMap<...>` (`extractors.rs:77`) rejects invalid components and silently skips bad files. Existing Go tests: `walk_dir_tree_test.go:234` nonexistent target retained; `:393` chain resolved; `:403` loop rejected; `:520` legitimate out-of-library audio; `:557` reject non-audio escape; `folder_entry_test.go:392,409` playlist size/mtime hash changes.
@@ -328,7 +342,7 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 ```
 SC-00 READY (oracle/manifest preparation)
    => SC-01 DECISION REQUIRED (deps/API/error/cancel/domain placement)
-      => SC-02 BLOCKED (storage/walk/ignore)
+      => SC-02 PARTIAL LANDED `e3e0770a` (storage/walk/ignore/folder hash/cancellation; entrypoint + ingest still open)
       => SC-03 BLOCKED (Info/stat/library bridge + singleton projection)
              => SC-04 BLOCKED (full pure aggregation/equality; not first fixture gate)
 

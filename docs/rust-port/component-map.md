@@ -1,17 +1,19 @@
 # Component map — Rust port of this navidrome fork
 
-## Current scheduling amendment (2026-11-19, baseline integrated `master` `f80b9704`)
+## Current scheduling amendment (2026-11-20, baseline integrated `master` `e3e0770a`)
 
 Ownership/product mapping below remains useful; **its component arrows and old parallel lanes are not an executable
 task DAG**. Entry point is [`README.md`](README.md); status is [`current-status.md`](current-status.md); milestone order
 is the current section of [`next-work.md`](next-work.md); settled decisions are [`decisions.md`](decisions.md); exact
 prerequisites/decisions/ownership are in `subplans/`. **One writer per checkout** — the user-approved exception is
 parallel **isolated worktrees** with parent-controlled merges — and a verified inherited workspace supersede any
-historical per-file/worktree parallelism. Read-only planning and review may overlap. At `f80b9704`, DB-10 (`65072b89`/`6e5ca97d`) and DB-12's executed artwork invalidation/enqueue subset (`e5d0592d`,
-rustdoc fix `f80b9704`) and **DB-22 `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 narrow boundary) are
-LANDED, with no production scanner callers or worker/full-scanner completion. SC-02 is still unmerged/uncommitted (two
-review rounds passed; S9 gate closed `b1aeea2c`; S9 fix round in flight). `D-CURSOR`/`D-SCOPE` are recorded (PARENT
-DECIDED 2026-11-20), so DB-11 is launchable; D-PLUGIN decided the same day (delete `plugin_repo.rs`).
+historical per-file/worktree parallelism. Read-only planning and review may overlap. At `e3e0770a`, DB-10 (`65072b89`/`6e5ca97d`), DB-12's executed artwork invalidation/enqueue subset (`e5d0592d`,
+rustdoc fix `f80b9704`), **DB-22 `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 narrow boundary) and the
+**SC-02 partial `e3e0770a`** (local walker, `.ndignore`/ignore policy, folder hash, cancellation; fast-forwarded onto
+`2e7026b2`, S9 dependency set `b1aeea2c`, corrected at `2e7026b2`) are LANDED, with no production scanner callers,
+no scanner entrypoint or tag-to-DB ingest, and no worker/full-scanner completion — the SC-02 slice is **not** SC-01
+ratification, SC-02 completion or MusicFS readiness. `D-CURSOR`/`D-SCOPE` are recorded (PARENT
+DECIDED 2026-11-20, corrected record `8b5b3925`), so DB-11 is launchable; D-PLUGIN decided the same day (delete `plugin_repo.rs`).
 
 In particular: C10's cancelled C29 edge must not gate scanner work; C10/C19 scanner/playlist relationships must be
 split into phase-1 ingest, playlist import service, and later phase-4 integration; C22/C30 construction/service
@@ -163,7 +165,7 @@ cancelled components (C20/C23/C28/C29/C32) own nothing.
 | C — process/media adapters | C11 `nd-ffmpeg`, C08 `nd-tagreader`, C18 lyric parsers | mpv-IPC half retired with `D-PLAYER26`; declared tagreader gaps stand |
 | D — credential model | C07 `nd-auth` | Components landed; the login native-audience defect is **closed** at BOOT-02 `c6e220eb`/merge `162fae1d` (crate-test round-trip only, no mounted router); HTTP key middleware is an API-01 package |
 | E — media decision + serving | C12 → C13 `nd-stream` → C24 `nd-public` | #15 complete at crate level, **not HTTP-ready** (API-04/API-05 seams); share surface is later work |
-| F — scan pipeline | C09 `nd-mapping` → C10 `nd-scanner` → C14 `nd-artwork` | Scanner scaffold; a local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (**not** SC-01/02 completion); the SC-02 remainder is in flight on `rust-sc02-local-walker` (uncommitted, 15 commits behind `master`, request-changes review) and is not done; aggregation/equality bridge owned by the scanner plan (`decisions.md` S4) |
+| F — scan pipeline | C09 `nd-mapping` → C10 `nd-scanner` → C14 `nd-artwork` | Scanner scaffold: a local-FS storage subset landed at `e9dd8230`/`ff5b9c92`, then the **SC-02 partial LANDED `e3e0770a`** (bounded walker, `.ndignore` policy, folder hash, cancellation; partial — no entrypoint, `MusicFS`/`ReadTags` dispatch or ingest, **not** SC-01/02 completion); aggregation/equality bridge owned by the scanner plan (`decisions.md` S4) |
 | G — wire surfaces | C22 `nd-api` (**TRUNK**), C25 `nd-ui-contract` | Scaffolds; capture native response-shape goldens from the Go binary before handlers (the Subsonic `.snapshots/` gate nothing — reference data only) |
 | I — satellites | C16 scrobbler, C17 external-metadata + matcher, C19 playlists, C15 players (session half only), C21 `nd-http`, C31 diagnostics, C30 `nd-cli` (stub) | Each needs its own scoped plan (`FRONT-*`); no mpv/socket/process-reap scope in any lane; deferrable C31 must not gate #27A |
 

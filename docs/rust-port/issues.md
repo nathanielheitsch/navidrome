@@ -33,14 +33,20 @@ Global rules:
 
 ---
 
-## Current progress authority (baseline integrated `master` `f80b9704`, updated 2026-11-19)
+## Current progress authority (baseline integrated `master` `e3e0770a`, updated 2026-11-20)
 
 Use [`README.md`](README.md) for the read order, [`current-status.md`](current-status.md) for measured capability axes,
 [`next-work.md`](next-work.md) for the current milestone order and live wave, [`decisions.md`](decisions.md) for settled
 decisions, and [`subplans/`](subplans/) for bounded technical assignments. The issue descriptions below retain
 ownership/product scope, **not** current implementation readiness or permission to launch all dependencies.
 
-- Latest parent gates at `f80b9704`: fmt/workspace clippy/tests/docs pass, **2159 / 0 / 1 across 87 suites**, `nd-db`
+- Latest parent gates at `e3e0770a` (**SC-02 partial** — local walker, `.ndignore`, folder hash, cancellation — fast-forwarded
+  onto `2e7026b2`): workspace tests **2276 / 0 / 1 across 92 suites**, `cargo fmt --all -- --check`, workspace clippy
+  (`--all-targets --all-features -- -D warnings`) and `git diff --check` clean, `nd-scanner` rustdoc **4 pre-existing**
+  warnings (none new from that slice). These are parent integration results on the integrated main checkout; this docs lane
+  did not re-run Cargo. Prior dated block at `272c9c66` (DB-22): **2171 / 0 / 1 across 88 suites**, `nd-db` docs **23**
+  pre-existing rustdoc warnings. Older dated blocks below are history, not current readiness.
+- Earlier parent gates at `f80b9704`: fmt/workspace clippy/tests/docs pass, **2159 / 0 / 1 across 87 suites**, `nd-db`
   retains **22 rustdoc warnings** (no net increase after `f80b9704`). Logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`;
   workspace test total independently tallied here. Historical direct gates at `4ab63cd5`: workspace **2114 / 0 / 1** across
   **85** suites, `nd-db --all-targets` **929 / 0 / 0** across **40** suites (doctests **6** on a separate axis, not
@@ -53,7 +59,11 @@ ownership/product scope, **not** current implementation readiness or permission 
   `6a201f4a`, `f210431f`, `a8e4d57c`, `60cdd184`). All eight row hooks and substantial reads execute, and since `4ab63cd5`
   so do executed transaction-bound writes; typed specialized scanner reads and GC do not.
 - LANDED since `ff900d3e` with **partial** scopes: DB-15 render-only rating repair `ab466928` (full DB-15 annotation
-  service NOT done), scanner local-FS storage subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02 completion), DB-00 typed
+  service NOT done), scanner local-FS storage subset `e9dd8230`/`ff5b9c92`, and the **SC-02 partial `e3e0770a`** (bounded
+  local walker, `.ndignore`/ignore policy, folder hash, cancellation with executed walker/ignore/hash/seam tests; the six
+  approved dependencies recorded in `decisions.md` S9 at `b1aeea2c`, corrected at `2e7026b2`). Neither scanner slice is
+  SC-01 ratification or SC-02 completion: there is still no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB
+  ingest, full-scan orchestration or watcher. DB-00 typed
   transaction/error seam `48e65806`/`ec84c176` (seam only, not the DB lane), DB-02 `6d9d984d`/`74ebd81c`, and the executed
   write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08
   `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5`. None of the `*_in_tx` primitives has a
@@ -62,7 +72,8 @@ ownership/product scope, **not** current implementation readiness or permission 
   DB-02 left two known residuals: scrobble-buffer integer stamps and no executed pin for
   `find_recent_files_by_properties_sql`.
 - Real tag parsing and mapping, auth components, and #15 handler/cache/limiter/archiver exist at crate level.
-  Scanner/HTTP/API remain scaffolds and the CLI main is empty. **BOOT-02 landed** `c6e220eb`/`162fae1d`: login mints a
+  Scanner holds the SC-02 partial walker slice (`e3e0770a`) but no entrypoint or ingest; HTTP/API remain scaffolds and the
+  CLI main is empty. **BOOT-02 landed** `c6e220eb`/`162fae1d`: login mints a
   native expiring session token, so the login-audience gap is closed — but that is **not** full auth/API integration. HTTP
   API-key extraction/issuance middleware, a mounted router, and stream HTTP commitment/Send still need explicit packages
   (BOOT-00/01/03/04, API-00…06); do not call those components absent or assume they mount unchanged.
@@ -71,10 +82,12 @@ ownership/product scope, **not** current implementation readiness or permission 
   **all four landed**, and DB-04…DB-10/12/13 are landed too. DB-10 signed `65072b89` / signed merge `6e5ca97d` executes
   identity/base/junction writes; DB-12 signed `e5d0592d` (fast-forward, rustdoc fix `f80b9704`) executes only artwork
   invalidation/enqueue, not worker/full scanner. Neither has a production scanner caller. The spine resumes at **DB-11**,
-  **not assignable** until `D-CURSOR`/`D-SCOPE` are recorded. DB-22 LANDED `272c9c66` (executed genre/scrobble/
+  **launchable** — `D-CURSOR`/`D-SCOPE` are recorded in `decisions.md` (PARENT DECIDED 2026-11-20, corrected record
+  `8b5b3925`) — once the parent serializes its writer. DB-22 LANDED `272c9c66` (executed genre/scrobble/
   playqueue/artwork reads; C5 narrow-read boundary).
-  SC-02 remains unmerged/uncommitted (two review rounds passed; S9 gate closed `b1aeea2c`; S9 fix round in flight). Full #17 also requires
-  moves/stats/playlists/GC/lifecycle.
+  The **SC-02 partial is LANDED at `e3e0770a`** (rebase base `2e7026b2`; S9 gate `b1aeea2c`), a partial slice rather than
+  SC-02 completion; the former `rust-sc02-local-walker` worktree/branch are removed. Full #17 also requires
+  a scanner entrypoint, ingest/aggregation, moves/stats/playlists/GC/lifecycle.
 - #27A is a deliberately scoped first runnable slice. Repair, full maintenance, metrics and all full-API services do not
   automatically gate it. Cancelled routes/services stay cancelled. The old build-order list is historical.
 - Decision 6 (fresh service/no upgrade path) supersedes decision 4's historical `migrate-credentials` wording: no
@@ -90,7 +103,7 @@ Do not restore the Go race for parity. Existing auth tests cover concurrent crea
 must preserve the same transaction and separately prove its mounted setup flow. Audit confidence: source/test-body
 inspection plus the parent workspace gate above; no new isolated concurrency run is claimed here.
 
-## Current issue scope (updated 2026-11-19, baseline integrated `master` `f80b9704`)
+## Current issue scope (updated 2026-11-20, baseline integrated `master` `e3e0770a`)
 
 Dated crate states below are **scope snapshots**, not launch permission. Measured gates, capability axes and remaining
 blockers live in [`current-status.md`](current-status.md); order and the live wave in [`next-work.md`](next-work.md);
@@ -106,7 +119,7 @@ index. Long-running truth worth keeping per issue is summarized in one row each.
 | #02 | `nd-id` | DONE — id/artwork/participant schemes |
 | #03 | `nd-conf` | DONE — keys/config/dir/bytes/duration/crontab/consts; `EnableTranscodingConfig` carried-but-unused |
 | #04 | `nd-dbschema` | PARTIAL — fresh DDL (all 80 index rows, 8 recovered columns via `15426bbc`), marker-guard migration runner, `optimize.rs`/`backup.rs` green; `db/repair.go` (367L FTS5 verify/repair) **explicitly deferred** as its own lane; golden DDL re-derivation pending (`OPS-01`); DB-03 landed here (`4a8aac9f`) |
-| #05 | `nd-db` | PARTIAL — execution seam (`3ce1b154`), store/pool, all 23 repositories shaped, `criteria_sql.rs` (2536 lines porting the 904-line Go `persistence/criteria_sql.go`), shared marshal + hydration + 8 hooks landed; substantial executed reads incl. transcoding (`f8ceeb8f`) **and twenty-two executed transaction-bound `*_in_tx` writes landed** (property `c791dbc1`, library + scan lifecycle `60be7534`, tag `bfdcfeca`, folder/media missing-state + album touch `2911b9ab`/`9be6ad0e`, artist `32c4fa5b`/`320b8b03`, album `d938d159`/`842c32a2`, user epoch revoke `eae4ba1d`/`4ab63cd5`) with **no production caller**; DB-10 `put_mediafile_in_tx` LANDED `65072b89`/`6e5ca97d`; DB-12 artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers; typed scanner queries/GC remain. `DB-01` landed `f57ae050`; `DB-00` `48e65806`/`ec84c176` and `DB-02` `6d9d984d`/`74ebd81c` are **landed**, not in flight; five modules render-only (`genre`, `playqueue`, `plugin` — scope pending, `scrobble`, `smart_playlist`); artwork reads remain unexecuted in the repo, but DB-12 invalidation executes; `share`/`user_props` execute on raw connections outside the shared helper |
+| #05 | `nd-db` | PARTIAL — execution seam (`3ce1b154`), store/pool, all 23 repositories shaped, `criteria_sql.rs` (2536 lines porting the 904-line Go `persistence/criteria_sql.go`), shared marshal + hydration + 8 hooks landed; substantial executed reads incl. transcoding (`f8ceeb8f`) **and twenty-two executed transaction-bound `*_in_tx` writes landed** (property `c791dbc1`, library + scan lifecycle `60be7534`, tag `bfdcfeca`, folder/media missing-state + album touch `2911b9ab`/`9be6ad0e`, artist `32c4fa5b`/`320b8b03`, album `d938d159`/`842c32a2`, user epoch revoke `eae4ba1d`/`4ab63cd5`) with **no production caller**; DB-10 `put_mediafile_in_tx` LANDED `65072b89`/`6e5ca97d`; DB-12 artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers; typed scanner queries/GC remain. `DB-01` landed `f57ae050`; `DB-00` `48e65806`/`ec84c176` and `DB-02` `6d9d984d`/`74ebd81c` are **landed**, not in flight; `DB-22` `272c9c66` executed genre/scrobble/playqueue/artwork reads, so **two** modules are render-only (`plugin` — D-PLUGIN decided deletion at `89b72894`, not yet executed; `smart_playlist` — not a separate Go repository); artwork item-image lookup and invalidation execute, and `share`/`user_props` execute on raw connections outside the shared helper |
 | #06 | `nd-model` | DONE — DTOs + criteria DSL (`fields.rs`, `operators.rs`, `criteria.rs`, 35 crate tests); the abandoned `docs/rust-port/drafts/` copies were deleted 2026-11-19 |
 | #07 | `nd-ffmpeg` | PARTIAL — args tables byte-exact, ffprobe JSON parser, FLAC STREAMINFO patcher, process-group spawn/SIGKILL teardown (`8152ac5a`), `MockFFmpeg` double, live container fixtures; symlink-chain and `invalid-files` fixture cases uncovered; `patchFLACDuration` deferred to the consumer |
 | #08 | `nd-tagreader` | DONE at crate level — real lofty `=0.25.5` parsing (`beaf63d7`) replaced the sidecar-only reader, so #16→#17 is unblocked upstream. Declared gaps: ASF/WMA unsupported (error, never a fabricated success), AAC-in-MP4 bit depth 0 vs Go's 16, bitrate estimates differ, MPEG-frame-timestamp SYLT skipped |
@@ -117,7 +130,7 @@ index. Long-running truth worth keeping per issue is summarized in one row each.
 | #14 | `nd-stream` decision half | DONE — decision tables, HS256 stream token, `ProbeInput` keeps `make_decision` infallible |
 | #15 | `nd-stream` serving half | **COMPLETE at crate level** (`d19526e3`) — Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body, limiter, archiver (Go `archive/zip` oracle), HTTP handler, transcoding-file cache. **Not HTTP-ready**: `prepare` privacy, header-commitment and `Send` adapter seams need API-04/API-05 |
 | #16 | `nd-mapping` | DONE at crate level (`b419472b`) — Go oracle-pinned `Info → Metadata → MediaFile`; 11 declared divergences; pair-tag map-order hazard (`decisions.md` O2). No ingest caller |
-| #17 | `nd-scanner` | SCAFFOLD; local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (not SC-01/02 completion). The SC-02 remainder (walker, `.ndignore` policy, folder hash) is **in flight, unmerged and uncommitted** on `rust-sc02-local-walker` (base `60be7534`, 15 commits behind `master`) with a **request-changes** review on that uncommitted diff — not done. Minimum executed surface is 8 repos + 1 mapper (`decisions.md` S1); gob carries `ProgressInfo` only |
+| #17 | `nd-scanner` | SCAFFOLD with two landed partial slices: local-FS storage subset `e9dd8230`/`ff5b9c92`, then the **SC-02 partial LANDED `e3e0770a`** (fast-forwarded onto `2e7026b2`) — bounded local walker, `.ndignore`/ignore policy, folder hash and cancellation with executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs` and the six approved dependencies recorded in `decisions.md` S9 (`b1aeea2c`, corrected `2e7026b2`). Still **not** SC-01 ratification or SC-02 completion: no scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration or watcher. Minimum executed surface is 8 repos + 1 mapper (`decisions.md` S1); gob carries `ProgressInfo` only |
 | #18 | `nd-http` | SCAFFOLD — BOOT-03 |
 | #19/#20/#21/#22/#23 | artwork, scrobbler, external metadata, lyrics fetch, playlists service | Not started; each needs its own plan when scoped (`FRONT-*`) |
 | #24/#33 | boot + service graph | Not started; BOOT-00 decision outstanding |

@@ -4,18 +4,21 @@ Read order and authority: [`README.md`](README.md) → this current section (mil
 [`current-status.md`](current-status.md) (measured evidence) → [`decisions.md`](decisions.md) (binding decisions) →
 `subplans/` (bounded assignments). Everything below the separator is a **dated historical index**, not a scheduler.
 
-## Current execution plan (baseline integrated `master` `272c9c66` (DB-22), re-dated 2026-11-20)
+## Current execution plan (baseline integrated `master` `e3e0770a` (SC-02 partial), re-dated 2026-11-20)
 
-`272c9c66` adds DB-22 (executed genre/scrobble/playqueue/artwork reads, C5 narrow boundary) to the prior boundary `f80b9704`
-which added DB-12 `e5d0592d` (signed implementation, fast-forward), DB-10 `65072b89` (signed implementation) / signed
-merge `6e5ca97d`, and DB-12 rustdoc fix `f80b9704` to the prior boundary:
+`e3e0770a` adds the **SC-02 partial** — the bounded local walker, `.ndignore`/ignore policy, folder hashing and cancellation
+in `nd-scanner`, fast-forwarded onto `2e7026b2` — to the prior boundary `272c9c66`, which added DB-22 (executed
+genre/scrobble/playqueue/artwork reads, C5 narrow boundary) to `f80b9704`;
+`f80b9704` added DB-12 `e5d0592d` (signed implementation, fast-forward), DB-10 `65072b89` (signed implementation) / signed
+merge `6e5ca97d`, and the DB-12 rustdoc fix `f80b9704` to the prior boundary:
 `4ab63cd5` = `74ebd81c` + `f03aff98`/merge `3b5e6c76` (docs consolidation) + `c791dbc1` (DB-04 property writes) +
 `60be7534` (DB-05 library writes + scan lifecycle) + `bfdcfeca` (DB-06 tag dictionary/library links) + `2911b9ab`/merge
 `9be6ad0e` (DB-07 folder missing-state + album touch) + `32c4fa5b`/merge `320b8b03` (DB-08 artist writes + timestamp
 parity) + `d938d159`/merge `842c32a2` (DB-09 atomic album writes) + `c6e220eb`/merge `162fae1d` (BOOT-02 native expiring
 login sessions) + `eae4ba1d`/merge `4ab63cd5` (DB-13 epoch-only revocation). Evidence is in `current-status.md`; this
-section only sets order. Nothing here authorizes implementation, commits, new workspaces, or completion claims. This
-docs lane runs in the **integrated master checkout itself** at `272c9c66`; latest Cargo gates are parent integration
+section only sets order. Nothing here authorizes implementation, commits, new workspaces, or completion claims. The
+**SC-02 partial** is a scoped slice — not SC-01 ratification, SC-02 completion, MusicFS readiness, or a runnable scanner.
+This docs lane runs in the **integrated master checkout itself** at `e3e0770a`; latest Cargo gates are parent integration
 results (logs checked here), while this lane's earlier `4ab63cd5` measurements remain historical.
 
 ### Authority and launch rules
@@ -34,7 +37,7 @@ results (logs checked here), while this lane's earlier `4ab63cd5` measurements r
   read-only review after writing stops, then selected fixes and parent CLI gates. Scratch only in `/tmp`; no automatic
   formatting.
 
-### Landed and verified (dated measurements, in this baseline; latest parent gates at `f80b9704`; earlier docs-lane totals at `4ab63cd5`)
+### Landed and verified (dated measurements, in this baseline; latest parent gates at `e3e0770a` (92 suites / 2276 / 0 / 1); earlier `272c9c66`, `f80b9704` and docs-lane totals at `4ab63cd5` are history)
 
 1. **Sort-gate parity — DONE at `62789ba2`.** Executed REST reads in `player_repo.rs`, `library_repo.rs`, `tag_repo.rs`,
    `radio_repo.rs` take `RestQueryOptions` and parse internally, matching Go; `runtime_rest_sort_gate.rs` proves hostile
@@ -61,7 +64,8 @@ results (logs checked here), while this lane's earlier `4ab63cd5` measurements r
 | Assignment | Commit | Scope actually landed — and what is **not** done |
 |---|---|---|
 | DB-15 **render-only** rating repair | `ab466928` | `update_avg_rating_sql` embeds `average_rating_expr_sql()` with 3 ordered binds, and `tests/runtime_annotation_rating.rs` executes it against a real schema. The three public annotation renderers were deliberately **kept and redocumented** (their `annotation.id` prepare failure pinned), not left undecided. **Full DB-15 is NOT done:** typed annotation reassignment/merge transactions and the annotation read APIs are unimplemented. |
-| Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `nd-scanner/src/storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical-path handling, `file://` URI parsing and explicit symlink classification. **Not implemented:** the walker, `.ndignore`/ignore policy, folder hashing, cancellation, `MusicFS`/`ReadTags`, registry dispatch, watcher. **Not** SC-01 ratification and **not** SC-02 completion. |
+| Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `nd-scanner/src/storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical-path handling, `file://` URI parsing and explicit symlink classification. At that commit the walker, `.ndignore`/ignore policy, folder hashing, cancellation, `MusicFS`/`ReadTags`, registry dispatch and watcher were **not implemented**; the walker/ignore/hash/cancellation portion landed later at `e3e0770a` (row below). **Not** SC-01 ratification and **not** SC-02 completion. |
+| Scanner **SC-02 partial** (local walker, `.ndignore`, folder hash, cancellation) | `e3e0770a` (fast-forwarded onto `2e7026b2`) | **LANDED partial slice.** `nd-scanner`: `contract.rs`/`walk.rs`/`ignore.rs`/`folder.rs` plus the `lib.rs`/`storage.rs` seam, with executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`. The manifest/lock delta is limited to the six user-approved dependencies recorded in `decisions.md` S9 (`b1aeea2c`; false order-divergence claim withdrawn at `2e7026b2`). Review findings through S9b closed; parent gates at `e3e0770a` are 92 suites / 2276 passed / 0 failed / 1 ignored with fmt, workspace clippy and `git diff --check` clean. **Not implemented:** a scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration, watcher or progress protocol. **Not** SC-01 ratification, SC-02 completion or MusicFS readiness. The former `rust-sc02-local-walker` worktree and branch are removed. |
 | DB-02 scanner timestamp contract (D-TIME) | `6d9d984d` + merge `74ebd81c` | Scanner-facing stamps/cutoffs bind canonical TEXT via `time::value`; `library_repo::zero_time_value()` replaces raw `ZERO_TIME` integers; artwork-purge integer cutoff fixed with executed coverage. **Partial:** `scrobble_buffer` `play_time`/`enqueue_time` still bind integers, and `find_recent_files_by_properties_sql` has no executed pin. Not scanner writes. |
 | DB-00 typed transaction/error seam | `48e65806` + merge `ec84c176` | Additive `try_with_tx`/`try_with_tx_retry` beside `with_tx*`, `DbOperationError`/`DbRuntimeError`, safe rollback cleanup, BUSY-only retry (`decisions.md` E1-E3, H2). The seam only — DB-04 onward consume it, and the DB lane is nowhere near done. |
 | Docs consolidation | `f03aff98` + merge `3b5e6c76` | `current-status.md`, `next-work.md`, `decisions.md` and the subplan headers consolidated into one authority chain; historical blocks marked superseded. |
@@ -76,18 +80,23 @@ results (logs checked here), while this lane's earlier `4ab63cd5` measurements r
 
 ### Live wave (verified checkout state; never mark DONE from a message)
 
-At `f80b9704`, **DB-10 and the DB-12 executed subset are LANDED**. Verified source history and `git worktree list` /
-branch refs during this refresh: their former worktrees/branches disappeared during this lane's read-only inspection;
-the final worktree list contains only `master` and `rust-sc02-local-walker`. This docs lane removed nothing.
+At `e3e0770a`, **DB-10, the DB-12 executed subset, DB-22 and the SC-02 partial are LANDED**. Verified `git worktree list`
+and branch refs during this refresh: `master` at `e3e0770a` is the only worktree, and the former DB-10/DB-12 and
+`rust-sc02-local-walker` worktrees/branches are absent (parent-controlled merges, then cleanup). This docs lane removed
+nothing.
 
 | Assignment | Commit / branch | Verified state |
 |---|---|---|
 | DB-10 MediaFile `PutByMatch` identity + atomic maintenance | `65072b89`, signed merge `6e5ca97d` | **LANDED**. `put_mediafile_in_tx` plus 31 executed tests; review APPROVE and follow-up P3s fixed (parent report). Empty-ID Match miss mints inside each tx attempt; retries may mint different GUIDs; failed attempts publish no result; only committed result returns ID. BUSY test fails initial INSERT before junction/FTS, not commit failure after a completed bundle. No production scanner caller. |
 | DB-12 scanner artwork invalidation/enqueue subset | `e5d0592d` (signed, fast-forward), rustdoc fix `f80b9704` | **LANDED subset**. Transaction-bound delete-for-items and three enqueue variants, 14 executed tests; review APPROVE after follow-up test fixes (parent report). No production scanner caller, artwork worker or full scanner. |
-| SC-02 walker/ignore/folder hash remainder | `rust-sc02-local-walker`, `/Users/nathanielheitsch/.paseo/worktrees/0xo97qr3/rust-sc02-local-walker`, base `60be7534` | **Unmerged, blocked**; 15 commits behind / 0 ahead of `master`; 5 modified tracked files (incl. scanner manifest and lockfile), 8 untracked source/test files. Review artifact `/tmp/nav-sc02-final-review.md` requests changes on the uncommitted diff, not an integrated-tree review; fixes are not claimed verified. Needs rebase/merge onto `f80b9704`, manifest/lock edge re-check, fresh review and gates. |
+| SC-02 walker/ignore/folder hash remainder | `e3e0770a` (was `rust-sc02-local-walker`, worktree and branch now removed) | **LANDED as a partial slice.** Fast-forwarded onto `2e7026b2` after rebase from base `60be7534`; parent gates at that HEAD: 92 suites / 2276 passed / 0 failed / 1 ignored, fmt, workspace clippy and `git diff --check` clean, `nd-scanner` rustdoc 4 pre-existing warnings. Review findings through S9b closed (`decisions.md` S7/S8/S9/S9b; `b1aeea2c`, `2e7026b2`). **Partial**: no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB ingest, full-scan orchestration or watcher — not SC-01 ratification, SC-02 completion or MusicFS readiness. Historical note below. |
 | Wave-2 docs refresh | `rust-wave2-status-refresh`, base `320b8b03`; no worktree | 0 ahead / 8 behind `master`. Stale docs attempt, no recovered output; superseded by this refresh. |
 
-Merges are parent-controlled; this docs lane is support work, not a rebalance of implementation lanes.
+Merges are parent-controlled; this docs lane is support work, not a rebalance of implementation lanes. Historical record:
+before the merge the SC-02 remainder sat uncommitted on `rust-sc02-local-walker` (base `60be7534`, 15 behind `master`) with
+the `/tmp/nav-sc02-final-review.md` request-changes verdict on that uncommitted diff — an unmerged-branch review, not an
+integrated-tree one. That round and the subsequent S8/S9/S9b dispositions are recorded in `decisions.md`; the slice landed
+at `e3e0770a`.
 
 ### Next dependencies (order, not estimates)
 
@@ -104,12 +113,15 @@ Merges are parent-controlled; this docs lane is support work, not a rebalance of
    renderer-only assertions (`decisions.md` W0/W1); the DB-02 gaps (`scrobble_buffer` integer stamps,
    `find_recent_files_by_properties_sql` executed pin) belong to whichever lane owns those statements. Landed lanes also
    still need **production callers**: no executed write is invoked from a scanner, bootstrap, or route yet.
-2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `f80b9704`: fmt,
-   workspace clippy and docs succeed; workspace tests **2159/0/1 across 87 suites**, `nd-db` docs retain **22 warnings**.
-   Logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log` are dated evidence, not proof for a later SC-02 diff.
-3. **Honest scanner phase-1 vertical slice** — storage/stat/symlink/ignore and metadata→record adapters, actual
-   library/folder IDs, pure album aggregation/change detection, one fixture-tree ingest over those DB APIs
-   (`decisions.md` S1-S4). Call it phase 1, not complete #17.
+2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `e3e0770a`:
+   workspace tests **2276 / 0 / 1 across 92 suites**, with `cargo fmt --all -- --check`, workspace clippy
+   (`--all-targets --all-features -- -D warnings`) and `git diff --check` clean, and `nd-scanner` rustdoc reporting 4
+   pre-existing warnings. Earlier dated blocks at `272c9c66` (88 suites / 2171 / 0 / 1) and `f80b9704` (87 suites /
+   2159 / 0 / 1, logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`) remain history, not proof for a later diff.
+3. **Honest scanner phase-1 vertical slice** — storage/stat/symlink/ignore landed (`e9dd8230`/`ff5b9c92`, then the
+   SC-02 partial walker/ignore/hash/cancellation slice at `e3e0770a`); what remains is the metadata→record adapter, real
+   library/folder IDs, pure album aggregation/change detection, and one fixture-tree ingest over those DB APIs
+   (`decisions.md` S1-S4). Call it phase 1, not complete #17: there is still no scanner entrypoint or tag-to-DB pipeline.
 4. **Bootstrap/HTTP/canonical route contracts** — scoped API manifest capture, configuration → schema/pool → configured
    library/admin → router/listener wiring, HTTP API-key extraction/issuance middleware (login-session/native-audience is
    landed at BOOT-02 `c6e220eb`/`162fae1d`), stream
@@ -127,10 +139,11 @@ Merges are parent-controlled; this docs lane is support work, not a rebalance of
    maintenance/logging, full artwork/share/scrobbler/external/lyrics/playlists/player-session/API/share-HTML expansion.
    Per-device editing needs only the BOOT seed plus the route now that the transcoding read executes.
 
-Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin` (scope pending), `scrobble`, `smart_playlist`;
-`share` and `user_props` execute only on **raw connections**, outside the shared `execution` helper. `annotation_repo.rs`
-does not exist because annotations ride album/media-file (DB-15), so that is not a gap. Non-DB follow-up: the `nd-stream`
-teardown flake (`current-status.md`).
+Executed reads landed for `genre`, `scrobble` and `playqueue` at DB-22 `272c9c66`, and artwork item-image lookup and
+invalidation execute; the render-only set is now `plugin` (D-PLUGIN decided deletion, not yet executed) and
+`smart_playlist` (not a separate Go repository). `share` and `user_props` execute only on **raw connections**, outside the
+shared `execution` helper. `annotation_repo.rs` does not exist because annotations ride album/media-file (DB-15), so that
+is not a gap. Non-DB follow-up: the `nd-stream` teardown flake (`current-status.md`).
 
 ### Decision ask (scope): does `plugin_repo.rs` belong in the port at all?
 
@@ -154,7 +167,7 @@ outside the file; `plugin_cleanup.go:8,50` updates the `plugin` table from user/
    scrobble-buffer integer stamps and the un-pinned `find_recent_files_by_properties_sql` cutoff among them (DB-08 fixed
    one of them, the force-appended `updated_at`, at `32c4fa5b`) — so do not connect renderers unchanged.
 2. **Bounded DB runtime packages** — DB-04 property, DB-05 library + scan lifecycle, DB-06 tag, DB-07 folder/missing/touch,
-   DB-08 artist, DB-09 album and DB-13 epoch revoke are **landed**; DB-10/12 are now landed too; the spine resumes at decision-gated DB-11, then DB-15(runtime)/14 as above. Library
+   DB-08 artist, DB-09 album and DB-13 epoch revoke are **landed**; DB-10/12 are now landed too, as is DB-22 `272c9c66`; the spine resumes at **DB-11** (`D-CURSOR`/`D-SCOPE` recorded in `decisions.md`, corrected at `8b5b3925`), then DB-15(runtime)/14 as above. Library
    bootstrap policy belongs to the bootstrap caller, DB supplies typed executed operations. Test rollback, retry, immutable
    fields, non-target rows, empty/chunk boundaries, and actual read-back through production methods.
 3. **Honest scanner phase-1 vertical slice** — as above; the old "8 repos + 1 mapper" is a core-read inventory, not a
@@ -216,7 +229,9 @@ listed for the parent to repair deliberately (this lane does not edit Rust sourc
 | `9be6ad0e`/`320b8b03`/`842c32a2` (DB-07/08/09 merges) | 2065 / 2078 / 2096 workspace, 82/83/84 suites | parent integration logs |
 | `162fae1d` (BOOT-02 merge) | 2055 workspace across 81 suites (auth 107) | parent integration log |
 | `4ab63cd5` (DB-13 merge) | 929 DB across 40 suites / 2114 workspace across 85 suites / doctests 6 / dbschema 61 / auth 107 | historical direct docs-lane measurements (commands/logs in `current-status.md`) |
-| `f80b9704` (DB-10/12 integrated, current code HEAD) | 2159 workspace across 87 suites, 0 failed / 1 ignored; nd-db docs 22 warnings | parent integration logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`; fmt/clippy/tests/docs pass, latest totals independently tallied here |
+| `f80b9704` (DB-10/12 integrated) | 2159 workspace across 87 suites, 0 failed / 1 ignored; nd-db docs 22 warnings | parent integration logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`; fmt/clippy/tests/docs pass, latest totals independently tallied here |
+| `272c9c66` (DB-22 integrated) | 2171 workspace across 88 suites, 0 failed / 1 ignored; nd-db docs 23 rustdoc warnings (all pre-existing) | parent integration at that HEAD; superseded boundary |
+| `e3e0770a` (**SC-02 partial integrated, current code HEAD**) | 2276 workspace across 92 suites, 0 failed / 1 ignored; `nd-scanner` rustdoc 4 pre-existing warnings | parent gates on the integrated main checkout (fmt check, workspace clippy, `git diff --check` clean); this docs lane did not re-run Cargo |
 
 The non-`nd-db` suite mass was constant at 1079 across the S-D3d/e/f lanes; that arithmetic is how the S-D3e workspace
 figure `1746` was found to be one short of `1747`.

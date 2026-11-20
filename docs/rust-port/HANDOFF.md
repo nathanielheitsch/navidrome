@@ -10,8 +10,10 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 - Repository: this navidrome fork checkout (Go sources at the root, Rust workspace `rust/`). Resolve paths from the
   working directory — never a developer's absolute path, and never a hardcoded worktree name.
-- Authoritative source baseline: integrated `master` at `f80b9704` (prior `4ab63cd5` plus DB-12 signed `e5d0592d`,
-  DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`). A docs lane may be cut from an earlier
+- Authoritative source baseline: integrated `master` at `e3e0770a` (**SC-02 partial** — local walker, `.ndignore`, folder
+  hash, cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and `f80b9704` (prior `4ab63cd5`
+  plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`). That SC-02
+  slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness. A docs lane may be cut from an earlier
   boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master` instead of measuring it in your own
   worktree. Earlier audited boundaries are listed in `current-status.md`'s landed-history table; older handoff baselines are
   history.
@@ -28,8 +30,10 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 ## Current reality (see `current-status.md` for numbers)
 
-The workspace passes its regression gates and is **not** a runnable server or scanner: `nd-scanner`, `nd-http`,
-`nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row hooks, substantial
+The workspace passes its regression gates and is **not** a runnable server or scanner: `nd-scanner` holds the tested
+local-FS walker slice (SC-02 partial at `e3e0770a`) but **no scanner entrypoint, tag-to-DB pipeline or full-scan
+orchestration**; `nd-http` and `nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row
+hooks, substantial
 executed reads **and twenty-two executed transaction-bound `*_in_tx` writes** are landed, including DB-10 identity/base/
 junction writes and DB-12 artwork invalidation/enqueue. Typed specialized scanner queries and GC are not. Tests that manually execute SQL bundles are not production repository methods,
 and none of the `*_in_tx` primitives has a production caller (`nd-auth` calls `UserRepo` methods outside them from its own
@@ -39,11 +43,17 @@ DB-02 (`6d9d984d`/`74ebd81c`) and DB-15's **render-only** rating repair (`ab4669
 are the executed write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08
 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2` and DB-13 `eae4ba1d`/`4ab63cd5` — the DB-15 annotation service and the
 full DB lane are **not**. **DB-10 and DB-12's executed subset are LANDED** (commits above), with no production scanner caller; DB-12 is not
-worker/full scanner completion. SC-02 remains unmerged/uncommitted on `rust-sc02-local-walker` (uncommitted diff has
-passed two review rounds; S9 merge gate closed `b1aeea2c`; small S9 fix round in flight). DB-11 is next in the spine but
-remains decision-gated on unrecorded `D-CURSOR`/`D-SCOPE` (scout drafting them). DB-22 LANDED `272c9c66`. Latest parent
-gates after DB-22: 2171/0/1 across 88 workspace suites, fmt/clippy pass, `nd-db` docs at 23 warnings (one pre-existing,
-not DB-22-introduced); see `current-status.md` for attribution/logs. BOOT-02's login-session
+worker/full scanner completion. The **SC-02 partial is LANDED at `e3e0770a`** (fast-forwarded onto `2e7026b2` after
+rebase; review findings through S9b closed, the S9 dependency set recorded at `b1aeea2c` and corrected at `2e7026b2`):
+local walker, `.ndignore`/ignore policy, folder hash and cancellation with executed walker/ignore/hash/seam tests. That is
+a **partial slice** — no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB ingest, full-scan orchestration or
+watcher, and **not** SC-01 ratification, SC-02 completion or MusicFS readiness; the former `rust-sc02-local-walker`
+worktree/branch are removed. DB-11 is next in the spine and launchable — `D-CURSOR`/`D-SCOPE` are recorded in
+`decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`), with the parent serializing its writer. DB-22
+LANDED `272c9c66`. Latest parent gates at `e3e0770a`: 2276/0/1 across 92 workspace suites, fmt check, workspace clippy and
+`git diff --check` clean, `nd-scanner` docs at 4 pre-existing warnings; the earlier `272c9c66` block (2171/0/1 across 88
+suites, `nd-db` docs at 23 pre-existing warnings) and older blocks remain dated history. See `current-status.md` for
+attribution/logs. BOOT-02's login-session
 native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middleware, a mounted router, and stream
 prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and

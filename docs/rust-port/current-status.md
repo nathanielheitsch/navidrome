@@ -1,10 +1,12 @@
 # Rust port — audited capability snapshot
 
-**Authoritative baseline: integrated `master` at `272c9c66` (DB-22), dated 2026-11-20.** This extends the previously audited
-`f80b9704` (DB-04…DB-10/12/13 and BOOT-02; DB-12 signed `e5d0592d`, rustdoc fix `f80b9704`; DB-10 signed `65072b89` / merge
-`6e5ca97d`) with **DB-22 signed `272c9c66`** — executed genre/scrobble/playqueue/artwork reads, parent-validated
-(88 suites, 2171/0/1). Decision records added the same day: S9 (SC-02 dependency set + close-out, `b1aeea2c`),
-D-CURSOR/D-SCOPE and D-PLUGIN (all in `decisions.md`). Both executed subsets are LANDED.
+**Authoritative baseline: integrated `master` at `e3e0770a` (SC-02 partial: local walker, `.ndignore`, folder hash,
+cancellation), dated 2026-11-20.** This extends the previously audited `272c9c66` (DB-22) boundary — and the
+`f80b9704` boundary before it (DB-04…DB-10/12/13 and BOOT-02; DB-12 signed `e5d0592d`, rustdoc fix `f80b9704`; DB-10 signed
+`65072b89` / merge `6e5ca97d`) — with **SC-02 partial landed at `e3e0770a`** (fast-forwarded onto `2e7026b2`, the S9b
+docs HEAD), parent-validated (92 suites, 2276/0/1). Decision records: S9 (SC-02 dependency set + close-out, `b1aeea2c`),
+D-CURSOR/D-SCOPE and D-PLUGIN (all in `decisions.md`). Both executed DB subsets and the SC-02 slice are LANDED; the
+**SC-02 partial** is a scoped slice, **not** SC-01 ratification, SC-02 completion, or MusicFS readiness.
 Latest gates below are **parent integration evidence**, with log totals independently checked by this docs lane; this
 lane did not rerun Cargo at the new HEAD. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
 This document records **evidence**, not implementation authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
@@ -18,8 +20,9 @@ test total. Entry point: [`README.md`](README.md).
 record marshaling, all eight `PostScan`-equivalent hooks, substantial executed reads, and — since `4ab63cd5` —
 **executed transaction-bound leaf and entity writes** (property, library incl. scan lifecycle, tag, folder,
 media-file identity/base/junction writes, artist, album, user epoch revoke, artwork invalidation/enqueue) have landed. **Scanner orchestration, HTTP, API and CLI
-remain scaffolds**: `nd-http` and `nd-api` are scaffolds (`nd-cli/src/main.rs` is an empty `main`), and `nd-scanner`
-currently holds only tested local-storage primitives (`storage.rs`). There is **no end-to-end/server readiness**, no
+remain scaffolds**: `nd-http` and `nd-api` are scaffolds (`nd-cli/src/main.rs` is an empty `main`); `nd-scanner` now
+holds the tested local-FS walker slice (`storage.rs` + `.ndignore`/folder-hash/cancellation, SC-02 partial at `e3e0770a`)
+but **no scanner entrypoint, tag-to-DB pipeline, or full-scan orchestration**. There is **no end-to-end/server readiness**, no
 mounted router, no production scan, and no integrated stream HTTP adapter. None of the executed transaction-bound write
 primitives has a **production caller** at `f80b9704` (SOURCE-VERIFIED: `_in_tx` references outside repository definitions
 are tests/doctests or internal helpers, not scanner/bootstrap/route/CLI entrypoints). DB-12 is only the executed artwork
@@ -30,14 +33,22 @@ invalidation/enqueue subset, not a worker or full scanner. That is narrower than
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## Latest integrated gates (parent, code HEAD `272c9c66`, 2026-11-20)
+## Latest integrated gates (parent, code HEAD `e3e0770a`, 2026-11-20)
 
-Parent validated on the DB-22 branch after rebase onto `276eec6c` (DB-22 is a fast-forward, no merge commit): fmt
-check, workspace clippy (`--all-targets --all-features -- -D warnings`), and workspace tests all succeed: **88 suites,
-2171 passed / 0 failed / 1 ignored**. `nd-db` docs report **23 rustdoc warnings** — the set compared against base at
-the same commit shows all 23 pre-existing (one new warning in `folder_repo.rs` came from already-integrated DB-07
-work, not DB-22); no warning in a DB-22-touched file. `git diff --check` clean. These are dated code-HEAD results, not
-proof for later diffs or mounted/end-to-end behavior. Prior dated block below.
+SC-02 partial (local walker + `.ndignore` + folder hash + cancellation, S7/S8/S9/S9b) fast-forwarded onto
+`2e7026b2` at `e3e0770a`. Parent re-ran the authoritative gates on the integrated main checkout:
+workspace tests **92 suites, 2276 passed / 0 failed / 1 ignored**; `cargo fmt --all -- --check` clean; workspace clippy
+(`--all-targets --all-features -- -D warnings`) clean; `git diff --check` clean; `nd-scanner` rustdoc = 4
+pre-existing warnings (none new from this lane). This is a partial SC-02, NOT SC-01/SC-02 completion or MusicFS
+readiness, and NOT the runnable-milestone scanner entrypoint. Prior dated block below.
+
+## Prior integrated gates (code HEAD `272c9c66` / DB-22, 2026-11-20)
+
+Parent validated on the DB-22 branch after rebase onto `276eec6c` (fast-forward, no merge commit): fmt check,
+workspace clippy, and workspace tests all succeed: **88 suites, 2171 passed / 0 failed / 1 ignored**. `nd-db` docs
+report **23 rustdoc warnings**, all pre-existing (one new in `folder_repo.rs` came from already-integrated DB-07
+work, not DB-22); no warning in a DB-22-touched file. Dated code-HEAD results, not proof for later diffs.
+
 ## Integrated gates history (code HEAD `f80b9704`, 2026-11-19)
 
 Parent reports fmt check, workspace clippy, workspace tests and workspace docs all succeed at `f80b9704`. This lane
@@ -120,8 +131,8 @@ at `4ab63cd5` were clean — flaky under load, not a regression. `nd-stream`'s
 | DB-01 | `f57ae050` | Missing-state bind order + executed regression gate |
 | DB-03 / D-OPEN | `4a8aac9f` | Go-DSN parity with pool-bound initializer tokens, per-connection effective-state read-back |
 | DB-15 **render-only** rating repair | `ab466928` | `update_avg_rating_sql` embeds the average-rating aggregate with 3 ordered binds, executed against a real schema by `runtime_annotation_rating.rs`; the three public renderers were kept and redocumented with their prepare failure pinned — **not** the full DB-15 annotation reassignment service, whose transactions and read APIs are unimplemented |
-| Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI parsing, explicit symlink classification. Walker, `.ndignore`/ignore policy, folder hashing and cancellation are **not implemented** — **not** SC-01 ratification or SC-02 completion |
-| DB-00 typed transaction/error seam | `48e65806` + merge `ec84c176` | Additive `try_with_tx`/`try_with_tx_retry`, `DbOperationError`/`DbRuntimeError`, safe rollback cleanup, BUSY-only retry (H2 amended) — the seam only, not the DB lane |
+| Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI parsing, explicit symlink classification. At that commit the walker, `.ndignore`/ignore policy, folder hashing and cancellation were **not implemented** — **not** SC-01 ratification or SC-02 completion. **Superseded on those four items by the `e3e0770a` row below.** |
+| Scanner **SC-02 partial** (local walker + `.ndignore` + folder hash + cancellation) | `e3e0770a` (fast-forwarded onto `2e7026b2`) | `nd-scanner`: `contract.rs`/`walk.rs`/`ignore.rs`/`folder.rs` plus the `lib.rs`/`storage.rs` seam, and executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`; the six user-approved dependencies are recorded in `decisions.md` S9 and the manifest/lock delta is limited to that approved dep set. Review findings through S9b closed. **Partial scope**: no scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration, watcher or progress protocol — **not** SC-01 ratification, SC-02 completion, or MusicFS readiness, and no `*_in_tx` write has a scanner caller. |
 | DB-02 scanner timestamp contract | `6d9d984d` + merge `74ebd81c` | Scanner-facing stamps/cutoffs bound as canonical TEXT via `time::value`, `library_repo::zero_time_value()` replacing raw `ZERO_TIME` integers, artwork-purge cutoff fixed to a `DateTime` bound, `runtime_scan_clock.rs` executed coverage. **Not** full scanner writes: `scrobble_buffer` `play_time`/`enqueue_time` still bind integers (see Residuals) |
 | Docs consolidation | `f03aff98` + merge `3b5e6c76` | `current-status.md`/`next-work.md`/`decisions.md` consolidated to one authority chain; historical blocks marked superseded |
 | DB-04 executed **property** writes | `c791dbc1` | `property_repo::put_in_tx`/`delete_in_tx` executed on the caller's transaction through `execution::execute`, update-first/insert-on-zero-row per Go, `DbOperationError::Sqlite` arm retained for busy classification; `tests/runtime_property_writes.rs` (12 executed tests). No `PropertyRepo::put`/`delete` connection-bound method and no production caller |
@@ -161,7 +172,7 @@ stale.
 | Tagreader/mapping | Real lofty backend and metadata mapping | Crate-level implementation/tests | No storage→record→DB ingest caller |
 | Auth | Credential/JWT/login/refresh/middleware components | Crate-level mounted test routers (107 executed at `4ab63cd5`) | Login→native-audience round-trip **closed** at `c6e220eb`; HTTP API-key extraction/issuance middleware still absent; no production router |
 | Stream #15 | Handler/cache/limiter/archiver implemented | Crate-level serving/lifecycle tests | **Component-level complete, not HTTP-ready**; header commitment/Send adapter gaps |
-| Scanner/HTTP/API/CLI | Scaffolds / empty `main` | No production scan/listener/router | **Not started at the integration boundary**; a local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (**not** SC-01/SC-02 completion) |
+| Scanner/HTTP/API/CLI | Scaffolds / empty `main` | No production scan/listener/router | **Not started at the integration boundary**; local-FS storage subset `e9dd8230`/`ff5b9c92` then SC-02 partial walker landed `e3e0770a` (**not** SC-01/SC-02 completion) |
 | Scheduler | Scheduling primitives implemented | Crate tests | Full maintenance/logging and bootstrap remain |
 
 Repository sources: `rust/crates/nd-db/src/*_repo.rs`, `hydrate.rs`, `marshal.rs`, `store.rs`, `pool.rs`, `execution.rs`.
@@ -205,9 +216,11 @@ is not a gap.
   `Sqlite` arm, so `store::is_busy` still classifies retryable failures.
 
 First-wave lanes (DB-01, DB-03, DB-00, DB-02, plus the DB-15 render-only repair and the scanner local-FS storage
-subset) are merged into `74ebd81c`, and DB-04 through DB-09 plus DB-13 and BOOT-02 are merged into `4ab63cd5`. DB-10 and DB-12's executed subset are now merged into `f80b9704`. SC-02 remains unmerged/uncommitted (see
-`next-work.md` §"Live wave"). DB-22's former DB-12 ownership block is released; it is ready subject to parent launch and
-exclusive checkout ownership. DB-11 remains decision-gated on `D-CURSOR`/`D-SCOPE`.
+subset) are merged into `74ebd81c`, and DB-04 through DB-09 plus DB-13 and BOOT-02 are merged into `4ab63cd5`. DB-10 and
+DB-12's executed subset are merged into `f80b9704`; **the SC-02 partial (local walker, `.ndignore`, folder hash,
+cancellation) is LANDED at `e3e0770a`** — a partial slice, not SC-02 completion. DB-22's former DB-12 ownership block is
+released; it is ready subject to parent launch and exclusive checkout ownership. `D-CURSOR`/`D-SCOPE` are recorded in
+`decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`), so DB-11 is the spine's next launchable package.
 
 ## Remaining blockers and integration obligations (SOURCE-VERIFIED)
 
@@ -240,12 +253,12 @@ exclusive checkout ownership. DB-11 remains decision-gated on `D-CURSOR`/`D-SCOP
    cleanup and recovered slots with real tools/codecs; an early-returning test is not lifecycle evidence.
 5. **No library row** — fresh DDL has none; configured-library creation belongs to an explicit bootstrap
    transaction/caller using typed executed DB methods, not an invented schema-golden seed.
-6. **Scope decisions still open** — `plugin_repo.rs` (`next-work.md` §"Decision ask (scope)", `decisions.md` open
-   list): the `plugin` table is absent from the fresh schema, so every statement that module renders fails, and the
-   scope decision is the parent's call. Part C per-key config scopes; oracle-harness authorization for new tracked
-   Go harnesses.
+6. **Scope decisions** — `plugin_repo.rs` is **DECIDED** (D-PLUGIN, `decisions.md`, record `89b72894`: delete the module,
+   its tests and the `lib.rs` export as out-of-scope dead code) but **not yet executed**; the `plugin` table is absent from
+   the fresh schema, so every statement that module renders fails until deletion lands. Still open: Part C per-key config
+   scopes; oracle-harness authorization for new tracked Go harnesses.
 
-## Bounded source-level residuals (amended at integrated `master` `f80b9704`; older line references retained, not a completeness claim)
+## Bounded source-level residuals (amended at integrated `master` `f80b9704`; older line references retained, not a completeness claim; SC-02 partial landed later at `e3e0770a` did not re-check these lines)
 
 - `scrobble_buffer_repo::enqueue_sql` still binds `play_time`/`enqueue_time` as **integers** (`Value::Integer`,
   `scrobble_buffer_repo.rs:206-226`) on an INTEGER-affinity `datetime` column, while the DB-02 contract binds TEXT
@@ -264,9 +277,10 @@ exclusive checkout ownership. DB-11 remains decision-gated on `D-CURSOR`/`D-SCOP
   mark-list primitives (`mark_folders_missing_in_tx`, `mark_media_missing_in_tx`,
   `mark_media_missing_by_folder_in_tx`) are NOT part of that deviation: they take id lists, accept an empty one and
   run no statement, exactly like Go's chunk loop.
-- The scanner local-FS subset and the DB-15 render-only repair remain **partial scopes** (not SC-01/SC-02, not the
-  annotation service); storage→record ingest, aggregation/equality bridge, controller/watcher and progress protocol are
-  unstarted. There is **no server readiness**: no router, listener, library bootstrap, or integrated stream HTTP adapter.
+- The scanner local-FS subset, the **SC-02 partial** at `e3e0770a`, and the DB-15 render-only repair remain **partial
+  scopes** (not SC-01/SC-02 completion, not the annotation service); storage→record ingest, aggregation/equality bridge,
+  controller/watcher and progress protocol are unstarted. There is **no server readiness**: no router, listener, library
+  bootstrap, or integrated stream HTTP adapter.
 
 ## Residuals (parity debt vs first-boot gates, kept distinct)
 
