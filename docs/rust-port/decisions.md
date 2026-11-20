@@ -438,7 +438,13 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   and `now_sql()` did not exist when first cited; `mediafile_repo::upsert_sql` does not exist; there is no
   `ON DUPLICATE KEY UPDATE` in `nd-db` or Go `persistence/`; no `todo!()`/`unimplemented!()` in `nd-db`; no
   `media_file_pkey` index; Go's `mediaFileRepository.Put` uses `putByMatch` — SELECT-then-`put`, not an upsert, so do
-  not "fix" an upsert that does not exist). Do not promote an unverified claim.
+  not "fix" an upsert that does not exist). Do not promote an unverified claim. This failure has also hit a PARENT
+  decision record: the first D-CURSOR/D-SCOPE recording cited `scanner/phase_2_artists.go`/`phase_3_albums.go` (nonexistent),
+  `buildLibraryFilter` (nonexistent; the real fn is `applyLibraryFilter`), and a wrong chunk/end-of-stream claim — all caught
+  by a later read-only scout and corrected at `8b5b3925` WITH the withdrawals stated in-text. Lesson: "PARENT DECIDED"
+  does not exempt a record from citation verification; verify every Go-file/function/line before recording, and a scout's
+  correction is not itself trusted until re-verified against source the same way (the 2026-11-20 correction was).
+  A later scout that "confirms" a draft without independent source checks is as dangerous as a wrong one.
 - **C5 — DB-22 executed-read boundary (PARENT DECIDED 2026-11-20):** playqueue mediafile-query failures deliberately return a typed
   all-or-error result instead of Go's log-and-continue/partial queue behavior. Scrobble ordering accepts only simple allowlisted columns;
   raw SQL expression sorting is rejected rather than interpolated. These are intentional narrow-read safety/consistency choices, not full
