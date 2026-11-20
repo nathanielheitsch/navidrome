@@ -1,12 +1,11 @@
 # Rust port — audited capability snapshot
 
-**Authoritative baseline: integrated `master` at `74ebd81c`, dated 2026-11-19** (`ff900d3e` + `ab466928` DB-15
-render-only rating repair + `e9dd8230`/`ff5b9c92` scanner local-storage subset + `48e65806`/`ec84c176` DB-00 typed
-transaction seam + `6d9d984d`/`74ebd81c` DB-02 scanner timestamp contract), sitting on the earlier audited boundaries `4a8aac9f` (DB-03), `f57ae050` (DB-01), `62789ba2` (sort
-gate), `f8ceeb8f` (W4+W6), `60cdd184` (S-D3g2 follow-up). This docs lane's own worktree is cut from `ff900d3e` and does
-**not** contain that code, so claims about integrated behavior below are SOURCE-VERIFIED against `master` or dated
-parent measurements — never measured in this worktree. This document records **evidence**, not implementation
-authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
+**Authoritative baseline: integrated `master` at `f80b9704`, dated 2026-11-19.** This extends the previously audited
+`4ab63cd5` (DB-04…DB-09/DB-13 and BOOT-02) with DB-12 signed implementation `e5d0592d` (fast-forward), DB-10 signed
+implementation `65072b89` / signed merge `6e5ca97d`, and DB-12 rustdoc fix `f80b9704`. Both executed subsets are LANDED.
+Latest gates below are **parent integration evidence**, with log totals independently checked by this docs lane; this
+lane did not rerun Cargo at the new HEAD. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
+This document records **evidence**, not implementation authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
 [`decisions.md`](decisions.md); bounded assignments in `subplans/`. Older dated blocks are history, not current
 readiness. Resolve contradictions against the pinned source and the current contract amendments, never against a larger
 test total. Entry point: [`README.md`](README.md).
@@ -14,55 +13,86 @@ test total. Entry point: [`README.md`](README.md).
 ## Verdict
 
 **The Rust workspace passes its present regression gates; it is not a runnable server or scanner.** Shared codecs,
-record marshaling, all eight `PostScan`-equivalent hooks, and substantial executed reads have landed. **Scanner
-orchestration, HTTP, API and CLI remain scaffolds**: `nd-http` and `nd-api` are scaffolds, `nd-cli/src/main.rs` is empty,
-and `nd-scanner` currently holds only tested local-storage primitives (`storage.rs`). There is **no end-to-end/server
-readiness**, no mounted router, no production scan, and no integrated stream HTTP adapter. A scaffold test asserting an issue number is
-not runtime coverage, and executed test helpers are not production repository methods.
+record marshaling, all eight `PostScan`-equivalent hooks, substantial executed reads, and — since `4ab63cd5` —
+**executed transaction-bound leaf and entity writes** (property, library incl. scan lifecycle, tag, folder,
+media-file identity/base/junction writes, artist, album, user epoch revoke, artwork invalidation/enqueue) have landed. **Scanner orchestration, HTTP, API and CLI
+remain scaffolds**: `nd-http` and `nd-api` are scaffolds (`nd-cli/src/main.rs` is an empty `main`), and `nd-scanner`
+currently holds only tested local-storage primitives (`storage.rs`). There is **no end-to-end/server readiness**, no
+mounted router, no production scan, and no integrated stream HTTP adapter. None of the executed transaction-bound write
+primitives has a **production caller** at `f80b9704` (SOURCE-VERIFIED: `_in_tx` references outside repository definitions
+are tests/doctests or internal helpers, not scanner/bootstrap/route/CLI entrypoints). DB-12 is only the executed artwork
+invalidation/enqueue subset, not a worker or full scanner. That is narrower than "no repository method is ever called":
+`nd-auth` **does** call
+`UserRepo` methods from production code (`login.rs:95,108,227,247,308,332,337,355,356,374`, `setup_store.rs:66-86`,
+`middleware.rs:93` — `find_by_username`, `count_all`, `count_by_username`, `put`, `update_last_login_at` through
+`SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
+test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## Latest verified gates (parent-measured at integrated `master` `74ebd81c`, 2026-11-19)
+## Latest integrated gates (parent, code HEAD `f80b9704`, 2026-11-19)
 
-Measured by the parent on a clean integrated tree from `rust/` with its default `rust/target`; the test runs used
-`--locked --all-targets --all-features` as recorded per row below, and every command exited **0**. These are **dated
-parent measurements**, not freshly executed by this docs lane,
-and not proof for a later diff. This lane re-tallied the parent logs itself and reproduces the totals exactly
-(`/tmp/wave1-db02-integrated-tests.log`: 78 `test result:` lines, 2009 passed, 0 failed, 1 ignored;
-`/tmp/wave1-final-db.log`: 33 lines, 841 passed, 0 failed; `/tmp/wave1-db02-integrated-doctests.log`: 5 passed).
+Parent reports fmt check, workspace clippy (`--all-targets --all-features -- -D warnings`), workspace tests and workspace
+docs all succeed. This lane independently tallied `/tmp/nav-db10-integrated-tests.log`: **87 suites, 2159 passed / 0 failed /
+1 ignored**. Clippy log: `/tmp/nav-db10-integrated-clippy.log`; docs: `/tmp/nav-db10-integrated-doc.log`. `nd-db` still has
+**22 rustdoc warnings** (pre-existing; no net increase after `f80b9704` fixed the DB-12 HTML-tag warning). Workspace docs
+success does not mean warning-free. No new standalone DB/doctest run is claimed. These are dated code-HEAD results, not
+proof for later diffs or mounted/end-to-end behavior.
+
+## Earlier direct docs-lane gates (`4ab63cd5`, historical, 2026-11-19)
+
+Measured by **this docs lane** on a clean integrated tree from `rust/` with its default `rust/target` (`cargo 1.99.1`,
+`rustc 1.99.1`, Homebrew, macOS arm64); the test runs used `--locked --all-targets --all-features` as recorded per row
+below, and every command exited **0**. `git diff --check` and `git status --porcelain` were clean before and after. These
+are **dated measurements at `4ab63cd5`**, not proof for a later diff. Totals were re-tallied from the logs themselves
+(`grep -c '^test result:'` plus a sum of the passed/failed/ignored fields): `/tmp/docs-sd3f-workspace-tests.log` — 85
+`test result:` lines, 2114 passed, 0 failed, 1 ignored; `/tmp/docs-sd3f-nd-db-tests.log` — 40 lines, 929 passed, 0 failed;
+`/tmp/docs-sd3f-doctests.log` — 6 passed.
 
 | Command | Actual result | Source log |
 |---|---|---|
-| `cargo fmt --all -- --check` | Pass (diff 0) | parent |
-| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Pass | parent |
-| `cargo test --locked -p nd-db --all-targets --all-features` | **841 passed / 0 failed / 0 ignored** across **33** suites | `/tmp/wave1-final-db.log` |
-| `cargo test --locked --workspace --all-targets --all-features` | **2009 passed / 0 failed / 1 ignored** across **78** suites | `/tmp/wave1-db02-integrated-tests.log` |
-| `cargo test --locked -p nd-db --doc` | **5 passed / 0 failed / 0 ignored** — a **separate axis**, never added to the 841 | `/tmp/wave1-db02-integrated-doctests.log` |
-| `cargo doc --locked -p nd-db --all-features --no-deps` | Pass, **22 warnings** (log's own summary line says 22; `grep -c '^warning:'` returns 23 because it counts that summary line) | `/tmp/wave1-db02-integrated-doc.log` |
-| `cargo test --locked -p nd-dbschema` | **61 passed / 0 failed / 0 ignored** — **carried** baseline, not freshly re-measured at `74ebd81c` by this lane | prior boundary |
-| `cargo test --locked -p nd-auth --all-targets --all-features` | **90 passed / 0 failed / 0 ignored** — **carried** baseline, same caveat | prior boundary |
-| `git diff --check` | Pass | parent |
+| `cargo fmt --all -- --check` | Pass (diff 0, exit 0) | `/tmp/docs-sd3f-fmt.log` |
+| `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` | Pass (exit 0) | `/tmp/docs-sd3f-clippy.log` |
+| `cargo test --locked -p nd-db --all-targets --all-features` | **929 passed / 0 failed / 0 ignored** across **40** suites | `/tmp/docs-sd3f-nd-db-tests.log` |
+| `cargo test --locked --workspace --all-targets --all-features` | **2114 passed / 0 failed / 1 ignored** across **85** suites | `/tmp/docs-sd3f-workspace-tests.log` |
+| `cargo test --locked -p nd-db --doc` | **6 passed / 0 failed / 0 ignored** — a **separate axis**, never added to the 929 (the new one is `user_repo::revoke_tokens_in_tx`) | `/tmp/docs-sd3f-doctests.log` |
+| `cargo doc --locked -p nd-db --all-features --no-deps` | Pass (exit 0), **22 warnings** (8 unresolved links + 14 private-item links; `grep -c '^warning:'` returns 23 because it also counts rustdoc's own summary line) | `/tmp/docs-sd3f-doc.log` |
+| `cargo test --locked -p nd-dbschema --all-targets --all-features` | **61 passed / 0 failed / 0 ignored** across **3** suites | `/tmp/docs-sd3f-dbschema.log` |
+| `cargo test --locked -p nd-auth --all-targets --all-features` | **107 passed / 0 failed / 0 ignored** across **3** suites (lib 79, `http_auth` 14, `login_http` 14) | `/tmp/docs-sd3f-auth.log` |
+| `git diff --check` | Pass (exit 0) | this lane |
 
-**Axis discipline:** `--all-targets` totals **exclude doctests**; the `5` doctests are their own run. Do not reconcile
+**Axis discipline:** `--all-targets` totals **exclude doctests**; the `6` doctests are their own run. Do not reconcile
 totals across axes or against an earlier head.
 
-Earlier dated boundaries on this line of development (historical evidence, not current): `ec84c176` 834 DB / 2002
-workspace across 77 suites; `4a8aac9f`/`ff900d3e` 813 DB / 1938 workspace across 74 suites; `ab466928` 819 DB across 31
-suites; `f57ae050` 778 DB / 1857 workspace; `62789ba2` 771 DB /
-1850 workspace; `f8ceeb8f` 765 DB; `60cdd184` 737 DB / 1816 workspace (69 groups). Toolchain at the `60cdd184` audit:
-rustc/cargo **1.99.1**, Go **1.27.4**, macOS arm64, ffmpeg/ffprobe **9.0.2** available. Some process tests return early
-when tools/codecs are unavailable; future lifecycle gates must require their prerequisites and record what was actually
-exercised. No run above booted a server or scanned a real library.
+Dated boundaries on this line of development (historical evidence, not current): `4ab63cd5` 929 DB / 2114 workspace
+across 85 suites (this lane's re-measurement; the parent's integration runs recorded the same workspace total in
+`/tmp/nav-db13-integrated-tests.log`); `842c32a2` 2096 workspace across 84 suites (`/tmp/nav-db09-integrated-tests.log`);
+`320b8b03` 2078 across 83 (`/tmp/nav-db08-integrated-tests.log`); `9be6ad0e` 2065 across 82
+(`/tmp/nav-db07-integrated-tests.log`); `162fae1d` 2055 across 81 (`/tmp/nav-boot02-integrated-tests.log`); `bfdcfeca` 2038
+across 81 (`/tmp/nav-db06-parent-tests.log`); `60be7534` 2029 across 80 (`/tmp/nav-db05-parent-tests.log`); `c791dbc1` 2021
+across 79 (`/tmp/nav-db04-parent-tests.log`); `74ebd81c` 841 DB across 33 suites / 2009 workspace across 78
+suites; `ec84c176` 834 DB / 2002 workspace across 77 suites; `4a8aac9f`/`ff900d3e` 813 DB / 1938 workspace across 74
+suites; `ab466928` 819 DB across 31 suites; `f57ae050` 778 DB / 1857 workspace; `62789ba2` 771 DB / 1850 workspace;
+`f8ceeb8f` 765 DB; `60cdd184` 737 DB / 1816 workspace (69 groups). Those intermediate totals come from the parent's named
+integration logs (`/tmp/nav-db04-parent-tests.log`, `/tmp/nav-db05-parent-tests.log`, `/tmp/nav-db06-parent-tests.log`,
+`/tmp/nav-boot02-integrated-tests.log`, `/tmp/nav-db07-integrated-tests.log`, `/tmp/nav-db08-integrated-tests.log`,
+`/tmp/nav-db09-integrated-tests.log`, `/tmp/nav-db13-integrated-tests.log`) and are re-tallied here from the logs, not
+re-executed. Toolchain at the `60cdd184` audit: rustc/cargo **1.99.1**, Go **1.27.4**, macOS arm64,
+ffmpeg/ffprobe **9.0.2** available. Some process tests return early when tools/codecs are unavailable; future lifecycle
+gates must require their prerequisites and record what was actually exercised. No run above booted a server or scanned
+a real library.
 
 **Rustdoc debt:** the `nd-db` doc build succeeds with **22 warnings** (8 unresolved links + 14 private-item links),
-byte-identical in set to the earlier baseline. Do not add rustdoc `-D warnings` as a gate without resolving that debt,
-and do not call a successful doc build warning-free. Measurement pitfall recorded so it is not repeated:
-`grep -c '^warning:'` also counts rustdoc's own summary line, which produced a transient 23-warning report.
+re-measured at `4ab63cd5` by this lane; the set is unchanged from the earlier baseline. Do not add rustdoc
+`-D warnings` as a gate without resolving that debt, and do not call a successful doc build warning-free. Measurement
+pitfall recorded so it is not repeated: `grep -c '^warning:'` also counts rustdoc's own summary line, which produced a
+transient 23-warning report.
 
 **Known flake (non-DB, tracked):** `nd-stream` lib test
 `the_poller_exits_on_teardown_even_when_the_client_never_hangs_up` took ~30s against its 3s deadline in one
-full-workspace run (1837 passed / 1 failed); later runs and four isolated binary runs were clean — flaky under load, not
-a regression. `nd-stream`'s `transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` (counts
-live `sleep` stub PIDs via `ps`) is the other timing-sensitive one. The ignored test is `dump_divergences`
-(`nd-mapping/tests/go_oracle.rs`). `--all-targets` totals are not a claim that doctests were run.
+full-workspace run (1837 passed / 1 failed); later runs, four isolated binary runs, and this lane's full-workspace run
+at `4ab63cd5` were clean — flaky under load, not a regression. `nd-stream`'s
+`transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` (counts live `sleep` stub PIDs via
+`ps`) is the other timing-sensitive one. The ignored test is `dump_divergences` (`nd-mapping/tests/go_oracle.rs`).
+`--all-targets` totals are not a claim that doctests were run.
 
 ## Landed history (labels are immutable; do not re-use them to schedule)
 
@@ -84,6 +114,20 @@ live `sleep` stub PIDs via `ps`) is the other timing-sensitive one. The ignored 
 | Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI parsing, explicit symlink classification. Walker, `.ndignore`/ignore policy, folder hashing and cancellation are **not implemented** — **not** SC-01 ratification or SC-02 completion |
 | DB-00 typed transaction/error seam | `48e65806` + merge `ec84c176` | Additive `try_with_tx`/`try_with_tx_retry`, `DbOperationError`/`DbRuntimeError`, safe rollback cleanup, BUSY-only retry (H2 amended) — the seam only, not the DB lane |
 | DB-02 scanner timestamp contract | `6d9d984d` + merge `74ebd81c` | Scanner-facing stamps/cutoffs bound as canonical TEXT via `time::value`, `library_repo::zero_time_value()` replacing raw `ZERO_TIME` integers, artwork-purge cutoff fixed to a `DateTime` bound, `runtime_scan_clock.rs` executed coverage. **Not** full scanner writes: `scrobble_buffer` `play_time`/`enqueue_time` still bind integers (see Residuals) |
+| Docs consolidation | `f03aff98` + merge `3b5e6c76` | `current-status.md`/`next-work.md`/`decisions.md` consolidated to one authority chain; historical blocks marked superseded |
+| DB-04 executed **property** writes | `c791dbc1` | `property_repo::put_in_tx`/`delete_in_tx` executed on the caller's transaction through `execution::execute`, update-first/insert-on-zero-row per Go, `DbOperationError::Sqlite` arm retained for busy classification; `tests/runtime_property_writes.rs` (12 executed tests). No `PropertyRepo::put`/`delete` connection-bound method and no production caller |
+| DB-05 executed **library** writes + scan lifecycle | `60be7534` | `library_repo::put_in_tx` (typed `LibraryColumn` set, id-1 path-immutability guard, autoincrement + predefined-id arms, admin assignment in the same tx), `scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/`add_artist_in_tx`; `tests/runtime_library_writes.rs` (8 executed tests). **Not** the bootstrap caller: no code creates a configured library row |
+| DB-06 executed **tag** dictionary + library links | `bfdcfeca` | `tag_repo::add_in_tx` runs each 200-id chunk's dictionary INSERT then `library_tag` link INSERT on the caller's tx (`ON CONFLICT DO NOTHING` preserved); `tests/runtime_tag_writes.rs` (9 executed tests). Counts/purge (`update_counts_sql`, `purge_unused_sql`) remain renderers — DB-17/20 |
+| DB-07 folder missing-state + album touch primitives | `2911b9ab` + merge `9be6ad0e` | `folder_repo::put_folder_in_tx`, `mark_folders_missing_in_tx`, `mediafile_repo::mark_media_missing_in_tx`/`mark_media_missing_by_folder_in_tx`, `album_repo::touch_albums_in_tx` and `touch_albums_with_missing_folders_globally_in_tx` (deliberately GLOBAL, Go predicate retained); `tests/runtime_folder_writes.rs` (10 executed tests). `put_folder_in_tx` takes a caller-supplied id and refuses an empty one as `FolderWriteError::EmptyId` rather than giving Go's random-id arm; the mark-list primitives take id lists and run NO statement on an empty list (Go's own chunk loop), so they are not an empty-id refusal |
+| DB-08 artist writes + exact partial timestamp selection | `32c4fa5b` + merge `320b8b03` | `artist_repo::put_artist_in_tx` with the typed `ArtistColumn` set; the pre-existing defect where a filtered update force-appended `updated_at` was **corrected** to Go's `selectUpdateColumns` semantics (`runtime_timestamp_convention.rs` re-pinned). `library_artist` link is NOT written here — it stays `library_repo::add_artist_in_tx` |
+| DB-09 atomic album base + participant + tag writes | `d938d159` + merge `842c32a2` | `album_repo::put_album_in_tx` executes base upsert then unconditional participant delete + optional insert, then unconditional tag delete + optional insert, all on the caller's tx. **FTS is not issued by any statement**: the fresh schema's own `album_fts_ai`/`_au`/`_ad` triggers maintain `album_fts`, and `runtime_album_writes.rs` (18 executed tests) observes it through `MATCH` and the contentless row count. Album aggregation/`equals` remain SC-owned (`decisions.md` S4) |
+| DB-10 identity/base/junction writes | `65072b89` + signed merge `6e5ca97d` | `put_mediafile_in_tx`, 31 executed tests. Empty-ID Match miss mints inside each tx attempt; retries may mint different GUIDs, failed attempts publish no ID, only committed result returns ID. BUSY test fails initial INSERT before junction/FTS, not commit failure of a completed bundle. Review APPROVE, follow-up P3s fixed (parent report); no production scanner caller |
+| DB-12 artwork invalidation/enqueue subset | `e5d0592d` (fast-forward), rustdoc fix `f80b9704` | Transaction-bound delete-for-items and three enqueue variants; 14 executed tests; review APPROVE after follow-up test fixes (parent report). Not worker/full scanner; no production scanner caller |
+| DB-13 epoch-only token revocation | `eae4ba1d` + merge `4ab63cd5` | `user_repo::increment_token_epoch_sql` (guarded `token_epoch = token_epoch + 1 … RETURNING token_epoch` with `typeof(token_epoch) = 'integer'` and `< i64::MAX`) executed by `revoke_tokens_in_tx` on the caller's tx, with `RevokeError::NotFound`/`Exhausted` classified by a same-tx existence read; `tests/runtime_token_revoke.rs` (18 executed tests). Epoch-only revoke is a **Rust-side addition** — Go bumps the epoch only inside the password UPDATE. No route/BOOT consumer exists |
+| BOOT-02 native expiring login sessions | `c6e220eb` + merge `162fae1d` | `login.rs` mints via `Authenticator::create_native_session_token` (native audience + checked positive `exp`), replacing the audience-less `create_token` call that made the login token unusable at `AuthGate::Api`; `tests/login_http.rs` (14) and `tests/http_auth.rs` (14) executed, including a legacy audience-less **negative control** and an epoch-revoke round-trip. The remaining HTTP API-key extraction/issuance middleware is **not** part of this scope |
+
+Executed write primitives are **transaction-bound and caller-trusted** (`WHERE id = ?` and nothing else, exactly like
+Go): they own no scope filter, no auth check, and no commit. None has a production caller at `f80b9704`.
 
 The old scout's S-D3b meant folder/playlist and its S-D3c meant album/media-file; `hydrate-scan-contract.md` numbers
 the same lanes differently (see the numbering-drift note in `next-work.md`'s historical index). All rows above are in
@@ -95,71 +139,89 @@ stale.
 | Surface | Rendered / decoded | Production execution | Mounted / end-to-end |
 |---|---|---|---|
 | Shared marshal, JSON/role/FTS feeders | Present; eight row hooks exist | Consumers below; marshal tests also manually execute SQL bundles | Not a full entity-write or scanner contract |
-| User/player | Read and mutation builders/records | Substantial reads and writes execute | Auth consumers exist; no server bootstrap |
+| User/player | Read and mutation builders/records | Substantial reads and writes execute, incl. DB-13 `user_repo::revoke_tokens_in_tx` (`eae4ba1d`) | Auth consumers exist (login mints a native expiring session at `c6e220eb`); no server bootstrap, no revoke route |
 | Share/user properties | Present | Raw-connection reads/writes execute, outside the shared execution helper | Full share service not implemented |
-| Album/media-file/artist/folder/playlist/radio | Record/hook/read builders present | Substantial reads; **no production executed entity `Put` lifecycle** | No ingest or mounted API |
-| Library/property/tag | Plain mappers and builders present | Reads execute, including `PropertyRepo::default_get`; scanner writes do not | No library bootstrap/scan lifecycle |
+| Album/media-file/artist/folder/playlist/radio | Record/hook/read builders present | Substantial reads; executed entity writes landed for **artist** (`32c4fa5b`), **album** (`d938d159`), **folder** (`2911b9ab`) and media-file **missing-state plus identity/base/junction writes** (`put_mediafile_in_tx`, DB-10 `65072b89`) | No ingest or mounted API |
+| Library/property/tag | Plain mappers and builders present | Reads **and** executed writes landed (property `c791dbc1`, library + scan lifecycle `60be7534`, tag `bfdcfeca`) | No library bootstrap/scan-lifecycle caller |
 | Playlist tracks/scrobble buffer | Delegating hooks and builders present | Partial reads; buffer dequeue executes | Not full playlist/scrobbler services |
-| Artwork queue | Builders and plain mapper present | Reads/counts and `purge_queued` execute | Enqueue/worker lifecycle not implemented |
+| Artwork queue | Builders and plain mapper present | Reads/counts, `purge_queued`, transaction-bound enqueue variants and artwork delete-for-items execute (DB-12 `e5d0592d`) | No production scanner caller; worker lifecycle not implemented |
 | Transcoding module | Builders present | **Executed reads landed at `f8ceeb8f`** (`read_all`/`count_all`, `command` masked for a non-admin) | No route, no default-profile seed; profile **editing** out of scope |
-| Artwork/genre/playqueue/plugin/scrobble/smart_playlist | Standalone repository operations are builder-only | Artwork item-image lookup separately executes in `artwork_hydration.rs` | Not full repository/service completion; `plugin` scope decision pending (`next-work.md` §"Decision ask (scope)") |
-| DB store/pool | Sync/async lease and transaction/retry APIs exist | SQLite work runs on the blocking boundary | Effective per-connection configuration **landed** (DB-03); typed seam **landed** (`48e65806`/`ec84c176`, DB-00) — compound writes (DB-04+) still consume it |
-| Schema | Fresh DDL, migrations/marker, extensions, indexes, backup/optimize | Executed schema tests | No default library row; repair deferred; no bootstrap caller |
+| Artwork/genre/playqueue/plugin/scrobble/smart_playlist | Reads remain builder-only in these repos; artwork invalidation now executes | Artwork item-image lookup separately executes in `artwork_hydration.rs`; artwork `delete_for_items_in_tx` executes | Not full repository/service completion; `plugin` scope decision pending (`next-work.md` §"Decision ask (scope)") |
+| DB store/pool | Sync/async lease and transaction/retry APIs exist | SQLite work runs on the blocking boundary | Effective per-connection configuration **landed** (DB-03); typed seam **landed** (`48e65806`/`ec84c176`, DB-00) and DB-04…DB-10/12/13 consume it |
+| Schema | Fresh DDL, migrations/marker, extensions, indexes, backup/optimize | Executed schema tests (61 at `4ab63cd5`) | No default library row; repair deferred; no bootstrap caller |
 | Tagreader/mapping | Real lofty backend and metadata mapping | Crate-level implementation/tests | No storage→record→DB ingest caller |
-| Auth | Credential/JWT/login/refresh/middleware components | Crate-level mounted test routers | Login-audience and HTTP API-key extraction integration gaps; no production router |
+| Auth | Credential/JWT/login/refresh/middleware components | Crate-level mounted test routers (107 executed at `4ab63cd5`) | Login→native-audience round-trip **closed** at `c6e220eb`; HTTP API-key extraction/issuance middleware still absent; no production router |
 | Stream #15 | Handler/cache/limiter/archiver implemented | Crate-level serving/lifecycle tests | **Component-level complete, not HTTP-ready**; header commitment/Send adapter gaps |
-| Scanner/HTTP/API/CLI | Scaffolds / empty main | No production scan/listener/router | **Not started at the integration boundary**; a local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (**not** SC-01/SC-02 completion) |
+| Scanner/HTTP/API/CLI | Scaffolds / empty `main` | No production scan/listener/router | **Not started at the integration boundary**; a local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (**not** SC-01/SC-02 completion) |
 | Scheduler | Scheduling primitives implemented | Crate tests | Full maintenance/logging and bootstrap remain |
 
-Repository sources: `rust/crates/nd-db/src/*_repo.rs`, `hydrate.rs`, `marshal.rs`, `store.rs`, `pool.rs`. Executed reads
-do not prove all methods execute. Re-counted at integrated `master` `74ebd81c` by this lane (SOURCE-VERIFIED: grep for
-`execution::query`/`read_hydrated`/`prepare_and_then` across the 23 `*_repo.rs` modules): **15 modules execute through the
-shared helper** (property, playlist_track, radio, scrobble_buffer, transcoding, album, artist, tag, folder,
-artwork_queue, mediafile, playlist, library, player, user), **2 execute on raw connections** outside it (`share`,
-`user_props`), and **six are render-only** (`artwork`, `genre`, `playqueue`, `plugin`, `scrobble`, `smart_playlist` —
-`smart_playlist` is not a separate Go repository; `plugin` scope decision pending). `annotation_repo.rs` does not exist
-because annotations ride album/media-file (DB-15), so that is not a gap.
+Repository sources: `rust/crates/nd-db/src/*_repo.rs`, `hydrate.rs`, `marshal.rs`, `store.rs`, `pool.rs`, `execution.rs`.
+Executed reads do not prove all methods execute. Re-counted at integrated `master` `f80b9704` by this lane
+(SOURCE-VERIFIED: grep for `execution::query`/`execution::execute`/`read_hydrated`/`prepare_and_then` across the 23
+`*_repo.rs` modules): **16 modules execute through the shared helper** (artwork, property, playlist_track, radio,
+scrobble_buffer, transcoding, album, artist, tag, folder, artwork_queue, mediafile, playlist, library, player, user),
+**2 execute on raw connections** outside it (`share`, `user_props`), and **five are render-only** (`genre`,
+`playqueue`, `plugin`, `scrobble`, `smart_playlist` — `smart_playlist` is not a separate Go repository; `plugin` scope
+decision pending). Twenty-two executed transaction-bound write functions exist (`grep 'pub fn .*_in_tx'`):
+property `put_in_tx`/`delete_in_tx`, library `put_in_tx`/`scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/
+`add_artist_in_tx`, tag `add_in_tx`, folder `put_folder_in_tx`/`mark_folders_missing_in_tx`, mediafile
+`mark_media_missing_in_tx`/`mark_media_missing_by_folder_in_tx`, artist `put_artist_in_tx`, album
+`put_album_in_tx`/`touch_albums_in_tx`/`touch_albums_with_missing_folders_globally_in_tx`, user
+`revoke_tokens_in_tx`, plus DB-10 `put_mediafile_in_tx`, artwork `delete_for_items_in_tx`, and queue
+`enqueue_in_tx`/`enqueue_all_missing_in_tx`/`enqueue_if_missing_in_tx`. `annotation_repo.rs` does not exist because annotations ride album/media-file (DB-15), so that
+is not a gap.
 
 ## Landed safety gates (former open blockers, now closed with executed regressions)
 
 - **Missing-update bind order — CLOSED at `f57ae050`** (DB-01): `mark_missing_sql` args follow Go's `.Set`/`.Where`
   order; `runtime_missing_state.rs` executes 7 real-schema tests plus a pre-fix control. Details: `decisions.md` W0.
-  **Other** latent write defects remain — do not connect existing renderers unchanged.
+  **Other** latent write defects remain — DB-08 found and fixed one of them (filtered artist updates force-appending
+  `updated_at`, corrected at `32c4fa5b`); do not connect existing renderers unchanged.
 - **Timestamp/idle semantics — CLOSED at `6d9d984d`/`74ebd81c`** (DB-02/D-TIME, `decisions.md` T1-T5): scanner-facing
   stamps and cutoffs bind canonical TEXT through `time::value`; the idle/scan-end comparison uses the deliberate
   `library_repo::zero_time_value()` API instead of raw `ZERO_TIME` integers; year-one `time::zero()` and the fresh-DDL
   `0000-00-00 00:00:00` sentinel behavior are preserved as inherited Go semantics (pinned, not "normalized"), and the
   artwork-purge integer-cutoff regression is fixed with executed coverage in `runtime_scan_clock.rs`. Not a demand for
-  Go database migration support. **Known residual:** `scrobble_buffer.play_time`/`enqueue_time` still bind integers.
+  Go database migration support. The DB-04…DB-09 write lanes consume this convention for their stamps. **Known
+  residual:** `scrobble_buffer.play_time`/`enqueue_time` still bind integers.
 - **Pool configuration — CLOSED at `4a8aac9f`** (DB-03/D-OPEN): explicit typed options, per-connection PRAGMA,
   effective-state read-back before pooling, Go-compatible DSN parser (`decisions.md` P1). FK-on and the 5000 ms rusqlite
   default are pinned facts, not assumptions.
 - **Typed repository/transaction errors — CLOSED at `48e65806`/`ec84c176`** (DB-00/D-ERROR, `decisions.md` E1-E3,
   retryable set H2): additive seam beside `with_tx*`, `RollbackFailed` keeps original + rollback errors reachable,
-  `BusyExhausted` replaces strings, `Depleted`/`Poisoned` checkout states are distinct. Consumers (DB-04 onward) still
-  adopt it lane by lane.
+  `BusyExhausted` replaces strings, `Depleted`/`Poisoned` checkout states are distinct. Consumers adopted it lane by lane:
+  DB-04…DB-09 and DB-13 all return `DbOperationError` with the concrete `rusqlite::Error` (extended code intact) on the
+  `Sqlite` arm, so `store::is_busy` still classifies retryable failures.
 
-All four first-wave implementation lanes (DB-01, DB-03, DB-00, DB-02, plus the DB-15 render-only repair and the scanner
-local-FS storage subset) are merged into `74ebd81c`; **no implementation branch is currently in flight.** The next lane is
-assigned work, not a pending merge.
+First-wave lanes (DB-01, DB-03, DB-00, DB-02, plus the DB-15 render-only repair and the scanner local-FS storage
+subset) are merged into `74ebd81c`, and DB-04 through DB-09 plus DB-13 and BOOT-02 are merged into `4ab63cd5`. DB-10 and DB-12's executed subset are now merged into `f80b9704`. SC-02 remains unmerged/uncommitted (see
+`next-work.md` §"Live wave"). DB-22's former DB-12 ownership block is released; it is ready subject to parent launch and
+exclusive checkout ownership. DB-11 remains decision-gated on `D-CURSOR`/`D-SCOPE`.
 
 ## Remaining blockers and integration obligations (SOURCE-VERIFIED)
 
-1. **Executed scanner writes and queries are missing** — conn-bound `Put`/`PutByMatch` plus base/FTS/participant/tag/link
-   atomicity; leaf property/library/tag/folder writes; typed folder/album-filtered media reads;
-   missing/recent/touched queries; queue enqueue and artwork invalidation; move/reference/annotation transactions;
-   scoped eleven-operation GC. `MediaFileRepo::get_all` does not forward arbitrary scanner filters, and a raw
-   user-supplied SQL fragment is not an acceptable substitute.
+1. **Executed scanner writes and queries are partly missing.** Landed on the integrated tree: leaf property/library/tag
+   writes, folder/album/media-file missing-state and touch primitives, artist and album entity writes with participant/tag
+   junction atomicity (`c791dbc1`, `60be7534`, `bfdcfeca`, `2911b9ab`, `32c4fa5b`, `d938d159`), plus DB-13 epoch revoke
+   (`eae4ba1d`), DB-10 identity/base/junction writes (`65072b89`) and DB-12 artwork invalidation/enqueue (`e5d0592d`).
+   **Still unexecuted:** typed folder/album-filtered scanner reads and cursors (DB-11), the recent/touched read pins,
+   move/reference/annotation transactions (DB-16), full DB-15
+   annotation execution, and scoped eleven-operation GC. `MediaFileRepo::get_all` does not forward arbitrary scanner
+   filters, and a raw user-supplied SQL fragment is not an acceptable substitute. Executed primitives also still have
+   **no production caller**: nothing invokes them from a scanner, bootstrap, or route.
 2. **Scanner mapping/equality seams** — `nd_mapping::map_file` (`nd-mapping/src/lib.rs:78-86`) forces library 1 and an
    empty folder id; `nd_model::album::equals` (`album.rs:174-176`) compares only ids. The scanner plan must own a tested
    aggregate/equality bridge or obtain the domain-owner decision (`decisions.md` S4). IPC correction: Go's external
    scanner gob carries `ProgressInfo` (`scanner/external.go:86-96`, `cmd/scan.go:71-76`), not tag-reader results;
    watcher/progress-protocol are later parity packages, not gates for a limited in-process fixture scan.
-3. **Auth integration** — login calls the audience-less `create_token` (`login.rs:143`, `credentials.rs:126-135`) while
-   `AuthGate::Api` requires the native audience (`middleware.rs:126-130`, `credentials.rs:288-300`); existing tests
-   assert audience-less rejection and no mounted login→canonical-API round-trip closes this. Preserve expiring sessions,
-   refresh/epoch checks and strict native audience; do not replace sessions with non-expiring API tokens or weaken gates.
-   Hashed-key primitives do not supply canonical HTTP key extraction/issuance middleware.
+3. **Auth integration** — the login-audience gap is **CLOSED at `c6e220eb`** (BOOT-02): `login.rs:142-145` mints through
+   `Authenticator::create_native_session_token` (`credentials.rs:163-175`, native audience plus a checked positive `exp`),
+   so a login token now passes `AuthGate::Api` (`middleware.rs:121-129` → `check_api_claims`, `credentials.rs:356-367`);
+   `tests/login_http.rs`/`tests/http_auth.rs` execute the round-trip, an epoch-revoke rejection, and a legacy audience-less
+   **negative control**. Preserve expiring sessions, refresh/epoch checks and the strict native audience; do not replace
+   sessions with non-expiring API tokens or weaken gates. **Still open:** no canonical HTTP API-key extraction/issuance
+   middleware — `verify_api_key_hash` (`credentials.rs:395`) and `PlayerRepo::find_by_api_key` have no non-test caller, and
+   `supplied_tokens`/`resolve_username` (`verifier.rs:78-108,122-140`) cover JWT header/cookie/query plus ExtAuth only.
 4. **Stream integration** — `StreamHandler::serve` (`handler.rs:1302-1507`) returns status/headers after pumping and
    teardown, `prepare` is private and may change the body kind, and the boxed-future/trait-object `Send` contract needs a
    deliberate network adapter seam. Preserve bounded backpressure, cancellation, lease/slot ownership, cache semantics,
@@ -172,18 +234,27 @@ assigned work, not a pending merge.
    scope decision is the parent's call. Part C per-key config scopes; oracle-harness authorization for new tracked
    Go harnesses.
 
-## Bounded source-level residuals (measured at `74ebd81c`; this list is a boundary, not a claim that everything else is done)
+## Bounded source-level residuals (amended at integrated `master` `f80b9704`; older line references retained, not a completeness claim)
 
-- `scrobble_buffer_repo` still binds `play_time`/`enqueue_time` as **integers** (`Value::Integer`) on an INTEGER-affinity
-  `datetime` column, while the DB-02 contract binds TEXT elsewhere (`scrobble_buffer_repo.rs:211-225`). Distinct and
-  deliberate: `scrobbles.submission_time` is intentionally an integer epoch and is not part of this convention.
-- `find_recent_files_by_properties_sql` (`mediafile_repo.rs:1792`) is converted to the TEXT cutoff shape but has **no
-  executed regression pin**; the sibling MBZ path is pinned (`runtime_scan_clock.rs:222`), so the properties path is the
-  uncovered one.
-- DB-04+ scanner mutations (property/library/tag/folder writes, entity `Put`/`PutByMatch`, FTS/junction atomicity),
-  DB-13 epoch revoke, DB-14 folder-delta transaction, and full DB-15 annotation execution are **not implemented**.
+- `scrobble_buffer_repo::enqueue_sql` still binds `play_time`/`enqueue_time` as **integers** (`Value::Integer`,
+  `scrobble_buffer_repo.rs:206-226`) on an INTEGER-affinity `datetime` column, while the DB-02 contract binds TEXT
+  elsewhere. Distinct and deliberate: `scrobbles.submission_time` is intentionally an integer epoch and is not part of
+  this convention.
+- `find_recent_files_by_properties_sql` (`mediafile_repo.rs:1903`) is converted to the TEXT cutoff shape but has **no
+  executed regression pin**; the sibling MBZ path is pinned (`runtime_scan_clock.rs:222`, which executes
+  `find_recent_files_by_mbz_track_id_sql`), so the properties path is the uncovered one.
+- **Still unexecuted on the integrated tree:** typed scanner reads/cursors with filters (DB-11), the DB-14 folder-delta
+  transaction, DB-16 move/reference transactions, and full DB-15 annotation execution. Tag count refresh and purge
+  (`update_counts_sql`/`purge_unused_sql`) and `album_repo::refresh_play_counts_sql` remain renderers.
+- Executed write primitives are **caller-trusted primitives, not services**: no scope filter, no auth check, no commit,
+  and no production caller. Empty-id `Put` refusal — `FolderWriteError::EmptyId`, `ArtistWriteError::EmptyId` and
+  `AlbumWriteError::EmptyId` in `put_folder_in_tx`/`put_artist_in_tx`/`put_album_in_tx` — is a **recorded port-side
+  deviation from Go** (Go generates a random id), documented on each function rather than silently applied. The
+  mark-list primitives (`mark_folders_missing_in_tx`, `mark_media_missing_in_tx`,
+  `mark_media_missing_by_folder_in_tx`) are NOT part of that deviation: they take id lists, accept an empty one and
+  run no statement, exactly like Go's chunk loop.
 - The scanner local-FS subset and the DB-15 render-only repair remain **partial scopes** (not SC-01/SC-02, not the
-  annotation service); storage `Put` lifecycle, aggregation/equality bridge, controller/watcher and progress protocol are
+  annotation service); storage→record ingest, aggregation/equality bridge, controller/watcher and progress protocol are
   unstarted. There is **no server readiness**: no router, listener, library bootstrap, or integrated stream HTTP adapter.
 
 ## Residuals (parity debt vs first-boot gates, kept distinct)
@@ -212,8 +283,9 @@ scaffold).
 
 ## Provenance
 
-Conclusions here come from parent-measured gate runs and source inspection at the pinned commits, plus read-only
-investigation briefs whose local `/tmp` reports are supporting evidence only (agent IDs and provider failure histories
-are deliberately not canonicalized in these docs). The parent independently verified consequential source claims and
-reproduced the hazards recorded in the contracts. Nothing is complete merely because it is planned, and no
-implementation is authorized by this snapshot.
+Conclusions here come from **this lane's own executed gate runs on the clean integrated `master` worktree at
+`4ab63cd5`** (logs under `/tmp/docs-sd3f-*.log`), from source inspection at the pinned commits, and from the parent's
+dated integration logs for intermediate boundaries. Read-only investigation briefs' local `/tmp` reports are supporting
+evidence only (agent IDs and provider failure histories are deliberately not canonicalized in these docs); in-flight
+lane worktrees were inspected read-only for **branch state only**, never treated as merged results. Nothing is complete
+merely because it is planned, and no implementation is authorized by this snapshot.

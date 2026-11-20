@@ -4,13 +4,18 @@ Read order and authority: [`README.md`](README.md) → this current section (mil
 [`current-status.md`](current-status.md) (measured evidence) → [`decisions.md`](decisions.md) (binding decisions) →
 `subplans/` (bounded assignments). Everything below the separator is a **dated historical index**, not a scheduler.
 
-## Current execution plan (baseline integrated `master` `74ebd81c`, updated 2026-11-19)
+## Current execution plan (baseline integrated `master` `f80b9704`, updated 2026-11-19)
 
-`74ebd81c` = `ff900d3e` + `ab466928` (DB-15 render-only rating repair) + `e9dd8230`/`ff5b9c92` (scanner local-FS storage
-subset) + `48e65806`/`ec84c176` (DB-00 typed transaction/error seam) + `6d9d984d`/`74ebd81c` (DB-02 scanner timestamp
-contract). Evidence is in `current-status.md`; this section
-only sets order. Nothing here authorizes implementation, commits, new workspaces, or completion claims. This docs lane is
-cut from `ff900d3e`, so statements about integrated behavior are sourced from `master`, not measured here.
+`f80b9704` adds DB-12 `e5d0592d` (signed implementation, fast-forward), DB-10 `65072b89` (signed implementation) / signed
+merge `6e5ca97d`, and DB-12 rustdoc fix `f80b9704` to the prior boundary:
+`4ab63cd5` = `74ebd81c` + `f03aff98`/merge `3b5e6c76` (docs consolidation) + `c791dbc1` (DB-04 property writes) +
+`60be7534` (DB-05 library writes + scan lifecycle) + `bfdcfeca` (DB-06 tag dictionary/library links) + `2911b9ab`/merge
+`9be6ad0e` (DB-07 folder missing-state + album touch) + `32c4fa5b`/merge `320b8b03` (DB-08 artist writes + timestamp
+parity) + `d938d159`/merge `842c32a2` (DB-09 atomic album writes) + `c6e220eb`/merge `162fae1d` (BOOT-02 native expiring
+login sessions) + `eae4ba1d`/merge `4ab63cd5` (DB-13 epoch-only revocation). Evidence is in `current-status.md`; this
+section only sets order. Nothing here authorizes implementation, commits, new workspaces, or completion claims. This
+docs lane runs in the **integrated master checkout itself** at `f80b9704`; latest Cargo gates are parent integration
+results (logs checked here), while this lane's earlier `4ab63cd5` measurements remain historical.
 
 ### Authority and launch rules
 
@@ -28,7 +33,7 @@ cut from `ff900d3e`, so statements about integrated behavior are sourced from `m
   read-only review after writing stops, then selected fixes and parent CLI gates. Scratch only in `/tmp`; no automatic
   formatting.
 
-### Landed and verified (dated parent measurements, in this baseline)
+### Landed and verified (dated measurements, in this baseline; latest parent gates at `f80b9704`; earlier docs-lane totals at `4ab63cd5`)
 
 1. **Sort-gate parity — DONE at `62789ba2`.** Executed REST reads in `player_repo.rs`, `library_repo.rs`, `tag_repo.rs`,
    `radio_repo.rs` take `RestQueryOptions` and parse internally, matching Go; `runtime_rest_sort_gate.rs` proves hostile
@@ -50,43 +55,61 @@ cut from `ff900d3e`, so statements about integrated behavior are sourced from `m
 5. **W4/W6/W7 hydration and executed-read rounds** (`f8ceeb8f`, `62789ba2`) are landed; see the historical index and the
    contract residual blocks for their durable findings.
 
-### Landed since `ff900d3e` (parent-reviewed, signed, merged — DB-00/DB-02 and the storage subset each landed via a merge commit; scopes are deliberately partial)
+### Landed since `ff900d3e` (parent-reviewed, signed, merged — each landed as a commit or a merge commit; scopes are deliberately partial)
 
 | Assignment | Commit | Scope actually landed — and what is **not** done |
 |---|---|---|
 | DB-15 **render-only** rating repair | `ab466928` | `update_avg_rating_sql` embeds `average_rating_expr_sql()` with 3 ordered binds, and `tests/runtime_annotation_rating.rs` executes it against a real schema. The three public annotation renderers were deliberately **kept and redocumented** (their `annotation.id` prepare failure pinned), not left undecided. **Full DB-15 is NOT done:** typed annotation reassignment/merge transactions and the annotation read APIs are unimplemented. |
 | Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `nd-scanner/src/storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical-path handling, `file://` URI parsing and explicit symlink classification. **Not implemented:** the walker, `.ndignore`/ignore policy, folder hashing, cancellation, `MusicFS`/`ReadTags`, registry dispatch, watcher. **Not** SC-01 ratification and **not** SC-02 completion. |
-| DB-02 scanner timestamp contract (D-TIME) | `6d9d984d` + merge `74ebd81c` | Scanner-facing stamps/cutoffs bind canonical TEXT via `time::value`; `library_repo::zero_time_value()` replaces raw `ZERO_TIME` integers; artwork-purge integer cutoff fixed with executed coverage. **Partial:** `scrobble_buffer` `play_time`/`enqueue_time` still bind integers, and `find_recent_files_by_properties_sql` has no executed pin. Not scanner writes.
-| DB-00 typed transaction/error seam | `48e65806` + merge `ec84c176` | Additive `try_with_tx`/`try_with_tx_retry` beside `with_tx*`, `DbOperationError`/`DbRuntimeError`, safe rollback cleanup, BUSY-only retry (`decisions.md` E1-E3, H2). The seam only — DB-04 onward still consume it, and the DB lane is nowhere near done. |
+| DB-02 scanner timestamp contract (D-TIME) | `6d9d984d` + merge `74ebd81c` | Scanner-facing stamps/cutoffs bind canonical TEXT via `time::value`; `library_repo::zero_time_value()` replaces raw `ZERO_TIME` integers; artwork-purge integer cutoff fixed with executed coverage. **Partial:** `scrobble_buffer` `play_time`/`enqueue_time` still bind integers, and `find_recent_files_by_properties_sql` has no executed pin. Not scanner writes. |
+| DB-00 typed transaction/error seam | `48e65806` + merge `ec84c176` | Additive `try_with_tx`/`try_with_tx_retry` beside `with_tx*`, `DbOperationError`/`DbRuntimeError`, safe rollback cleanup, BUSY-only retry (`decisions.md` E1-E3, H2). The seam only — DB-04 onward consume it, and the DB lane is nowhere near done. |
+| Docs consolidation | `f03aff98` + merge `3b5e6c76` | `current-status.md`, `next-work.md`, `decisions.md` and the subplan headers consolidated into one authority chain; historical blocks marked superseded. |
+| DB-04 executed property writes | `c791dbc1` | `property_repo::put_in_tx`/`delete_in_tx` on the caller's tx (update-first, insert on zero rows, Go order), 12 executed tests. No connection-bound `PropertyRepo::put`/`delete`, no production caller. |
+| DB-05 executed library writes + scan lifecycle | `60be7534` | `library_repo::put_in_tx` (typed `LibraryColumn`, id-1 path guard, autoincrement/predefined-id arms, admin assignment in-tx), `scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/`add_artist_in_tx`, 8 executed tests. **Not** the bootstrap caller — no code creates a configured library row. |
+| DB-06 executed tag Add | `bfdcfeca` | `tag_repo::add_in_tx` — dictionary INSERT then `library_tag` link INSERT per 200-chunk on the caller's tx, 9 executed tests. `update_counts_sql`/`purge_unused_sql` remain renderers (DB-17/20). |
+| DB-07 folder missing-state + album touch | `2911b9ab` + merge `9be6ad0e` | `put_folder_in_tx`, `mark_folders_missing_in_tx`, `mark_media_missing_in_tx`, `mark_media_missing_by_folder_in_tx`, `touch_albums_in_tx`, `touch_albums_with_missing_folders_globally_in_tx` (deliberately GLOBAL, Go predicate retained), 10 executed tests. Not walk/finalize/purge policy. |
+| DB-08 artist writes + partial timestamp parity | `32c4fa5b` + merge `320b8b03` | `artist_repo::put_artist_in_tx` with typed `ArtistColumn`; **fixed** the renderer defect that appended `updated_at` to every filtered SET (Go `selectUpdateColumns` semantics restored and re-pinned in `runtime_timestamp_convention.rs`). `library_artist` link stays DB-05's `add_artist_in_tx`. 10 executed tests. |
+| DB-09 atomic album base/participants/tags | `d938d159` + merge `842c32a2` | `album_repo::put_album_in_tx`: base upsert, unconditional participant delete + optional insert, unconditional tag delete + optional insert, one tx. FTS is maintained by the schema's own `album_fts_*` triggers, not by an issued statement — the tests observe it via `MATCH`/row count. 18 executed tests. Album aggregation/`equals` remain SC-owned (`decisions.md` S4). |
+| BOOT-02 native expiring login sessions | `c6e220eb` + merge `162fae1d` | Login mints via `create_native_session_token` (native audience + checked positive `exp`), so a login token passes `AuthGate::Api`; executed `tests/login_http.rs`/`tests/http_auth.rs` coverage incl. an epoch-revoke round-trip and an audience-less negative control. **Not** HTTP API-key extraction/issuance middleware; no production router. |
+| DB-13 epoch-only token revocation | `eae4ba1d` + merge `4ab63cd5` | `increment_token_epoch_sql` (guarded `typeof(token_epoch)='integer'` and `< i64::MAX`, `RETURNING token_epoch`) executed by `revoke_tokens_in_tx` on the caller's tx; `RevokeError::NotFound`/`Exhausted` classified by a same-tx existence read; 18 executed tests. Epoch-only revoke is a Rust-side addition (Go bumps only inside the password UPDATE); no BOOT/API consumer exists. |
 
-### Live wave (in flight — never mark DONE from a message)
+### Live wave (verified checkout state; never mark DONE from a message)
 
-**No implementation lane is in flight as of `74ebd81c`**: all four first-wave lanes are merged and their
-branches cleaned. The rows below are the next assignable packages, not pending merges.
+At `f80b9704`, **DB-10 and the DB-12 executed subset are LANDED**. Verified source history and `git worktree list` /
+branch refs during this refresh: their former worktrees/branches disappeared during this lane's read-only inspection;
+the final worktree list contains only `master` and `rust-sc02-local-walker`. This docs lane removed nothing.
 
-| Assignment | Branch | Scope claimed | State |
-|---|---|---|---|
-| DB-04 executed **property** writes (consumes DB-00/02/03) | to be assigned | Executed property put/delete on a transaction through `try_with_tx*`, canonical TEXT stamps, typed errors | **Next assignable package.** Code not written; DB-02's timestamp contract is a prerequisite, not a substitute. Library writes are **DB-05**, not this package. |
-| DB-05 executed **library** writes | after DB-04 | Executed library put/click/touch-style writes on the same seam | Assignable only after DB-04 integrates (shared renderer files) |
+| Assignment | Commit / branch | Verified state |
+|---|---|---|
+| DB-10 MediaFile `PutByMatch` identity + atomic maintenance | `65072b89`, signed merge `6e5ca97d` | **LANDED**. `put_mediafile_in_tx` plus 31 executed tests; review APPROVE and follow-up P3s fixed (parent report). Empty-ID Match miss mints inside each tx attempt; retries may mint different GUIDs; failed attempts publish no result; only committed result returns ID. BUSY test fails initial INSERT before junction/FTS, not commit failure after a completed bundle. No production scanner caller. |
+| DB-12 scanner artwork invalidation/enqueue subset | `e5d0592d` (signed, fast-forward), rustdoc fix `f80b9704` | **LANDED subset**. Transaction-bound delete-for-items and three enqueue variants, 14 executed tests; review APPROVE after follow-up test fixes (parent report). No production scanner caller, artwork worker or full scanner. |
+| SC-02 walker/ignore/folder hash remainder | `rust-sc02-local-walker`, `/Users/nathanielheitsch/.paseo/worktrees/0xo97qr3/rust-sc02-local-walker`, base `60be7534` | **Unmerged, blocked**; 15 commits behind / 0 ahead of `master`; 5 modified tracked files (incl. scanner manifest and lockfile), 8 untracked source/test files. Review artifact `/tmp/nav-sc02-final-review.md` requests changes on the uncommitted diff, not an integrated-tree review; fixes are not claimed verified. Needs rebase/merge onto `f80b9704`, manifest/lock edge re-check, fresh review and gates. |
+| Wave-2 docs refresh | `rust-wave2-status-refresh`, base `320b8b03`; no worktree | 0 ahead / 8 behind `master`. Stale docs attempt, no recovered output; superseded by this refresh. |
 
 Merges are parent-controlled; this docs lane is support work, not a rebalance of implementation lanes.
 
 ### Next dependencies (order, not estimates)
 
-1. **DB-04 → DB-05 → DB-06 → DB-07 …** — executed **property** writes first (DB-04), then **library** (DB-05),
-   **tag** (DB-06), **folder** (DB-07), then artist/album/media-file `Put`/`PutByMatch` with base/FTS/junction/link
-   atomicity (DB-08…10), typed filtered scanner reads, artwork invalidation/queue-enqueue subset. Each lane consumes the
-   landed DB-00 typed transaction/error seam, the DB-02 canonical TEXT stamp convention, and the DB-03 effective pool
+1. **DB-11 → DB-15(runtime) → DB-14 → DB-21(P1-DB)** — DB-04…DB-10/DB-12/DB-13 are landed; the spine resumes at
+   **DB-11**, typed filtered scanner reads/cursors, still gated on unrecorded `D-CURSOR` + `D-SCOPE`. DB-12 has already
+   released the artwork subset. DB-14 requires `SC.folder-write-batch-contract` and DB-15 for general album-ID transitions.
+   **DB-22 is independently ready/assignable**: DB-00/02/03 landed, former DB-12 `artwork_repo.rs` ownership released, no
+   code writer per parent. Parent must authorize and serialize its launch after this docs writer. DB-16…20 (move/reference,
+   tag counts, artist stats, playlist cleanup, GC) extend the phase-2+/full-scanner exit. Each lane consumes the landed
+   DB-00 typed transaction/error seam, the DB-02 canonical TEXT stamp convention, and the DB-03 effective pool
    configuration — adopt them rather than re-deriving helper behavior. Add executed write→read-back regressions, not more
    renderer-only assertions (`decisions.md` W0/W1); the DB-02 gaps (`scrobble_buffer` integer stamps,
-   `find_recent_files_by_properties_sql` executed pin) belong to whichever lane owns those statements.
-2. **Re-date the gate block** on the integrated tree after each merge; the current block in `current-status.md` is dated
-   parent truth at `74ebd81c`, not proof for a later diff.
+   `find_recent_files_by_properties_sql` executed pin) belong to whichever lane owns those statements. Landed lanes also
+   still need **production callers**: no executed write is invoked from a scanner, bootstrap, or route yet.
+2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `f80b9704`: fmt,
+   workspace clippy and docs succeed; workspace tests **2159/0/1 across 87 suites**, `nd-db` docs retain **22 warnings**.
+   Logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log` are dated evidence, not proof for a later SC-02 diff.
 3. **Honest scanner phase-1 vertical slice** — storage/stat/symlink/ignore and metadata→record adapters, actual
    library/folder IDs, pure album aggregation/change detection, one fixture-tree ingest over those DB APIs
    (`decisions.md` S1-S4). Call it phase 1, not complete #17.
 4. **Bootstrap/HTTP/canonical route contracts** — scoped API manifest capture, configuration → schema/pool → configured
-   library/admin → router/listener wiring, login-session/native-audience and HTTP key integration, stream
+   library/admin → router/listener wiring, HTTP API-key extraction/issuance middleware (login-session/native-audience is
+   landed at BOOT-02 `c6e220eb`/`162fae1d`), stream
    prepare/header/Send/body-ownership seams. Contract capture and read-only investigation may proceed before ingest;
    implementation still has one writer per checkout.
 5. **First runnable slice (#27A)** — fresh DB → scan a real track → login → authorized canonical lookup → direct Range
@@ -101,9 +124,10 @@ Merges are parent-controlled; this docs lane is support work, not a rebalance of
    maintenance/logging, full artwork/share/scrobbler/external/lyrics/playlists/player-session/API/share-HTML expansion.
    Per-device editing needs only the BOOT seed plus the route now that the transcoding read executes.
 
-Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin` (scope pending), `scrobble`, `share`,
-`smart_playlist`, `user_props`; `annotation_repo.rs` does not exist because annotations ride album/media-file (DB-15),
-so that is not a gap. Non-DB follow-up: the `nd-stream` teardown flake (`current-status.md`).
+Zero executed reads remain in `artwork`, `genre`, `playqueue`, `plugin` (scope pending), `scrobble`, `smart_playlist`;
+`share` and `user_props` execute only on **raw connections**, outside the shared `execution` helper. `annotation_repo.rs`
+does not exist because annotations ride album/media-file (DB-15), so that is not a gap. Non-DB follow-up: the `nd-stream`
+teardown flake (`current-status.md`).
 
 ### Decision ask (scope): does `plugin_repo.rs` belong in the port at all?
 
@@ -123,11 +147,12 @@ deleted by the docs lane; decision still pending.**
 1. **DB safety and configuration gates before enabling writes** — **all four DONE**: bind order (DB-01 `f57ae050`),
    canonical TEXT timestamps + D-TIME (DB-02 `6d9d984d`/`74ebd81c`), effective pool configuration (DB-03 `4a8aac9f`), and
    typed error/transaction composition (DB-00 `48e65806`/`ec84c176`). Existing helpers still carry latent defects — the
-   scrobble-buffer integer stamps and the un-pinned `find_recent_files_by_properties_sql` cutoff among them — so do not
-   connect renderers unchanged.
-2. **Bounded DB runtime packages** — as item 2 above; library bootstrap policy belongs to the bootstrap caller, DB
-   supplies typed executed operations. Test rollback, retry, immutable fields, non-target rows, empty/chunk boundaries,
-   and actual read-back through production methods.
+   scrobble-buffer integer stamps and the un-pinned `find_recent_files_by_properties_sql` cutoff among them (DB-08 fixed
+   one of them, the force-appended `updated_at`, at `32c4fa5b`) — so do not connect renderers unchanged.
+2. **Bounded DB runtime packages** — DB-04 property, DB-05 library + scan lifecycle, DB-06 tag, DB-07 folder/missing/touch,
+   DB-08 artist, DB-09 album and DB-13 epoch revoke are **landed**; DB-10/12 are now landed too; the spine resumes at decision-gated DB-11, then DB-15(runtime)/14 as above. Library
+   bootstrap policy belongs to the bootstrap caller, DB supplies typed executed operations. Test rollback, retry, immutable
+   fields, non-target rows, empty/chunk boundaries, and actual read-back through production methods.
 3. **Honest scanner phase-1 vertical slice** — as above; the old "8 repos + 1 mapper" is a core-read inventory, not a
    completion gate.
 4. **Bootstrap/HTTP/canonical route contracts** — as above; do not weaken auth or buffer an entire transcode merely to
@@ -182,7 +207,12 @@ listed for the parent to repair deliberately (this lane does not edit Rust sourc
 | `4a8aac9f`/`ff900d3e` (DB-03 + docs) | 813 DB / 1938 workspace, 74 suites | superseded boundary |
 | `ab466928` (DB-15 render-only) | 819 DB, 31 suites | `824` = `819 + 5` doctests, a different axis |
 | `ec84c176` (DB-00 merge) | 834 DB / 2002 workspace, 77 suites | superseded boundary |
-| `74ebd81c` (DB-02 merge, current head) | 841 DB across 33 suites / 2009 workspace across 78 suites | current dated gates |
+| `74ebd81c` (DB-02 merge) | 841 DB across 33 suites / 2009 workspace across 78 suites | superseded boundary |
+| `c791dbc1`/`60be7534`/`bfdcfeca` (DB-04/05/06) | 2021 / 2029 / 2038 workspace, 79/80/81 suites | parent integration logs |
+| `9be6ad0e`/`320b8b03`/`842c32a2` (DB-07/08/09 merges) | 2065 / 2078 / 2096 workspace, 82/83/84 suites | parent integration logs |
+| `162fae1d` (BOOT-02 merge) | 2055 workspace across 81 suites (auth 107) | parent integration log |
+| `4ab63cd5` (DB-13 merge) | 929 DB across 40 suites / 2114 workspace across 85 suites / doctests 6 / dbschema 61 / auth 107 | historical direct docs-lane measurements (commands/logs in `current-status.md`) |
+| `f80b9704` (DB-10/12 integrated, current code HEAD) | 2159 workspace across 87 suites, 0 failed / 1 ignored; nd-db docs 22 warnings | parent integration logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`; fmt/clippy/tests/docs pass, latest totals independently tallied here |
 
 The non-`nd-db` suite mass was constant at 1079 across the S-D3d/e/f lanes; that arithmetic is how the S-D3e workspace
 figure `1746` was found to be one short of `1747`.
@@ -215,6 +245,9 @@ rustc-pseudo-code note below.
 | W7 sort gate | `62789ba2` | REST sort parity |
 | DB-01 | `f57ae050` | missing-state bind repair |
 | DB-03 | `4a8aac9f` | DSN/pool parity |
+| DB-02 | `6d9d984d`/merge `74ebd81c` | canonical TEXT stamps, `zero_time_value()` |
+| DB-00 | `48e65806`/merge `ec84c176` | additive typed tx/error seam |
+| DB-04…DB-09, DB-13, BOOT-02 | `c791dbc1`, `60be7534`, `bfdcfeca`, `2911b9ab`/`9be6ad0e`, `32c4fa5b`/`320b8b03`, `d938d159`/`842c32a2`, `eae4ba1d`/`4ab63cd5`, `c6e220eb`/`162fae1d` | executed tx-bound writes + native expiring login sessions. **These rows are commit provenance only** — current scopes, non-scopes and residuals live in `current-status.md` and the current section above, not here. |
 
 **Numbering drift:** the parent issued lanes as S-D3c/d/e/f while `hydrate-scan-contract.md` numbers the same work
 S-D3c…S-D3f differently (its `:198-199` = this table's S-D3b; its `:203-206`/`:208-211` = the artist and

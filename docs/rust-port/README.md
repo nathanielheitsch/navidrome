@@ -25,7 +25,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated parent measurements) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `f80b9704`; earlier docs-lane runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -41,16 +41,23 @@ Rules that keep the docs from fighting each other:
   real end-to-end behavior). Never infer one from another or from a test count; a green suite is not server readiness.
 - Contract files keep long source-evidence sections; their **current amendments** override older scout claims.
 - Never mark a package DONE from an agent message — only from a reviewed, verified package on an integrated tree with
-  parent-measured gates. As of `74ebd81c` no implementation branch is in flight; when one is opened it is the only writer
-  per checkout.
+  parent-measured gates. At `f80b9704`, DB-10 and the DB-12 executed subset are merged; SC-02 remains unmerged/uncommitted in its approved
+  isolated worktree. One writer per checkout; parent controls integration.
 - Labels `EXECUTED` / `SOURCE-VERIFIED` / `INFERRED` / `UNVERIFIED` are mandatory on consequential claims.
 
 ## Current one-line status
 
-Source baseline integrated `master` at `74ebd81c` (`ff900d3e` + DB-15 render-only repair `ab466928` + scanner local-FS
-storage subset `e9dd8230`/`ff5b9c92` + DB-00 typed transaction seam `48e65806`/`ec84c176` + DB-02 scanner timestamp
-contract `6d9d984d`/`74ebd81c`): regression gates green as dated parent measurements (workspace 2009/0/1 across 78 suites,
-`nd-db` 841/0/0 across 33 suites), substantial executed reads landed, **no runnable server or scanner**; the three partial
-scopes above are **not** full DB-15, not SC-01/SC-02, and not the DB lane. **No implementation lane is in flight**; the
-next package is DB-04. See
+Source baseline integrated `master` at `f80b9704` (`74ebd81c` + docs consolidation `f03aff98`/merge `3b5e6c76` + the executed
+write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/merge `9be6ad0e`, DB-08
+`32c4fa5b`/merge `320b8b03`, DB-09 `d938d159`/merge `842c32a2`, DB-13 `eae4ba1d`/merge `4ab63cd5`, and BOOT-02 native
+expiring login sessions `c6e220eb`/merge `162fae1d`; on the earlier audited boundaries `74ebd81c`/`4a8aac9f`/`f57ae050`/
+`62789ba2`/`f8ceeb8f`/`60cdd184`; now also DB-10 `65072b89`/merge `6e5ca97d`, DB-12 `e5d0592d` and rustdoc fix
+`f80b9704`): **parent integration gates at this code HEAD** pass fmt/clippy/tests/docs (workspace 2159/0/1 across 87 suites;
+`nd-db` docs still 22 warnings). Earlier standalone DB/doctest counts are historical, not re-runs at this HEAD, substantial executed
+reads **and executed transaction-bound writes** landed, **no runnable server or scanner**. None of the executed `*_in_tx`
+primitives has a production caller (`nd-auth` calls `UserRepo` methods outside them, mounted only in crate tests), and the
+partial scopes above are **not** full DB-15, not SC-01/SC-02, not full auth/API integration, and not the DB lane. **DB-10 and the DB-12 invalidation/enqueue subset are LANDED**, not a worker/full scanner. SC-02 remains uncommitted,
+unmerged, 15 commits behind with a request-changes review. The spine resumes at **DB-11**, decision-gated on unrecorded
+`D-CURSOR`/`D-SCOPE`. **DB-22 is independently ready/assignable**: DB-00/02/03 landed and DB-12's artwork ownership block
+is released; parent must serialize its launch after this docs writer. See
 `current-status.md` and `next-work.md` for the details.

@@ -1,4 +1,4 @@
-# Subplan index — the one task/dependency map (baseline integrated `master` `74ebd81c`, updated 2026-11-19)
+# Subplan index — the one task/dependency map (baseline integrated `master` `f80b9704`, updated 2026-11-19)
 
 **Planning authority, NOT implementation authorization.** This file is the parent-owned index that reconciles the four
 technical subplans into a single task graph, resolves the semantic prerequisite aliases each lane invented into actual
@@ -12,9 +12,9 @@ Lane files (verbatim planner output, parent-published):
 
 | File | Covers | Packages | Verdict |
 | --- | --- | --- | --- |
-| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-21 | DB-01/02/03/00 LANDED and DB-15 render-only LANDED (partial); **no lane in flight**; DB-04 is the next assignable package, most later packages BLOCKED on it |
-| [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY; a local-FS storage subset LANDED `e9dd8230`/`ff5b9c92` (**not** SC-01/02 completion) |
-| [`boot-api.md`](boot-api.md) | #24, #33 graph, #27A | BOOT-00…04, API-00…06, API-F1…F7, BOOT-F1 | spec-first; #27A gated |
+| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` (partial). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** DB-11 is next in spine order but NOT assignable: unrecorded `D-CURSOR`/`D-SCOPE`. DB-22 is independently READY/assignable: DB-00/02/03 landed, DB-12 ownership block released; parent launch/exclusive writer gate still applies. DB-14 stays blocked on `SC.folder-write-batch-contract` |
+| [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY; a local-FS storage subset LANDED `e9dd8230`/`ff5b9c92` (**not** SC-01/02 completion). The SC-02 remainder is IN FLIGHT on `rust-sc02-local-walker` (base `60be7534`, 15 commits behind `master`, all work **uncommitted**, review verdict **request changes** on that uncommitted diff): unmerged and unreviewed on the integrated tree, so it is not done and its findings are not confirmed fixed. |
+| [`boot-api.md`](boot-api.md) | #24, #33 graph, #27A | BOOT-00…04, API-00…06, API-F1…F7, BOOT-F1 | spec-first; #27A gated. **BOOT-02 landed** `c6e220eb`/`162fae1d` (login mints a native expiring session) — the login-session correction only, **not** full auth/API integration: BOOT-00 and API-04 are `DECISION REQUIRED`, API-00 is READY for specification with launches blocked on BOOT-00, and BOOT-01/03/04 plus API-01/02/03/05/06 are BLOCKED; no router is mounted. |
 | [`evidence-ops.md`](evidence-ops.md) | parity residual + #03/#31 | EVID-01…08, OPS-01…07, FRONT-* | mostly BLOCKED/decision; EVID-01's snapshot/contract amendments largely folded into these docs |
 
 Rules that override any historical lane text: **one writer per checkout** — the user-approved exception is parallel
@@ -81,11 +81,11 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 | ID | Decision | Blocks | Owner |
 | --- | --- | --- | --- |
 | `D-ERROR` | **DECIDED 2026-11-18 (parent, option B), LANDED `48e65806` + merge `ec84c176`.** Additive `try_with_tx`/`try_with_tx_retry` beside `with_tx*` (no signature churn): callback `DbOperationError<E>` (`Domain(E) / Sqlite{stage, source}`) and runtime `DbRuntimeError<E>` adds `RollbackFailed{original, rollback}` and `Pool(StoreError)`, SQLite cause retained through `Error::source()`, no string loss; COMMIT-stage busy is reachable so the Commit branch issues no second ROLLBACK. Retryable set is BUSY-only (H2, amended by review). Record: `../decisions.md` E1-E3, H2. | DB-00 (landed) and all compound writes | DB — resolved |
-| `D-TIME` | **DECIDED 2026-11-18 (parent), IN FLIGHT on `rust-wave1-db02` (the one pending lane).** Scanner stamps stored as TEXT via `time::value`; Go's `<> canonical zero` idle predicate kept verbatim (the DDL sentinel makes a fresh library count as in-progress — inherited, pinned); the real defect was INTEGER affinity. Record: `../decisions.md` T1-T4. | DB-02, DB-05/07/08/09/10 | DB — resolved |
+| `D-TIME` | **DECIDED 2026-11-18 (parent), LANDED `6d9d984d` + merge `74ebd81c`.** Scanner stamps stored as TEXT via `time::value`; Go's `<> canonical zero` idle predicate kept verbatim (the DDL sentinel makes a fresh library count as in-progress — inherited, pinned); the real defect was INTEGER affinity. Record: `../decisions.md` T1-T4. Residual: `scrobble_buffer` `play_time`/`enqueue_time` still bind integers and `find_recent_files_by_properties_sql` has no executed pin. | DB-02 (landed), DB-05/07/08/09/10 | DB — resolved |
 | `D-OPEN` | **DECIDED 2026-11-18 (user, option a), LANDED at `4a8aac9f`.** Typed `DbOpenOptions` as explicit per-connection PRAGMA statements with effective-state read-back before pooling; Go-compatible DSN parser (keeps genuine URI params, rejects unknown ones); defaults matching Go (WAL for file DBs, 15000 ms, NORMAL, FK on; `:memory:` keeps the memory journal). Record: `../decisions.md` P1. | DB-03, every runtime acceptance | BOOT-00 + DB — resolved |
-| `D-CURSOR` | Borrowed visitor vs bounded-owned cursor; cancel + backpressure ownership | DB-11 | DB + SC |
-| `D-SCOPE` | Scoped-query authorization / library-alias construction; deny-on-empty | DB-11, API-02 | DB + API |
-| `D-REVOKE` | Epoch-only revoke semantics, overflow, post-commit token observation | DB-13, API-03 | DB + BOOT/API |
+| `D-CURSOR` | **NOT RECORDED** (no entry in `../decisions.md`). Borrowed visitor vs bounded-owned cursor; cancel + backpressure ownership. Until it is recorded, DB-11 is not assignable even though its code prerequisites land. | DB-11 | DB + SC |
+| `D-SCOPE` | **NOT RECORDED** (no entry in `../decisions.md`). Scoped-query authorization / library-alias construction; deny-on-empty. Until it is recorded, DB-11 (and API-02's scope adapter) is not assignable. | DB-11, API-02 | DB + API |
+| `D-REVOKE` | **IMPLEMENTED, but the canonical decision record is MISSING — a documentation gap for the parent, not a settled authority.** The DB-13 primitive LANDED `eae4ba1d` + merge `4ab63cd5`: epoch-only `revoke_tokens_in_tx` with `RETURNING`, an overflow/`typeof` guard, no-row `NotFound` classification and a same-tx existence read; `Exhausted` is terminal. That shape was settled *in the parent's review of the lane* (the `/tmp` review record), and no `D-REVOKE` entry exists in `../decisions.md`, so this row must not be read as a recorded decision. Consumers remain BOOT/API (`BOOT.epoch-revoke`, `API.revoke-authorization`), and post-commit token observation is still theirs to decide. | DB-13 (landed), API-03 | DB — implementation landed; **decision record outstanding**; BOOT/API consumption open |
 | `D-STATS` | Retain Go partial-commit/nonfatal cleanup or approve stronger atomicity | DB-18 | DB |
 | `D-GC` | Selective-scope GC semantics + uploaded-image post-commit ownership | DB-20 | DB + SC |
 | `SC-01` | Scanner manifest/dependency/cancellation/domain-equality placement | SC-02..14 | SC |
@@ -119,22 +119,32 @@ evidence capture, not new planning.
 
 ### Step 1 — DB persistence spine (one writer per checkout; isolated worktrees allowed where prerequisites are absent)
 
-Dependency order: `DB-01` (**LANDED `f57ae050`**) → `DB-02` (IN FLIGHT `rust-wave1-db02`) → `DB-03` (**LANDED
-`4a8aac9f`**) → `DB-00` (**LANDED `48e65806`/`ec84c176`, additive seam**) → `DB-04` → `DB-05` → `DB-06` → `DB-07` →
-`DB-08` → `DB-09` → `DB-10` → `DB-11` → `DB-12` → `DB-15` → `DB-14` → `DB-21(P1-DB)`.
+Dependency order: `DB-01` (**LANDED `f57ae050`**) → `DB-02` (**LANDED `6d9d984d`/`74ebd81c`**) → `DB-03` (**LANDED
+`4a8aac9f`**) → `DB-00` (**LANDED `48e65806`/`ec84c176`, additive seam**) → `DB-04` (**LANDED `c791dbc1`**) → `DB-05`
+(**LANDED `60be7534`**) → `DB-06` (**LANDED `bfdcfeca`**) → `DB-07` (**LANDED `2911b9ab`/`9be6ad0e`**) →
+`DB-08` (**LANDED `32c4fa5b`/`320b8b03`**) → `DB-09` (**LANDED `d938d159`/`842c32a2`**) → `DB-10` (**LANDED
+`65072b89`/`6e5ca97d`**) → `DB-11` (**decision-gated, unrecorded `D-CURSOR`/`D-SCOPE`, not assignable**) → `DB-12`
+(**LANDED executed subset `e5d0592d`, rustdoc fix `f80b9704`**) → `DB-15` → `DB-14` → `DB-21(P1-DB)`.
 `DB-15`'s **render-only** rating repair LANDED at `ab466928` and does **not** complete DB-15: the typed
-annotation reassignment, disposition of the three public renderers, and executed read-back remain.
-`DB-13` is inserted when BOOT/API needs revoke, after `DB-00/03`. `DB-16 → 17 → 18 → 19 → 20`
+annotation reassignment/merge transactions, annotation reads, and executed read-back remain.
+`DB-13` (**LANDED `eae4ba1d`/`4ab63cd5`**) was inserted for BOOT/API revoke after `DB-00/03`; nothing calls it yet.
+`DB-16 → 17 → 18 → 19 → 20`
 extend phase 2+/GC for the full-scanner exit.
 
-### Step 2 — scanner (gated on DB releases; a local-FS subset is already in flight)
+### Step 2 — scanner (gated on DB releases; a local-FS subset has landed, the walker remainder is in flight)
 
 `SC-00/01` decisions → `SC-02` → `SC-03` → **`SC-05` first vertical** (needs the DB phase-1
 write subset + DB-11/typed folder query) → `SC-04` → `SC-06` complete phase 1 → `SC-07` →
 `SC-08` → (`PL-SERVICE` #23, then) `SC-09` → (`DB-20` released, then) `SC-10` → `SC-11` →
 `SC-14` integrated in-process release. `SC-12/13` recorded early but off the critical path.
 A local-filesystem storage/symlink-safe-classification subset LANDED at `e9dd8230`/`ff5b9c92` (std-`fs` list/stat/read/`read_link`/resolve/exists, `file://` URI parsing — no walker, `.ndignore`, hashing or cancellation); it is a
-prerequisite-independent slice, **not** SC-01 ratification or SC-02 completion.
+prerequisite-independent slice, **not** SC-01 ratification or SC-02 completion. The SC-02 remainder (walker, ignore policy,
+folder hashing) is IN FLIGHT on `rust-sc02-local-walker` in an approved isolated worktree — **uncommitted, 0 commits ahead
+of `master`, and based on `60be7534`, i.e. 15 commits behind the `f80b9704` baseline**, so it needs a rebase/merge before
+integration and its scoped `Cargo.toml`/`Cargo.lock` edges must be re-checked against the integrated lockfile. It is
+**blocked, not done**: the only review artifact is a `/tmp` report on that uncommitted diff (`/tmp/nav-sc02-final-review.md`,
+verdict **request changes**), and nothing in this docs lane confirms any of its findings is fixed. `SC-01` ratification is
+also still unrecorded, so SC-03+ remain gated.
 
 ### Step 3 — boot/API (Track A early; Track B last)
 
@@ -163,21 +173,37 @@ step now that code has landed.
 
 ---
 
-## Current assignable packages (as of `74ebd81c`)
+## Current assignable packages (as of `f80b9704`)
 
-**In flight:** none. `DB-02` LANDED `6d9d984d`/`74ebd81c` (canonical TEXT stamps/cutoffs, `library_repo::zero_time_value()`,
-artwork-purge cutoff fixed with executed coverage) after review and parent-measured gates. Residuals it left open —
-scrobble-buffer integer stamps and no executed pin for `find_recent_files_by_properties_sql` — belong to the lane that owns
-those statements, not to a pending merge.
+**LANDED:** DB-10 signed implementation `65072b89` / signed merge `6e5ca97d`; DB-12 signed implementation `e5d0592d`
+fast-forwarded, rustdoc fix `f80b9704`. Parent reports DB-10 review APPROVE with P3s fixed and DB-12 APPROVE after test fixes.
+Neither has a production scanner caller; DB-12 is not a worker/full scanner. Former DB-10/12 worktrees and branches are
+absent on the final verified worktree/ref check (external cleanup during this refresh, not performed by this lane).
+
+**Outstanding:** SC-02 at `rust-sc02-local-walker`, base `60be7534`, 15 behind / 0 ahead, 5 modified tracked and 8 untracked
+files. Request-changes review is on the uncommitted diff, not the integrated tree. Rebase/merge onto `f80b9704`, re-check
+manifest/lock edges and re-review before integration; no findings claimed fixed. See `../next-work.md` for worktree details.
 
 **Landed since `ff900d3e`, partial scopes:** `DB-15` render-only repair `ab466928` (full annotation service NOT done),
-scanner local-FS subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02), `DB-00` typed seam `48e65806`/`ec84c176` (seam only).
+scanner local-FS subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02), `DB-00` typed seam `48e65806`/`ec84c176` (seam only),
+`DB-02` `6d9d984d`/`74ebd81c` (canonical TEXT stamps/cutoffs, `library_repo::zero_time_value()`, artwork-purge cutoff
+with executed coverage; it left scrobble-buffer integer stamps and no executed pin for
+`find_recent_files_by_properties_sql` open — those belong to the lane that owns those statements),
+`DB-04` `c791dbc1`, `DB-05` `60be7534` (**no bootstrap caller: nothing creates or updates a configured library row, and
+fresh DDL has none**), `DB-06` `bfdcfeca`, `DB-07` `2911b9ab`/`9be6ad0e`, `DB-08` `32c4fa5b`/`320b8b03` (which also removed
+the force-appended `updated_at`), `DB-09` `d938d159`/`842c32a2` (FTS is maintained by schema triggers, not by a Rust
+statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` write primitives has a **production** caller;
+`nd-auth` does call `UserRepo` methods (`find_by_username`, `count_all`, `count_by_username`, `put`,
+`update_last_login_at`) from its own production code, but that router is mounted only in crate tests, not in a server.
 
 **Ready now:**
 
-* **`DB-04`** — executed property writes. Prerequisites `DB-00` (`48e65806`/`ec84c176`), `DB-02` (`6d9d984d`/`74ebd81c`) and
-  `DB-03` (`4a8aac9f`) are all landed, so **DB-04 is the next assignable package**; then DB-05 library, DB-06 tag,
-  DB-07 folder in that order.
+* **DB-22 is READY / assignable, not launched.** Its DB-00/02/03 prerequisites are landed; DB-12 integration releases
+  `artwork_repo.rs` ownership and the parent reports no code writer there. It has no DB-11 decision prerequisite. Parent
+  must authorize/serialize its repo writes and workspace gates after this docs writer stops.
+* **DB-11 is next in the spine but decision-gated:** all code prerequisites including DB-10 landed, but `D-CURSOR` and
+  `D-SCOPE` remain unrecorded in `../decisions.md`. DB-14 stays blocked on `SC.folder-write-batch-contract`; DB-15 runtime
+  is READY but parent-sequenced after DB-11, not technically blocked; DB-16…20 retain later decisions (`D-STATS`, `D-GC`) and DB-11 dependencies.
 * **`SC-00` / `API-00`** (read-only/spec) — oracle manifest + native wire-contract capture, pending the
   oracle-authorization decision above.
 * **`OPS-01`** — re-derive the schema golden and keep DDL/data-seeding separate; prerequisite-independent and it also
@@ -185,7 +211,10 @@ scanner local-FS subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02), `DB-00` typed s
 * **`BOOT-00`** — the construction/dependency/launch decision, which unblocks the whole boot/API track.
 
 **Done (dated parent measurements):** `DB-01` `f57ae050`, `DB-03`/`D-OPEN` `4a8aac9f`, sort gate `62789ba2`,
-executed transcoding reads `f8ceeb8f`.
+executed transcoding reads `f8ceeb8f`, `DB-00` `48e65806`/`ec84c176`, `DB-02` `6d9d984d`/`74ebd81c`, `DB-04` `c791dbc1`,
+`DB-05` `60be7534`, `DB-06` `bfdcfeca`, `DB-07` `2911b9ab`/`9be6ad0e`, `DB-08` `32c4fa5b`/`320b8b03`, `DB-09`
+`d938d159`/`842c32a2`, `DB-13` `eae4ba1d`/`4ab63cd5`, `BOOT-02` `c6e220eb`/`162fae1d`. Historical gates at `4ab63cd5` are
+recorded in [`../current-status.md`](../current-status.md); latest parent gates at `f80b9704` are recorded there as well.
 
 Everything else waits on a recorded decision or an earlier release. Implementation assignments go one writer per
 checkout (or one per approved isolated worktree), each with its own fresh review and parent verification.

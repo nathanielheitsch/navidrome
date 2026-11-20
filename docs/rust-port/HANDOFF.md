@@ -10,9 +10,10 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 - Repository: this navidrome fork checkout (Go sources at the root, Rust workspace `rust/`). Resolve paths from the
   working directory — never a developer's absolute path, and never a hardcoded worktree name.
-- Authoritative source baseline: integrated `master` at `74ebd81c`. A docs lane may be cut from an earlier boundary
-  (`ff900d3e`) — say so, and cite integrated behavior from `master` instead of measuring it in your own worktree.
-  Earlier audited boundaries are listed in `current-status.md`'s landed-history table; older handoff baselines are
+- Authoritative source baseline: integrated `master` at `f80b9704` (prior `4ab63cd5` plus DB-12 signed `e5d0592d`,
+  DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`). A docs lane may be cut from an earlier
+  boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master` instead of measuring it in your own
+  worktree. Earlier audited boundaries are listed in `current-status.md`'s landed-history table; older handoff baselines are
   history.
 - Read order: `README.md` → `next-work.md` **current section only** → `current-status.md` → `decisions.md` → the
   subplan index → the assigned package and its prerequisites → the relevant source contract. Contracts
@@ -28,13 +29,23 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 ## Current reality (see `current-status.md` for numbers)
 
 The workspace passes its regression gates and is **not** a runnable server or scanner: `nd-scanner`, `nd-http`,
-`nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row hooks and substantial
-executed reads are landed; scanner transactional entity writes, specialized typed queries and GC are not. Tests that
-manually execute SQL bundles are not production repository methods. DB-01 (missing-state bind order), DB-03/D-OPEN
-(effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`) and
-DB-15's **render-only** rating repair (`ab466928`) are landed with executed regressions — the DB-15 annotation service and
-the full DB lane are **not**; DB-02 (scanner timestamps) landed at `6d9d984d`/`74ebd81c`, so no lane is in flight and DB-04 is next. Login/native-audience and HTTP key integration, plus
-stream prepare/header/`Send`/body ownership, each need their own bounded package. Do not connect existing renderers
+`nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row hooks, substantial
+executed reads **and twenty-two executed transaction-bound `*_in_tx` writes** are landed, including DB-10 identity/base/
+junction writes and DB-12 artwork invalidation/enqueue. Typed specialized scanner queries and GC are not. Tests that manually execute SQL bundles are not production repository methods,
+and none of the `*_in_tx` primitives has a production caller (`nd-auth` calls `UserRepo` methods outside them from its own
+production code, but its router is mounted only in crate tests). DB-01 (missing-state bind order), DB-03/D-OPEN
+(effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`),
+DB-02 (`6d9d984d`/`74ebd81c`) and DB-15's **render-only** rating repair (`ab466928`) are landed with executed regressions, as
+are the executed write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08
+`32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2` and DB-13 `eae4ba1d`/`4ab63cd5` — the DB-15 annotation service and the
+full DB lane are **not**. **DB-10 and DB-12's executed subset are LANDED** (commits above), with no production scanner caller; DB-12 is not
+worker/full scanner completion. SC-02 remains unmerged/uncommitted on `rust-sc02-local-walker`, 15 commits behind, with
+request-changes review on its uncommitted diff. DB-11 is next in the spine but remains decision-gated on unrecorded
+`D-CURSOR`/`D-SCOPE`. DB-22 is independently READY/assignable: DB-00/02/03 landed and DB-12 artwork ownership released;
+parent must authorize and serialize launch after this docs writer. Latest parent gates: 2159/0/1 across 87 workspace
+suites, fmt/clippy/docs succeed, `nd-db` docs retain 22 warnings; see `current-status.md` for attribution/logs. BOOT-02's login-session
+native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middleware, a mounted router, and stream
+prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and
 non-target/user-data preservation tests.
 

@@ -33,34 +33,47 @@ Global rules:
 
 ---
 
-## Current progress authority (baseline integrated `master` `74ebd81c`, updated 2026-11-19)
+## Current progress authority (baseline integrated `master` `f80b9704`, updated 2026-11-19)
 
 Use [`README.md`](README.md) for the read order, [`current-status.md`](current-status.md) for measured capability axes,
 [`next-work.md`](next-work.md) for the current milestone order and live wave, [`decisions.md`](decisions.md) for settled
 decisions, and [`subplans/`](subplans/) for bounded technical assignments. The issue descriptions below retain
 ownership/product scope, **not** current implementation readiness or permission to launch all dependencies.
 
-- Dated parent gates at integrated `ec84c176`: workspace **2002 / 0 / 1** across **77** suites, `nd-db --all-targets`
-  **841 / 0 / 0** across **33** suites (doctests are a separate axis, not included), `nd-dbschema` **61 / 0 / 0** and
-  `nd-auth` **90 / 0 / 0** as carried baselines, fmt/clippy/diff clean, doc build **22 warnings** (not warning-free). A
-  green suite is not scanner/server readiness; re-measure on any integrated tree.
+- Latest parent gates at `f80b9704`: fmt/workspace clippy/tests/docs pass, **2159 / 0 / 1 across 87 suites**, `nd-db`
+  retains **22 rustdoc warnings** (no net increase after `f80b9704`). Logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`;
+  workspace test total independently tallied here. Historical direct gates at `4ab63cd5`: workspace **2114 / 0 / 1** across
+  **85** suites, `nd-db --all-targets` **929 / 0 / 0** across **40** suites (doctests **6** on a separate axis, not
+  included), `nd-dbschema` **61 / 0 / 0**, `nd-auth` **107 / 0 / 0**, fmt/clippy/diff clean, doc build **22 warnings** (not
+  warning-free). At the `ec84c176` DB-00 boundary: workspace **2002 / 0 / 1** across **77** suites, `nd-db --all-targets`
+  **834 / 0 / 0** across **32** suites, `nd-auth` **90 / 0 / 0**. At the later DB-02 boundary `74ebd81c`, `nd-db` measured
+  **841 / 0 / 0** across **33** suites. A green suite is not scanner/server readiness; re-measure on any integrated tree.
 - Landed and reviewed: sort gate `62789ba2`, DB-01 `f57ae050`, DB-03/D-OPEN `4a8aac9f`, executed transcoding reads
   `f8ceeb8f`, and the S-D3a…S-D3g2 hydration/executed-read lanes (`3ba10ee1`, `6cd6c8d2`, `1c215a7e`, `0d2dc89d`,
-  `6a201f4a`, `f210431f`, `a8e4d57c`, `60cdd184`). All eight row hooks and substantial reads execute; the scanner's
-  transactional writes, typed specialized reads and GC do not.
+  `6a201f4a`, `f210431f`, `a8e4d57c`, `60cdd184`). All eight row hooks and substantial reads execute, and since `4ab63cd5`
+  so do executed transaction-bound writes; typed specialized scanner reads and GC do not.
 - LANDED since `ff900d3e` with **partial** scopes: DB-15 render-only rating repair `ab466928` (full DB-15 annotation
   service NOT done), scanner local-FS storage subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02 completion), DB-00 typed
-  transaction/error seam `48e65806`/`ec84c176` (seam only, not the DB lane).
-- DB-02 scanner timestamp contract **LANDED `6d9d984d`/`74ebd81c`**: canonical TEXT stamps/cutoffs, deliberate
-  `library_repo::zero_time_value()` instead of raw `ZERO_TIME` integers, preserved year-one/fresh-DDL sentinel behavior,
-  artwork-purge cutoff fixed with executed coverage. **No implementation lane is in flight.** Known residuals: scrobble
-  buffer integer stamps, and no executed pin for `find_recent_files_by_properties_sql`.
+  transaction/error seam `48e65806`/`ec84c176` (seam only, not the DB lane), DB-02 `6d9d984d`/`74ebd81c`, and the executed
+  write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08
+  `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5`. None of the `*_in_tx` primitives has a
+  **production** caller; `nd-auth` calls `UserRepo` methods (`find_by_username`, `count_all`, `count_by_username`, `put`,
+  `update_last_login_at`) from its own production code, but that router is mounted only in crate tests, not a server.
+  DB-02 left two known residuals: scrobble-buffer integer stamps and no executed pin for
+  `find_recent_files_by_properties_sql`.
 - Real tag parsing and mapping, auth components, and #15 handler/cache/limiter/archiver exist at crate level.
-  Scanner/HTTP/API remain scaffolds and the CLI main is empty. Auth audience/API-key and stream HTTP commitment/Send
-  integration need explicit packages; do not call those components absent or assume they mount unchanged.
+  Scanner/HTTP/API remain scaffolds and the CLI main is empty. **BOOT-02 landed** `c6e220eb`/`162fae1d`: login mints a
+  native expiring session token, so the login-audience gap is closed — but that is **not** full auth/API integration. HTTP
+  API-key extraction/issuance middleware, a mounted router, and stream HTTP commitment/Send still need explicit packages
+  (BOOT-00/01/03/04, API-00…06); do not call those components absent or assume they mount unchanged.
 - Pre-scanner safety gates: missing-update bind repair (DB-01), every-pool-handle effective configuration (DB-03),
   typed transaction/error seam (DB-00, `48e65806`/`ec84c176`), timestamp/idle lifecycle (DB-02, `6d9d984d`/`74ebd81c`) —
-  **all four landed**; next is DB-04 property writes, then DB-05 library, DB-06 tag, DB-07 folder. Full #17 also requires
+  **all four landed**, and DB-04…DB-10/12/13 are landed too. DB-10 signed `65072b89` / signed merge `6e5ca97d` executes
+  identity/base/junction writes; DB-12 signed `e5d0592d` (fast-forward, rustdoc fix `f80b9704`) executes only artwork
+  invalidation/enqueue, not worker/full scanner. Neither has a production scanner caller. The spine resumes at **DB-11**,
+  **not assignable** until `D-CURSOR`/`D-SCOPE` are recorded. DB-22 is independently READY/assignable: DB-00/02/03 landed,
+  former DB-12 artwork ownership block released; parent launch and exclusive checkout ownership remain required.
+  SC-02 remains unmerged/uncommitted with request-changes review. Full #17 also requires
   moves/stats/playlists/GC/lifecycle.
 - #27A is a deliberately scoped first runnable slice. Repair, full maintenance, metrics and all full-API services do not
   automatically gate it. Cancelled routes/services stay cancelled. The old build-order list is historical.
@@ -70,12 +83,14 @@ ownership/product scope, **not** current implementation readiness or permission 
 ### Explicit deviation register entry: AUTH-ATOMIC-ADMIN
 
 **Retained intentional divergence, not an open implementation task.** First-admin creation is atomic in a retryable
-transaction (`nd-auth/src/login.rs:197-249,279`), unlike Go's non-atomic count/insert (`server/auth.go:122-160`).
+transaction (`nd-auth/src/login.rs:197-256`, `create_admin`/`create_admin_inner`; the trusted-header variant shares the
+same rule at `:279-390`), unlike Go's non-atomic count/insert (`server/auth.go:122-160`). These line references are as of
+`4ab63cd5` and shift with every edit to that file.
 Do not restore the Go race for parity. Existing auth tests cover concurrent creation; the future bootstrap/API plan
 must preserve the same transaction and separately prove its mounted setup flow. Audit confidence: source/test-body
 inspection plus the parent workspace gate above; no new isolated concurrency run is claimed here.
 
-## Current issue scope (updated 2026-11-19, baseline integrated `master` `74ebd81c`)
+## Current issue scope (updated 2026-11-19, baseline integrated `master` `f80b9704`)
 
 Dated crate states below are **scope snapshots**, not launch permission. Measured gates, capability axes and remaining
 blockers live in [`current-status.md`](current-status.md); order and the live wave in [`next-work.md`](next-work.md);
@@ -91,24 +106,24 @@ index. Long-running truth worth keeping per issue is summarized in one row each.
 | #02 | `nd-id` | DONE — id/artwork/participant schemes |
 | #03 | `nd-conf` | DONE — keys/config/dir/bytes/duration/crontab/consts; `EnableTranscodingConfig` carried-but-unused |
 | #04 | `nd-dbschema` | PARTIAL — fresh DDL (all 80 index rows, 8 recovered columns via `15426bbc`), marker-guard migration runner, `optimize.rs`/`backup.rs` green; `db/repair.go` (367L FTS5 verify/repair) **explicitly deferred** as its own lane; golden DDL re-derivation pending (`OPS-01`); DB-03 landed here (`4a8aac9f`) |
-| #05 | `nd-db` | PARTIAL — execution seam (`3ce1b154`), store/pool, all 23 repositories shaped, `criteria_sql.rs` (904L), shared marshal + hydration + 8 hooks landed; substantial executed reads incl. transcoding (`f8ceeb8f`); **no production executed entity `Put` lifecycle**, no scanner queries/GC. `DB-01` landed `f57ae050`; `DB-00`/`DB-02` in flight; six modules builder-only (`artwork`, `genre`, `playqueue`, `plugin` — scope pending, `scrobble`, `smart_playlist`); `share`/`user_props` execute on raw connections outside the shared helper |
+| #05 | `nd-db` | PARTIAL — execution seam (`3ce1b154`), store/pool, all 23 repositories shaped, `criteria_sql.rs` (2536 lines porting the 904-line Go `persistence/criteria_sql.go`), shared marshal + hydration + 8 hooks landed; substantial executed reads incl. transcoding (`f8ceeb8f`) **and twenty-two executed transaction-bound `*_in_tx` writes landed** (property `c791dbc1`, library + scan lifecycle `60be7534`, tag `bfdcfeca`, folder/media missing-state + album touch `2911b9ab`/`9be6ad0e`, artist `32c4fa5b`/`320b8b03`, album `d938d159`/`842c32a2`, user epoch revoke `eae4ba1d`/`4ab63cd5`) with **no production caller**; DB-10 `put_mediafile_in_tx` LANDED `65072b89`/`6e5ca97d`; DB-12 artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers; typed scanner queries/GC remain. `DB-01` landed `f57ae050`; `DB-00` `48e65806`/`ec84c176` and `DB-02` `6d9d984d`/`74ebd81c` are **landed**, not in flight; five modules render-only (`genre`, `playqueue`, `plugin` — scope pending, `scrobble`, `smart_playlist`); artwork reads remain unexecuted in the repo, but DB-12 invalidation executes; `share`/`user_props` execute on raw connections outside the shared helper |
 | #06 | `nd-model` | DONE — DTOs + criteria DSL (`fields.rs`, `operators.rs`, `criteria.rs`, 35 crate tests); the abandoned `docs/rust-port/drafts/` copies were deleted 2026-11-19 |
 | #07 | `nd-ffmpeg` | PARTIAL — args tables byte-exact, ffprobe JSON parser, FLAC STREAMINFO patcher, process-group spawn/SIGKILL teardown (`8152ac5a`), `MockFFmpeg` double, live container fixtures; symlink-chain and `invalid-files` fixture cases uncovered; `patchFLACDuration` deferred to the consumer |
 | #08 | `nd-tagreader` | DONE at crate level — real lofty `=0.25.5` parsing (`beaf63d7`) replaced the sidecar-only reader, so #16→#17 is unblocked upstream. Declared gaps: ASF/WMA unsupported (error, never a fabricated success), AAC-in-MP4 bit depth 0 vs Go's 16, bitrate estimates differ, MPEG-frame-timestamp SYLT skipped |
 | #09/#10 | `nd-lyrics`/`nd-playlists` parsers | Parsers landed; fetch/import service halves belong to later packages |
 | #11 | `nd-events` | DONE at crate level; no mounted SSE route |
 | #12 | `nd-sched` | PARTIAL — scheduler/crontab half DONE (validator agreement and robfig oracle pinned); maintenance/logging half unspecified (`OPS-04/05/06`) |
-| #13 | `nd-auth` | DONE (credential + claim model) — **NOT MOUNTABLE**: native-only audience, dual secrets, epoch revocation, fail-closed `GuardedLimiter`, CIDR/`@` trusted sources; login uses the audience-less `create_token` so the login→canonical-API round-trip is an open integration package (BOOT-02/API-01); AUTH-ATOMIC-ADMIN deviation retained below |
+| #13 | `nd-auth` | DONE (credential + claim model) — `AuthGate` middleware exists and is crate-test mountable, but no production server mounts it. HTTP API-key extraction/issuance and production router integration remain open (API-01); native-only audience, dual secrets, epoch revocation, fail-closed `GuardedLimiter`, CIDR/`@` trusted sources. **The login-audience defect is CLOSED at `c6e220eb`/merge `162fae1d`** (login mints `create_native_session_token`, native audience + checked positive `exp`; crate tests pass it through `AuthGate::Api`); AUTH-ATOMIC-ADMIN deviation retained below |
 | #14 | `nd-stream` decision half | DONE — decision tables, HS256 stream token, `ProbeInput` keeps `make_decision` infallible |
 | #15 | `nd-stream` serving half | **COMPLETE at crate level** (`d19526e3`) — Range/conditional matrix, bounded direct adapter, probe adapter, process-backed transcode body, limiter, archiver (Go `archive/zip` oracle), HTTP handler, transcoding-file cache. **Not HTTP-ready**: `prepare` privacy, header-commitment and `Send` adapter seams need API-04/API-05 |
 | #16 | `nd-mapping` | DONE at crate level (`b419472b`) — Go oracle-pinned `Info → Metadata → MediaFile`; 11 declared divergences; pair-tag map-order hazard (`decisions.md` O2). No ingest caller |
-| #17 | `nd-scanner` | SCAFFOLD; local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (not SC-01/02 completion). Minimum executed surface is 8 repos + 1 mapper (`decisions.md` S1); gob carries `ProgressInfo` only |
+| #17 | `nd-scanner` | SCAFFOLD; local-FS storage subset landed at `e9dd8230`/`ff5b9c92` (not SC-01/02 completion). The SC-02 remainder (walker, `.ndignore` policy, folder hash) is **in flight, unmerged and uncommitted** on `rust-sc02-local-walker` (base `60be7534`, 15 commits behind `master`) with a **request-changes** review on that uncommitted diff — not done. Minimum executed surface is 8 repos + 1 mapper (`decisions.md` S1); gob carries `ProgressInfo` only |
 | #18 | `nd-http` | SCAFFOLD — BOOT-03 |
 | #19/#20/#21/#22/#23 | artwork, scrobbler, external metadata, lyrics fetch, playlists service | Not started; each needs its own plan when scoped (`FRONT-*`) |
 | #24/#33 | boot + service graph | Not started; BOOT-00 decision outstanding |
 | #25/#29/#30/#31 | Subsonic shim, plugin host, Jellyfin, sonic similarity | **CANCELLED** — no wire, no ABI, no host; reference goldens stay data-only |
 | #26 | player-session service (`nd-players`) | Scope split `D-PLAYER26`: session service retained (API-01 placement), owner-scoped editing retained `D-PLAYER-EDIT`, mpv/jukebox **DROPPED**. Not DONE — no mounted route; transcoding read landed `f8ceeb8f`; seed + route remain |
-| #27 | `nd-api` canonical surface | SCAFFOLD (765-byte `lib.rs`); scoped **#27A** is the first slice; full #27 needs share/playlists/artwork/external/quick-connect services |
+| #27 | `nd-api` canonical surface | SCAFFOLD (765-byte `lib.rs`); scoped **#27A** is the first slice; full #27 needs share/playlists/artwork/external/quick-connect services. BOOT-02 landed `c6e220eb` gives login a native expiring token, but with no router and no API-01 key middleware nothing is mounted |
 | #28 | UI contract | Bundled JS UI **DROPPED**; only the server-side share-page HTML contract survives |
 | #32 | metrics/diagnostics | DEFERRABLE — must not gate #27A |
 | #34 | backgrounds | **DROPPED** (sole consumer was the JS UI) |

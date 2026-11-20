@@ -2,7 +2,12 @@
 
 Baseline: `master` / `60cdd184` (package `Status:` lines below are planner-time and are superseded where they conflict
 with [`../current-status.md`](../current-status.md) and [`../subplans/README.md`](../subplans/README.md), 2026-11-19;
-the source baseline has since advanced to integrated `master` `74ebd81c` and settled decisions live in [`../decisions.md`](../decisions.md)).
+the source baseline has since advanced to integrated `master` `f80b9704` — DB-04…DB-09 `c791dbc1`/`60be7534`/`bfdcfeca`/
+`2911b9ab`+`9be6ad0e`/`32c4fa5b`+`320b8b03`/`d938d159`+`842c32a2`, DB-13 `eae4ba1d`+`4ab63cd5` and BOOT-02
+`c6e220eb`+`162fae1d` are landed there, as are DB-10 `65072b89`/signed merge `6e5ca97d` and DB-12 artwork
+invalidation/enqueue subset `e5d0592d` (fast-forward, rustdoc fix `f80b9704`), no production scanner callers — and settled
+decisions live in [`../decisions.md`](../decisions.md); note that `D-CURSOR`, `D-SCOPE` and `SC-01` ratification still have
+no canonical record there, so packages gated on them stay blocked).
 Issue workspace `wks_7bb3344766422a39` on host `srv_QsD9e1TgIsNq`; the parent owns integration.
 Prepared READ-ONLY. Source inspection only; **no builds, tests, probes, formatting, repository edits, commits, or pushes were executed**. Only `/tmp` report/index files were written. Test names below are inspected source, not passing-test claims. All new signatures, modules, tests and recipes below are **proposals**, not existing public APIs or approved dependency changes.
 
@@ -14,7 +19,7 @@ The scanner must **consume**, not recreate, missing DB execution/transaction/que
 
 ### Corrections to the runtime scout
 
-* `PropertyRepo::default_get` **already executes** through `self.get`: `rust/crates/nd-db/src/property_repo.rs:162-171,188-194`. Existing test `property_default_get_folds_not_found_into_the_default` in `tests/runtime_hydrate_library_property_tag.rs:717`. Property Put/Delete are still builders, not executing repository methods. Do not make DefaultGet a missing-write prerequisite.
+* `PropertyRepo::default_get` **already executes** through `self.get`: `rust/crates/nd-db/src/property_repo.rs:162-171,188-194`. Existing test `property_default_get_folds_not_found_into_the_default` in `tests/runtime_hydrate_library_property_tag.rs:717`. Property Put/Delete are still builders, not executing repository methods. Do not make DefaultGet a missing-write prerequisite. _(Amended at `4ab63cd5`: `property_repo::put_in_tx`/`delete_in_tx` now execute on the caller's transaction at `c791dbc1`; there is still no connection-bound `PropertyRepo::put`/`delete` and no production caller.)_
 * External scanner gob carries **`ProgressInfo`**, not tag-reader result records: `scanner/external.go:86-96`, `cmd/scan.go:71-76`. A Rust progress protocol needs a decision; mixed Go/Rust gob compatibility is not implied.
 * `nd-tagreader::Storage` is a scheme/path descriptor, **not MusicFS** (`src/storage.rs:18-24`). Its dispatcher alone does not walk, stat, resolve links or supply BirthTime.
 * New semantic gap: `nd_model::album::equals` compares only IDs (`rust/crates/nd-model/src/album.rs:174-176`), unlike Go `model/album.go:87-103`. No Rust equivalent of `MediaFiles.ToAlbum` was found. Reusing that equality in phase 3 would skip changed albums with unchanged IDs. SC-04 owns a proposed pure scanner-domain implementation pending placement approval; it is not DB SQL work.
@@ -38,6 +43,18 @@ Semantic names intentionally await the DB planner's final IDs. A declaration tha
 | **PL-SERVICE (#23 semantic prerequisite)** | Real nd-playlists ImportFromFolder-equivalent service, path normalization/lookup + synced/smart persistence + actual playlist/track writes/readback; parser-only nd-playlists is insufficient. See SC-09. | SC-09 real integration |
 
 For SQL predicates the scanner supplies typed inputs only. DB owns ordered binds and permissions. In particular, the existing GetMissingAndMatching SQL does **not** restrict every outer candidate to the originating library; do not add a same-library filter by assumption. Its exact Go predicate is `pid IN (SELECT pid ... missing=true AND library_id=?) AND (missing=true OR media_file.created_at > library.last_scan_started_at) ORDER BY pid` (`persistence/mediafile_repository.go:491-511`). DB planner must preserve or explicitly review this nuance. Recent cross-library queries bind the missing library exclusion, MBZ/properties, suffix and strict since threshold in builder order; their current `since:i64` must be reconciled by DB timestamp work, not by scanner casts.
+
+> **DB-release amendment at integrated `master` `f80b9704` (2026-11-19):** of the phase-1 write rows above, Library
+> ScanBegin/readback/AddArtist, Folder Put, Tag Add incl. `library_tag`, Artist Put, Album Put, Property Put/Delete,
+> Folder/MediaFile MarkMissing(+ByFolder) and Album Touch/TouchByMissingFolder **execute** as transaction-bound primitives
+> (`c791dbc1`, `60be7534`, `bfdcfeca`, `2911b9ab`/`9be6ad0e`, `32c4fa5b`/`320b8b03`, `d938d159`/`842c32a2`), and the
+> DB SQL-bind, timestamp-lifecycle and every-handle connection-policy rows above are resolved (DB-01 `f57ae050`, DB-02
+> `6d9d984d`/`74ebd81c`, DB-03 `4a8aac9f`). **Now released:** DB-10 `put_mediafile_in_tx` (`65072b89`/`6e5ca97d`),
+> DB-12 delete-for-items and enqueue variants (`e5d0592d`, rustdoc fix `f80b9704`). DB-10 empty-ID Match miss mints inside
+> each tx attempt; retries may mint different GUIDs, failed attempts publish no ID, only committed result returns ID.
+> BUSY coverage rejects initial INSERT before junction/FTS, not commit failure after a completed bundle. DB-12 is not
+> worker/full scanner completion. **Still unreleased:** typed filtered reads/cursors (DB-11, unrecorded `D-CURSOR`/`D-SCOPE`)
+> and GC (DB-20). Released primitives remain caller-trusted (no scope/auth/commit), with no production scanner caller.
 
 Source refinements for assignments below: existing `nd-db/Cargo.toml:18-23` actually pins `rusqlite=0.32` with bundled/chrono/etc and `chrono=0.4`; proposed scanner dependencies must match that compatible type/features, not workspace's unused `chrono="^2"` placeholder. Actual schema junction names are confirmed `library_artist` and `library_tag` (`nd-dbschema/src/schema_ddl.rs:62-63`). Queue assertions concern `(item_kind,item_id,image_type)`, priority and retry/enqueued timestamps (`schema_ddl.rs:50`); artwork `source` is checked on `item_artwork` (`:51`), not an invented queue source column. Pure aggregate source-test anchors include `model/mediafile_test.go:221` frequency/appearance order, `:272,284,293` ReplayGain non-NULL/real-zero/absent, `:324` participants, and `:373,394,415,441` cover selection. Every dependency expression referring to “DB phase1 subset” also requires **DB every-handle connection policy** above.
 
@@ -117,13 +134,23 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** `cargo test --locked -p nd-scanner --test contract`; V. Any dependency unavailable offline/locked is a decision blocker, not permission to resolve new packages.
 10. **Review/done/report:** R, signed-off interface/error/dependency decision table and no unintended manifest/lock delta. Do not launch dependent writers until ratified.
 
-## SC-02 — Local storage, symlink-safe classification, ignore/walk snapshots — BLOCKED
+## SC-02 — Local storage, symlink-safe classification, ignore/walk snapshots — **IN FLIGHT, UNMERGED** (planner-time status BLOCKED; only the local-FS subset is on `master`)
 
 > **2026-11-19:** a **local-FS storage/symlink-safe-classification subset** LANDED at `e9dd8230` (merge `ff5b9c92`).
 > It is a scoped subset — std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI
 > parsing and symlink classification only; the walker, `.ndignore`/ignore policy, folder hashing and cancellation are
 > **not implemented**. **Not** SC-01 ratification and **not** SC-02 completion; the contract items below still stand as
 > the acceptance bar for the full package.
+>
+> **2026-11-19 (lane state at `f80b9704`):** the remainder is IN FLIGHT on `rust-sc02-local-walker` in a user-approved
+> isolated worktree — base `60be7534`, **15 commits behind `master`**, 0 commits ahead, and **everything uncommitted**
+> (`contract.rs`, `walk.rs`, `ignore.rs`, `folder.rs` and four new test files are untracked; `Cargo.toml`/`Cargo.lock`,
+> `lib.rs`, `storage.rs`, `tests/local_storage.rs` are modified). It has **no integrated-tree review**: the only review
+> artifact is `/tmp/nav-sc02-final-review.md` on that uncommitted worktree diff, verdict **request changes** (two P1
+> findings — ancestor-`.ndignore` preload fed an absolute OS path, and a `CancelToken` await that can hang — plus P2
+> coverage/observability items). This document records that state only; it does **not** claim any finding is fixed, and it
+> makes no scanner design decision. It must be rebased/merged onto `f80b9704`, re-reviewed after fixes, and parent-merged before
+> any SC-02 claim; its manifest/lock edges need re-checking against the integrated lockfile.
 
 1. **Goal/non-goals/prereqs:** real local MusicFS-equivalent and bounded postorder walker; prereq SC-01. No DB writes, remote/object storage plugin implementation, watcher or subprocess. Storage URI registry may reuse existing descriptor but cannot pretend it is fs I/O.
 2. **Starting evidence:** Go `core/storage/interface.go:10-33`, `storage.go:32-83`, `local/local.go:30-109,120-153`; walk `scanner/walk_dir_tree.go:23-351`; ignores `ignore_checker.go:35-161`; hashes `folder_entry.go:72-163`. Rust descriptor `nd-tagreader/src/storage.rs:53-99` preserves paths and only targets Unix; `Extractor::parse(&self,Vec<String>)->HashMap<...>` (`extractors.rs:77`) rejects invalid components and silently skips bad files. Existing Go tests: `walk_dir_tree_test.go:234` nonexistent target retained; `:393` chain resolved; `:403` loop rejected; `:520` legitimate out-of-library audio; `:557` reject non-audio escape; `folder_entry_test.go:392,409` playlist size/mtime hash changes.

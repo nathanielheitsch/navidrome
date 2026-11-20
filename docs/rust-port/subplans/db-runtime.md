@@ -1,11 +1,20 @@
 # DB runtime implementation subplan — assignment contracts, NOT implementation authorization
 
-**Package `Status:` lines below are the planner's state at `60cdd184` and are superseded where they conflict with**
+**Package `Status:` lines below are the planner's state at `60cdd184`, amended to integrated `master` `f80b9704`**
+and superseded where they conflict with
 [`../current-status.md`](../current-status.md) **and** [`../subplans/README.md`](../subplans/README.md) **(2026-11-19):**
 DB-01 LANDED `f57ae050`, DB-03 LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only repair LANDED
-`ab466928` (full DB-15 NOT done), scanner local-FS subset LANDED `e9dd8230`/`ff5b9c92` (not SC-01/SC-02), **DB-02 LANDED
-`6d9d984d`/`74ebd81c`** (canonical TEXT stamps, `zero_time_value()`, artwork-purge cutoff; scrobble-buffer integer stamps and
-the un-pinned `find_recent_files_by_properties_sql` cutoff remain open). **No lane is in flight; DB-04 is next.** Settled decisions now live in
+`ab466928` (full DB-15 NOT done), scanner local-FS subset LANDED `e9dd8230`/`ff5b9c92` (not SC-01/SC-02), DB-02 LANDED
+`6d9d984d`/`74ebd81c` (canonical TEXT stamps, `zero_time_value()`, artwork-purge cutoff; scrobble-buffer integer stamps and
+the un-pinned `find_recent_files_by_properties_sql` cutoff remain open). **Now also LANDED, each as an executed
+transaction-bound primitive: DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07
+`2911b9ab`/merge `9be6ad0e`, DB-08 `32c4fa5b`/merge `320b8b03`, DB-09 `d938d159`/merge `842c32a2`, and DB-13
+`eae4ba1d`/merge `4ab63cd5`.** None of those `*_in_tx` primitives has a **production** caller; the nd-auth code that calls
+`UserRepo` methods (`find_by_username`, `count_all`, `count_by_username`, `put`, `update_last_login_at`) does not use them,
+and that auth router is mounted only in crate tests, not in a server. DB-10 is LANDED (`65072b89`, signed merge `6e5ca97d`); DB-12's executed artwork invalidation/enqueue subset is LANDED
+(`e5d0592d`, fast-forward; rustdoc follow-up `f80b9704`). Neither has a production scanner caller; DB-12 is not a worker
+or full scanner. The DB spine resumes at **DB-11, next in order but not assignable** until `D-CURSOR`/`D-SCOPE` are recorded in
+`../decisions.md`. Settled decisions now live in
 [`../decisions.md`](../decisions.md); the record blocks in this file stay as evidence.
 
 Baseline: `master 60cdd18402c0fd4b09b65e0b64ca494330501c02`. Parent owns orchestration/integration. Workspace `wks_7bb3344766422a39`, host `srv_QsD9e1TgIsNq`. This plan was produced read-only; no code, tests, formatting, delegates, commits or workspaces were created. Only this `/tmp` report was authored. Parent documentation changes appeared during planning; source references below remain pinned to the baseline, not to their evolving status prose.
@@ -217,9 +226,11 @@ result on identical fixtures).
 
 ## DB-04 — Executed property mutations
 
-1. **Status: READY — the next assignable package.** Prereqs DB-00 (`48e65806`/`ec84c176`), DB-02 (`6d9d984d`/`74ebd81c`,
-   canonical TEXT stamps) and DB-03 (`4a8aac9f`) are all landed; the checkout has no concurrent writer. Goal: small typed
-   property put/delete on a transaction; no scanner state/controller policy.
+1. **Status: LANDED at `c791dbc1`** (executed `property_repo::put_in_tx`/`delete_in_tx` on the caller's transaction, 12
+   executed tests in `tests/runtime_property_writes.rs`; no connection-bound `PropertyRepo::put`/`delete` was added and
+   there is **no production caller**). Prereqs DB-00 (`48e65806`/`ec84c176`), DB-02 (`6d9d984d`/`74ebd81c`, canonical TEXT
+   stamps) and DB-03 (`4a8aac9f`) were all landed. Goal: small typed property put/delete on a transaction; no scanner
+   state/controller policy.
 2. **V:** existing `PropertyRepo::get/default_get` `B/property_repo.rs:162,188`, builders put60/delete87; `T/runtime_hydrate_library_property_tag.rs:626-661` manually executes writes. Existing tests `property_put_update_then_insert_pair_runs_in_go_order`, `property_delete_removes_the_row_and_get_then_reports_not_found` are test helpers, not runtime API. Go `persistence/property_repository.go:15-45` source to re-read on assignment.
 3. **Own:** `src/property_repo.rs`, NEW `tests/runtime_property_writes.rs`, O property cases. Collisions DB-00 typed errors, DB-14 orchestration; no docs.
 4. **Proposal:** `put_in_tx(tx,key:&str,value:&str)->Result<(),DbRuntimeError>`, `delete_in_tx(tx,key)->Result<(),...>`; bound keys/values; update first then insert iff affected0. Empty string value is stored value, missing read is NotFound; DefaultGet folds only NotFound. Delete absent key no-op per Go, not fabricated permission. Typed key constants in SC may wrap strings; no SQL fragments.
@@ -232,7 +243,11 @@ result on identical fixtures).
 
 ## DB-05 — Typed library insert/update and scan lifecycle execution
 
-1. **Status: BLOCKED.** Prereqs DB-00/02/03. Goal: supply BOOT/SC executed library mutations; BOOT alone decides which configured libraries to create or update. No schema seed, library deletion/service cache/plugin migration.
+1. **Status: LANDED at `60be7534`** (executed `library_repo::put_in_tx` with the typed `LibraryColumn` set, id-1 path guard,
+   autoincrement and predefined-id arms, in-tx admin assignment, plus `scan_begin_in_tx`/`scan_end_in_tx`/
+   `set_scanned_pid_in_tx`/`add_artist_in_tx`; 8 executed tests in `tests/runtime_library_writes.rs`). Prereqs DB-00/02/03
+   landed. **The bootstrap caller is still missing**: nothing creates or updates a configured library row and fresh DDL has
+   none. Goal: supply BOOT/SC executed library mutations; BOOT alone decides which configured libraries to create or update. No schema seed, library deletion/service cache/plugin migration.
 2. **V:** LibraryRepo reads934-1115; `LibraryUpdate`/`insert_sql(id:Option<i64>,values:Vec<Value>)` at `B/library_repo.rs:465-577` still accepts arbitrary ordered values; scan/link builders580-655, stats later. Go Put `persistence/library_repository.go:72-135`: ID0 autoincrement, nonzero update/fallback insert, ID1 path-change validation, stamp times, assign all admins. Existing `library_get_returns_the_full_record_from_an_integer_id_bind`, `library_get_all_plain_returns_every_row_and_binds_nothing` cover reads only.
 3. **Own:** `src/library_repo.rs`, NEW `tests/runtime_library_writes.rs`, O library cases. Collision DB-02 signatures, DB-17 stats, BOOTcaller; schema_ddl forbidden.
 4. **Proposal:** typed `NewLibrary`/`LibraryPatch` or validated `LibraryRecord` payload with registered update-column enum; `put_in_tx(...)->LibraryWriteResult{id,inserted}`, `scan_begin_in_tx(id,now,full)`, `scan_end_in_tx(id,now)`, `set_scanned_pid_in_tx(id,albumSpec,trackSpec)`, `add_artist_in_tx(libraryId,artistId)`; preserve Go update-miss semantics (do not universally turn rowcount0 into NotFound). Explicit insert all required stamps/zero fields; immutable created_at on update; updated_at always stamp; validate ID1 path against current row if it exists. Music-folder override, if required BOOT, a separate privileged operation rather than bypassing generic validation invisibly. Admin assignment happens inside same tx. No arbitrary caller `Vec<Value>` at public write boundary.
@@ -245,7 +260,10 @@ result on identical fixtures).
 
 ## DB-06 — Executed tag dictionary/library-link Add
 
-1. **Status: BLOCKED.** Prereqs DB-00/03/05 (production library test seed). Goal: execute tag Add only; counts/purge assigned DB-17/20.
+1. **Status: LANDED at `bfdcfeca`** (executed `tag_repo::add_in_tx` — dictionary INSERT then `library_tag` link INSERT per
+   200-chunk on the caller's tx; 9 executed tests in `tests/runtime_tag_writes.rs`). Prereqs DB-00/03/05 landed, and DB-05's
+   `library_repo::put_in_tx` supplies the production library seed the tests use (`runtime_tag_writes.rs` seeds libraries only
+   through it — there is no `add_library_in_tx` symbol). Goal: execute tag Add only; counts/purge assigned DB-17/20.
 2. **V:** `B/tag_repo.rs:106-141` produces dictionary + library_tag pair per200; existing TagRepo594-662 only reads. Go `persistence/tag_repository.go:23-45`; current lib insert/chunk tests and `tag_get_all_scopes_rows_to_accessible_libraries_with_an_inner_join` are precedents.
 3. **Own:** `src/tag_repo.rs`, NEW `tests/runtime_tag_writes.rs`, O tag-add. Collision DB-17/20, shared runtime errors. No genre fix here.
 4. **Proposal:** `add_in_tx(tx,libraryId,tags:&[Tag])->Result<(),DbRuntimeError>`; derive/check tag IDs at SC->record boundary per approved ID rule, don't invent fourth role/ID scheme. Ordered binds dictionary(id,name,value) then link(tagId,libraryId); dictionary before FK link; chunk200; empty list no SQL; ON CONFLICT DO NOTHING preserves existing dictionary and counts.
@@ -258,7 +276,11 @@ result on identical fixtures).
 
 ## DB-07 — Folder Put plus executed missing/touch primitives
 
-1. **Status: BLOCKED.** Prereqs DB-00/01/02/03/05. Goal: bounded folder/missing/touch DB primitives, not walk/finalize policy or purge.
+1. **Status: LANDED at `2911b9ab` + merge `9be6ad0e`** (executed `put_folder_in_tx`, `mark_folders_missing_in_tx`,
+   `mark_media_missing_in_tx`, `mark_media_missing_by_folder_in_tx`, `touch_albums_in_tx` and
+   `touch_albums_with_missing_folders_globally_in_tx`; 10 executed tests in `tests/runtime_folder_writes.rs`). Prereqs
+   DB-00/01/02/03/05 landed. The global touch predicate is retained deliberately and named as such (parent ruling; narrowing
+   it is a `D-GC`/`D-SCOPE` decision). Goal: bounded folder/missing/touch DB primitives, not walk/finalize policy or purge.
 2. **V:** folder row/put711/839, mark896; `FolderRepo` has no writes. Media missing builders1587/1613, album touch1144/1163. Existing `folder_record_insert_update_readback`, `folder_record_rotated_insert_is_detected`, g2 update-info/read tests. Go folder Put `persistence/folder_repository.go:255-274` writes caller UpdateAt; current Rust put_sql stamps its `now` (`:839-852`), so call with caller folder update stamp, not commit-clock. Folder base reads intentionally return zero UpdateAt (dbx field-name mismatch), while update-info reads stored updated_at.
 3. **Own:** `src/{folder_repo.rs,mediafile_repo.rs,album_repo.rs}` only new executed folder/missing/touch functions; NEW `tests/runtime_folder_writes.rs`; extend DB-01 runtime_missing_state/DB-02 clock tests only necessary. Collision DB-08-11/16; no filesystem code.
 4. **Proposal:** `put_folder_in_tx(tx,record,updateStamp)->WriteResult`; `mark_media_missing_in_tx`, `mark_folders_missing_in_tx`, `mark_media_missing_by_folder_in_tx`, `touch_albums_in_tx`, `touch_albums_with_missing_folders_in_tx`. All consume typed scan authority/library scope and IDs, chrono stamp; empty IDs no-op, chunks200. Keep created_at immutable. Scope validation must prevent accidentally updating IDs belonging to another selected library; final safe predicate or existence-check chosen with DB-11 types. Go TouchByMissingFolder is global—do NOT silently claim it is scoped; if narrowing it to selected libraries is desired parent approves at D-GC/D-SCOPE.
@@ -271,7 +293,11 @@ result on identical fixtures).
 
 ## DB-08 — Transaction-bound artist Put and partial-update contract
 
-1. **Status: BLOCKED.** Prereqs DB-00/02/03/05. Goal: artist write lifecycle for scanner partial fields, not stats/index/search/cursor.
+1. **Status: LANDED at `32c4fa5b` + merge `320b8b03`** (executed `artist_repo::put_artist_in_tx` with the typed
+   `ArtistColumn` set; 10 executed tests in `tests/runtime_artist_writes.rs`). It also **corrected** the renderer defect that
+   appended `updated_at` to every filtered SET, restoring Go's `selectUpdateColumns` semantics and re-pinning
+   `runtime_timestamp_convention.rs`. Prereqs DB-00/02/03/05 landed. Goal: artist write lifecycle for scanner partial fields,
+   not stats/index/search/cursor; the `library_artist` link stays DB-05's `add_artist_in_tx` in the same caller transaction.
 2. **V:** `put_cols`675 and `put_sql`758-807 render; ArtistRepo1588/1631 only reads. Go `persistence/artist_repository.go:239-253`, shared selectUpdateColumns `sql_base_repository.go:593-610`. Existing `put_sql_update_leg_filters_cols_and_appends_updated_at` pins a documented divergence: Rust appends updated_at to ANY filtered update while Go filters exactly requested cols. Scanner phase1 explicitly includes updated_at (`scanner/phase_1_folders.go:403-405`), so broader external-info change is not required blindly.
 3. **Own:** `src/artist_repo.rs`, NEW `tests/runtime_artist_writes.rs`, O artist-put. Collision DB-18/20. Existing hydration code protected except deliberate tests for round-trip.
 4. **Proposal:** `put_artist_in_tx(tx,record,now,ArtistColumns)->WriteResult`; enum/all-vs-explicit typed fields; generated ID only if Go permits and caller does not supply, otherwise stable provided ID; sorted columns/binds, created_at immutable on update, empty sort/MBZ do not overwrite stored nonempty. Freeze behavior for filtered timestamp stamping: recommend match Go (updated_at changes only if explicitly requested), add regression for scanner's explicit list; do not change all external-info callers without audit.
@@ -284,7 +310,12 @@ result on identical fixtures).
 
 ## DB-09 — Album Put: base + participants/tags + FTS
 
-1. **Status: BLOCKED.** Prereqs DB-00/02/03/05/06/08. Goal: execute existing record bundle atomically; no aggregate/equals algorithm (SC-owned), moves/copy later.
+1. **Status: LANDED at `d938d159` + merge `842c32a2`** (executed `album_repo::put_album_in_tx`: base upsert, unconditional
+   participant delete + optional insert, unconditional tag delete + optional insert, all on the caller's tx; 18 executed
+   tests in `tests/runtime_album_writes.rs`). **No Rust statement issues FTS** — the fresh schema's `album_fts_ai`/`_au`/`_ad`
+   triggers maintain `album_fts`, and the tests observe that through `MATCH` and the contentless row count. Prereqs
+   DB-00/02/03/05/06/08 landed. Goal: execute existing record bundle atomically; no aggregate/equals algorithm (SC-owned),
+   moves/copy later (DB-16).
 2. **V:** `B/album_repo.rs:764,1030-1100` defines complete record map and base/junction bundle; conn repo only get/get_all. Go `persistence/album_repository.go:208-219` stamps imported_at, generic put, then participants/tags. Existing `album_record_insert_update_readback`, `album_record_rg_some_and_null_folder_ids_roundtrip`, `runtime_insert_alignment` and `runtime_hydrate_album_mediafile` assert pieces, not production transaction lifecycle.
 3. **Own:** `src/album_repo.rs`, NEW `tests/runtime_album_writes.rs`, O album-put. May fix only directly proven bundle defect; sql_participations/sql_tags ownership expansion requires parent if tests expose a new helper fault. Collision DB-07/11/15-20.
 4. **Proposal:** `put_album_in_tx(tx,id,record,now,AlbumColumns)->WriteResult`; consume DB record supplied by SC. Stamp only imported_at at repository Put; created/updated from record; never update created_at/birth_time; exclude annotation/average_rating/released orphan/image fields. Execute update if ID exists else insert; then participant delete/optional insert then tags delete/optional insert. Empty maps must clear junctions, not skip deletes. FTS comes from record-derived inputs once, not caller independent column arrays. Insert ID must be returned/known before junctions. All same tx.
@@ -297,12 +328,17 @@ result on identical fixtures).
 
 ## DB-10 — MediaFile PutByMatch identity and atomic maintenance
 
-1. **Status: BLOCKED.** Prereqs DB-00/02/03/05/06/08/09 (production fixture graph). Goal: real match/update/insert/ID result plus base/junction/FTS transaction; no tag reader/mapping, scan move selection or full REST.
+1. **Status: LANDED** at signed implementation `65072b89`, signed merge `6e5ca97d` (integrated baseline `f80b9704`).
+   `put_mediafile_in_tx` executes identity match plus atomic base/participant/tag maintenance; schema triggers maintain FTS.
+   `tests/runtime_mediafile_writes.rs` has 31 executed tests. Parent reports review **APPROVE**, with follow-up P3s fixed.
+   No production scanner caller. The V/proposal lines below retain pre-implementation source references, not current absence claims.
+   Prereqs DB-00/02/03/05/06/08/09 are now all landed. Goal: real match/update/insert/ID result plus base/junction/FTS
+   transaction; no tag reader/mapping, scan move selection or full REST.
 2. **V:** `put_match_sql(path,library_id)`765 only renders SELECT; `put_sql(id,record,now,append_subtitle,cols)`1427 returns bundle; Repo get/get_all/get_random606-713 only reads. Go `mediafile_repository.go:184-197`, `sql_base_repository.go:576-591,618-642`: if explicit ID skip match; else SELECT by path+library then put; no upsert API. Existing `mediafile_record_insert_update_readback`, insert alignment, hydration tests need a new production wrapper test.
 3. **Own:** `src/mediafile_repo.rs`, NEW `tests/runtime_mediafile_writes.rs`, O media-put. Collision DB-01/02/07/11/16; no SC mapping types edited.
-4. **Proposal:** `put_mediafile_in_tx(tx,identity:MediaIdentity,record,now,append_subtitle)->WriteResult{id,disposition}`; identity explicit ID or match(path,libraryId). Match selected with Go case/path semantics, ID0/empty decisions explicit; generated ID stable to one operation/retry plan and returned only postcommit by outer operation. Created_at stamp only when model zero (`None` AND explicit go_zero as appropriate); preserve birth_time/created_at on updates. Bundle order base -> participant delete/insert -> tag delete/insert. Keep full_title config supplied typed bool not global. Match permission is scanner/system caller; API must not invoke unscoped match from a raw path string.
-5. **Steps:** read match on same tx, distinguish no rows vs hard error; generate/preallocate if needed; execute branch; maintenance; return result without mutating shared retry input. Audit no unique path constraint reliance; concurrency serialized by transaction/retry, no fabricated upsert conflict key. Re-read production entity after commit.
-6. **Tests:** `put_by_match_reuses_path_library_identity`; `same_path_different_library_stays_distinct`; `explicit_id_bypasses_match_and_preserves_immutable_columns`; `new_id_and_predefined_miss_return_persisted_id`; `media_each_leg_failure_rolls_back_fts_and_junctions`; `retry_match_same_result_no_orphan_id`. Empty paths per Go accepted/rejected explicitly, absent match, malformed read failure, subtitle on/off, bitdepth/BPM/RG optional, zero created_at representations, duplicate role/subroles, chunks in related helpers where applicable. Ensure caller record and batch untouched after rollback.
+4. **Proposal:** `put_mediafile_in_tx(tx,identity:MediaIdentity,record,now,append_subtitle)->WriteResult{id,disposition}`; identity explicit ID or match(path,libraryId). Match selected with Go case/path semantics, ID0/empty decisions explicit; **binding user ID policy:** an empty-ID Match miss mints a GUID inside each transaction attempt; a failed attempt rolls back and publishes no ID, and only the successful committed result returns its ID. Retries may mint different GUIDs; no stable-across-retry requirement. Stamp `created_at` to caller `now` only for `None` OR explicit Go zero; pass `updated_at`/`birth_time` through unchanged, and preserve stored `birth_time`/`created_at` on updates. Bundle order base -> participant delete/insert -> tag delete/insert. Keep full_title config supplied typed bool not global. Match permission is scanner/system caller; API must not invoke unscoped match from a raw path string.
+5. **Steps:** read match on same tx, distinguish no rows vs hard error; mint a GUID inside the attempt on an empty-ID Match miss; execute branch; maintenance; return result without mutating shared retry input. Audit no unique path constraint reliance; concurrency serialized by transaction/retry, no fabricated upsert conflict key. Re-read production entity after commit.
+6. **Tests:** `put_by_match_reuses_path_library_identity`; `same_path_different_library_stays_distinct`; `explicit_id_bypasses_match_and_preserves_immutable_columns`; `new_id_and_predefined_miss_return_persisted_id`; `media_each_leg_failure_rolls_back_fts_and_junctions`; executed `busy_exhausted_attempts_publish_no_minted_id` (BUSY lock rejects the initial INSERT before junction/FTS maintenance; this does **not** cover commit-failure rollback of a completed bundle). Empty paths per Go accepted/rejected explicitly, absent match, malformed read failure, subtitle on/off, bitdepth/BPM/RG optional, zero created_at representations, duplicate role/subroles, chunks in related helpers where applicable. Ensure caller record and batch untouched after rollback.
 7. **Non-vacuity:** two calls with no ID at same path/library must produce one row via actual new API; omission of match SELECT would duplicate and fail; explicit ID branch with colliding path tests it doesn't incorrectly overwrite unrelated ID.
 8. **Oracle:** O public MediaFile.Put; timestamps normalized, persisted IDs/state/junction set exact. Random IDs canonicalize only new unknown ID bijection; match and stable supplied IDs compared literally.
 9. **Validation:** `cargo test --locked -p nd-db --test runtime_mediafile_writes --test runtime_marshal_records --test runtime_hydrate_album_mediafile`; G.
@@ -323,7 +359,13 @@ result on identical fixtures).
 
 ## DB-12 — Scanner artwork invalidation and enqueue subset
 
-1. **Status: BLOCKED.** Prereqs DB-00/02/03. Goal: executed DeleteForItems, Enqueue, EnqueueIfMissing, EnqueueAllMissing only. Non-goals: image worker/blob IO, source bulk tools, purge production actions.
+1. **Status: LANDED executed subset.** Signed `e5d0592d` fast-forwarded into `master`; rustdoc warning fix `f80b9704`.
+   `delete_for_items_in_tx`, `enqueue_in_tx`, `enqueue_if_missing_in_tx`, `enqueue_all_missing_in_tx` execute on the caller's tx;
+   `tests/runtime_scanner_artwork_writes.rs` has 14 executed tests. Parent reports independent review **APPROVE after follow-up
+   test fixes**. No production scanner caller, worker or full scanner. V/proposal lines below retain pre-implementation references.
+   Prereqs DB-00/02/03 landed. Goal:
+   executed DeleteForItems, Enqueue, EnqueueIfMissing, EnqueueAllMissing only. Non-goals: image worker/blob IO, source bulk
+   tools, purge production actions.
 2. **V:** `B/artwork_repo.rs:232-251` deletion builder; queue123/170/176/187/219 render; existing ArtworkQueueRepo only reads/counts/purge731. Go `persistence/artwork_repository.go:150-158`, `artwork_queue_repository.go:46-105,142-160`: reset lifecycle vs preserve/if-missing. Kind prefixes `al/mf/ar/pl/ra`, not names. Existing g2 source-count old-bug control does NOT execute enqueue.
 3. **Own:** `src/{artwork_repo.rs,artwork_queue_repo.rs}`, NEW `tests/runtime_scanner_artwork_writes.rs`, O artwork cases. Shared with DB-14/19/20; no artwork_hydration rewrite.
 4. **Proposal:** transaction-bound `invalidate_items(kind:ArtworkKind,ids)`, `enqueue(items,now,mode)`, `enqueue_all_missing(kind,priority,now)->i64`; typed kind->fixed entity table whitelist. Enqueue chunk100, deletion200; empty list no SQL. Reset sets priority=max, retry_at/enqueued_at=now, attempts0, trace[]; if-missing never resets existing queued row or item_artwork-resolved row. Default image type primary when empty per Go, or explicit typed constructor. Return typed errors; caller chooses nonfatal artwork policy only after checking tx still viable, never suppress automatic transaction rollback/commit failure.
@@ -336,7 +378,14 @@ result on identical fixtures).
 
 ## DB-13 — Epoch-only token revocation primitive for BOOT/API
 
-1. **Status: BLOCKED.** Prereqs DB-00/03; parent `D-REVOKE` approves semantics/overflow; external `BOOT.epoch-revoke`/`API.revoke-authorization`. Goal: narrow DB mutation, not endpoint or password encryption/token refresh.
+1. **Status: LANDED at `eae4ba1d` + merge `4ab63cd5`.** Prereqs DB-00/03 landed. The implemented shape — overflow/`typeof`
+   guard, no-row classification and same-tx existence read — matches the proposal below (`increment_token_epoch_sql`,
+   `select_token_epoch_sql`, `revoke_tokens_in_tx`, `NewTokenEpoch`, `RevokeError::NotFound`/`Exhausted`; 18 executed tests
+   in `tests/runtime_token_revoke.rs`). **`D-REVOKE` itself has no canonical record: there is no `D-REVOKE` entry in
+   `../decisions.md`, and the shape was fixed in the parent's lane review (`/tmp` review record), so treat it as a
+   documentation gap for the parent rather than a settled authority decision.** **The external consumers are
+   NOT landed** — BOOT/API owns `BOOT.epoch-revoke`/`API.revoke-authorization` and nothing calls this primitive yet. Goal:
+   narrow DB mutation, not endpoint or password encryption/token refresh.
 2. **V:** existing `UserRepo::put` `B/user_repo.rs:760-811` bumps token_epoch only if password Some; no-password updates preserve it. It also rewrites fields and autoassigns admin libraries, so it is NOT a safe epoch-only revoke. Builder `put_password_update_sql:312-326` same-statement epoch+password exists. Existing `put_bumps_the_token_epoch_once_per_password_change`, `put_without_a_password_updates_the_row_and_leaves_the_epoch`. `nd-auth/middleware.rs:92-118` reloads user each request and revalidates epoch; credentials.rs273 rejects mismatch. No epoch-only production API found.
 3. **Own:** `src/user_repo.rs`, NEW `tests/runtime_token_revoke.rs`; potentially runtime_error enum variant via parent-controlled shared edit. No nd-auth edits; BOOT/API owns those tests/routes. Collision user source may be used by BOOT; schedule explicitly.
 4. **Proposal:** `revoke_tokens_in_tx(tx,userId)->Result<NewTokenEpoch,DbRuntimeError>` or additive `UserRepo::increment_token_epoch` under caller transaction. One UPDATE `SET token_epoch=token_epoch+1 WHERE id=? RETURNING token_epoch`; no password/updated_at/last_access/library changes, no insert fallback. Missing => NotFound. Guard i64 overflow BEFORE mutation (`token_epoch < i64::MAX` plus classify existent exhausted row) or chosen typed exhaustion behavior; never let SQLite promote REAL then fail read after autocommit. Authorization is trusted caller/API, not raw HTTP bool; caller observes result only after commit. Epoch-only revoke invalidates current token too unless API deliberately issues a new token after commit; no TokenEpochHolder refresh automatically implied.
@@ -533,7 +582,7 @@ costs one test file. Do not add it before the mutation renderers stabilize (DB-0
 it will fail on intentionally-partial shapes like `refresh_counters_sql`.
 
 
-1. **Status: repair portion LANDED at `ab466928` (render-only rating repair — this does NOT complete DB-15); runtime half BLOCKED.** Prereqs DB-00 (landed `48e65806`/`ec84c176`) / DB-03 (landed `4a8aac9f`) for the executed tx helper; the render-only regression shipped first. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation average on ID changes. Non-goals: general rating/starring endpoints.
+1. **Status: repair portion LANDED at `ab466928` (render-only rating repair — this does NOT complete DB-15); runtime half READY as a plan, currently unassigned and parent-sequenced after DB-11.** DB-00 (`48e65806`/`ec84c176`) and DB-03 (`4a8aac9f`) are landed; this plan records no remaining technical prerequisite for DB-15 itself. This is queue status, not a technical block. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation average on ID changes. Non-goals: general rating/starring endpoints.
 2. **V, newly found during planning:** `B/sql_annotations.rs:301-309` `update_avg_rating_sql` emits `SET average_rating=? WHERE id=?` but args `[itemId,table,itemId]`; the actual aggregate expression is separately `average_rating_expr_sql:314-316`, not embedded. Existing `update_avg_rating_binds_subquery_args_before_where_id`602-620 pins that inconsistent shape. Go `persistence/sql_annotations.go:151-162` embeds coalesced rounded avg positive ratings; `ReassignAnnotation:185-196` UPDATE OR IGNORE then update average. No execution by planner/parent claimed for this new renderer defect.
 3. **Own:** `src/sql_annotations.rs`, NEW `tests/runtime_annotation_transfers.rs`, O annotation fixtures. Prefer new runtime helper in this file or fixed registered entity enum in runtime_error/types; no arbitrary table input. Collision DB-16/20, shared helpers potential external API later.
 4. **Proposal:** repair SQL to embed average_rating_expr_sql and exactly3 ordered binds; `reassign_annotation_in_tx(tx,EntityKind,old,new)->Result<(),DbRuntimeError>` short-circuits empty/equal IDs per Go, moves OR IGNORE, recalculates target average in same tx. Duplicate per-user target annotation wins; do not merge or delete source conflict rows silently. Preserve zero/NULL/unrated average rule and type string `album` vs artwork prefix (not interchangeable).
@@ -694,12 +743,14 @@ a later reviewer does not re-open it as a missing behavior.
 
 ## DB-22 — Executed read parity for genre, scrobble, playqueue, artwork (parent-added, 2026-11-18)
 
-1. **Status: READY as a plan; BLOCKED on checkout** — run only after DB-03 (**landed `4a8aac9f`**; the `19a5a57a` cited here is a
-   superseded pre-review commit), DB-00 (**landed `48e65806`/`ec84c176`**) and DB-02 (**landed `6d9d984d`/`74ebd81c`**) have
-   landed, so it is assignable now: this lane edits `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}`
-   and runs the whole workspace, so a concurrent writer would poison its numbers.
+1. **Status: READY / assignable from `f80b9704`, subject to parent launch and exclusive checkout ownership.** Its DB
+   prerequisites DB-03 (`4a8aac9f`; `19a5a57a` was superseded), DB-00 (`48e65806`/`ec84c176`) and DB-02
+   (`6d9d984d`/`74ebd81c`) are landed. DB-12 (`e5d0592d`) is now integrated, releasing the former `artwork_repo.rs`
+   ownership block; the parent reports no code writer there. DB-22 has no DB-11 decision prerequisite. Serialize its
+   `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}` writes and workspace gates after this docs writer
+   stops. Readiness is not implementation authorization.
 2. **Goal:** execute the four repos' read statements against `apply_fresh_schema` and pin Go's
-   observed results. Zero executed reads today (measured: 0 execution calls in each module).
+   observed results. No executed read parity is recorded for these modules. DB-12 now executes artwork invalidation/enqueue writes; this does not cover artwork reads.
 3. **Go ground truth (verified this turn, cite in code):**
    - genre: `selectGenre` = `newSelect().Columns("tag.tag_value as name")`
      (`persistence/genre_repository.go:22-24`); `GetAll` `:26-31`; `Get` adds `Where(Eq{"tag.id": id})`
@@ -774,8 +825,9 @@ DB-16/17/18/19/20 + SC.full-phase-contract + SC.playlist-import-contract -> DB-2
 
 DB-21's P1 exit requires only genuinely consumed phase1 APIs; e.g. API visible-point test and future phase2 reads in DB-11 need not delay a parent-approved narrower DB-11 phase1 handoff, but cannot be reported complete. If split, retain stable IDs with explicit acceptance checklist states; do not silently delete the unimplemented obligations. DB-14 needs DB-15 for phase1 album-ID transitions; a no-transition first fixture may demonstrate only a strictly narrower exit, not general phase1 parity.
 
-Recommended **serial** writer order (DB-01/02/03/00 are done, so the sequence resumes at DB-04): DB-01 -> DB-02 -> DB-03 ->
-DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03. Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates.
+Recommended **serial** writer order (DB-01/02/03/00, DB-04…DB-10/DB-12/DB-13 are landed at `f80b9704`; the spine now
+resumes at decision-gated **DB-11**): DB-01 -> DB-02 -> DB-03 ->
+DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**). Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10 and the DB-12 subset are landed; DB-11 remains **not assignable** until `D-CURSOR`/`D-SCOPE` are recorded. DB-22 is independently ready: its prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`; parent must serialize the next writer.
 
 ## MUST-answer questions before relevant launch
 
@@ -926,9 +978,18 @@ artwork, genre, playqueue, plugin, scrobble, share, smart_playlist, user_props.
 Note `annotation_repo.rs` does not exist while `persistence/` has no annotation file
 either — annotations ride album/mediafile (`DB-15`), so no gap there.
 
+> **Amendment (integrated `master` `4ab63cd5`):** the counts above and the "zero executed reads" list are the 2026-11-18
+> inventory. Re-measured at `4ab63cd5`, `share` and `user_props` execute on **raw connections** outside the shared
+> `execution` helper, so they are no longer zero-execution; at that historical boundary the render-only set was `artwork`,
+> `genre`, `playqueue`, `plugin` (scope pending), `scrobble`, `smart_playlist`. At `f80b9704`, DB-12 executes artwork
+> invalidation, leaving five render-only modules (artwork reads still pending). See `../current-status.md` for the re-count.
+
 Near-term order after this commit, all DB-owned **(superseded 2026-11-19: DB-01 LANDED `f57ae050`,
 DB-03 / D-OPEN LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only LANDED `ab466928`, DB-02 LANDED
-`6d9d984d`/`74ebd81c` — **no lane is in flight**; read
+`6d9d984d`/`74ebd81c` **and** the executed write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07
+`2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2` and DB-13 `eae4ba1d`/`4ab63cd5` are LANDED;
+DB-10 is LANDED `65072b89`/`6e5ca97d`; DB-12's artwork invalidation/enqueue subset is LANDED `e5d0592d` with rustdoc fix
+`f80b9704` (no production scanner callers, no artwork worker); read
 `../subplans/README.md` and `../next-work.md`'s current section for the live order)**:
 1. **Sort-gate parity** for player, library, tag, radio — **done** at `62789ba2`.
 2. **DB-01** missing-state bind repair — READY then, no prerequisites, and G0 gates
