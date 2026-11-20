@@ -91,18 +91,14 @@ pub fn items_to_column(items: &[String]) -> String {
     items.join(",")
 }
 
-/// `toModel` (`:113-129`): split the column back into ids, blank/whitespace
-/// entries dropped like Go's trim guard (`:122-127`).
+/// `toModel` (`:113-129`): trim only to detect a blank column; otherwise
+/// preserve every split token, including whitespace and empty ids.
 #[must_use]
 pub fn column_to_items(column: String) -> Vec<String> {
     if column.trim().is_empty() {
         return Vec::new();
     }
-    column
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
+    column.split(',').map(str::to_string).collect()
 }
 
 /// `Store` (`:38-76`): returns the statements in Go's execution order.
@@ -282,5 +278,185 @@ mod tests {
         assert!(stmts[0].0.contains("WHERE media_file.id IN ("));
         assert_eq!(stmts[0].1.len(), 500);
         assert_eq!(stmts[1].1.len(), 1);
+    }
+}
+
+/// Queue read failures, retaining concrete SQLite errors.
+#[derive(Debug, thiserror::Error)]
+pub enum PlayQueueError {
+    /// No queue for this user.
+    #[error("record not found")]
+    NotFound,
+    /// Concrete driver or scan failure.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+    /// Media-file query or hydration failure.
+    #[error(transparent)]
+    MediaFile(#[from] crate::mediafile_repo::MediaFileError),
+}
+
+/// Executed queue reads on a caller-owned connection.
+pub struct PlayQueueRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> PlayQueueRepo<'a> {
+    /// Bind a connection.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Retrieve the persisted CSV row (Go Retrieve :86-92).
+    /// Decode ids with column_to_items; the raw column is kept for lossless reads.
+    /// # Errors
+    /// Returns NotFound or concrete SQLite scan/query failures.
+    pub fn retrieve(&self, user_id: &str) -> Result<PlayQueueRow, PlayQueueError> {
+        use crate::hydrate::RowGet;
+        crate::execution::query_optional(self.conn, &retrieve_sql(user_id), |row| {
+            Ok(PlayQueueRow {
+                id: row.get_text("id")?,
+                user_id: row.get_text("user_id")?,
+                current: row.get_i64("current")?,
+                position: row.get_i64("position")?,
+                changed_by: row.get_text("changed_by")?,
+                items: row.get_text("items")?,
+                created_at: row.get_dt("created_at")?,
+                updated_at: row.get_dt("updated_at")?,
+            })
+        })?
+        .ok_or(PlayQueueError::NotFound)
+    }
+
+    /// Retrieve with the existing MediaFileRepo GetAll and artwork enrichment.
+    /// Go loadTracks (:133-166) chunks at 500, keeps order and duplicates, and
+    /// drops missing ids. Unlike Go's logged-and-swallowed track query errors,
+    /// this strict API returns failures without a partial queue. Artwork errors
+    /// remain observable on ReadOutcome, as with MediaFileRepo::get_all.
+    /// `reader_id` is the logged-in user (not necessarily the queue owner).
+    /// As in MediaFileRepo, `library_filter` is caller-resolved access policy:
+    /// None only for unrestricted reads (admin/unauthenticated/all libraries).
+    /// The id filter is conjoined with that policy in every chunk.
+    /// # Errors
+    /// Returns queue or media-file query/hydration errors.
+    pub fn retrieve_with_media_files(
+        &self,
+        user_id: &str,
+        reader_id: Option<&str>,
+        library_filter: Option<Sql>,
+        enable_media_file_cover_art: bool,
+    ) -> Result<
+        (
+            PlayQueueRow,
+            crate::artwork_hydration::ReadOutcome<crate::mediafile_repo::MediaFileRecord>,
+        ),
+        PlayQueueError,
+    > {
+        self.retrieve_with_media_files_observed(
+            user_id,
+            reader_id,
+            library_filter,
+            enable_media_file_cover_art,
+            |_| {},
+        )
+    }
+
+    // The public path and the private runtime chunk probe share this exact
+    // implementation. The no-op production observer optimizes away.
+    fn retrieve_with_media_files_observed(
+        &self,
+        user_id: &str,
+        reader_id: Option<&str>,
+        library_filter: Option<Sql>,
+        enable_media_file_cover_art: bool,
+        mut observe_chunk: impl FnMut(usize),
+    ) -> Result<
+        (
+            PlayQueueRow,
+            crate::artwork_hydration::ReadOutcome<crate::mediafile_repo::MediaFileRecord>,
+        ),
+        PlayQueueError,
+    > {
+        let queue = self.retrieve(user_id)?;
+        let ids = column_to_items(queue.items.clone());
+        let mut tracks = std::collections::HashMap::new();
+        let mut artwork_error = None;
+        for chunk in ids.chunks(TRACK_CHUNK_SIZE) {
+            observe_chunk(chunk.len());
+            let mut clause = format!("media_file.id IN ({})", vec!["?"; chunk.len()].join(", "));
+            let mut args: Vec<Value> = chunk.iter().cloned().map(Value::Text).collect();
+            if let Some((access, access_args)) = &library_filter {
+                clause.push_str(&format!(" AND ({access})"));
+                args.extend(access_args.iter().cloned());
+            }
+            let filter = (clause, args);
+            let outcome = crate::mediafile_repo::MediaFileRepo::new(self.conn).get_all(
+                reader_id,
+                Some(filter),
+                &[],
+                0,
+                0,
+                enable_media_file_cover_art,
+            )?;
+            if let Some(error) = outcome.artwork_error.filter(|error| !error.is_empty()) {
+                match &mut artwork_error {
+                    None => artwork_error = Some(error),
+                    Some(previous) => {
+                        previous.push_str("; ");
+                        previous.push_str(&error);
+                    }
+                }
+            }
+            for track in outcome.items {
+                tracks.insert(track.id.clone(), track);
+            }
+        }
+        let items = ids
+            .iter()
+            .filter_map(|id| tracks.get(id).cloned())
+            .collect();
+        Ok((
+            queue,
+            crate::artwork_hydration::ReadOutcome {
+                items,
+                artwork_error,
+            },
+        ))
+    }
+}
+
+#[cfg(test)]
+mod runtime_chunk_tests {
+    use super::*;
+
+    #[test]
+    fn executed_retrieve_partitions_actual_media_reads_at_500() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        nd_dbschema::schema::register_extensions(&conn).unwrap();
+        nd_dbschema::schema::apply_fresh_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO library(id,name,path) VALUES (1,'One','/one');
+             INSERT INTO user(id,user_name,created_at,updated_at)
+               VALUES ('u','user','2024-01-01','2024-01-01');
+             INSERT INTO media_file(id,library_id,created_at,updated_at)
+               VALUES ('a',1,'2024-01-01','2024-01-01');",
+        )
+        .unwrap();
+        let ids = vec!["a".to_string(); 503];
+        conn.execute(
+            "INSERT INTO playqueue(id,user_id,current,position,changed_by,items,created_at,updated_at)
+             VALUES ('q','u',0,0,'',?,'2024-01-01','2024-01-01')",
+            [items_to_column(&ids)],
+        )
+        .unwrap();
+        let mut chunks = Vec::new();
+        let (_, outcome) = PlayQueueRepo::new(&conn)
+            .retrieve_with_media_files_observed("u", Some("u"), None, true, |size| {
+                chunks.push(size);
+            })
+            .unwrap();
+        assert_eq!(chunks, [500, 3]);
+        assert_eq!(outcome.items.len(), 503);
+        assert!(outcome.items.iter().all(|track| track.id == "a"));
     }
 }

@@ -5,14 +5,8 @@
 //! to `tag.tag_name = "genre"`, plus the select's extra
 //! `Columns("tag.tag_value as name")` (`:23`).
 //!
-//! As in the sibling `tag_repo.rs`, this port stops at the materialized
-//! `(sql, args)` pairs (Go's `queryAll`/`queryOne` execute them in the store
-//! layer), and the LEFT JOINs splice at squirrel's join position — only the
-//! user id binds, join identifiers are fixed schema names.
-//!
-//! Deferred, with the reason: the base repository's REST `Count` (`sql_tags.go:202+`)
-//! belongs to the tag repository's registry, and `Read`/`ReadAll` (`:42-49`)
-//! are pass-throughs to `Get`/`GetAll`, ported as the two fns below.
+//! Executed reads retain Go's authenticated INNER access join, after the
+//! LEFT library aggregate (`persistence/sql_tags.go:165-175`).
 
 use crate::sql_tags::{library_filter_joins, Sql};
 use crate::sqlrepo::{Repository, SqlError};
@@ -53,8 +47,7 @@ pub fn get_sql(user_id: Option<&str>, id: String) -> Result<Sql, SqlError> {
 /// `selectGenre` composed on `baseTagRepository.newSelect`
 /// (`sql_tags.go:197-228`): the aggregate columns, the fixed `genre` name
 /// filter, squirrel `GroupBy` (`sqlrepo.group_by`, rendered WHERE→GROUP BY→
-/// ORDER/LIMIT), and the `applyLibraryFiltering` LEFT JOINs from
-/// [`library_filter_joins`] spliced after `FROM tag` (`sql_tags.go:205-210`).
+/// ORDER/LIMIT), with an INNER user access join for authenticated reads.
 fn select_genre(user_id: Option<&str>, id: Option<&str>) -> Result<Sql, SqlError> {
     let (joins, join_args) = library_filter_joins(user_id.map(|u| u.to_string()));
     let mut sq = Repository::new("tag")
@@ -79,7 +72,15 @@ fn select_genre(user_id: Option<&str>, id: Option<&str>) -> Result<Sql, SqlError
     let at = pos + from.len();
     let join_sql = joins
         .iter()
-        .map(|j| format!(" LEFT JOIN {j}"))
+        .enumerate()
+        .map(|(index, j)| {
+            let join = if index == 0 {
+                "LEFT JOIN"
+            } else {
+                "INNER JOIN"
+            };
+            format!(" {join} {j}")
+        })
         .collect::<String>();
     sql.replace_range(at..at, &join_sql);
     // squirrel binds JOIN args before WHERE args.
@@ -113,7 +114,7 @@ mod tests {
         let (sql, args) =
             get_sql(Some("usr-1"), "tag-9".to_string()).expect("the id filter materializes");
         // Assert: the join id binds before the two WHERE values.
-        assert!(sql.contains(" LEFT JOIN user_library on user_library.library_id = library_tag.library_id AND user_library.user_id = ?"));
+        assert!(sql.contains(" INNER JOIN user_library on user_library.library_id = library_tag.library_id AND user_library.user_id = ?"));
         assert!(sql.contains("WHERE tag.tag_name = ? AND tag.id = ?"));
         assert_eq!(
             args,
@@ -124,4 +125,61 @@ mod tests {
             ]
         );
     }
+}
+
+/// Strict genre read failures; absence is distinct from SQLite failure.
+#[derive(Debug, thiserror::Error)]
+pub enum GenreError {
+    /// No accessible genre matched.
+    #[error("record not found")]
+    NotFound,
+    /// Concrete driver or scan failure.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+}
+
+/// Genre reads on a caller-owned connection.
+pub struct GenreRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> GenreRepo<'a> {
+    /// Bind a connection.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Execute Go's GetAll aggregate.
+    /// # Errors
+    /// Returns concrete SQLite failures.
+    pub fn get_all(&self, user_id: Option<&str>) -> Result<GenreList, GenreError> {
+        Ok(crate::execution::query_all(
+            self.conn,
+            &get_all_sql(user_id).expect("fixed genre select"),
+            genre_from_row,
+        )?)
+    }
+
+    /// Execute Get; an inaccessible id is not found.
+    /// # Errors
+    /// Returns NotFound or concrete SQLite failures.
+    pub fn get(&self, user_id: Option<&str>, id: &str) -> Result<Genre, GenreError> {
+        crate::execution::query_optional(
+            self.conn,
+            &get_sql(user_id, id.to_string()).expect("fixed genre select"),
+            genre_from_row,
+        )?
+        .ok_or(GenreError::NotFound)
+    }
+}
+
+fn genre_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Genre> {
+    use crate::hydrate::RowGet;
+    Ok(Genre {
+        id: row.get_text("id")?,
+        name: row.get_text("name")?,
+        album_count: row.get_i64("album_count")?,
+        song_count: row.get_i64("song_count")?,
+    })
 }

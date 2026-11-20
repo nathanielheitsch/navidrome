@@ -1,11 +1,8 @@
 //! Port of `persistence/artwork_repository.go` (184L) — the image cache
 //! (`artwork`) plus per-entity artwork state (`item_artwork`).
 //!
-//! House conventions as elsewhere: every method returns the materialized
-//! `(sql, args)` pair; execution stays with the caller. squirrel's `SetMap`
-//! inserts project sorted column names (verified against squirrel@v1.5.4
-//! source in the mediafile slice), so the two upserts below list their
-//! columns alphabetically, exactly what Go's `Insert().SetMap(values)` emits.
+//! Materialized statements plus strict executed read APIs. squirrel's SetMap
+//! inserts project sorted column names; the upserts below match that order.
 //! `kind.Prefix()` (`model/artwork_id.go:23`) is caller-supplied typed-domain
 //! text, values bound — and it is the ONLY spelling the `item_kind` column ever
 //! holds, so [`OWNER_TABLES`] and every test fixture below keys on the prefix
@@ -114,6 +111,8 @@ pub struct ArtworkRow {
     pub thumb_hash: String,
     /// `#rrggbb` placeholder (`model/artwork.go:14`).
     pub dominant_color: String,
+    /// Persisted acquisition time; writes stamp the supplied clock, reads preserve it.
+    pub created_at: DateTime<Utc>,
 }
 
 /// `GetMimeByHash` (`:58-72`): the two-column scan; the caller folds rows
@@ -211,7 +210,11 @@ pub struct ItemArtworkRow {
     pub last_failure: String,
     /// Go's `IsZero()` is equivalent to `None` or the year-one zero; either
     /// means `put_item_artwork_sql` substitutes the supplied `now`.
+    /// The Option is a write-input convenience only: successful strict reads
+    /// always return Some and reject SQL NULL (Go's non-pointer time.Time).
     pub attempted_at: Option<DateTime<Utc>>,
+    /// Persisted update time; writers stamp their supplied clock.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// `PutLastFailure` (`:143-148`): update-only (a fresh row would write an
@@ -546,5 +549,129 @@ mod tests {
             .0
             .contains("FROM item_artwork ia LEFT JOIN artwork a ON a.hash = ia.hash WHERE"));
         assert_eq!(stmts[0].1.len(), 3);
+    }
+}
+
+/// Strict artwork repository read failures.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtworkError {
+    /// No image or item state matched Go's queryOne.
+    #[error("record not found")]
+    NotFound,
+    /// Concrete driver or row scan error.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+}
+
+/// Typed artwork reads, separate from the lenient artwork hydration helpers.
+pub struct ArtworkRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> ArtworkRepo<'a> {
+    /// Bind a caller-owned connection.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// GetImage (`persistence/artwork_repository.go:33-40`).
+    /// # Errors
+    /// Returns NotFound or concrete SQLite failures.
+    pub fn get_image(&self, hash: &str) -> Result<ArtworkRow, ArtworkError> {
+        use crate::hydrate::RowGet;
+        crate::execution::query_optional(self.conn, &get_image_sql(hash), |row| {
+            Ok(ArtworkRow {
+                hash: row.get_text("hash")?,
+                mime: row.get_text("mime")?,
+                width: row.get_i64("width")?,
+                height: row.get_i64("height")?,
+                size_bytes: row.get_i64("size_bytes")?,
+                blur_hash: row.get_text("blur_hash")?,
+                thumb_hash: row.get_text("thumb_hash")?,
+                dominant_color: row.get_text("dominant_color")?,
+                created_at: row.get_dt("created_at")?,
+            })
+        })?
+        .ok_or(ArtworkError::NotFound)
+    }
+
+    /// GetItemArtwork (:112-120), scoped by all three keys.
+    /// # Errors
+    /// Returns NotFound or concrete SQLite failures.
+    pub fn get_item_artwork(
+        &self,
+        kind: &str,
+        id: &str,
+        image_type: &str,
+    ) -> Result<ItemArtworkRow, ArtworkError> {
+        use crate::hydrate::RowGet;
+        crate::execution::query_optional(
+            self.conn,
+            &get_item_artwork_sql(kind, id, image_type),
+            |row| {
+                Ok(ItemArtworkRow {
+                    item_kind: row.get_text("item_kind")?,
+                    item_id: row.get_text("item_id")?,
+                    image_type: row.get_text("image_type")?,
+                    hash: row.get_text("hash")?,
+                    source: row.get_text("source")?,
+                    source_path: row.get_text("source_path")?,
+                    ref_mtime: row.get_i64("ref_mtime")?,
+                    trace: row.get_text("trace")?,
+                    last_failure: row.get_text("last_failure")?,
+                    attempted_at: Some(row.get_dt("attempted_at")?),
+                    updated_at: row.get_dt("updated_at")?,
+                })
+            },
+        )?
+        .ok_or(ArtworkError::NotFound)
+    }
+
+    /// GetMimeByHash (:58-72); empty cache is a successful empty map.
+    /// # Errors
+    /// Returns concrete SQLite failures, never a partial map.
+    pub fn get_mime_by_hash(
+        &self,
+    ) -> Result<std::collections::HashMap<String, String>, ArtworkError> {
+        use crate::hydrate::RowGet;
+        let pairs = crate::execution::query_all(self.conn, &get_mime_by_hash_sql(), |row| {
+            Ok((row.get_text("hash")?, row.get_text("mime")?))
+        })?;
+        Ok(pairs.into_iter().collect())
+    }
+
+    /// GetInfoForItems (:159-182), primary slot only, in 200-id chunks.
+    /// A failed chunk discards all earlier results; no partial map escapes.
+    /// # Errors
+    /// Returns concrete SQLite failures.
+    pub fn get_info_for_items(
+        &self,
+        kind: &str,
+        ids: &[String],
+    ) -> Result<
+        std::collections::HashMap<String, crate::artwork_hydration::ItemArtworkInfo>,
+        ArtworkError,
+    > {
+        use crate::artwork_hydration::ItemArtworkInfo;
+        use crate::hydrate::RowGet;
+        let mut result = std::collections::HashMap::new();
+        for statement in get_info_for_items_sql(kind, ids).expect("fixed artwork select") {
+            let rows = crate::execution::query_all(self.conn, &statement, |row| {
+                Ok(ItemArtworkInfo {
+                    item_id: row.get_text("item_id")?,
+                    hash: row.get_text("hash")?,
+                    blur_hash: row.get_text("blur_hash")?,
+                    thumb_hash: row.get_text("thumb_hash")?,
+                    dominant_color: row.get_text("dominant_color")?,
+                    width: row.get_i32("width")?,
+                    height: row.get_i32("height")?,
+                })
+            })?;
+            for info in rows {
+                result.insert(info.item_id.clone(), info);
+            }
+        }
+        Ok(result)
     }
 }

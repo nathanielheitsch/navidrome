@@ -1,25 +1,12 @@
 //! Port of `persistence/scrobble_repository.go` (90L) — the submitted-scrobbles
 //! table behind the "recently played" endpoints.
 //!
-//! Every Go method builds a squirrel statement and hands it to
-//! `executeSQL`/`count`/`queryOne`/`queryAll`, which materialize through
-//! `toSQL()` (`sql_base_repository.go:358-372`) as `(sql, args)`; execution and
-//! logging stay with `store.rs`/the caller, so the port stops at the same
-//! `(sql, args)` pairs (see [`Sql`]).
-//!
-//! Ported here: `baseQuery`'s user-scoped three-column select (`:18-27`),
-//! `RecordScrobble`'s SetMap insert (`:40-49`), `CountAll`/`Count` via the base
-//! `count()` (`:51-52`, `:54-56`, `sql_base_repository.go:566-576`), `Get`'s
-//! id-filtered select (`:58-61`), and the registered `from`/`to` timestamp
-//! filters (`:13-18`, `:35-37` — `fromTs` is `>=`, `toTs` is `<=`).
-//!
-//! Not ported, with the reason: `setSortMappings({"submission_time"})` and
-//! `parseRestOptions` over a live request context belong to the auth-aware
-//! slice (`sql_restful.rs` owns the registry); the REST paths take the
-//! caller's already-parsed `QueryOptions`. Go's `submission_time` filter keys
-//! land here as explicit [`from_ts`]/[`to_ts`] fragments so their operator
-//! difference (`>=` vs `<=`) stays pinned.
+//! Executed user-scoped reads preserve integer Unix seconds and inclusive
+//! bounds (`persistence/scrobble_repository.go:17-31,47-83`).
+//! QueryOptions carries caller-parsed filters and column sorts. Camel/snake
+//! fields, comma lists and relative field directions follow Go's sort builder.
 
+use crate::hydrate::RowGet;
 use crate::sql_restful::QueryOptions;
 use crate::sqlrepo::{Repository, Value};
 
@@ -81,10 +68,52 @@ pub fn base_query(user_id: &str, options: Option<&QueryOptions>) -> Repository {
     match options {
         None => sq,
         Some(options) => {
-            let sq = crate::sql_search::apply_filters(sq, options);
+            let mut sq = crate::sql_search::apply_filters(sq, options);
+            if !options.sort.is_empty() {
+                sq = sq.order_by(scrobble_sort(&options.sort, &options.order));
+            }
             crate::sql_search::apply_pagination(sq, options)
         }
     }
+}
+
+// Go sql_base_repository.go:164-227: snake-case fallback for unmapped keys,
+// comma lists, trimmed order, and field-local direction relative to that order.
+// Only the parent-approved fixed scrobble column allowlist is supported.
+// Unsupported names/expressions become a fixed missing-column reference:
+// typed SQLite failure, never interpolated SQL or a silently unsorted read.
+fn scrobble_sort(sort: &str, order: &str) -> Vec<String> {
+    let descending = order.trim().eq_ignore_ascii_case("desc");
+    if sort.chars().all(|c| c == ',') {
+        return vec!["scrobbles.__unsupported_sort".to_string()];
+    }
+    sort.split(',')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let normalized = crate::sql_restful::to_snake_case(part.trim());
+            // Go's direction splitter uses literal ASCII space, not whitespace.
+            let fields: Vec<&str> = normalized
+                .split(' ')
+                .filter(|part| !part.is_empty())
+                .collect();
+            let column = match fields.first().copied() {
+                Some("id") => "scrobbles.id",
+                Some("media_file_id") => "scrobbles.media_file_id",
+                Some("submission_time") => "scrobbles.submission_time",
+                _ => return "scrobbles.__unsupported_sort".to_string(),
+            };
+            let reverse = match fields.get(1).copied() {
+                None | Some("asc") => false,
+                Some("desc") => true,
+                _ => return "scrobbles.__unsupported_sort".to_string(),
+            };
+            if fields.len() > 2 {
+                return "scrobbles.__unsupported_sort".to_string();
+            }
+            let direction = if descending ^ reverse { "desc" } else { "asc" };
+            format!("{column} {direction}")
+        })
+        .collect()
 }
 
 /// `RecordScrobble` (`:40-49`): the SetMap insert — `submission_time` is Go's
@@ -226,4 +255,76 @@ mod tests {
         // Assert: the bounds are squirrel literals (`select.go:139-147`).
         assert_eq!(args, vec![Value::Text("user1".to_string())]);
     }
+}
+
+/// Strict scrobble read failures.
+#[derive(Debug, thiserror::Error)]
+pub enum ScrobbleError {
+    /// No row matched this user's id.
+    #[error("record not found")]
+    NotFound,
+    /// Concrete driver or scan failure.
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+}
+
+/// Executed scrobble reads.
+pub struct ScrobbleRepo<'a> {
+    conn: &'a rusqlite::Connection,
+}
+
+impl<'a> ScrobbleRepo<'a> {
+    /// Bind a caller-owned connection.
+    #[must_use]
+    pub fn new(conn: &'a rusqlite::Connection) -> Self {
+        Self { conn }
+    }
+
+    /// Count with filters, without pagination (Go CountAll :59-61).
+    /// # Errors
+    /// Returns concrete SQLite failures.
+    pub fn count_all(
+        &self,
+        user_id: &str,
+        options: Option<&QueryOptions>,
+    ) -> Result<i64, ScrobbleError> {
+        Ok(
+            crate::execution::query_optional(self.conn, &count_all_sql(user_id, options), |row| {
+                row.get_i64("count")
+            })?
+            .unwrap_or(0),
+        )
+    }
+
+    /// Get one user-scoped row.
+    /// # Errors
+    /// Returns NotFound or concrete SQLite failures.
+    pub fn get(&self, user_id: &str, id: i64) -> Result<Scrobble, ScrobbleError> {
+        crate::execution::query_optional(self.conn, &get_sql(user_id, id), scrobble_from_row)?
+            .ok_or(ScrobbleError::NotFound)
+    }
+
+    /// List filtered, sorted and paginated scrobbles.
+    /// # Errors
+    /// Returns concrete SQLite failures.
+    pub fn get_all(
+        &self,
+        user_id: &str,
+        options: Option<&QueryOptions>,
+    ) -> Result<Scrobbles, ScrobbleError> {
+        Ok(crate::execution::query_all(
+            self.conn,
+            &get_all_sql(user_id, options),
+            scrobble_from_row,
+        )?)
+    }
+}
+
+fn scrobble_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Scrobble> {
+    Ok(Scrobble {
+        id: row.get_i64("id")?,
+        media_file_id: row.get_text("media_file_id")?,
+        submission_time: row.get_i64("submission_time")?,
+        user_id: String::new(),
+    })
 }
