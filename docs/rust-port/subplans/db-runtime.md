@@ -749,15 +749,16 @@ a later reviewer does not re-open it as a missing behavior.
    ownership block; the parent reports no code writer there. DB-22 has no DB-11 decision prerequisite. Serialize its
    `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}` writes and workspace gates after this docs writer
    stops. Readiness is not implementation authorization.
-2. **Goal:** execute the four repos' read statements against `apply_fresh_schema` and pin Go's
-   observed results. No executed read parity is recorded for these modules. DB-12 now executes artwork invalidation/enqueue writes; this does not cover artwork reads.
+2. **Goal:** execute the four repos' still-unexecuted repository reads against `apply_fresh_schema` and pin Go's
+   observed results. Artwork coverage is already partial: `artwork_hydration::hydrate_item_images` executes
+   `get_info_for_items_sql` in chunks, but flattens failures to text; it is not the strict typed repository API targeted here.
 3. **Go ground truth (verified this turn, cite in code):**
    - genre: `selectGenre` = `newSelect().Columns("tag.tag_value as name")`
      (`persistence/genre_repository.go:22-24`); `GetAll` `:26-31`; `Get` adds `Where(Eq{"tag.id": id})`
      `:33-38`; `Read` delegates to `Get` `:42-44`; `ReadAll` = `GetAll(parseRestOptions)` `:46-48`.
-     Genre is a tag-repository override, so **verify** whether the tag library filter reaches
-     `GetAll` before asserting an unfiltered row set — Rust's `get_all_sql(user_id: Option<&str>)`
-     currently takes a user id, and that parameter's meaning must be proven against Go, not assumed.
+     Genre overrides the generic library filter: authenticated reads must retain Go's INNER `user_library` join after
+     the `library_tag` aggregate (`persistence/sql_tags.go:165-175`). Rust currently prefixes both join fragments LEFT in
+     `genre_repo.rs`; fix within the owned file, not the shared `sql_tags.rs` helper. Test accessible/inaccessible libraries.
    - scrobble: `baseQuery` = `newSelect().Columns("id","media_file_id","submission_time")
      .Where(Eq{"scrobbles.user_id": user.ID})` (`persistence/scrobble_repository.go:25-31`); model
      registers `from`/`to` filter fns (`:37-40`) and the `submission_time` sort mapping (`:41-43`);
@@ -766,10 +767,11 @@ a later reviewer does not re-open it as a missing behavior.
      and ordering must be pinned against epoch integers, not TEXT.
    - playqueue: `RetrieveWithMediaFiles` and `Retrieve` both
      `newSelect().Columns("*").Where(Eq{"user_id": userId})` + `queryOne`
-     (`persistence/playqueue_repository.go:78-92`); `Retrieve` wraps with `new(...)` (a
-     nil-tolerant copy) while `RetrieveWithMediaFiles` calls `loadTracks` (`:83`, `:133-166`).
-     Rust `retrieve_sql`/`load_tracks_sql` must be executed and the items-column encode/decode
-     (`column_to_items`/`items_to_column`) pinned with real JSON round-trips.
+     (`persistence/playqueue_repository.go:78-92`); `Retrieve` wraps with `new(...)` while `RetrieveWithMediaFiles` calls
+     `loadTracks` (`:83,133-166`). The `items` column is comma-joined IDs, **not JSON**; Go trims the whole column only
+     to detect emptiness, then preserves whitespace and interior empty split tokens (`:94-128`). Pin CSV round-trips, order,
+     duplicates and missing IDs. Rust's bare `load_tracks_sql` projection is not full `MediaFileRepo.GetAll` enrichment; do
+     not claim full `RetrieveWithMediaFiles` equivalence unless the existing executed GetAll/hydration path is reused.
    - artwork: `GetImage` = `Select("*").From(artwork).Where(Eq{"hash": hash})`
      (`persistence/artwork_repository.go:33-40`); `GetItemArtwork` =
      `Select("*").From(artwork_items).Where(Eq{"item_kind","item_id","image_type"})` `:112-120`;
@@ -780,9 +782,9 @@ a later reviewer does not re-open it as a missing behavior.
 4. **Own:** `src/{genre_repo.rs,scrobble_repo.rs,playqueue_repo.rs,artwork_repo.rs}` plus NEW
    `tests/runtime_hydrate_genre_scrobble_playqueue_artwork.rs`. Do NOT touch `sql_annotations.rs`
    (DB-15 owns it) or `store.rs`/`runtime_error.rs` (DB-00 owns them).
-5. **Tests:** per repo, at least one executed read on seeded rows plus one empty-table read;
-   scrobble from/to epoch bounds; playqueue JSON items round-trip; artwork hash and
-   item-kind/id/image_type lookups including the not-found error shape.
+5. **Tests:** each repository: an executed seeded read and empty read; single-row NotFound vs SQL failure; scrobble
+   inclusive epoch bounds/sort/pagination; playqueue persisted CSV edge cases, order/duplicates/missing IDs and 500-ID
+   chunks; artwork hash, MIME, item-kind/id/image_type scoping and 200-ID chunks; genre user/library authorization.
 6. **Non-vacuity:** each test must assert a value that a wrong column list, wrong user filter, or
    wrong epoch mapping would change — state it per test.
 7. **Validation:** `cargo test --locked -p nd-db --test runtime_hydrate_genre_scrobble_playqueue_artwork --all-features`,
