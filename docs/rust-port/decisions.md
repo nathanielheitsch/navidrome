@@ -263,6 +263,22 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   stale regex/token-limit claims; add distinct-overlap traversal coverage without changing exact-duplicate normalization. These repairs do
   not authorize new scanner APIs or imply SC-01/SC-02/MusicFS readiness; independent review and parent CLI gates remain required.
   Source basis: the second critical-review report and the read-only reasoner audit; no execution is implied.
+- **S9 — SC-02 manifest/dependency record + S8 close-out dispositions (PARENT DECIDED 2026-11-20; merge gate closed, not ratification).**
+  S7/S8's "no new dependencies" clause meant *beyond the user-approved set below*; the walker cannot compile without it, and it was never
+  recorded here. Durably recorded now: `rust/crates/nd-scanner/Cargo.toml` carries exactly six direct dependencies — `nd-mapping`
+  (path), `chrono` 0.4, `md-5` 0.10, `regex` 1.13, `tokio` (workspace), `thiserror` (workspace) — every one user-approved for this
+  lane and already pinned in `rust/Cargo.lock`; the only lock diff is the `nd-scanner` dependency edge, adding no package, version,
+  or checksum. No other manifest may change. The merge commit must keep the manifest/lock diff visible so the reviewer sees it.
+  S8 close-out dispositions from the second-round review (basis: `/tmp/nav-sc02-s8-review.md`): (a) the raw-byte fixtures' accidental
+  lowercase-`ff` assertions are replaced with explicit `\\xFF`-style rawness checks and the lossy `LogicalPath` `Display` is noted as
+  showing U+FFFD while `message`/`Debug` keep the exact `\\xFF` form (display diagnostics only); (b) the blocklist-before-dot-rule
+  reason-taxonomy difference and the unreachable `logical_to_string` fail-fast are recorded as documented deviations without changing
+  execution order; (c) the Linux-gated raw-name tests are retained as the real-filesystem evidence, with the portable seam tests as the
+  platform-independent layer, and their platform restriction stated in the test comments; (d) the untested warning kinds
+  (`DirectoryEnumerationFailed`, `DepthLimitReached`, `TimestampUnavailable`, walk-level `EntryStatFailed`) and `MAX_WALK_DEPTH` get one
+  exercised walk-level regression each where deterministically reachable, plus an `as_str()` table round-trip; where a kind is not
+  deterministically reachable from a walk on this platform, that is stated, not papered over. Nothing here authorizes further scanner
+  scope or claims SC-01/SC-02 completion or MusicFS readiness.
 
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
