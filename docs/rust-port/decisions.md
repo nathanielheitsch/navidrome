@@ -243,11 +243,26 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   observed every event. Callers that need events use `next()`/`drain_and_join()`; preserve the worker's terminal error/outcome.
   Match Go's broken-link `modTime` ordering without moving all accumulation after classification. Keep conservative regex refusal as
   an explicit policy, correct its rationale/goldens; retain the typed hash error and exclusion for unavailable captured mtime and
-  correct its comment. Remove the unreachable `EnumerationIncomplete`/`Ignored` coverage variants/branch. Keep duplicate/overlapping
-  targets Go-compatible; their idempotent persistence obligation belongs to SC-06. This approves no other scanner interface,
-  dependency, manifest, Go-source or cross-package work; SC-01 remains **DECISION REQUIRED**, and these repairs do not establish
-  SC-01 ratification, SC-02 completion or MusicFS readiness. Merge remains gated on implementation, independent review and parent CLI
-  validation. Source basis: `/tmp/nav-sc02-final-review.md` and the read-only remediation plan; no execution is implied.
+  correct its comment. Remove the unreachable `EnumerationIncomplete`/`Ignored` coverage variants/branch. Preserve separate traversals
+  for distinct overlapping targets; exact duplicate target strings remain Rust-deduplicated as an accepted normalization deviation from
+  Go's literal target-list loop. SC-06 owns persistence idempotency. This approves no other scanner interface, dependency, manifest, Go-source
+  or cross-package work; SC-01 remains **DECISION REQUIRED**, and these repairs do not establish SC-01 ratification, SC-02 completion
+  or MusicFS readiness. Merge remains gated on implementation, independent review and parent CLI validation. Source basis:
+  `/tmp/nav-sc02-final-review.md` and the read-only remediation plan; no execution is implied.
+- **S8 — Second-reviewed SC-02 narrow repairs (PARENT DECIDED 2026-11-20; not ratification).** Authorize only source/test repairs in
+  the existing scanner slice, without new dependencies or manifest/lock/Go changes: preflight every logical target component and reject
+  non-UTF-8 targets with typed `NonUtf8Name` plus a raw-path `NameNotUtf8` summary warning; do not reject a non-UTF-8 configured root.
+  Exclude a followed link whose resolved endpoint basename is unrepresentable, mark its owning folder `EntriesIncomplete`, and retain the
+  raw endpoint in both folder and terminal warnings. Put `EntryStatFailed` in both warning collections; increment `folders_emitted` only
+  after the event is accepted by the channel. Refuse Go-valid regexes using `\d \D \w \W \s \S \b \B` with the existing
+  unsupported-pattern warning (an accepted conservative deviation; do not globally disable Unicode or attempt lowering here). For local
+  ignore files, preserve a valid final partial pattern before reporting a read error, never substitute an ignore-all pattern for an empty
+  error prefix, and match Go `bufio.Scanner`'s ordinary local-file buffer ceiling (M=65,536, counting raw terminator bytes); do not claim
+  parity for arbitrary Reader `(n, err)` combinations. Match Go `strings.EqualFold` for this ASCII blocklist, including the long-s and
+  Kelvin-sign ASCII fold orbits, without claiming general Unicode case folding. Make permission tests branch on observed access; correct
+  stale regex/token-limit claims; add distinct-overlap traversal coverage without changing exact-duplicate normalization. These repairs do
+  not authorize new scanner APIs or imply SC-01/SC-02/MusicFS readiness; independent review and parent CLI gates remain required.
+  Source basis: the second critical-review report and the read-only reasoner audit; no execution is implied.
 
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
@@ -337,6 +352,11 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `ON DUPLICATE KEY UPDATE` in `nd-db` or Go `persistence/`; no `todo!()`/`unimplemented!()` in `nd-db`; no
   `media_file_pkey` index; Go's `mediaFileRepository.Put` uses `putByMatch` — SELECT-then-`put`, not an upsert, so do
   not "fix" an upsert that does not exist). Do not promote an unverified claim.
+- **C5 — DB-22 executed-read boundary (PARENT DECIDED 2026-11-20):** playqueue mediafile-query failures deliberately return a typed
+  all-or-error result instead of Go's log-and-continue/partial queue behavior. Scrobble ordering accepts only simple allowlisted columns;
+  raw SQL expression sorting is rejected rather than interpolated. These are intentional narrow-read safety/consistency choices, not full
+  Go parity. Seeded `random` ordering and optioned `GenreRepo::get_all` remain unimplemented gaps; offset-only pagination is already the
+  separately accepted A1 `LIMIT -1` behavior. Never describe DB-22's narrow executed subset as full read parity.
 
 ## Open decision (NOT resolved here)
 
