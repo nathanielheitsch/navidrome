@@ -1,14 +1,17 @@
 //! Port of `persistence/sql_annotations.go` (209L) — the annotation
-//! repository's SQL shaping only.
+//! repository's SQL shaping, plus the two EXECUTED rating/transfer writes.
 //!
 //! Every Go method builds an `Update`/`Insert`/`Delete` squirrel statement and
 //! hands it to `executeSQL`, which materializes it through `toSQL()`
-//! (`sql_base_repository.go:336-354,358-372`) as `(sql, args)`. Execution,
-//! transactions and logging stay with `store.rs`/later slices, so the port stops
-//! at the same `(sql, args)` pairs. Nothing in `sql_annotations.go` opens a
-//! transaction: every statement is a separate `executeSQL`, and running it inside
-//! one is the caller's choice. Only `ReassignAnnotation` (`:185-197`) needs its
-//! UPDATE and `updateAvgRating` atomic, and its callers wrap it in a tx:
+//! (`sql_base_repository.go:336-354,358-372`) as `(sql, args)`. Most of the port
+//! stops at the same `(sql, args)` pairs; the rating/transfer pair is the
+//! exception — [`update_avg_rating_in_tx`] and [`reassign_annotation_in_tx`]
+//! EXECUTE those pairs on the caller's transaction (DB-15's runtime half), and
+//! every other statement's execution stays with `store.rs`/later slices. Nothing
+//! in `sql_annotations.go` opens a transaction: every statement is a separate
+//! `executeSQL`, and running it inside one is the caller's choice. Only
+//! `ReassignAnnotation` (`:185-197`) needs its UPDATE and `updateAvgRating`
+//! atomic, and its callers wrap it in a tx:
 //! `WithTx` (`core/maintenance.go:79,89,102`), `WithTxRetry` around
 //! `persistFolder` (`scanner/phase_1_folders.go:353`, call at `:490`) and
 //! `WithTxRetry` (`scanner/phase_2_missing_tracks.go:291`, call at `:313`).
@@ -390,6 +393,161 @@ pub fn reassign_annotation_sql(table: &str, prev_id: &str, new_id: &str) -> Sql 
         format!("update or ignore {ANNOTATION_TABLE} set item_id = ? where item_type = ? and item_id = ?"),
         vec![Value::from(new_id), Value::from(table), Value::from(prev_id)],
     )
+}
+
+/// Callback-level failure of the executed annotation writes ([`update_avg_rating_in_tx`],
+/// [`reassign_annotation_in_tx`]).
+///
+/// `Infallible` is the honest domain type: `updateAvgRating` (`:151-160`) and
+/// `ReassignAnnotation` (`:185-197`) return a bare `error` that can only be a driver
+/// failure — no `ErrNotFound`, no validation, and the empty/equal-id short-circuit
+/// (`:186-188`) is a successful no-op rather than an error. So the `Domain` arm is
+/// structurally uninhabited rather than reserved, exactly as
+/// [`crate::property_repo::PropertyWriteError`] does for DB-04.
+///
+/// The executor (`crate::store::try_with_tx`/`try_with_tx_retry`) is the only place
+/// that assigns a [`crate::TransactionStage`], so `Body`/`Begin`/`Commit` cannot be
+/// forged here.
+pub type AnnotationWriteError = crate::runtime_error::DbOperationError<std::convert::Infallible>;
+
+/// The entities whose repositories implement `model.AnnotatedRepository` —
+/// `albumRepository` (`persistence/album_repository.go:105-108`), `mediaFileRepository`
+/// (`:88-91`), `artistRepository` (`persistence/artist_repository.go:133-137`) and
+/// `playlistRepository` (`:53-56`, whose `tableName` comes from
+/// `registerModel(&model.Playlist{})` → `toSnakeCase("playlist")`,
+/// `sql_base_repository.go:104-110`) — i.e. exactly the types
+/// `ReassignAnnotation`/`updateAvgRating` can legitimately be called for
+/// (`model/annotation.go:18-23`, `model/album.go:161`, `model/mediafile.go:580`,
+/// `model/artist.go:103`, `model/playlist.go:213`).
+///
+/// This is the fixed registered entity enum that gates the runtime writes: a caller
+/// cannot hand an arbitrary table name to [`reassign_annotation_in_tx`] or
+/// [`update_avg_rating_in_tx`], so the table identifier baked into the statement and
+/// the bound `item_type` value both come from this closed set. Go reaches the same
+/// guarantee structurally — `r.tableName` is set once by the constructor and never
+/// taken from a caller.
+///
+/// The string is Go's `r.tableName`, which serves BOTH roles in these two methods:
+/// the base table in `UPDATE <table> SET average_rating = … WHERE id = ?`
+/// (`:154-157`) and the bound `item_type` value in the move (`:191`) and in the
+/// subquery (`:155`). It is NOT the artwork kind prefix: `item_artwork.item_kind` and
+/// `artwork_queue.item_kind` store `al`/`mf` (`nd_id::ARTWORK_KIND_ALBUM_PREFIX` etc,
+/// `model/artwork_id.go:22`, `:30-35`; see [`crate::artwork_repo::OWNER_TABLES`]),
+/// while `annotation.item_type` stores the full name. The two are not
+/// interchangeable, and reading the annotation column by prefix matches nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnnotationEntityKind {
+    /// `albumRepository`, table and `item_type` `"album"`.
+    Album,
+    /// `artistRepository`, table and `item_type` `"artist"`.
+    Artist,
+    /// `mediaFileRepository`, table and `item_type` `"media_file"`.
+    MediaFile,
+    /// `playlistRepository`, table and `item_type` `"playlist"`.
+    Playlist,
+}
+
+impl AnnotationEntityKind {
+    /// Every registered kind, in `persistence.go:267-270`'s GC order (album, artist,
+    /// media file, playlist). Tests iterate it rather than naming variants ad hoc.
+    pub const ALL: [Self; 4] = [Self::Album, Self::Artist, Self::MediaFile, Self::Playlist];
+
+    /// Go's `r.tableName` for this kind: the base table that carries the
+    /// `average_rating REAL NOT NULL DEFAULT 0` column
+    /// (`nd-dbschema/src/schema_ddl.rs:48,58,64,66`) and the `item_type` value bound
+    /// by the move and the aggregate subquery.
+    #[must_use]
+    pub fn table(self) -> &'static str {
+        match self {
+            Self::Album => crate::album_repo::ALBUM_TABLE,
+            Self::Artist => crate::artist_repo::TABLE,
+            Self::MediaFile => crate::mediafile_repo::TABLE,
+            Self::Playlist => crate::playlist_repo::TABLE,
+        }
+    }
+}
+
+/// `updateAvgRating` (`sql_annotations.go:151-160`) EXECUTED on the caller's
+/// transaction: recompute the base table's cached `average_rating` from the ratings
+/// that remain on `annotation`, using the [`update_avg_rating_sql`] pair verbatim —
+/// embedded aggregate expression in the SET, three ordered binds
+/// `[item_id, table, item_id]` (the `ab466928` repair).
+///
+/// Executed semantics, each pinned by `tests/runtime_annotation_transfers.rs`:
+/// `rating > 0` drops zero and NULL ratings (`NULL > 0` is NULL, so a NULL row is
+/// excluded too), there is deliberately no `user_id` predicate so the cached value is
+/// a cross-user average, and `coalesce(…, 0)` means an item with no positive ratings
+/// is reset to `0` rather than left at its stale cached value or written NULL. The
+/// update is unconditional, so a call with no matching annotation rows still wipes a
+/// stale cache — which is why [`reassign_annotation_in_tx`]'s empty/equal-id
+/// short-circuit has to be a real no-op and not an early return that still updates.
+///
+/// A missing `item_id` in the base table is a successful 0-row statement, not an
+/// error (Go ignores the affected-row count in `executeSQL`,
+/// `sql_base_repository.go:336-354`).
+///
+/// # Errors
+/// [`AnnotationWriteError::Sqlite`] carrying the concrete `rusqlite::Error` (extended
+/// code intact, so `store::is_busy` still classifies it) when the statement fails to
+/// prepare, bind, or execute.
+pub fn update_avg_rating_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    entity: AnnotationEntityKind,
+    item_id: &str,
+) -> Result<(), AnnotationWriteError> {
+    let statement = update_avg_rating_sql(entity.table(), item_id);
+    crate::execution::execute(tx, &statement).map_err(AnnotationWriteError::sqlite)?;
+    Ok(())
+}
+
+/// `ReassignAnnotation` (`sql_annotations.go:185-197`) EXECUTED on the caller's
+/// transaction: move this kind's annotation rows from `prev_id` to `new_id`, then
+/// recalculate the TARGET's cached average in the SAME transaction.
+///
+/// Go's `update or ignore` (`:190`, comment at `:189`) keeps `new_id`'s own row for a
+/// user who annotated both ids and skips the conflicting source row instead of
+/// aborting the statement: the conflict row stays on `prev_id`, is never merged into
+/// the target, and is never deleted. An `or replace`/merge shortcut would overwrite
+/// the target's own rating — the row assertions in
+/// `tests/runtime_annotation_transfers.rs` fail on that shortcut.
+///
+/// The short-circuit is Go's own (`:186-188`): `prev_id == new_id`, or either id
+/// empty, returns success without executing EITHER statement, so the cached averages
+/// keep their stored values. Neither leg runs on that path; with two distinct
+/// non-empty ids and no source rows the move affects 0 rows but the average
+/// recalculation still runs and resets the target.
+///
+/// Go ignores both affected-row counts (`executeSQL` discards `c` for these callers),
+/// so this returns `()`; the moved-row population is observable by reading the
+/// `annotation` rows back.
+///
+/// Retryable: Go wraps this call in `WithTx`/`WithTxRetry`
+/// (`core/maintenance.go:79,89,102`, `scanner/phase_1_folders.go:353`,
+/// `scanner/phase_2_missing_tracks.go:291`), and a rerun converges — the move is
+/// idempotent once the rows already carry `new_id` and the average is recomputed from
+/// the stored population.
+///
+/// # Errors
+/// [`AnnotationWriteError::Sqlite`] from either statement, with the concrete
+/// `rusqlite::Error` retained as source. The average leg runs only after a successful
+/// move, matching Go's order (`:192-196`).
+pub fn reassign_annotation_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    entity: AnnotationEntityKind,
+    prev_id: &str,
+    new_id: &str,
+) -> Result<(), AnnotationWriteError> {
+    // Go's guard, verbatim (`sql_annotations.go:186-188`): equal ids or an empty id
+    // succeed without touching either statement.
+    if prev_id == new_id || prev_id.is_empty() || new_id.is_empty() {
+        return Ok(());
+    }
+    let statement = reassign_annotation_sql(entity.table(), prev_id, new_id);
+    crate::execution::execute(tx, &statement).map_err(AnnotationWriteError::sqlite)?;
+    // The moved rows change newID's rating population, so its cached average no
+    // longer matches (`sql_annotations.go:195-196`). Only the target is refreshed;
+    // prev_id's cached average is deliberately left as stored.
+    update_avg_rating_in_tx(tx, entity, new_id)
 }
 
 /// `cleanAnnotations` (`sql_annotations.go:198-209`): drop this table-type's
