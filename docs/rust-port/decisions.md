@@ -77,8 +77,9 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   behavior, pinned rather than "fixed". The real defect was INTEGER affinity, which T1/T2 removed. Writers, bounds,
   defaults, the idle predicate, and the decoded model must be tested together. DB-02 is **LANDED `6d9d984d`/`74ebd81c`**:
   scanner-facing stamps/cutoffs bind canonical TEXT via `time::value` and the idle predicate uses
-  `library_repo::zero_time_value()`. Known residuals: `scrobble_buffer_repo` still binds `play_time`/`enqueue_time` as
-  integers, and `find_recent_files_by_properties_sql` has no executed regression pin.
+`library_repo::zero_time_value()`. Known residual resolved by **T6**: `scrobble_buffer_repo` still binds
+  `play_time`/`enqueue_time` as integers (decision recorded; lane pending). `find_recent_files_by_properties_sql`
+  still has no executed regression pin (separate residual).
 - **T4 — Sentinel decode rule** (EXECUTED). `library_repo`'s `0000-00-00 00:00:00` and SQLite's naive
   `CURRENT_TIMESTAMP` decode to `None`, mirroring Go discarding its parse error into a zero `time.Time` that callers
   test with `!LastScanAt.IsZero()` (`model/library.go:64`, `scanner/controller.go:124`); a genuinely malformed date
@@ -86,6 +87,27 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
 - **T5 — Record-shape divergence, documented not "fixed".** A cell that scans as Go's zero time is returned as `None`
   rather than a zero stamp (`hydrate.rs::go_zero_or_none`), consistent with the write path treating `None` as "never
   stamped". Annotation stamps keep the stored zone while record stamps render as `Z`.
+- **T6 — Scrobble-table timestamp boundary (PARENT DECIDED 2026-11-20):** `scrobble_buffer` is a **TEXT-timestamp
+  table**; `scrobbles` is an **epoch-seconds table**. T1-T5's scope was scanner-facing stamps, so neither table was inside D-TIME's
+  covered set — this closes that gap rather than exempting it. Parent re-verified the load-bearing Go source:
+  `scrobble_buffer.play_time`/`enqueue_time` are declared `datetime` (`db/migrations/20260405124200_fix_schema_inconsistencies.sql:
+  39-40`) with `UNIQUE (user_id, service, media_file_id, play_time)` (:42), and Go `Enqueue` binds `play_time`/`enqueue_time` as
+  `time.Time`/`time.Now()` (`persistence/scrobble_buffer_repository.go:54-63`), which go-sqlite3 stores as TEXT; `scrobbles.
+  submission_time` is declared `INTEGER` (`20251206013022_create_scrobbles_table.sql:12`) and Go writes `submissionTime.Unix()`
+  (`persistence/scrobble_repository.go:52`), so it stays integer seconds. Decision: Rust binds `scrobble_buffer` TEXT via `time::value`
+  (the current integer bind at `scrobble_buffer_repo.rs:206-237` + `now_unix` second-truncation is a DEFECT to replace, not a
+  deviation): (i) under T2's NUMERIC-affinity rule a mixed INTEGER/TEXT `play_time` column makes `ORDER BY play_time, s.rowid`
+  (`:74`) non-chronological; (ii) second-truncation collapses sub-second-distinct plays that Go's ns-precision TEXT keeps, and
+  `play_time` is in the UNIQUE key, so a buffered scrobble Go keeps is silently rejected (also through the `OR IGNORE` reassign
+  leg, `mediafile_repository.go:421-428`). `scrobbles.submission_time` stays INTEGER — converting it would BE the divergence; every
+  consumer is integer-native (`scrobble_repository.go:17-22`, `plugins/host_scrobbleretriever.go:150-157`). No Go code compares either
+  table's stamps against a TEXT timestamp (verified across `persistence/` and `core/scrobbler/`), so there is no cross-table parity
+  risk. The read side keeps the DUAL decode (`hydrate.rs::get_dt` + `driver_integer_dt`), because Go-written and `CURRENT_TIMESTAMP`-
+  default-written naive-TEXT cells both occur; that is pinned, not normalized. Lane: fold the write-shape change + an executed
+  round-trip pin (`typeof(play_time)='text'`, chronological order over mixed fixtures, sub-second dedup, an INTEGER-bound
+  non-vacuity control) into #20 `nd-scrobbler`'s first commit, or run as a ~30-min DB-02b filler; it must NOT run concurrently with
+  another DB writer (whole-workspace gates in one checkout). Evidence: read-only audit `e17a161b` (2026-11-20) + parent re-verification
+  of the three Go citations above.
 
 ## DB open/configuration (D-OPEN, landed `4a8aac9f`)
 
