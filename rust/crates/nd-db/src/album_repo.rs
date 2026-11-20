@@ -46,6 +46,11 @@
 //! `SELECT * FROM album`), which carries no `library_path`/`library_name`/annotation
 //! columns and so cannot be hydrated through this seam: Rust `Search` results are
 //! NOT artwork-hydrated (recorded as a residual).
+//! Landed in DB-09: the executed Put (`album_repository.go:208-219`) as
+//! [`put_album_in_tx`] — base upsert plus participants/tags junction maintenance
+//! on the CALLER's transaction, executing exactly the bundle [`put_sql`] returns.
+//! It issues NO FTS statement: the schema's own `album_fts_ai`/`_au`/`_ad` triggers
+//! maintain the index, so an explicit FTS write would double-index it.
 //!
 //! `GetAll` takes no `optimizePagination` (`sql_base_repository.go:477-486`) on
 //! either side: Go passes no options to `queryAll` (`album_repository.go:248`), so
@@ -1109,6 +1114,178 @@ pub fn put_marshalled_sql(
     cols_to_update: &[&str],
 ) -> Result<PutAlbumSql, crate::marshal::MarshalError> {
     put_from_map(id, map, maintenance, cols_to_update)
+}
+/// What a successful [`put_album_in_tx`] reports.
+///
+/// Both fields are ADVISORY until the CALLER commits: a rolled-back Put publishes
+/// nothing, and the album repository keeps no cache (Go keeps none either), so there
+/// is nothing to invalidate on rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumWriteResult {
+    /// The written row's id: [`AlbumRecord::id`], which is always non-empty here. Go
+    /// assigns `al.ID = id` from `r.put`'s return value (`album_repository.go:211-215`)
+    /// and then keys BOTH junction legs with it; the port reports the same id, which is
+    /// the record's own because this boundary never generates one.
+    ///
+    /// Go's `id` can differ from the input ONLY on its random-id arm
+    /// (`sql_base_repository.go:635-638`), which this port refuses instead
+    /// ([`AlbumWriteError::EmptyId`]), so the returned id always equals the input's.
+    pub id: String,
+    /// `true` when the INSERT leg ran rather than the UPDATE leg, i.e. when the UPDATE
+    /// matched zero rows (`sql_base_repository.go:630-641`). A predefined id that misses
+    /// is therefore `inserted: true`, not a miss and not a `NotFound`.
+    pub inserted: bool,
+}
+/// Callback error of the executed album [`put_album_in_tx`].
+///
+/// The builder arm is REAL and must stay off the SQLite arm: [`put_sql`] returns
+/// [`crate::marshal::MarshalError`], so a failure to materialize the two base legs is a
+/// domain failure, not a driver one. `Infallible` would force such a failure onto
+/// [`DbOperationError::Sqlite`], which `D-ERROR` forbids — the concrete cause would be
+/// lost and `store::is_busy` would be asked to classify a non-driver failure.
+///
+/// For the FULL-record seam this wrapper uses, neither [`crate::marshal::MarshalError`
+/// variant is reachable today: [`album_row`] never emits `id` (so not `IdInMap`) and its
+/// 45-column map always leaves a settable UPDATE set (so not `EmptyUpdateSet`, which
+/// needs a `cols_to_update` restriction this signature does not take). The arm exists
+/// because the renderer it executes IS fallible, not because a caller can provoke it here.
+#[derive(Debug, thiserror::Error)]
+pub enum AlbumWriteError {
+    /// The base legs could not be materialized by [`put_sql`]. Go's equivalent failure
+    /// is `fmt.Errorf("error preparing values to write to DB: %w", err)`
+    /// (`sql_base_repository.go:620-623`); the port keeps the typed `MarshalError` on the
+    /// `Domain` arm rather than stringifying it.
+    #[error(transparent)]
+    Builder(#[from] crate::marshal::MarshalError),
+
+    /// [`AlbumRecord::id`] is empty, so there is nothing to write. **DOCUMENTED
+    /// DEVIATION, not exact Go parity:** Go's `put` fills an empty id with
+    /// `id2.NewRandom()` (`sql_base_repository.go:635-638`), SKIPS the UPDATE leg, and
+    /// returns the generated id with no error. This port refuses instead, because album
+    /// identity comes from SC (`nd_id::new_hash`/`new_hash1`/`new_random`,
+    /// `nd-id/src/lib.rs:115-135`) and a DB-side id generator would be an invented policy
+    /// nobody asked for; the caller's retry loop is also where id stability belongs, so
+    /// generating inside the DB would make a retry publish a different id. Accepted under
+    /// the supplied-SC-ID contract (parent decision, same as
+    /// [`crate::folder_repo::FolderWriteError::EmptyId`] and
+    /// [`crate::artist_repo::ArtistWriteError::EmptyId`]); Go has no equivalent error here,
+    /// so do NOT describe this arm as Go-exact.
+    #[error("album record has an empty id: the id comes from SC and is never generated here")]
+    EmptyId,
+}
+/// `Put` (`album_repository.go:208-219`) EXECUTED on the CALLER's transaction, in Go's
+/// exact statement order: the `r.put` upsert (`sql_base_repository.go:618-642`) — UPDATE
+/// by `id` FIRST, INSERT only on a zero-row match — then `updateParticipants`
+/// (`sql_participations.go:78-125`), then `updateTags` (`sql_tags.go:57-79`). Any leg
+/// failure aborts the whole Put, which is what Go's caller relies on to roll back the
+/// scanner's folder transaction (`scanner/phase_1_folders.go:410` `persistAlbum`).
+///
+/// It executes exactly what [`put_sql`] renders — the six-statement [`PutAlbumSql`]
+/// bundle — and re-renders nothing here.
+///
+/// Identity: `record.id` is the UPDATE's `WHERE id = ?`, the INSERT's id column, and the
+/// `album_id` of BOTH junction legs, which is Go's `al.ID = id` (`:215`) feeding
+/// `updateParticipants`/`updateTags`. An empty id is refused as a typed contract
+/// violation BEFORE any statement runs rather than repaired with a generated one; see
+/// [`AlbumWriteError::EmptyId`]. No id is generated anywhere in this function, so a
+/// retried call keeps the same identity and a rollback publishes no id.
+///
+/// Timestamps: `now` is the CALLER's clock and reaches [`put_sql`] as its `now`, which
+/// stamps `imported_at` ONLY (`album_repository.go:210`; Go stamps neither `CreatedAt`
+/// nor `UpdatedAt` in `Put`). `created_at` is dropped from the UPDATE set by the shared
+/// seam (`marshal::UPDATE_DROP`), so it stays immutable across the update leg, and the
+/// record is borrowed and never mutated — stamps travel as bound values.
+///
+/// Junction maintenance: each junction's DELETE runs unconditionally and BEFORE its
+/// optional INSERT, which is Go's shape (`sql_participations.go:79-89`,
+/// `sql_tags.go:58-74`). A record with NO participants (or no indexed tags) therefore
+/// CLEARS the existing rows rather than leaving them stale; the `Option` insert leg is
+/// skipped only after its delete ran. Both junction INSERTs are `INSERT … SELECT` over
+/// `json_each` INNER-joined to `artist`/`tag`, so ids the dictionary does not have are
+/// dropped SILENTLY by the join — Go's behavior (`sql_participations.go:117`,
+/// `sql_tags.go:69`), not an error, and the stored `participants`/`tags` JSON columns
+/// still carry those entries. That asymmetry is Go's own: `Put` never re-derives or
+/// filters the JSON from the junction result, so this wrapper does not either. Counts
+/// (`library_tag`, `album.average_rating`) and the library link are NOT touched here —
+/// DB-17 and the annotation/library lanes own those, and Go's `Put` does no aggregation.
+///
+/// FTS: NO statement here mentions `album_fts`. The schema's `album_fts_ai`/`_au`/`_ad`
+/// triggers (`nd-dbschema/src/schema_ddl.rs:85-87`) index the base row's own
+/// `name`/`sort_album_name`/`album_artist`/`search_participants`/`discs`/`catalog_num`/
+/// `album_version`/`search_normalized`, and [`put_sql`] derives those columns from the
+/// record's own `participants`/`discs`/`tags` (the S-D2b consistency invariant), so the
+/// index is correct from the base write alone. Junction writes touch no FTS trigger (the
+/// junction tables have none). A malformed `tags` cell makes the trigger's
+/// `json_each(NEW.tags, '$.albumversion')` fail — EXECUTED-RUST against the real trigger
+/// DDL with SQLite 3.54.0, that failure is `SQLITE_ERROR` (`malformed JSON`, raw code 1,
+/// NOT `SQLITE_CONSTRAINT_TRIGGER`), which aborts the base statement and rolls back the
+/// caller's transaction.
+///
+/// Scope: a caller-trusted primitive, exactly like Go. `WHERE id = ?` and nothing else:
+/// no library predicate, no auth check, no ownership guard. Library scoping is the
+/// READ side's job ([`AlbumRepo::get`]'s `library_filter`), not this write's.
+///
+/// The transaction is the caller's: this never begins, commits, retries, checks out a
+/// connection, or runs in autocommit, and there is no connection-bound variant. Raw
+/// SQLite errors keep their concrete cause and extended code on the
+/// [`DbOperationError::Sqlite`] arm — Go returns `Put`'s errors raw and unwrapped
+/// (`album_repository.go:211-219` adds no `fmt.Errorf`).
+///
+/// `cols_to_update` is deliberately NOT a parameter: Go's `Put` passes no `colsToUpdate`
+/// (`:212`), so this boundary is the unfiltered full-record save and needs no typed
+/// column enum. The restricted `UpdateExternalInfo` write (`:223`) stays the rendered
+/// [`update_external_info_sql`] seam until the lane that executes it (DB-15/16) exists.
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`AlbumWriteError::EmptyId`] for an empty
+/// [`AlbumRecord::id`] (before any statement runs), and
+/// [`DbOperationError::Domain`]·[`AlbumWriteError::Builder`] when [`put_sql`] fails to
+/// materialize the base legs; [`DbOperationError::Sqlite`] carrying the concrete
+/// `rusqlite::Error` (extended code intact) from the UPDATE, the INSERT, either junction
+/// DELETE, or either junction INSERT — the `album.library_id` FK included, which Go
+/// returns raw. A repeated id is an UPDATE hit rather than a constraint failure; a
+/// zero-row UPDATE is NOT an error; unknown participant/tag ids are dropped by the JOIN
+/// and are NOT an error.
+pub fn put_album_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    record: &AlbumRecord,
+    now: &DateTime<Utc>,
+) -> Result<AlbumWriteResult, DbOperationError<AlbumWriteError>> {
+    if record.id.is_empty() {
+        // Go's `id == ""` arm generates a random id (`sql_base_repository.go:635-638`).
+        // The port refuses instead: album identity belongs to SC, and a DB-side id would
+        // also make a retried Put publish a different id.
+        return Err(DbOperationError::Domain(AlbumWriteError::EmptyId));
+    }
+    let bundle = put_sql(&record.id, record, *now, &[])
+        .map_err(|err| DbOperationError::Domain(AlbumWriteError::Builder(err)))?;
+
+    // Base leg (:624-633): UPDATE first; a row count > 0 ends the upsert, so the INSERT
+    // never runs. A zero-row match is the predefined-id insert fallback (:634-641).
+    let inserted =
+        crate::execution::execute(tx, &bundle.update).map_err(DbOperationError::sqlite)? == 0;
+    if inserted {
+        crate::execution::execute(tx, &bundle.insert).map_err(DbOperationError::sqlite)?;
+    }
+
+    // `updateParticipants` (:78-125): the delete ALWAYS runs — it is what clears stale
+    // role rows when a role changes — and Go's early return on an empty participant list
+    // (:87-89) only skips the INSERT.
+    crate::execution::execute(tx, &bundle.participants_delete).map_err(DbOperationError::sqlite)?;
+    if let Some(insert) = bundle.participants_insert.as_ref() {
+        crate::execution::execute(tx, insert).map_err(DbOperationError::sqlite)?;
+    }
+
+    // `updateTags` (:57-79): same shape — unconditional delete, optional insert.
+    crate::execution::execute(tx, &bundle.tags_delete).map_err(DbOperationError::sqlite)?;
+    if let Some(insert) = bundle.tags_insert.as_ref() {
+        crate::execution::execute(tx, insert).map_err(DbOperationError::sqlite)?;
+    }
+
+    Ok(AlbumWriteResult {
+        id: record.id.clone(),
+        inserted,
+    })
 }
 
 /// `UpdateExternalInfo` (`album_repository.go:223`) — the six external-
