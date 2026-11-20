@@ -293,9 +293,11 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   or checksum. No other manifest may change. The merge commit must keep the manifest/lock diff visible so the reviewer sees it.
   S8 close-out dispositions from the second-round review (basis: `/tmp/nav-sc02-s8-review.md`): (a) the raw-byte fixtures' accidental
   lowercase-`ff` assertions are replaced with explicit `\\xFF`-style rawness checks and the lossy `LogicalPath` `Display` is noted as
-  showing U+FFFD while `message`/`Debug` keep the exact `\\xFF` form (display diagnostics only); (b) the blocklist-before-dot-rule
-  reason-taxonomy difference and the unreachable `logical_to_string` fail-fast are recorded as documented deviations without changing
-  execution order; (c) the Linux-gated raw-name tests are retained as the real-filesystem evidence, with the portable seam tests as the
+  showing U+FFFD while `message`/`Debug` keep the exact `\\xFF` form (display diagnostics only; a quoted basename can
+  never be a `Path`-Debug suffix, so rawness tests assert containment of the exact escape, not `ends_with` of a quoted
+  name); (b) the `logical_to_string` unreachable fail-fast is noted (its order-claim was wrong — Go's `isIgnoredEntry`
+  is blocklist-first like the port; S9b corrected the comment, code order unchanged);
+  (c) the Linux-gated raw-name tests are retained as the real-filesystem evidence, with the portable seam tests as the
   platform-independent layer, and their platform restriction stated in the test comments; (d) the untested warning kinds
   (`DirectoryEnumerationFailed`, `DepthLimitReached`, `TimestampUnavailable`, walk-level `EntryStatFailed`) and `MAX_WALK_DEPTH` get one
   exercised walk-level regression each where deterministically reachable, plus an `as_str()` table round-trip; where a kind is not
