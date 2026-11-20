@@ -50,6 +50,14 @@
 //! `SELECT * FROM media_file`), which carries no library/annotation/bookmark
 //! columns and so cannot be hydrated through this seam: Rust `Search` results are
 //! NOT artwork-hydrated (residual).
+//! Landed in DB-10: the executed `Put` (`mediafile_repository.go:184-197`) as
+//! [`put_mediafile_in_tx`] — the `putByMatch` identity probe (`sql_base_repository.go:577-589`)
+//! plus the base upsert and participants/tags junction maintenance on the CALLER's
+//! transaction, executing exactly the bundle [`put_sql`] returns. An empty id takes Go's
+//! random-id arm (`sql_base_repository.go:635-638`) with `nd_id::new_random()`, minted inside
+//! the caller's transaction so a failed attempt publishes nothing. It issues NO FTS
+//! statement: the schema's own `media_file_fts_ai`/`_au`/`_ad` triggers maintain the index,
+//! so an explicit FTS write would double-index it.
 //!
 //! **`optimizePagination` asymmetry (residual, deliberately NOT applied):**
 //! `queryAll` runs the offset rewrite only when options are passed to it
@@ -1373,9 +1381,10 @@ fn mediafile_derived(
 /// [`full_title`]); the config wiring supplies it.
 ///
 /// `now` stamps the row exactly like Go's `Put`
-/// (`mediafile_repository.go:184-190`): `created_at` to `now` **only when
-/// the record's is `None`** (Go zero `time.Time`); `updated_at` passes
-/// through the record unchanged — Go stamps neither in `Put`.
+/// (`mediafile_repository.go:184-190`): `created_at` to `now` when the record's `IsZero()`,
+/// which in Rust means `None` OR an explicit `Some(crate::time::zero())` — the year-one
+/// value Go's decoder can hand back — and otherwise passes the record's value through.
+/// `updated_at` passes through the record unchanged — Go stamps neither in `Put`.
 /// `created_at`/`birth_time` are still dropped from the UPDATE set by the
 /// seam (INSERT-only).
 ///
@@ -1432,10 +1441,18 @@ pub fn put_sql(
     append_subtitle: bool,
     cols_to_update: &[&str],
 ) -> Result<PutMediaFileSql, crate::marshal::MarshalError> {
-    // Go's Put (mediafile_repository.go:184-190): CreatedAt is stamped to
-    // now only when zero; UpdatedAt is never touched.
+    // Go's Put (mediafile_repository.go:184-190): CreatedAt is stamped to `now` when it
+    // `IsZero()`, and UpdatedAt is never touched. `IsZero()` is a VALUE test on the year-one
+    // time, so the Rust port has TWO spellings of "unset" that must both stamp: `None`
+    // (a read of a NULL column) and an explicit `Some(crate::time::zero())` (a decode of a
+    // Go-written zero timestamp). A real timestamp — including an epoch-adjacent one that is
+    // merely close to year-one — passes through untouched.
     let stamped = MediaFileRecord {
-        created_at: Some(m.created_at.unwrap_or(now)),
+        created_at: Some(match m.created_at {
+            None => now,
+            Some(at) if at == crate::time::zero() => now,
+            Some(at) => at,
+        }),
         ..m.clone()
     };
     let (map, maintenance) = crate::marshal::mediafile_post_map_args(
@@ -1490,6 +1507,288 @@ pub fn put_marshalled_sql(
     cols_to_update: &[&str],
 ) -> Result<PutMediaFileSql, crate::marshal::MarshalError> {
     put_from_map(id, map, maintenance, cols_to_update)
+}
+
+// ---------------------------------------------------------------------------
+// DB-10 — the EXECUTED `Put` (`mediafile_repository.go:184-197`), identity and
+// atomic maintenance.
+// ---------------------------------------------------------------------------
+
+/// Which row [`put_mediafile_in_tx`] writes: an explicit id, or the `path`+`library_id`
+/// match Go's `Put` hands to `putByMatch` (`mediafile_repository.go:188`,
+/// `sql_base_repository.go:577-589`).
+///
+/// **A `Match` is a trusted SC/system scope, NOT an unscoped lookup.** This is the
+/// scanner's identity probe — the one `Put` builds itself from the record it is saving —
+/// and it must never be reachable from a raw HTTP path string: `media_file.path` has
+/// `default ''` and is indexed NON-unique (`media_file_path`, `media_file_path_nocase`,
+/// `nd-dbschema/src/schema_ddl.rs`), so there is no unique constraint to lean on and an
+/// attacker-supplied path would claim an existing row. `library_id` is part of the
+/// predicate, so a match never crosses libraries, and the empty path is a REAL stored
+/// value rather than an invalid one: `Match{path: "", ..}` matches a row stored with
+/// `path = ''` in that library exactly as Go's `Eq{"path": ""}` does. Rejecting an empty
+/// path is a caller (SC/BOOT) policy decision, not a DB rule.
+///
+/// The predicate is byte-exact and case-SENSITIVE: the probe compares against the column,
+/// which has no `COLLATE NOCASE` (only its `media_file_path_nocase` INDEX does), so
+/// `/Music/A.mp3` does not match `/music/a.mp3` — Go's `Eq` renders the same bare
+/// comparison.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MediaIdentity {
+    /// `sql_base_repository.go:578-580`: a non-empty id makes `putByMatch` call `put`
+    /// DIRECTLY, so the match probe never runs and no other row's identity can be reused
+    /// — not even a row holding the SAME `path`+`library_id` as the record.
+    ///
+    /// An EMPTY id here takes Go's generated-id arm (`sql_base_repository.go:635-638`) and
+    /// inserts under a freshly minted `nd_id::new_random()` id rather than being refused.
+    /// DOCUMENTED EDGE: Go cannot express "empty id, no probe" — its `Put` always builds the
+    /// `Eq{path, library_id}` filter from the record, so an empty `m.ID` falls through to the
+    /// probe (`:581-588`). This arm keeps [`MediaIdentity::Id`] meaning "no probe" and
+    /// generates instead; a caller that wants Go's exact probe-then-write behavior passes
+    /// [`MediaIdentity::Match`], which is the arm `Put` actually builds.
+    Id(String),
+    /// `sql_base_repository.go:581-588`: resolve the id with [`put_match_sql`] on the
+    /// caller's transaction first.
+    Match {
+        /// `Eq{"path": m.Path}` (`mediafile_repository.go:188`).
+        path: String,
+        /// `Eq{"library_id": m.LibraryID}` (same line).
+        library_id: i64,
+    },
+}
+
+/// What a successful [`put_mediafile_in_tx`] reports.
+///
+/// Both fields are ADVISORY until the CALLER commits: a rolled-back Put publishes
+/// nothing, and the media_file repository keeps no cache (Go keeps none either), so
+/// there is nothing to invalidate on rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaFileWriteResult {
+    /// The id this Put wrote — Go's `m.ID = id` (`mediafile_repository.go:192`), which BOTH
+    /// junction legs are then keyed with (`:193-196`). It is one of three: the caller's
+    /// [`MediaIdentity::Id`], the id the probe FOUND on the [`MediaIdentity::Match`] arm
+    /// (the identity-reuse semantic this seam exists to prove: the record's OWN `id` is
+    /// IGNORED there, so a caller that re-imports a track under a fresh id lands on the
+    /// existing row), or a freshly generated `nd_id::new_random()` id when neither was
+    /// available — Go's random-id arm (`sql_base_repository.go:635-638`), REPRODUCED rather
+    /// than refused. In that last case the id is minted INSIDE the caller's transaction, so a
+    /// rolled-back attempt leaves no row under it and nothing is published before the caller
+    /// commits.
+    pub id: String,
+    /// `true` when the INSERT leg ran rather than the UPDATE leg, i.e. when the UPDATE
+    /// matched zero rows (`sql_base_repository.go:630-641`). A predefined id that misses is
+    /// therefore `inserted: true`, not a miss and not a `NotFound`.
+    pub inserted: bool,
+}
+
+/// Callback error of the executed [`put_mediafile_in_tx`].
+///
+/// The builder arm is REAL and must stay off the SQLite arm: [`put_sql`] returns
+/// [`crate::marshal::MarshalError`], so a failure to materialize the legs is a domain
+/// failure, not a driver one. `Infallible` would force such a failure onto
+/// [`DbOperationError::Sqlite`], which `D-ERROR` forbids — the concrete cause would be
+/// lost and `store::is_busy` would be asked to classify a non-driver failure.
+///
+/// For the FULL-record seam this wrapper uses, neither [`crate::marshal::MarshalError`
+/// variant is reachable today: [`mediafile_row`] never emits `id` (so not `IdInMap`) and
+/// its 63-column map always leaves a settable UPDATE set (so not `EmptyUpdateSet`, which
+/// needs a `cols_to_update` restriction this signature does not take). The arm exists
+/// because the renderer it executes IS fallible, not because a caller can provoke it here.
+///
+/// There is NO empty-id variant: Go's `Put` returns no domain error of its own
+/// (`mediafile_repository.go:189-197` adds no wrapper), and an empty id is Go's random-id
+/// arm (`sql_base_repository.go:635-638`) — reproduced here rather than refused. The
+/// `EmptyId` variants in `album_repo`, `artist_repo` and `folder_repo` are NOT mirrored
+/// here: media-file identity follows Go's `put` exactly.
+#[derive(Debug, thiserror::Error)]
+pub enum MediaFileWriteError {
+    /// The legs could not be materialized by [`put_sql`]. Go's equivalent failure is
+    /// `fmt.Errorf("error preparing values to write to DB: %w", err)`
+    /// (`sql_base_repository.go:619-622`); the port keeps the typed `MarshalError` on the
+    /// `Domain` arm rather than stringifying it.
+    #[error(transparent)]
+    Builder(#[from] crate::marshal::MarshalError),
+}
+
+/// `Put` (`mediafile_repository.go:184-197`) EXECUTED on the CALLER's transaction, in
+/// Go's exact statement order: [`put_match_sql`] when the identity is a `Match`
+/// (`putByMatch`, `sql_base_repository.go:577-589`), then the `r.put` upsert
+/// (`sql_base_repository.go:618-642`) — UPDATE by `id` FIRST, INSERT only on a zero-row
+/// match — then `updateParticipants` (`sql_participations.go:78-125`), then `updateTags`
+/// (`sql_tags.go:57-79`). Any leg failure aborts the whole Put, which is what Go's caller
+/// relies on to roll back the scanner's folder transaction (`scanner/phase_1_folders.go`).
+///
+/// It executes exactly what [`put_sql`] renders — the six-statement [`PutMediaFileSql`]
+/// bundle — and re-renders nothing here.
+///
+/// Identity: the id resolved by the [`MediaIdentity`] arm is the UPDATE's `WHERE id = ?`,
+/// the INSERT's id column, and the `media_file_id` of BOTH junction legs, which is Go's
+/// `m.ID = id` (`:192`) feeding `updateParticipants`/`updateTags`. A caller-selected `Match`
+/// that FINDS a row writes that row even when `record.id` holds a different (non-empty) id;
+/// `record.id` is not consulted on that arm. This follows the explicit Rust `MediaIdentity`
+/// choice; Go chooses its match path only when `m.ID` is empty, and otherwise puts by id.
+/// A `Match` that finds NOTHING falls back to `record.id`, and when THAT is empty too the id
+/// is Go's generated one: `put` fills an empty id with `id2.NewRandom()`
+/// (`sql_base_repository.go:635-638`), SKIPS the UPDATE leg (`:623` `if id != ""`), and
+/// INSERTs under the fresh id. The generation
+/// happens inside this transaction, so a failed attempt rolls it back with everything else
+/// and publishes nothing; a retried attempt may generate a DIFFERENT id, which is Go's
+/// behavior (`persistence.go:207-228` reruns the whole block) and is safe because the
+/// committed row is the only externally visible id and a subsequent `Put` at the same
+/// `path`+`library_id` matches that row rather than creating another. Only the successful
+/// transaction's [`MediaFileWriteResult`] reaches the caller.
+/// The caller's record is borrowed and never mutated (Go mutates `m.ID`; the port reports
+/// the id in [`MediaFileWriteResult`] instead, so a retry reuses the caller's input).
+///
+/// Timestamps: `now` is the CALLER's clock and reaches [`put_sql`] as its `now`, which
+/// stamps `created_at` when the record's is `None` OR the Go zero `time.Time`
+/// (`mediafile_repository.go:185-187` `CreatedAt.IsZero()` — Go's zero is a VALUE its
+/// decoder can produce, so both spellings mean "unset"). `updated_at` and `birth_time` are
+/// NEVER stamped here: Go's `Put` touches neither (`:184-197`), and the shared seam drops
+/// `created_at` and `birth_time` from the UPDATE set (`selectUpdateColumns`,
+/// `sql_base_repository.go:605-608`/`marshal::UPDATE_DROP`), so both stay immutable across
+/// the UPDATE leg. There is no second stamp anywhere on this path.
+///
+/// Junction maintenance: each junction's DELETE runs unconditionally and BEFORE its
+/// optional INSERT, which is Go's shape (`sql_participations.go:79-89`, `sql_tags.go:58-74`).
+/// A record with NO participants (or no indexed tags) therefore CLEARS the existing rows
+/// rather than leaving them stale; the `Option` insert leg is skipped only after its delete
+/// ran. Both junction INSERTs are `INSERT … SELECT` over `json_each` INNER-joined to
+/// `artist`/`tag`, so ids the dictionary does not have are dropped SILENTLY by the join —
+/// Go's behavior (`sql_participations.go:117`, `sql_tags.go:69`), not an error, and the
+/// stored `participants`/`tags` JSON columns still carry those entries. Only `genre` is
+/// indexed at all ([`crate::sql_tags::INDEXED_TAG_NAMES`]), so other tag names live only in
+/// the JSON column. That asymmetry is Go's own: `Put` never re-derives or filters the JSON
+/// from the junction result, so this wrapper does not either. Counts (`library_tag`,
+/// `average_rating`) and the annotation tables are NOT touched here — DB-17 and the
+/// annotation lane own those, and Go's `Put` does no aggregation.
+///
+/// FTS: NO statement here mentions `media_file_fts`. The schema's
+/// `media_file_fts_ai`/`_au`/`_ad` triggers (`nd-dbschema/src/schema_ddl.rs:82-84`) index
+/// the base row's own `title`/`album`/`artist`/`album_artist`/`sort_*`/`disc_subtitle`/
+/// `search_participants`/`search_normalized`, and [`put_sql`] derives those columns from
+/// the record's own fields and participants/tags (the S-D2b consistency invariant), so the
+/// index is correct from the base write alone. Junction writes touch no FTS trigger (the
+/// junction tables have none). `media_file_fts_au`'s `WHEN` list does NOT include `tags` —
+/// but that is only half the truth: a tag change re-indexes EXACTLY when it moves a COVERED
+/// column, which happens when `append_subtitle` is on (the `subtitle` tag feeds `full_title`
+/// and therefore `full_text`/`search_normalized`) and does not happen when it is off. Do not
+/// describe a tag change as never touching the index.
+///
+/// Scope: a caller-trusted primitive, exactly like Go. `WHERE id = ?` and nothing else
+/// beyond the identity arm: no auth check, no ownership guard. Library scoping is the
+/// READ side's job ([`MediaFileRepo::get`]'s `library_filter`), not this write's — but the
+/// `Match` arm's predicate DOES carry `library_id`, which is why the same path in two
+/// libraries stays two rows.
+///
+/// The transaction is the caller's: this never begins, commits, retries, checks out a
+/// connection, or runs in autocommit, and there is no connection-bound variant. Raw
+/// SQLite errors keep their concrete cause and extended code on the
+/// [`DbOperationError::Sqlite`] arm — Go returns `Put`'s errors raw and unwrapped
+/// (`mediafile_repository.go:189-197` adds no `fmt.Errorf`).
+///
+/// `cols_to_update` is deliberately NOT a parameter: Go's `Put` passes no `colsToUpdate`
+/// (`mediafile_repository.go:188`), so this boundary is the unfiltered full-record save and
+/// needs no typed column enum. A filtered (partial-column) put is a FOLLOW-UP for whichever
+/// lane needs one; [`put_sql`] already takes the restriction and stays the seam for it.
+///
+/// Multi-row match: with no unique index on `(path, library_id)` two rows CAN hold the same
+/// pair. Go's `queryOne` takes the FIRST row and errors on nothing (`dbx@v1.12.0/query.go:259-272`);
+/// rusqlite's `query_row` takes the first row too and discards the rest (`row.rs:101-106` —
+/// `get_expected_row` returns the first row, and the `Rows` drop resets the statement). The
+/// port therefore keeps Go's first-row semantics rather than reporting a multi-match.
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`MediaFileWriteError::Builder`] when [`put_sql`] fails to
+/// materialize the legs — the ONLY domain arm, because Go's `Put` has no domain error of its
+/// own; [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact) from the match SELECT, the UPDATE, the INSERT, either junction DELETE, or either
+/// junction INSERT — the `media_file.library_id` FK included, which Go returns raw. The
+/// junction FKs are structurally unreachable through this seam because both junction INSERTs
+/// INNER-JOIN `artist`/`tag` first (a dangling id is filtered away rather than attempted);
+/// only a raw caller can provoke them. A `Match` that finds NO row is NOT an error (Go tolerates
+/// `model.ErrNotFound`, `sql_base_repository.go:585-587`) and falls back to `record.id`, and an
+/// empty `record.id` is NOT an error either — it takes Go's generated-id arm; a
+/// `Match` read that FAILS (a hard SQLite error, or a cell that cannot be decoded) IS, and is
+/// not tolerated. A repeated id is an UPDATE hit rather than a constraint failure; a zero-row
+/// UPDATE is NOT an error; unknown participant/tag ids are dropped by the JOIN and are NOT an
+/// error.
+pub fn put_mediafile_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    identity: &MediaIdentity,
+    record: &MediaFileRecord,
+    now: &DateTime<Utc>,
+    append_subtitle: bool,
+) -> Result<MediaFileWriteResult, DbOperationError<MediaFileWriteError>> {
+    // `putByMatch` (`sql_base_repository.go:578-588`): a non-empty id skips the probe
+    // entirely; otherwise the probe runs on THIS transaction and only ErrNotFound-equivalent
+    // absence is tolerated.
+    let mut id = match identity {
+        // An EMPTY id is not a contract violation: it is exactly the `id == ""` value Go
+        // hands `put` (`sql_base_repository.go:588`), whose UPDATE leg is guarded by
+        // `if id != ""` (`:623`) and whose insert takes the generated-id arm (`:635-638`).
+        MediaIdentity::Id(id) => id.clone(),
+        MediaIdentity::Match { path, library_id } => {
+            crate::execution::query_optional(tx, &put_match_sql(path, *library_id), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(DbOperationError::sqlite)?
+            // Go's tolerated `ErrNotFound` leaves `res.ID == ""` and `put(ctx, "", …)` runs
+            // (`:588`); the port falls back to the record's id, which may itself be empty —
+            // that is Go's generated-id arm, taken below.
+            .unwrap_or_else(|| record.id.clone())
+        }
+    };
+
+    // Go's random-id arm (`sql_base_repository.go:635-638`): `id2.NewRandom()` is
+    // `nd_id::new_random()` (`nd-id/src/lib.rs:115-121`, the same 16 CSPRNG bytes base62-
+    // encoded) minted HERE, inside the caller's transaction and ONLY on this arm, before the
+    // bundle is rendered so the INSERT's id column and both junction legs' `media_file_id`
+    // carry it — Go's `values["id"] = id` (`:637`) plus `m.ID = id`
+    // (`mediafile_repository.go:192`). A failed attempt rolls that id back with the row and
+    // publishes nothing; a retry may mint a different one, which is Go's behavior
+    // (`persistence.go:207-228` reruns the whole block) and is safe because only the committed
+    // row is visible and the next `Put` at that `path`+`library_id` matches it rather than
+    // adding another.
+    let id_was_generated = id.is_empty();
+    if id_was_generated {
+        id = nd_id::new_random();
+    }
+
+    // The bundle is keyed by the RESOLVED id, exactly as Go's `put` builds its SET-map once
+    // the id is known.
+    let bundle = put_sql(&id, record, *now, append_subtitle, &[])
+        .map_err(|err| DbOperationError::Domain(MediaFileWriteError::Builder(err)))?;
+
+    // Base leg (`:623-641`): an id that was EMPTY to begin with skips the UPDATE entirely
+    // (`:623` `if id != ""`), so the INSERT is the only leg — no UPDATE is attempted against
+    // a freshly minted id. Otherwise UPDATE by `id` runs FIRST and a row count > 0 ends the
+    // upsert, so the INSERT never runs; a zero-row match is the predefined-id insert fallback
+    // (`:634-641`) and keeps the SAME id.
+    let inserted = if id_was_generated {
+        true
+    } else {
+        crate::execution::execute(tx, &bundle.update).map_err(DbOperationError::sqlite)? == 0
+    };
+    if inserted {
+        crate::execution::execute(tx, &bundle.insert).map_err(DbOperationError::sqlite)?;
+    }
+
+    // `updateParticipants` (`sql_participations.go:78-125`): the delete ALWAYS runs — it is
+    // what clears stale role rows when a role changes — and Go's early return on an empty
+    // participant list (`:87-89`) only skips the INSERT.
+    crate::execution::execute(tx, &bundle.participants_delete).map_err(DbOperationError::sqlite)?;
+    if let Some(insert) = bundle.participants_insert.as_ref() {
+        crate::execution::execute(tx, insert).map_err(DbOperationError::sqlite)?;
+    }
+
+    // `updateTags` (`sql_tags.go:57-79`): same shape — unconditional delete, optional insert.
+    crate::execution::execute(tx, &bundle.tags_delete).map_err(DbOperationError::sqlite)?;
+    if let Some(insert) = bundle.tags_insert.as_ref() {
+        crate::execution::execute(tx, insert).map_err(DbOperationError::sqlite)?;
+    }
+
+    Ok(MediaFileWriteResult { id, inserted })
 }
 
 /// `UpdateProbeData` (`mediafile_repository.go:204-207`).
