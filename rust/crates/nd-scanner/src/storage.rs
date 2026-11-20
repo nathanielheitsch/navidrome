@@ -1,7 +1,7 @@
 //! `core/storage` — the **local-filesystem subset** only: real local `stat`/`read`/`list`
 //! plus explicit symlink classification. A deliberately small slice of SC-02
 //! (`docs/rust-port/subplans/scanner.md`): **not** `MusicFS`/`ReadTags`
-//! (`core/storage/interface.go:15-18`), not registry dispatch (`storage.go:53-84`), not the
+//! (`core/storage/interface.go:15-18`), not registry dispatch (`core/storage/storage.go:53-79`), not the
 //! walker/ignore/hash/cancellation surface, not the watcher, not SC-02 completion.
 //! Standard library only: no dependency decision is implied here.
 //!
@@ -16,16 +16,16 @@
 //!
 //! **Configured-root policy:** the root is trusted configuration. A root that is itself a
 //! symlink **is followed**, by every operation including [`Follow::No`] — Go stats and
-//! `os.DirFS`es the configured path without rejecting it (`local.go:55-62`). Only
+//! `os.DirFS`es the configured path without rejecting it (`core/storage/local/local.go:53-59`). Only
 //! components **below** the root are guarded; the root path is never canonicalised or
 //! re-derived from a request.
 //!
 //! ## Parity notes (Go → here)
 //!
-//! * `storage.go:8` `LocalSchemaID = "file"` → [`LOCAL_SCHEMA_ID`]; `For` rejecting an
-//!   unregistered schema (`storage.go:76-78`) → [`StorageError::UnsupportedScheme`]. Only
+//! * `core/storage/storage.go:13` `LocalSchemaID = "file"` → [`LOCAL_SCHEMA_ID`]; `For` rejecting an
+//!   unregistered schema (`core/storage/storage.go:76-78`) → [`StorageError::UnsupportedScheme`]. Only
 //!   `file`: no remote code path exists, so a remote URI can never appear to work.
-//! * `storage.go:32-51` `LocalPathToURL` escapes components with `url.PathEscape` and `For`
+//! * `core/storage/storage.go:32-47` `LocalPathToURL` escapes components with `url.PathEscape` and `For`
 //!   hands `url.Parse`'s decoded `u.Path` to the constructor — escape → parse is the
 //!   identity. Reproduced exactly: [`LocalDir::open`] percent-decodes a `file` URL **once**
 //!   ([`decode_path`]); a bare path and [`LocalDir::from_path`] take bytes **verbatim**, so
@@ -33,17 +33,17 @@
 //!   `%25`→`%`, `%2520`→`%20`, `%23`→`#`, `%3F`→`?`, `+`→`+` (no `+`-space decoding in
 //!   paths), `%C3%BC`→`ü`, `%2F`→`/`, `%zz`→`invalid URL escape`; `u.Fragment`/`u.RawQuery`
 //!   are never part of `u.Path`.
-//! * `local.go:65-95` `localFS` implements `fs.ReadLinkFS` → [`LocalDir::snapshot`] and
+//! * `core/storage/local/local.go:61-88` `localFS` implements `fs.ReadLinkFS` → [`LocalDir::snapshot`] and
 //!   [`LocalDir::read_link`] are always no-follow; [`LocalDir::list`] reports each entry's
 //!   own lstat kind under [`Follow::No`], endpoint kind under [`Follow::Yes`].
-//! * `ResolveSymlink` (`interface.go:21-26`, `local.go:69-75`) → [`LocalDir::resolve`]
+//! * `ResolveSymlink` (`core/storage/interface.go:24-26`, `core/storage/local/local.go:72-77`) → [`LocalDir::resolve`]
 //!   [`Follow::Yes`]. Go's `filepath.EvalSymlinks` stops after 255 walked links
 //!   (`path/filepath/symlink.go`); [`MAX_SYMLINK_HOPS`] mirrors it and is tested to it
 //!   (255 resolve, 256 fail). Go returns one plain error; here a loop is
 //!   [`ResolvedTarget::LinkLoop`] and a chain ending on a missing component is
 //!   [`EndpointKind::Missing`], because classification needs the distinction. The logical
 //!   name is always preserved; the target may lie outside the root.
-//! * `local.go:104-153` `BirthTime()` falls back to `time.Now()`. Not ported:
+//! * `core/storage/local/local.go:120-128` `BirthTime()` falls back to `time.Now()`. Not ported:
 //!   [`FileStat::created`] reports availability honestly; [`FileStat::modified`] is never
 //!   filled with an epoch either.
 //!
@@ -81,7 +81,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// `core/storage/storage.go:8` — `LocalSchemaID = "file"`. The only scheme this subset
+/// `core/storage/storage.go:13` — `LocalSchemaID = "file"`. The only scheme this subset
 /// can serve; anything else is rejected rather than emulated.
 pub const LOCAL_SCHEMA_ID: &str = "file";
 
@@ -118,7 +118,7 @@ pub enum EntryKind {
 }
 
 /// "This platform/filesystem reported no creation time." Go's `BirthTime` papers over the
-/// same situation with `time.Now()` (`local.go:112-119`); this keeps it visible.
+/// same situation with `time.Now()` (`core/storage/local/local.go:120-128`); this keeps it visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BirthTimeUnavailable;
 
@@ -250,6 +250,10 @@ impl LogicalPath {
     }
 }
 
+/// Slash-separated display form of a logical path: diagnostics only — it is lossy
+/// (U+FFFD for any non-UTF-8 bytes, so `raw-\xFF` displays as `raw-<U+FFFD>`) while the
+/// exact bytes live in [`LogicalPath::components`] and the derived `Debug` form
+/// (`S9`).
 impl fmt::Display for LogicalPath {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.components.is_empty() {
@@ -276,6 +280,50 @@ pub struct ListEntry {
     /// Stat without following the entry's own symlink: for a symlink this is the link's own
     /// length, exactly like Go's `fs.Lstat`.
     pub stat: FileStat,
+}
+/// Entry facts for one directory level, with **both** stat views kept distinct.
+///
+/// This is the additive SC-02 listing seam. Go reads a folder entry's size and mtime from
+/// `fs.DirEntry.Info()` — the entry's own `lstat` — while tag enrichment later stats the
+/// **endpoint** with `fs.Stat` (`scanner/walk_dir_tree.go:157-177`, `scanner/folder_entry.go:133-148`,
+/// `core/storage/local/local.go:90-109`). [`LocalDir::list`] under [`Follow::Yes`] replaces an entry's kind
+/// and stat with the endpoint's (`storage.rs:550-561`), which is right for classifying by
+/// target extension and wrong for a fingerprint that must reproduce Go's `Info()` bytes.
+/// [`LocalDir::list_annotated`] reports both instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryFacts {
+    /// Path relative to the root (`parent/<name>`).
+    pub path: LogicalPath,
+    /// Kind without following the entry's own symlink (`fs.DirEntry.Type()`).
+    pub kind: EntryKind,
+    /// The entry's own `lstat` facts (`fs.DirEntry.Info()`). For a symlink this is the
+    /// link's own length and mtime — exactly the values Go hashes.
+    pub stat: FileStat,
+    /// Endpoint facts, present only when `kind` is [`EntryKind::Symlink`] **and** the
+    /// endpoint could be stat'd. Reserved for mapping/tag enrichment, never for hashing.
+    pub endpoint: Option<EntryEndpoint>,
+}
+
+/// Resolved endpoint of a symlink entry (`fs.Stat` of the entry's path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryEndpoint {
+    /// Classification of the actual endpoint, never of the link name.
+    pub kind: EndpointKind,
+    /// Endpoint size and mtime.
+    pub stat: FileStat,
+}
+
+/// One directory level: the directory's own facts plus its entries.
+///
+/// `dir_stat` mirrors `fs.Stat(dirPath)` in `loadDir` (`scanner/walk_dir_tree.go:111-119`) under
+/// [`Follow::Yes`]; under [`Follow::No`] the directory is `lstat`'d instead, because that
+/// policy reports the entry rather than its endpoint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryListing {
+    /// The listed directory's own facts.
+    pub dir_stat: FileStat,
+    /// Entries sorted by raw name bytes (Go's `fs.ReadDir` order).
+    pub entries: Vec<EntryFacts>,
 }
 
 /// Endpoint of a resolved chain, with the logical name preserved beside it.
@@ -333,7 +381,7 @@ impl Snapshot {
 /// A local storage root: one **configured** (trusted) directory addressed by logical paths.
 /// No containment, no authorization, no race-proof no-follow — see the module docs.
 /// Errors carry the logical path, mirroring Go's `*fs.PathError{Op, Path, Err}`
-/// (`local.go:57,70`).
+/// (`core/storage/local/local.go:56,74`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDir {
     root: PathBuf,
@@ -342,7 +390,7 @@ pub struct LocalDir {
 impl LocalDir {
     /// Open a storage URI.
     ///
-    /// Parity with `storage.For` (`storage.go:53-84`), which checks for `://` **before**
+    /// Parity with `storage.For` (`core/storage/storage.go:53-79`), which checks for `://` **before**
     /// `url.Parse`. Classification here:
     /// * text containing `://` → a URL; a scheme with no implementation is an error.
     /// * text starting with a multi-character scheme followed by `:/` (e.g. `file:/`,
@@ -454,7 +502,7 @@ impl LocalDir {
     /// Exact logical path from an OS name or path, without any UTF-8 conversion.
     ///
     /// Only a path **inside** the root can be addressed: absolute paths and `..` are
-    /// rejected. This replaces Go's `fs.ValidPath` check (`local.go:69-71`).
+    /// rejected. This replaces Go's `fs.ValidPath` check (`core/storage/local/local.go:73`).
     pub fn logical(&self, path: &OsStr) -> Result<LogicalPath, StorageError> {
         let raw = path.to_string_lossy().into_owned();
         if path.is_empty() {
@@ -565,6 +613,127 @@ impl LocalDir {
         entries.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(entries)
     }
+    /// List one directory level while keeping the entry's own `lstat` facts **and** its
+    /// endpoint facts distinct — the seam SC-02's walker needs (see [`EntryFacts`]).
+    ///
+    /// Additive: [`LocalDir::list`] is unchanged. Differences here:
+    /// * every entry keeps its own kind and `lstat` stat, and a symlink additionally
+    ///   carries the endpoint's kind and stat under [`Follow::Yes`];
+    /// * under [`Follow::Yes`] a symlinked ancestor or a symlinked requested directory is
+    ///   followed by the OS (like Go's `os.DirFS`) while entries keep their link facts;
+    /// * under [`Follow::No`] the refusals still apply — a symlinked ancestor or a
+    ///   symlinked requested directory is rejected, never traversed, and no endpoint is
+    ///   reported at all;
+    /// * the directory's own facts come back beside the entries.
+    ///
+    /// A link whose endpoint vanished keeps its link facts and reports no endpoint, which
+    /// matches Go: `DirEntry.Info()` succeeds on a broken link.
+    pub fn list_annotated(
+        &self,
+        dir: &LogicalPath,
+        follow: Follow,
+    ) -> Result<DirectoryListing, StorageError> {
+        let os_dir = self.os_path(dir);
+        self.check_ancestors(dir, follow)?;
+
+        let dir_stat = if follow == Follow::No && !dir.is_root() {
+            // Same refusal as `list`: enumerating through a symlinked directory would
+            // traverse an alias the policy forbids.
+            match std::fs::symlink_metadata(&os_dir) {
+                Ok(metadata) => {
+                    let kind = kind_of_metadata(&metadata);
+                    if kind == EntryKind::Symlink {
+                        return Err(StorageError::EntryIsSymlink {
+                            path: dir.clone(),
+                            target: read_link_or_empty(&os_dir),
+                        });
+                    }
+                    if kind != EntryKind::Dir {
+                        return Err(StorageError::NotADirectory {
+                            path: dir.clone(),
+                            kind,
+                            source: enotdir_error(),
+                        });
+                    }
+                    stat_of_metadata(&metadata)
+                }
+                Err(source) => return Err(self.not_found(dir, source)),
+            }
+        } else {
+            match std::fs::metadata(&os_dir) {
+                Ok(metadata) => stat_of_metadata(&metadata),
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                    return Err(self.not_found(dir, source));
+                }
+                Err(source) => {
+                    return match std::fs::symlink_metadata(&os_dir) {
+                        Ok(metadata) if kind_of_metadata(&metadata) != EntryKind::Dir => {
+                            Err(StorageError::NotADirectory {
+                                path: dir.clone(),
+                                kind: kind_of_metadata(&metadata),
+                                source,
+                            })
+                        }
+                        // A real directory whose stat still failed, or a path that
+                        // cannot be stat'd at all.
+                        _ => Err(self.map_io(dir, source)),
+                    };
+                }
+            }
+        };
+
+        let read = match std::fs::read_dir(&os_dir) {
+            Ok(read) => read,
+            Err(source) => {
+                if source.kind() == io::ErrorKind::NotFound {
+                    return Err(self.not_found(dir, source));
+                }
+                return match std::fs::symlink_metadata(&os_dir) {
+                    Ok(metadata) if kind_of_metadata(&metadata) != EntryKind::Dir => {
+                        Err(StorageError::NotADirectory {
+                            path: dir.clone(),
+                            kind: kind_of_metadata(&metadata),
+                            source,
+                        })
+                    }
+                    _ => Err(self.map_io(dir, source)),
+                };
+            }
+        };
+
+        let mut entries = Vec::new();
+        for entry in read {
+            let entry = entry.map_err(|source| StorageError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let os_path = entry.path();
+            let path = dir.join(entry.file_name().as_os_str())?;
+            // lstat first: this is Go's `DirEntry.Info()`, the facts the fingerprint uses.
+            let metadata =
+                std::fs::symlink_metadata(&os_path).map_err(|source| self.map_io(&path, source))?;
+            let kind = kind_of_metadata(&metadata);
+            let endpoint = if kind != EntryKind::Symlink || follow == Follow::No {
+                None
+            } else {
+                match std::fs::metadata(&os_path) {
+                    Ok(endpoint_stat) => Some(EntryEndpoint {
+                        kind: endpoint_kind_of_metadata(&endpoint_stat),
+                        stat: stat_of_metadata(&endpoint_stat),
+                    }),
+                    Err(_) => None,
+                }
+            };
+            entries.push(EntryFacts {
+                path,
+                kind,
+                stat: stat_of_metadata(&metadata),
+                endpoint,
+            });
+        }
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(DirectoryListing { dir_stat, entries })
+    }
 
     /// Stat one entry. Always no-follow under [`Follow::No`]: a symlink yields
     /// `EntryKind::Symlink` and works even when its target is missing (Go `fs.Lstat`).
@@ -604,7 +773,7 @@ impl LocalDir {
         std::fs::read(&os_path).map_err(|source| self.map_io(path, source))
     }
 
-    /// Raw link target, without interpreting it (`fs.ReadLink`, `local.go:85-87`). A
+    /// Raw link target, without interpreting it (`fs.ReadLink`, `core/storage/local/local.go:82-84`). A
     /// non-link is an OS error (Linux `EINVAL`, macOS `ENOTDIR`), not "not a symlink".
     pub fn read_link(&self, path: &LogicalPath) -> Result<PathBuf, StorageError> {
         let os_path = self.os_path(path);
@@ -612,7 +781,7 @@ impl LocalDir {
     }
 
     /// Resolve the whole symlink chain at the OS level, like `localFS.ResolveSymlink`
-    /// (`local.go:69-75`) via `filepath.EvalSymlinks`.
+    /// (`core/storage/local/local.go:72-77`) via `filepath.EvalSymlinks`.
     ///
     /// [`Follow::Yes`] mirrors Go: relative targets resolve against the link's directory,
     /// `.` components are dropped, a `..` produced **by a link target** is applied to the
@@ -653,7 +822,7 @@ impl LocalDir {
     }
 
     /// OS path for a logical path (`filepath.Join(root, filepath.FromSlash(name))`,
-    /// `local.go:73`). Public so a decoder can be handed the real file; IDs and PIDs must
+    /// `core/storage/local/local.go:76`). Public so a decoder can be handed the real file; IDs and PIDs must
     /// keep using the **logical** path.
     pub fn os_path(&self, path: &LogicalPath) -> PathBuf {
         let mut out = self.root.clone();
@@ -990,6 +1159,30 @@ fn is_windows_volume(path: &Path) -> bool {
         && trimmed.as_bytes()[0].is_ascii_alphabetic()
 }
 
+/// `FileStat` from real metadata, with each timestamp's availability preserved.
+fn stat_of_metadata(metadata: &std::fs::Metadata) -> FileStat {
+    file_stat(
+        metadata.len(),
+        metadata.modified().map_err(|_| StatUnavailable),
+        metadata.created().map_err(|_| BirthTimeUnavailable),
+    )
+}
+
+/// Endpoint classification of a followed stat (`fs.Stat` → `IsDir`/`IsRegular`). A
+/// missing target produces no metadata, so this never yields [`EndpointKind::Missing`].
+fn endpoint_kind_of_metadata(metadata: &std::fs::Metadata) -> EndpointKind {
+    let file_type = metadata.file_type();
+    if file_type.is_dir() {
+        EndpointKind::Dir
+    } else if file_type.is_file() {
+        EndpointKind::File
+    } else if file_type.is_symlink() {
+        EndpointKind::Symlink
+    } else {
+        EndpointKind::Other
+    }
+}
+
 fn kind_of_metadata(metadata: &std::fs::Metadata) -> EntryKind {
     let file_type = metadata.file_type();
     if file_type.is_symlink() {
@@ -1004,7 +1197,7 @@ fn kind_of_metadata(metadata: &std::fs::Metadata) -> EntryKind {
 }
 
 /// Assemble a snapshot from explicit availability. **No fallback timestamp**: Go's
-/// `localFileInfo.BirthTime` substitutes `time.Now()` here (`local.go:112-119`), which is
+/// `localFileInfo.BirthTime` substitutes `time.Now()` here (`core/storage/local/local.go:120-128`), which is
 /// deliberately absent. Kept private; `stat_tests` covers the unavailable states directly,
 /// because `Metadata::created()` never fails on macOS/APFS.
 fn file_stat(
@@ -1059,7 +1252,7 @@ fn pop_component(dest: &mut Vec<OsString>) -> bool {
 /// Errors for the local subset, carrying the logical path like Go's `*fs.PathError`.
 #[derive(Debug)]
 pub enum StorageError {
-    /// Scheme with no implementation (`storage.go:76-78`). Never silently treated as local.
+    /// Scheme with no implementation (`core/storage/storage.go:76-78`). Never silently treated as local.
     UnsupportedScheme {
         /// The scheme that was rejected.
         scheme: String,
@@ -1088,7 +1281,7 @@ pub enum StorageError {
         /// Why it was rejected.
         reason: &'static str,
     },
-    /// Logical path that escapes or is malformed (`fs.ErrInvalid`, `local.go:70`).
+    /// Logical path that escapes or is malformed (`fs.ErrInvalid`, `core/storage/local/local.go:74`).
     InvalidLogicalPath {
         /// The rejected path as written.
         path: String,
@@ -1217,7 +1410,7 @@ mod stat_tests {
 
     #[test]
     fn unavailable_timestamps_stay_unavailable() {
-        // The states Go's BirthTime would paper over with time.Now() (`local.go:112-119`).
+        // The states Go's BirthTime would paper over with time.Now() (`core/storage/local/local.go:120-128`).
         let stat = file_stat(7, Err(StatUnavailable), Err(BirthTimeUnavailable));
         assert_eq!(stat.size, 7);
         assert_eq!(stat.modified, Err(StatUnavailable));

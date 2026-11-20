@@ -5,5 +5,24 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+# SC-02 remainder manifest: the six direct dependencies the user approved (exact list),
+# every one of them already pinned in `rust/Cargo.lock`. No other manifest in the
+# workspace is touched and no new package/version/checksum edge is introduced.
+# nd-mapping: reuse `file_types` classification rather than duplicating MIME logic.
+nd-mapping = { path = "../nd-mapping" }
+# chrono: checked UTC calendar decomposition for the Go `time.Time.String` hash spelling.
+chrono = "0.4"
+# md-5: raw MD5 (`crypto/md5`) for the folder fingerprint, rendered as lowercase hex.
+md-5 = "0.10"
+# regex: scanner-local translation of the pinned Go matcher (`sabhiram/go-gitignore`,
+# go.mod:52). Rust regex is *not* asserted equivalent to every Go regexp spelling:
+# constructs the two engines disagree on are reported, never silently reinterpreted.
+regex = "1.13"
+# tokio: wakeable cancellation (`watch`) and the bounded capacity-1 folder stream.
+tokio = { workspace = true }
+# thiserror: typed scanner errors, per the workspace error-type freeze.
+thiserror = { workspace = true }
+
 [lints]
 workspace = true

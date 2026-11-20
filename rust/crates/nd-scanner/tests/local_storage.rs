@@ -116,7 +116,7 @@ fn file_scheme_and_bare_path_are_accepted() {
     assert_eq!(via_url.root(), bare.root());
     assert!(via_url.exists(&LogicalPath::root()));
 
-    // Go's `For` treats a schema-less string as file:// too (`storage.go:60-66`), including
+    // Go's `For` treats a schema-less string as file:// too (`core/storage/storage.go:60-66`), including
     // a Windows-style path — it is a local root here, never a remote scheme.
     let windowsish = LocalDir::open("C:\\music\\a.mp3").expect("bare path, no scheme");
     assert_eq!(windowsish.root(), Path::new("C:\\music\\a.mp3"));
@@ -499,7 +499,7 @@ fn birth_time_availability_is_reported_honestly() {
         ),
     }
 
-    // Go substitutes time.Now() when no birth time exists (`local.go:112-119`); that
+    // Go substitutes time.Now() when no birth time exists (`core/storage/local/local.go:120-128`); that
     // fallback is deliberately not ported, so the unavailable state is representable and
     // never silently replaced. (The no-fabrication rule itself is asserted in the private
     // `stat_tests` module, since `Metadata::created()` never fails on macOS/APFS.)
@@ -565,7 +565,7 @@ fn read_returns_exact_bytes_including_binary_content() {
     write_file(&root, "empty.mp3", b"");
     assert_eq!(
         store.read(&logical("empty.mp3"), Follow::No).unwrap(),
-        Vec::new()
+        Vec::<u8>::new()
     );
     assert_eq!(
         store

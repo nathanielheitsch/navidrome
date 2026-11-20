@@ -1,14 +1,47 @@
 // nd-scanner: owned by #17 (docs/rust-port/issues.md Part B)
 
-//! Scaffold stage for nd-scanner: this crate instantiates empty so later issues
-//! (#17) can fill it without pulling the world in (#S1 test contract).
+//! Scanner slice of the Rust port: local storage facts, `.ndignore` policy, folder
+//! fingerprints and a bounded cancellable postorder walk.
+//!
+//! Scope actually implemented here — the **nondestructive SC-02 remainder**
+//! (`docs/rust-port/subplans/scanner.md` SC-02):
+//! - [`storage`] — real local `stat`/`read`/`list`/`read_link`/`resolve`, logical paths,
+//!   `file://` URI parsing, symlink classification, plus the additive
+//!   [`storage::LocalDir::list_annotated`] seam that keeps an entry's own `lstat` facts
+//!   distinct from its resolved endpoint's facts.
+//! - [`ignore`] — `.ndignore` loading and a pinned translation of the Go matcher
+//!   (`sabhiram/go-gitignore` at `go.mod:52`), including its stack semantics.
+//! - [`folder`] — the immutable folder snapshot and the Go-compatible MD5 fingerprint,
+//!   with the Go `time.Time.String` UTC spelling ([`folder::go_time_string`]).
+//! - [`walk`] — iterative postorder walk over configured library roots, emitting
+//!   [`walk::FolderEvent`] through a **capacity-1** bounded stream with wakeable
+//!   cancellation and a separately awaited terminal outcome ([`walk::WalkHandle`]).
+//! - [`contract`] — request/target validation, typed errors and warnings, and
+//!   [`contract::CancelToken`].
+//!
+//! ## Explicitly not here
+//!
+//! No database access, no tag reading, no persistence, no controller/phases, no
+//! missing-state or destructive finalization, no watcher, no external progress IPC, no
+//! registry. **This is not SC-02 completion and not MusicFS readiness**: album/artist
+//! projection, `ReadTags`, and DB writes belong to SC-03..SC-06. Nothing in this crate
+//! opens a database resource.
+//!
+//! ## Platform honesty
+//!
+//! Verified on Unix (macOS/Linux). Windows path/volume/junction behaviour is neither
+//! implemented nor exercised, and is a declared coverage gap rather than parity.
+//! Non-UTF-8 entry names are reported as typed warnings and excluded, never lossily
+//! rendered into an identity.
 
-/// Real local-filesystem stat/read/list plus explicit symlink classification — the
-/// deliberately small first slice of SC-02 (`docs/rust-port/subplans/scanner.md`).
-/// Not `MusicFS`, not the walker/ignore/hash surface, and not SC-02 completion.
+pub mod contract;
+pub mod folder;
+pub mod ignore;
 pub mod storage;
+pub mod walk;
 
-/// Scaffold marker: the public surface authored by #17 replaces this constant.
+/// Scaffold marker: kept so the #S1 crate-graph contract still has something to assert.
+/// The scanner's real public surface lives in the modules above.
 pub const OWNED_BY_ISSUE: u8 = 17;
 
 #[cfg(test)]

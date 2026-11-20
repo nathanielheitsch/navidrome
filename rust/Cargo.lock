@@ -959,6 +959,14 @@ version = "0.1.0"
 [[package]]
 name = "nd-scanner"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "md-5",
+ "nd-mapping",
+ "regex",
+ "thiserror 1.0.69",
+ "tokio",
+]
 
 [[package]]
 name = "nd-sched"
