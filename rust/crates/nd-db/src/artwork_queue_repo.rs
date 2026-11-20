@@ -216,7 +216,7 @@ pub fn enqueue_all_missing_sql(
 /// `insertIfNotQueued` (`:99-102`), NOT in the loop:
 /// `Expr(with + "INSERT INTO " + r.tableName + " (" + join(enqueueColumns, ", ") + ") "
 /// + sql + skipIfQueued, args...)`, where `with` is the CTE prefix (`:81`) and `sql` is
-/// the SELECT (`:82-87`). The `INSERT INTO artwork_queue (<enqueueColumns>)` leg therefore
+/// the `INSERT INTO artwork_queue (column list)` leg therefore
 /// sits BETWEEN the CTE and the SELECT. This renderer previously omitted it, producing a
 /// `WITH … SELECT … ON CONFLICT` statement that SQLite rejects outright at PREPARE
 /// (`near "ON": syntax error`), so the executed wrapper could never insert a row.
