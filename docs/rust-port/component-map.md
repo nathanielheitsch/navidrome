@@ -1,19 +1,23 @@
 # Component map — Rust port of this navidrome fork
 
-## Current scheduling amendment (2026-11-20, baseline integrated `master` `e3e0770a`)
+## Current scheduling amendment (2026-11-20, baseline integrated `master` code HEAD `e3e0770a` plus DB-11 `52b04064` and DB-15 runtime `96c495e7`)
 
 Ownership/product mapping below remains useful; **its component arrows and old parallel lanes are not an executable
 task DAG**. Entry point is [`README.md`](README.md); status is [`current-status.md`](current-status.md); milestone order
 is the current section of [`next-work.md`](next-work.md); settled decisions are [`decisions.md`](decisions.md); exact
 prerequisites/decisions/ownership are in `subplans/`. **One writer per checkout** — the user-approved exception is
 parallel **isolated worktrees** with parent-controlled merges — and a verified inherited workspace supersede any
-historical per-file/worktree parallelism. Read-only planning and review may overlap. At `e3e0770a`, DB-10 (`65072b89`/`6e5ca97d`), DB-12's executed artwork invalidation/enqueue subset (`e5d0592d`,
-rustdoc fix `f80b9704`), **DB-22 `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 narrow boundary) and the
+historical per-file/worktree parallelism. Read-only planning and review may overlap. At `96c495e7`, DB-10 (`65072b89`/`6e5ca97d`), DB-12's executed artwork invalidation/enqueue subset (`e5d0592d`,
+rustdoc fix `f80b9704`), **DB-22 `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 narrow boundary), the
 **SC-02 partial `e3e0770a`** (local walker, `.ndignore`/ignore policy, folder hash, cancellation; fast-forwarded onto
-`2e7026b2`, S9 dependency set `b1aeea2c`, corrected at `2e7026b2`) are LANDED, with no production scanner callers,
+`2e7026b2`, S9 dependency set `b1aeea2c`, corrected at `2e7026b2`), **DB-11 `52b04064`** (executed typed scanner reads,
+`D-CURSOR` cursor contract, `ScannerScope`/`UserScope`, `get_visible_media`) and **DB-15's runtime half `96c495e7`**
+(annotation transfer + average-rating recalc; durable Go oracle deferred to the EVID lane, `decisions.md` H6) are
+LANDED, with no production scanner callers,
 no scanner entrypoint or tag-to-DB ingest, and no worker/full-scanner completion — the SC-02 slice is **not** SC-01
-ratification, SC-02 completion or MusicFS readiness. `D-CURSOR`/`D-SCOPE` are recorded (PARENT
-DECIDED 2026-11-20, corrected record `8b5b3925`), so DB-11 is launchable; D-PLUGIN decided the same day (delete `plugin_repo.rs`).
+ratification, SC-02 completion or MusicFS readiness, and neither DB-11 nor DB-15's runtime half is a full package.
+`D-CURSOR`/`D-SCOPE` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`) are now consumed by executed code;
+D-PLUGIN decided the same day (delete `plugin_repo.rs`). **Next is DB-14, LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (`decisions.md` "Folder-write batch contract").
 
 In particular: C10's cancelled C29 edge must not gate scanner work; C10/C19 scanner/playlist relationships must be
 split into phase-1 ingest, playlist import service, and later phase-4 integration; C22/C30 construction/service
@@ -160,7 +164,7 @@ cancelled components (C20/C23/C28/C29/C32) own nothing.
 | Lane | Components → crates (ownership only) | Current note |
 |---|---|---|
 | L0 — shared artifacts | workspace layout, schema/ID/config/credential contracts, wire fixtures, tag vocabulary, mock specs | Frozen; see §4 and the contract files |
-| A — substrate | C03 `nd-conf`, C01 `nd-dbschema`, C02 `nd-db` | Substantial executed reads landed (incl. transcoding `f8ceeb8f`); DB-00 seam landed (`48e65806`/`ec84c176`), DB-02 timestamp contract landed (`6d9d984d`/`74ebd81c`), and the executed `*_in_tx` write lanes DB-04…DB-09/DB-13 landed (`c791dbc1`, `60be7534`, `bfdcfeca`, `2911b9ab`/`9be6ad0e`, `32c4fa5b`/`320b8b03`, `d938d159`/`842c32a2`, `eae4ba1d`/`4ab63cd5`) with no production caller; DB-10 `put_mediafile_in_tx` (`65072b89`/`6e5ca97d`) and DB-12 artwork invalidation/enqueue (`e5d0592d`, rustdoc fix `f80b9704`) also landed, no production scanner caller; typed scanner queries and GC outstanding |
+| A — substrate | C03 `nd-conf`, C01 `nd-dbschema`, C02 `nd-db` | Substantial executed reads landed (incl. transcoding `f8ceeb8f`); DB-00 seam landed (`48e65806`/`ec84c176`), DB-02 timestamp contract landed (`6d9d984d`/`74ebd81c`), and the executed `*_in_tx` write lanes DB-04…DB-09/DB-13 landed (`c791dbc1`, `60be7534`, `bfdcfeca`, `2911b9ab`/`9be6ad0e`, `32c4fa5b`/`320b8b03`, `d938d159`/`842c32a2`, `eae4ba1d`/`4ab63cd5`) with no production caller; DB-10 `put_mediafile_in_tx` (`65072b89`/`6e5ca97d`) and DB-12 artwork invalidation/enqueue (`e5d0592d`, rustdoc fix `f80b9704`) also landed, no production scanner caller; **DB-11 `52b04064`** released the executed typed scanner reads/cursor contract (no caller yet) and **DB-15 runtime `96c495e7`** the annotation transfers; GC (DB-20) and move/reference transactions (DB-16) remain outstanding |
 | B — leaf utilities | C05 `nd-utils`, C04 `nd-id`, C06 `nd-model`, C26 `nd-events`, C27 `nd-sched` | Crate-level done except #12's maintenance/logging half (`OPS-04/05/06`) |
 | C — process/media adapters | C11 `nd-ffmpeg`, C08 `nd-tagreader`, C18 lyric parsers | mpv-IPC half retired with `D-PLAYER26`; declared tagreader gaps stand |
 | D — credential model | C07 `nd-auth` | Components landed; the login native-audience defect is **closed** at BOOT-02 `c6e220eb`/merge `162fae1d` (crate-test round-trip only, no mounted router); HTTP key middleware is an API-01 package |

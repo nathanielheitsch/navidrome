@@ -55,9 +55,13 @@ For SQL predicates the scanner supplies typed inputs only. DB owns ordered binds
 > DB-12 delete-for-items and enqueue variants (`e5d0592d`, rustdoc fix `f80b9704`). DB-10 empty-ID Match miss mints inside
 > each tx attempt; retries may mint different GUIDs, failed attempts publish no ID, only committed result returns ID.
 > BUSY coverage rejects initial INSERT before junction/FTS, not commit failure after a completed bundle. DB-12 is not
-> worker/full scanner completion. **Still unreleased:** typed filtered reads/cursors (DB-11 — `D-CURSOR`/`D-SCOPE` are
-> recorded in `../decisions.md` (`8b5b3925`), so it is launchable once the parent serializes its writer)
-> and GC (DB-20). Released primitives remain caller-trusted (no scope/auth/commit), with no production scanner caller.
+> worker/full scanner completion. **DB-11 LANDED `52b04064`** — typed filtered scanner reads, the `D-CURSOR` cursor
+> contract, `ScannerScope`/`UserScope` and `get_visible_media` are now released (21 executed tests); `SC.query-consumption`
+> is resolved on the DB side, and SC still owns backpressure when it consumes these APIs. **DB-15's runtime half LANDED
+> `96c495e7`** provides the annotation-transfer/average-recalc helpers for album-ID transitions (durable Go oracle
+> deferred to EVID, `../decisions.md` H6). **Still unreleased:** GC (DB-20) and move/reference transactions (DB-16), and
+> DB-14 still needs `SC.folder-write-batch-contract`. Released primitives remain caller-trusted (no scope/auth/commit),
+> with no production scanner caller.
 
 Source refinements for assignments below: existing `nd-db/Cargo.toml:18-23` actually pins `rusqlite=0.32` with bundled/chrono/etc and `chrono=0.4`; proposed scanner dependencies must match that compatible type/features, not workspace's unused `chrono="^2"` placeholder. Actual schema junction names are confirmed `library_artist` and `library_tag` (`nd-dbschema/src/schema_ddl.rs:62-63`). Queue assertions concern `(item_kind,item_id,image_type)`, priority and retry/enqueued timestamps (`schema_ddl.rs:50`); artwork `source` is checked on `item_artwork` (`:51`), not an invented queue source column. Pure aggregate source-test anchors include `model/mediafile_test.go:221` frequency/appearance order, `:272,284,293` ReplayGain non-NULL/real-zero/absent, `:324` participants, and `:373,394,415,441` cover selection. Every dependency expression referring to “DB phase1 subset” also requires **DB every-handle connection policy** above.
 

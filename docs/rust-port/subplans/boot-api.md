@@ -8,11 +8,16 @@
 > `e3e0770a`: DB-10 `65072b89`/`6e5ca97d`, DB-12 artwork invalidation/enqueue subset `e5d0592d` (rustdoc fix
 > `f80b9704`), DB-22 `272c9c66` and the **SC-02 partial `e3e0770a`** (local walker, `.ndignore`, folder hash,
 > cancellation — a partial slice: no scanner entrypoint, `MusicFS`/`ReadTags` dispatch or tag-to-DB ingest, and **not**
-> SC-01/SC-02 completion) are LANDED; still no production scanner caller or artwork worker/full scanner.
-> `D-CURSOR`/`D-SCOPE` are recorded in `../decisions.md` (corrected record `8b5b3925`), so DB-11 is launchable once the
-> parent serializes its writer; DB-22's former DB-12 ownership block is released (see index).
-> Latest parent gates at `e3e0770a`: fmt, workspace clippy and workspace tests pass — **2276/0/1 across 92 workspace
-> suites**; `nd-scanner` docs report 4 pre-existing warnings. Named logs and historical measurements are in
+> SC-01/SC-02 completion) are LANDED, as are **DB-11 `52b04064`** (executed typed scanner reads, `D-CURSOR` cursor
+> contract, `ScannerScope`/`UserScope`, `get_visible_media` — so `EXT-DB-SCOPED-LOOKUP`/`EXT-DB-QUERY` and
+> `API.visible-media-contract` are resolved on the DB side; API-02 still owns the route, revalidation and response) and
+> **DB-15's runtime half `96c495e7`**; still no production scanner caller or artwork worker/full scanner, and collection/
+> count for later API-F* still belongs to DB-21.
+> Latest parent gates at `96c495e7` (cargo/rustc 1.99.1, EXECUTED): fmt, workspace clippy and workspace tests pass —
+> **2302/0/1 across 94 workspace suites** (the ignore is the pre-existing `dump_divergences`); `nd-db` rustdoc is at
+> **22 warnings = baseline** (zero for `sql_annotations.rs`). The prior `e3e0770a` block (**2276/0/1 across 92 suites**,
+> `nd-scanner` docs at 4 pre-existing warnings) and the intermediate `52b04064` block (2297/0/1) are dated history.
+> Named logs and historical measurements are in
 > `../current-status.md`. Package statuses here are planner-time. **One planner-time row below is superseded:** the
 > "Login integration defect" entry in §1
 > (audience-less `create_token`, `check_api_claims` rejecting it, `http_auth.rs` expecting rejection) described `60cdd184`.

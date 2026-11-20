@@ -25,7 +25,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `e3e0770a`; earlier `272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `96c495e7`; earlier `e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -41,28 +41,37 @@ Rules that keep the docs from fighting each other:
   real end-to-end behavior). Never infer one from another or from a test count; a green suite is not server readiness.
 - Contract files keep long source-evidence sections; their **current amendments** override older scout claims.
 - Never mark a package DONE from an agent message — only from a reviewed, verified package on an integrated tree with
-  parent-measured gates. At `e3e0770a`, DB-10, the DB-12 executed subset, DB-22 **and the SC-02 partial** (local walker,
-  `.ndignore`, folder hash, cancellation) are merged; the SC-02 slice is partial, not SC-02 completion or MusicFS readiness.
-  One writer per checkout; parent controls integration.
+  parent-measured gates. At `96c495e7`, DB-10, the DB-12 executed subset, DB-22, the **SC-02 partial**, **DB-11
+  `52b04064`** and **DB-15's runtime half `96c495e7`** are landed; the SC-02 slice is partial, not SC-02 completion or
+  MusicFS readiness, and DB-11/DB-15 stay partial on their own scopes. One writer per checkout; parent controls
+  integration.
 - Labels `EXECUTED` / `SOURCE-VERIFIED` / `INFERRED` / `UNVERIFIED` are mandatory on consequential claims.
 
 ## Current one-line status
 
-Source baseline integrated `master` at `e3e0770a` (the **SC-02 partial** — local walker, `.ndignore`, folder hash and
-cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and the `f80b9704` boundary before it
+Source baseline integrated `master` code HEAD `e3e0770a` (the **SC-02 partial** — local walker, `.ndignore`, folder hash
+and cancellation — fast-forwarded onto `2e7026b2`, docs HEAD `795e8986`) plus **DB-11 LANDED `52b04064`** and **DB-15's
+runtime half LANDED `96c495e7`**, which extend `272c9c66` (DB-22) and the `f80b9704` boundary before it
 (`74ebd81c` + docs consolidation `f03aff98`/merge `3b5e6c76` + the executed write lanes DB-04 `c791dbc1`, DB-05
 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/merge `9be6ad0e`, DB-08 `32c4fa5b`/merge `320b8b03`, DB-09
 `d938d159`/merge `842c32a2`, DB-13 `eae4ba1d`/merge `4ab63cd5`, BOOT-02 native expiring login sessions
 `c6e220eb`/merge `162fae1d`, DB-10 `65072b89`/merge `6e5ca97d`, DB-12 `e5d0592d` and rustdoc fix `f80b9704`): **parent
-integration gates at this code HEAD** pass fmt/clippy/tests and workspace tests at **2276 / 0 / 1 across 92 suites**;
-`nd-scanner` docs report 4 pre-existing warnings (none new from that slice). Earlier standalone DB/doctest counts are
+gates at `96c495e7` (cargo/rustc 1.99.1, EXECUTED)** pass fmt/clippy/tests and workspace tests at **2302 / 0 / 1 across
+94 suites** (the ignore is the pre-existing `dump_divergences`), with `nd-db` rustdoc at **22 warnings = baseline** and
+zero for `sql_annotations.rs`; the prior `e3e0770a` block reported **2276 / 0 / 1 across 92 suites** and `nd-scanner`
+docs at 4 pre-existing warnings. Earlier standalone DB/doctest counts are
 historical, not re-runs at this HEAD; substantial executed reads **and executed transaction-bound writes** landed, **no
-runnable server or scanner**. None of the executed `*_in_tx` primitives has a production caller (`nd-auth` calls
+runnable server or scanner**. None of the executed `*_in_tx` primitives — and none of DB-11's executed scanner reads —
+has a production caller (`nd-auth` calls
 `UserRepo` methods outside them, mounted only in crate tests), and the partial scopes above are **not** full DB-15, not
 SC-01/SC-02, not full auth/API integration, and not the DB lane. **DB-10 and the DB-12 invalidation/enqueue subset are
 LANDED**, not a worker/full scanner; **DB-22 LANDED `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5
 narrow boundary). **SC-02 partial LANDED `e3e0770a`** (rebase base `2e7026b2`; S9 dependency set recorded `b1aeea2c`):
 walker + ignore policy + folder hash + cancellation only — **not** SC-01 ratification, not SC-02 completion, not MusicFS
-readiness, and no scanner entrypoint or tag-to-DB pipeline. The spine resumes at **DB-11**; `D-CURSOR`/`D-SCOPE` are
-**recorded** in `decisions.md` (PARENT DECIDED 2026-11-20, corrected at `8b5b3925`), and **D-PLUGIN** decided the same day
-(delete `plugin_repo.rs` as out-of-scope dead code). See `current-status.md` and `next-work.md` for the details.
+readiness, and no scanner entrypoint or tag-to-DB pipeline. **DB-11 LANDED `52b04064`** (executed typed scanner reads +
+the D-CURSOR cursor contract + `ScannerScope`/`UserScope` + `get_visible_media`; not the full cursor/REST surface, no
+production scanner caller) and **DB-15 runtime half LANDED `96c495e7`** (annotation transfer + average-rating recalc;
+its durable Go oracle is deferred to the EVID lane, `decisions.md` H6, so DB-15 is not fully DONE). `D-CURSOR`/`D-SCOPE`
+(`decisions.md`, PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) are now **consumed by executed code**, and
+**D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code). The spine's next package is
+**DB-14**, now **LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (`decisions.md` "Folder-write batch contract"). See `current-status.md` and `next-work.md` for the details.

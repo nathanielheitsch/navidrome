@@ -304,7 +304,7 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   deterministically reachable from a walk on this platform, that is stated, not papered over. Nothing here authorizes further scanner
   scope or claims SC-01/SC-02 completion or MusicFS readiness.
 
-## Cursor and scope (D-CURSOR, D-SCOPE; record PARENT DECIDED, DB-11 still not launched)
+## Cursor and scope (D-CURSOR, D-SCOPE; record PARENT DECIDED, consumed by DB-11 `52b04064`)
 
 - **D-CURSOR — Two cursor kinds, leased connection, three-way stop taxonomy (PARENT DECIDED 2026-11-20; unblocks DB-11).**
   SOURCE-VERIFIED Go truth (re-verified against `scanner/*.go` and `persistence/` after the first recording's citations
@@ -375,6 +375,38 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `folder_repository.go:77,275-299`, and `scanner/phase_*.go` scope sites. DB-11 must pin the empty-grant deny case,
   the all-grants fast path, and the headless skip with executed tests.
 
+## Folder-write batch contract (D-BATCH; PARENT DECIDED 2026-11-20, unblocks DB-14)
+
+- **D-BATCH — Per-folder tx opened by DB; `persist_folder_delta_in_tx` pub(crate) (PARENT DECIDED 2026-11-20; resolves `SC.folder-write-batch-contract`).**
+  SOURCE-VERIFIED Go truth (scout DB-14 memo, parent re-verified): phase 1 persists **exactly one tx per folder** —
+  `persistChanges` wraps `persistFolder` in `WithTxRetry` (`scanner/phase_1_folders.go:353`), persist stage
+  `Concurrency(1)` `:218-219`; in-tx order `:374-475` (cloned `albumIDMap` `:378` → Folder Put `:390` → Tag Add `:396` →
+  per-artist restricted Put `:403` + Library.AddArtist `:408` + artist queue item `:413` → per-album `persistAlbum` `:419`
+  (Put `:481`, warn-only ReassignAnnotation `:490`, warn-only CopyAttributes `:497`, map delete `:504`) → per-track
+  MediaFile.Put `:430` → warn-only Artwork.DeleteForItems `:439` → MarkMissing `:446` → Album.Touch `:456` → enqueue
+  `:466-470` with `EnqueueIfMissing` only when `lib.FullScanInProgress` `:467`). Partial failure rolls back that folder's
+  entire tx then `stopWalk` aborts the walk; the only multi-folder tx is the phase finalizer (`:527-551`, SC-owned,
+  outside DB-14). **Decision:** (1) DB-14 exposes `persist_folder_delta(store, &FolderWriteBatch)` wrapping
+  `store.try_with_tx_retry_sync` around `persist_folder_delta_in_tx(tx, batch)`, the in-tx fn **`pub(crate)`** — Go-parity
+  granularity/retry/rollback radius, retry-safety by construction (immutable batch; album-ID transitions cloned per
+  attempt); SC may later widen the in-tx fn to `pub` for batching — a one-line change, not a second surface now (the
+  hybrid candidate was rejected: it makes Go-divergent multi-folder batching reachable, whose busy-retry replays N
+  folders and whose rollback radius covers siblings Go would have committed). (2) **Warn-vs-fatal table:** fatal = Folder
+  Put / Tag Add / Artist Put / AddArtist / Album Put / MediaFile Put / MarkMissing / Touch; warn-only (tx still commits)
+  = media artwork invalidation, enqueue, ReassignAnnotation, CopyAttributes (NotFound ignored per `:498`); commit/abort
+  errors always fatal. (3) **ID stability:** SC pre-generates all folder/artist/album IDs (DB refuses empty —
+  `put_folder_in_tx`/`put_album_in_tx`/`put_artist_in_tx`); GUID churn allowed only on the media Match path (DB-09/DB-10
+  per-attempt mint rule). (4) **Retry purity:** batch immutable; no clock reads in-attempt (DB-02 caller-stamped TEXT
+  stamps); no side effects inside the retry closure (post-commit `imageChanges.record` per `:363-367` is SC's, on the
+  published `CommittedFolderOutcome` only — DB publishes nothing pre-commit). (5) **Copy helper (parent-controlled
+  shared edit, DB-13 precedent):** Go calls CopyAttributes inside the folder tx but only renderers exist in Rust
+  (`album_repo.rs` `copy_attributes_read_sql`/`copy_attributes_update_sql`); DB-14 therefore adds a narrow executed
+  `copy_created_at_in_tx` in `album_repo.rs` (Go semantics `album_repository.go:331-357` incl. `0001-`/empty skip);
+  DB-16's planned `copy_album_created_at_in_tx` is the SAME helper — DB-14 writes it first, DB-16 reuses it (collision
+  resolved). (6) **Go quirk preserved:** `mark_media_missing_in_tx` early-return on `err != nil || c == 0`
+  (`mediafile_repository.go:463-467`) stays; fixtures must not expect a zero-matching chunk's siblings to be marked.
+  Evidence basis: scout DB-14 launch memo (citation audit + HEAD primitive locations), parent re-verification of the
+  Go arms cited above. DB-14 is launchable once this record lands and the parent serializes its writer.
 ## Bootstrap and stream seams (BOOT-00, API-04, ffmpeg; drafts 2026-11-20)
 
 - **B1 — Workspace `chrono` placeholder is dead and wrong (PARENT DECIDED 2026-11-20).** `rust/Cargo.toml:66`
@@ -483,6 +515,14 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   registered per connection via `schema::open`. Fixture paths resolve from `CARGO_MANIFEST_DIR`/repository discovery,
   never a developer's absolute path. Process tests must require their external tools/codecs; an early-returning test
   when a tool is missing is not coverage.
+- **H6 — DB-15 durable Go oracle deferred to the EVID lane (PARENT DECIDED 2026-11-20):** the durable tracked Go-harness
+  oracle that would certify DB-15's annotation transfer/average-recalc semantics is **deferred** to the EVID lane
+  (`subplans/evidence-ops.md`, EVID-02 authorization gate recorded in `subplans/README.md` "Oracle harness"), not
+  invented in this lane and not waived. Until it lands, DB-15's Go behavior is pinned by source citations
+  (`sql_annotations.go:185-197`) plus `/tmp`-local Go driver evidence, explicitly labeled local and not committed
+  (`decisions.md` H4: `/tmp`-only oracles are local evidence, not clone-reproducible fixtures). Consequence: `96c495e7`
+  plus the `ab466928` render-only repair complete DB-15's plan scope **except that oracle** — DB-15 must not be marked
+  fully DONE, and EVID-02's approval (or a declined alternative) stays an open parent decision.
 
 ## Scope and label hygiene
 

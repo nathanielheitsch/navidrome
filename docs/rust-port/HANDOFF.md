@@ -10,13 +10,15 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 - Repository: this navidrome fork checkout (Go sources at the root, Rust workspace `rust/`). Resolve paths from the
   working directory — never a developer's absolute path, and never a hardcoded worktree name.
-- Authoritative source baseline: integrated `master` at `e3e0770a` (**SC-02 partial** — local walker, `.ndignore`, folder
-  hash, cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and `f80b9704` (prior `4ab63cd5`
-  plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`). That SC-02
-  slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness. A docs lane may be cut from an earlier
-  boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master` instead of measuring it in your own
-  worktree. Earlier audited boundaries are listed in `current-status.md`'s landed-history table; older handoff baselines are
-  history.
+- Authoritative source baseline: this branch line at `96c495e7` — **DB-11 LANDED `52b04064`** and **DB-15's runtime half
+  LANDED `96c495e7`** on top of integrated `master`'s code HEAD `e3e0770a` (**SC-02 partial** — local walker, `.ndignore`,
+  folder hash, cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and `f80b9704` (prior
+  `4ab63cd5` plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`).
+  That SC-02 slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness; DB-11 is the executed
+  read/cursor contract only and DB-15 is its runtime half only (durable Go oracle deferred — `decisions.md` H6). A docs
+  lane may be cut from an earlier boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master`
+  instead of measuring it in your own worktree. Earlier audited boundaries are listed in `current-status.md`'s
+  landed-history table; older handoff baselines are history.
 - Read order: `README.md` → `next-work.md` **current section only** → `current-status.md` → `decisions.md` → the
   subplan index → the assigned package and its prerequisites → the relevant source contract. Contracts
   (`schema-contract.md`, `config-contract.md`, `credentials.md`, `entity-write-contract.md`, `hydrate-contract.md`,
@@ -34,26 +36,39 @@ The workspace passes its regression gates and is **not** a runnable server or sc
 local-FS walker slice (SC-02 partial at `e3e0770a`) but **no scanner entrypoint, tag-to-DB pipeline or full-scan
 orchestration**; `nd-http` and `nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row
 hooks, substantial
-executed reads **and twenty-two executed transaction-bound `*_in_tx` writes** are landed, including DB-10 identity/base/
-junction writes and DB-12 artwork invalidation/enqueue. Typed specialized scanner queries and GC are not. Tests that manually execute SQL bundles are not production repository methods,
+executed reads **and twenty-four executed transaction-bound `*_in_tx` writes** are landed, including DB-10 identity/base/
+junction writes and DB-12 artwork invalidation/enqueue; **DB-11 LANDED `52b04064`** adds the executed typed scanner reads,
+the D-CURSOR cursor contract, the `ScannerScope`/`UserScope` authorities and the `get_visible_media` point read (21
+tests), and **DB-15's runtime half LANDED `96c495e7`** adds annotation transfer + average-rating recalc (5 tests). Typed
+specialized scanner reads are no longer "not landed" — GC and move/reference transactions still are, and neither DB-11's
+reads nor any write has a production caller. Tests that manually execute SQL bundles are not production repository methods,
 and none of the `*_in_tx` primitives has a production caller (`nd-auth` calls `UserRepo` methods outside them from its own
 production code, but its router is mounted only in crate tests). DB-01 (missing-state bind order), DB-03/D-OPEN
 (effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`),
-DB-02 (`6d9d984d`/`74ebd81c`) and DB-15's **render-only** rating repair (`ab466928`) are landed with executed regressions, as
+DB-02 (`6d9d984d`/`74ebd81c`), DB-15's **render-only** rating repair (`ab466928`) **and its runtime half (`96c495e7`)** are
+landed with executed regressions, as
 are the executed write lanes DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08
-`32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2` and DB-13 `eae4ba1d`/`4ab63cd5` — the DB-15 annotation service and the
-full DB lane are **not**. **DB-10 and DB-12's executed subset are LANDED** (commits above), with no production scanner caller; DB-12 is not
+`32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2` and DB-13 `eae4ba1d`/`4ab63cd5` — DB-15's durable Go oracle is
+**deferred to the EVID lane** (`decisions.md` H6), no annotation service or route exists, and the
+full DB lane is **not** done. **DB-10 and DB-12's executed subset are LANDED** (commits above), with no production scanner caller; DB-12 is not
 worker/full scanner completion. The **SC-02 partial is LANDED at `e3e0770a`** (fast-forwarded onto `2e7026b2` after
 rebase; review findings through S9b closed, the S9 dependency set recorded at `b1aeea2c` and corrected at `2e7026b2`):
 local walker, `.ndignore`/ignore policy, folder hash and cancellation with executed walker/ignore/hash/seam tests. That is
 a **partial slice** — no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB ingest, full-scan orchestration or
 watcher, and **not** SC-01 ratification, SC-02 completion or MusicFS readiness; the former `rust-sc02-local-walker`
-worktree/branch are removed. DB-11 is next in the spine and launchable — `D-CURSOR`/`D-SCOPE` are recorded in
-`decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`), with the parent serializing its writer. DB-22
-LANDED `272c9c66`. Latest parent gates at `e3e0770a`: 2276/0/1 across 92 workspace suites, fmt check, workspace clippy and
-`git diff --check` clean, `nd-scanner` docs at 4 pre-existing warnings; the earlier `272c9c66` block (2171/0/1 across 88
-suites, `nd-db` docs at 23 pre-existing warnings) and older blocks remain dated history. See `current-status.md` for
-attribution/logs. BOOT-02's login-session
+worktree/branch are removed. **DB-11 LANDED `52b04064`** (executed typed scanner reads, cursor contract,
+`ScannerScope`/`UserScope`, `get_visible_media`) and **DB-15's runtime half LANDED `96c495e7`** (annotation transfer +
+average-rating recalc on the caller's tx); `D-CURSOR`/`D-SCOPE` (`decisions.md`, corrected record `8b5b3925`) are now
+consumed by executed code. DB-22
+LANDED `272c9c66`. Latest parent gates at `96c495e7` (cargo/rustc 1.99.1, EXECUTED): 2302/0/1 across 94 workspace suites
+(the ignore is the pre-existing `dump_divergences`), fmt check, workspace clippy and `git diff --check` clean, `nd-db`
+rustdoc at 22 warnings = baseline (zero for `sql_annotations.rs`); the intermediate `52b04064` block (2297/0/1), the
+`e3e0770a` block (2276/0/1 across 92 suites, `nd-scanner` docs at 4 pre-existing warnings), the earlier `272c9c66` block
+(2171/0/1 across 88 suites, `nd-db` docs at 23 pre-existing warnings) and older blocks remain dated history. See
+`current-status.md` for attribution/logs. **Next is DB-14, LAUNCHABLE** — its last blocker, the
+`SC.folder-write-batch-contract` decision, is resolved as **D-BATCH** (PARENT DECIDED 2026-11-20, `decisions.md`
+"Folder-write batch contract": per-folder tx opened by DB, `persist_folder_delta_in_tx` `pub(crate)`, warn-vs-fatal
+table, SC pre-generated IDs, parent-controlled `album_repo.rs` `copy_created_at_in_tx` helper for DB-16's later reuse). BOOT-02's login-session
 native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middleware, a mounted router, and stream
 prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and

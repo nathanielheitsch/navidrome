@@ -1,4 +1,4 @@
-# Subplan index — the one task/dependency map (baseline integrated `master` `e3e0770a`, updated 2026-11-20)
+# Subplan index — the one task/dependency map (baseline integrated `master` code HEAD `e3e0770a` plus DB-11 `52b04064` and DB-15 runtime `96c495e7`, updated 2026-11-20)
 
 **Planning authority, NOT implementation authorization.** This file is the parent-owned index that reconciles the four
 technical subplans into a single task graph, resolves the semantic prerequisite aliases each lane invented into actual
@@ -12,7 +12,7 @@ Lane files (verbatim planner output, parent-published):
 
 | File | Covers | Packages | Verdict |
 | --- | --- | --- | --- |
-| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` (partial). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** **DB-22 LANDED `272c9c66` (executed genre/scrobble/playqueue/artwork reads; narrow-read subset per C5 — not full Go parity).** The **SC-02 partial LANDED `e3e0770a`** (local walker, `.ndignore`, folder hash, cancellation — not SC-01/SC-02 completion, no scanner entrypoint or ingest). DB-11 is next in spine order and launchable: `D-CURSOR`/`D-SCOPE` are recorded in `../decisions.md` (`8b5b3925`), with the parent serializing its writer. DB-14 stays blocked on `SC.folder-write-batch-contract` |
+| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` **and its runtime half LANDED `96c495e7`** (`AnnotationEntityKind`, `AnnotationWriteError`, `update_avg_rating_in_tx`, `reassign_annotation_in_tx`, 5 executed tests) — DB-15 is **not** fully DONE: the durable Go-harness oracle is deferred to the EVID lane (`../decisions.md` H6; authorization gate in this index). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** **DB-22 LANDED `272c9c66` (executed genre/scrobble/playqueue/artwork reads; narrow-read subset per C5 — not full Go parity).** **DB-11 LANDED `52b04064`** (executed typed scanner reads + cursor contract + `ScannerScope`/`UserScope` + `get_visible_media`; 21 executed tests; not the full cursor/REST surface — the `SEEDEDRAND` seeded full-set render stays with the REST/API lane; no production scanner caller and no `nd-scanner` consumption). The **SC-02 partial LANDED `e3e0770a`** (local walker, `.ndignore`, folder hash, cancellation — not SC-01/SC-02 completion, no scanner entrypoint or ingest). **DB-14 is next in spine order and LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract") |
 | [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY. A local-FS storage subset LANDED `e9dd8230`/`ff5b9c92`, and the **SC-02 partial LANDED `e3e0770a`** (fast-forwarded onto `2e7026b2`): bounded local walker, `.ndignore`/ignore policy, folder hashing and cancellation with executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`, and the six approved dependencies recorded in `../decisions.md` S9 (`b1aeea2c`, corrected at `2e7026b2`). **Partial scope**: no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB ingest, full-scan orchestration or watcher — **not** SC-01 ratification, not SC-02 completion, not MusicFS readiness. `SC-01` ratification remains unrecorded, so SC-03+ stay gated. |
 | [`boot-api.md`](boot-api.md) | #24, #33 graph, #27A | BOOT-00…04, API-00…06, API-F1…F7, BOOT-F1 | spec-first; #27A gated. **BOOT-02 landed** `c6e220eb`/`162fae1d` (login mints a native expiring session) — the login-session correction only, **not** full auth/API integration: BOOT-00 and API-04 are `DECISION REQUIRED`, API-00 is READY for specification with launches blocked on BOOT-00, and BOOT-01/03/04 plus API-01/02/03/05/06 are BLOCKED; no router is mounted. |
 | [`evidence-ops.md`](evidence-ops.md) | parity residual + #03/#31 | EVID-01…08, OPS-01…07, FRONT-* | mostly BLOCKED/decision; EVID-01's snapshot/contract amendments largely folded into these docs |
@@ -40,17 +40,17 @@ agent message — the dependency is met only by a verified, reviewed package.**
 | --- | --- | --- | --- |
 | `EXT-DB-CONNECTION` | **DB-03** (+ **DB-00** typed seam) | DB | Decision `D-OPEN` owned jointly with **BOOT-00**. Bundled SQLite is FK=1 / busy 5000 ms; do not assume FK-off. |
 | `EXT-DB-LIBRARY` | **DB-05** | DB | BOOT-01 owns configured-library policy; DB-05 owns executed typed insert/update. |
-| `EXT-DB-SCOPED-LOOKUP` | **DB-11** (API-safe point read) | DB | Needs `D-SCOPE`; static internally-built membership only; no raw user SQL. Not #27A-blocking on its own. |
+| `EXT-DB-SCOPED-LOOKUP` | **DB-11** (API-safe point read) — **LANDED `52b04064`** | DB | `D-SCOPE` consumed by the executed `UserScope` authority: internally-built membership only, no raw user SQL, deny arms for zero-grant/empty library. Not #27A-blocking on its own; API-02 still owns the route. |
 | `EXT-DB-EPOCH` | **DB-13** | DB | Epoch-only increment + RETURNING; `D-REVOKE`; consumed by BOOT/API, not a route. |
-| `EXT-DB-QUERY` | **DB-11** (+ later collection/count via **DB-21**) | DB | Typed executed query/count for later API-F*; not a #27A prerequisite. |
+| `EXT-DB-QUERY` | **DB-11** — **LANDED `52b04064`** (+ later collection/count via **DB-21**) | DB | Typed executed scanner queries/cursors now exist; collection/count for later API-F* still belongs to **DB-21**; not a #27A prerequisite. |
 | `EXT-SC-REAL-SCAN` | **SC-05** (min for #27A) / **SC-06** (complete phase 1) | SC | In-process phase-1 entry that really reads tagged media, commits, reopens, reads back. Full watcher/subprocess not required. |
 
 ### `SC.*` handshakes (db-runtime → scanner owner)
 
 | Handshake | Provided by | Consumed by |
 | --- | --- | --- |
-| `SC.query-consumption` | SC-05/SC-06 | DB-11 (cancel/backpressure boundary) |
-| `SC.folder-write-batch-contract` | SC-05/SC-06 | DB-14 |
+| `SC.query-consumption` | SC-05/SC-06 | DB-11 (cancel/backpressure boundary) — **RESOLVED by DB-11 `52b04064`**: the DB side ships the visitor/`Control`/`VisitOutcome`/`CursorError` contract and owns early-stop plus lease release; SC still owns backpressure when it consumes these APIs |
+| `SC.folder-write-batch-contract` | **RESOLVED as D-BATCH (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract"): per-folder tx opened by DB, `persist_folder_delta_in_tx` pub(crate)** | SC-05/SC-06 consume the batch types | DB-14 (launchable) |
 | `SC.mapping-bridge` | SC-03 | DB-21 (P1-DB exit) |
 | `SC.phase1-fixture` | SC-05 | DB-21 (P1-DB exit) |
 | `SC.move-selection` | SC-07 | DB-16 |
@@ -66,7 +66,7 @@ agent message — the dependency is met only by a verified, reviewed package.**
 | `BOOT.epoch-revoke` | BOOT + **DB-13** | API-03 |
 | `API.revoke-authorization` | API-03 | DB-13 |
 | `BOOT.configured-library-caller` | BOOT-01 (uses DB-05) | DB-21 (P1-DB), SC-14 |
-| `API.visible-media-contract` | API-02 (+ DB-11) | DB-11 |
+| `API.visible-media-contract` | API-02 (+ DB-11) | DB-11 — **RESOLVED by DB-11 `52b04064`**: `get_visible_media` is the executed DB-side point read and typed scope authorities are the only public scope inputs; API-02 owns revalidation/auth/response and the route |
 
 ### `FRONT-*` (evidence-ops) — full service frontier, not #27A gates
 
@@ -83,8 +83,8 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 | `D-ERROR` | **DECIDED 2026-11-18 (parent, option B), LANDED `48e65806` + merge `ec84c176`.** Additive `try_with_tx`/`try_with_tx_retry` beside `with_tx*` (no signature churn): callback `DbOperationError<E>` (`Domain(E) / Sqlite{stage, source}`) and runtime `DbRuntimeError<E>` adds `RollbackFailed{original, rollback}` and `Pool(StoreError)`, SQLite cause retained through `Error::source()`, no string loss; COMMIT-stage busy is reachable so the Commit branch issues no second ROLLBACK. Retryable set is BUSY-only (H2, amended by review). Record: `../decisions.md` E1-E3, H2. | DB-00 (landed) and all compound writes | DB — resolved |
 | `D-TIME` | **DECIDED 2026-11-18 (parent), LANDED `6d9d984d` + merge `74ebd81c`.** Scanner stamps stored as TEXT via `time::value`; Go's `<> canonical zero` idle predicate kept verbatim (the DDL sentinel makes a fresh library count as in-progress — inherited, pinned); the real defect was INTEGER affinity. Record: `../decisions.md` T1-T4. Residual: `scrobble_buffer` `play_time`/`enqueue_time` still bind integers and `find_recent_files_by_properties_sql` has no executed pin. | DB-02 (landed), DB-05/07/08/09/10 | DB — resolved |
 | `D-OPEN` | **DECIDED 2026-11-18 (user, option a), LANDED at `4a8aac9f`.** Typed `DbOpenOptions` as explicit per-connection PRAGMA statements with effective-state read-back before pooling; Go-compatible DSN parser (keeps genuine URI params, rejects unknown ones); defaults matching Go (WAL for file DBs, 15000 ms, NORMAL, FK on; `:memory:` keeps the memory journal). Record: `../decisions.md` P1. | DB-03, every runtime acceptance | BOOT-00 + DB — resolved |
-| `D-CURSOR` | **RECORDED 2026-11-20 (first draft corrected at `8b5b3925` after citation audit).** Two typed cursor kinds (single-statement vs id-chunked), leased connection owned for the whole iteration, three-way stop taxonomy (`Sqlite` error vs `Closed` vs clean end), chunk 600, `SEEDEDRAND` full-set render not a cursor, prefix-drop deviation declared. `../decisions.md` "Cursor and scope". | DB-11 (now assignable; parent serializes launch) | DB + SC |
-| `D-SCOPE` | **RECORDED 2026-11-20 (corrected with D-CURSOR at `8b5b3925`).** `applyLibraryFilter` (`sql_base_repository.go:261-283`) omits the clause for admin/headless/all-grants, otherwise appends `library_id IN (SELECT … user_library …)`; no `1=1` for users; zero-grant non-admin matches nothing (deny). `library_filter: Option<Sql>` stays the only scope parameter, resolved once by the caller; scanner scope (configured library IDs) and user read scope stay distinct. `../decisions.md` "Cursor and scope". | DB-11, API-02 (assignable) | DB + API |
+| `D-CURSOR` | **RECORDED 2026-11-20 (first draft corrected at `8b5b3925` after citation audit), CONSUMED by DB-11 `52b04064`.** Two typed cursor kinds (single-statement vs id-chunked), leased connection owned for the whole iteration, three-way stop taxonomy (`Sqlite` error vs `Closed` vs clean end), chunk 600, `SEEDEDRAND` full-set render not a cursor, prefix-drop deviation declared. `../decisions.md` "Cursor and scope". | DB-11 (landed) | DB + SC |
+| `D-SCOPE` | **RECORDED 2026-11-20 (corrected with D-CURSOR at `8b5b3925`), CONSUMED by DB-11 `52b04064`.** `applyLibraryFilter` (`sql_base_repository.go:261-283`) omits the clause for admin/headless/all-grants, otherwise appends `library_id IN (SELECT … user_library …)`; no `1=1` for users; zero-grant non-admin matches nothing (deny). `library_filter: Option<Sql>` stays the only scope parameter, resolved once by the caller; scanner scope (configured library IDs) and user read scope stay distinct. `../decisions.md` "Cursor and scope". | DB-11 (landed), API-02 (assignable) | DB + API |
 | `D-REVOKE` | **IMPLEMENTED, but the canonical decision record is MISSING — a documentation gap for the parent, not a settled authority.** The DB-13 primitive LANDED `eae4ba1d` + merge `4ab63cd5`: epoch-only `revoke_tokens_in_tx` with `RETURNING`, an overflow/`typeof` guard, no-row `NotFound` classification and a same-tx existence read; `Exhausted` is terminal. That shape was settled *in the parent's review of the lane* (the `/tmp` review record), and no `D-REVOKE` entry exists in `../decisions.md`, so this row must not be read as a recorded decision. Consumers remain BOOT/API (`BOOT.epoch-revoke`, `API.revoke-authorization`), and post-commit token observation is still theirs to decide. | DB-13 (landed), API-03 | DB — implementation landed; **decision record outstanding**; BOOT/API consumption open |
 | `D-STATS` | Retain Go partial-commit/nonfatal cleanup or approve stronger atomicity | DB-18 | DB |
 | `D-GC` | Selective-scope GC semantics + uploaded-image post-commit ownership | DB-20 | DB + SC |
@@ -94,7 +94,7 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 | `D-PLAYER26` | **DECIDED 2026-11-18 — user-approved in-session (explicit): split #26.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `PlayerRepo`); **drop** the mpv/jukebox device service. Canonical register/touch placement belongs to API-01. See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F1/F5, player wiring — resolved | parent/user |
 | `D-PLAYER-EDIT` | **DECIDED 2026-11-18 — user-approved in-session (explicit): per-device preference editing is retained product scope.** A device profile is editable by its owner: `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`user_id` immutable, field whitelist enforced), and the profile list a client picks `transcoding_id` from needs a **read-only** `GET /api/transcoding` (profile *creation/editing* stays dropped, Part C item 1). The executing `transcoding_repo` read **landed at `f8ceeb8f`**, so the remaining prerequisites are the BOOT-owned `DEFAULT_TRANSCODINGS` seed and the route. See "Per-device editing (D-PLAYER-EDIT)" below. | API-00 registry capture, API-01, API-03, API-F1/F5, `FRONT-26` — read resolved; seed + route remain | parent/user |
 | `plugin_repo` scope | **OPEN — parent's call, not resolved by the docs lane.** Whether `plugin_repo.rs` belongs in the port at all: the `plugin` table is dropped (`../schema-contract.md`, Part C item 14) and every statement it renders fails with `no such table: plugin`. Options/recommendation: [`../next-work.md`](../next-work.md) §"Decision ask". | Any lane touching `plugin_repo.rs`; plugin surface in `FRONT-*` | parent |
-| Oracle harness | Approve new tracked Go harness under `testdata` (no Go-source edits) or an approved alternative; toolchain availability | EVID-02/03, SC-00 durable captures | parent |
+| Oracle harness | Approve new tracked Go harness under `testdata` (no Go-source edits) or an approved alternative; toolchain availability | EVID-02/03, SC-00 durable captures, and the **DB-15 durable annotation-transfer oracle deferred here (PARENT DECIDED 2026-11-20, `../decisions.md` H6)** | parent |
 | Fixture/toolchain | Durable fixture location/recipe, synthetic-only credentials, `ffmpeg`/`ffprobe` provenance, native path disclosure/redaction | EVID-03, SC-00, API-06 | parent |
 
 ---
@@ -123,18 +123,20 @@ Dependency order: `DB-01` (**LANDED `f57ae050`**) → `DB-02` (**LANDED `6d9d984
 `4a8aac9f`**) → `DB-00` (**LANDED `48e65806`/`ec84c176`, additive seam**) → `DB-04` (**LANDED `c791dbc1`**) → `DB-05`
 (**LANDED `60be7534`**) → `DB-06` (**LANDED `bfdcfeca`**) → `DB-07` (**LANDED `2911b9ab`/`9be6ad0e`**) →
 `DB-08` (**LANDED `32c4fa5b`/`320b8b03`**) → `DB-09` (**LANDED `d938d159`/`842c32a2`**) → `DB-10` (**LANDED
-`65072b89`/`6e5ca97d`**) → `DB-11` (**next, launchable: `D-CURSOR`/`D-SCOPE` recorded in `../decisions.md`
-(PARENT DECIDED 2026-11-20, corrected record `8b5b3925`); parent still serializes its writer**) → `DB-12`
-(**LANDED executed subset `e5d0592d`, rustdoc fix `f80b9704`**) → `DB-15` → `DB-14` → `DB-21(P1-DB)`.
-`DB-15`'s **render-only** rating repair LANDED at `ab466928` and does **not** complete DB-15: the typed
-annotation reassignment/merge transactions, annotation reads, and executed read-back remain.
+`65072b89`/`6e5ca97d`**) → `DB-11` (**LANDED `52b04064`: `D-CURSOR`/`D-SCOPE`, recorded in `../decisions.md`
+(PARENT DECIDED 2026-11-20, corrected record `8b5b3925`), now consumed by executed code**) → `DB-12`
+(**LANDED executed subset `e5d0592d`, rustdoc fix `f80b9704`**) → `DB-15` (**runtime half LANDED `96c495e7`** on the
+render-only repair `ab466928`) → `DB-14` (**next; LAUNCHABLE — `SC.folder-write-batch-contract` resolved as D-BATCH**) → `DB-21(P1-DB)`.
+`DB-15`'s **render-only** rating repair LANDED at `ab466928` and its **runtime half** — the typed annotation
+reassignment/average-recalc transactions — LANDED at `96c495e7`; DB-15 is still **not** fully DONE because the durable
+Go-harness oracle is deferred to the EVID lane (`../decisions.md` H6), and no annotation service or route caller exists.
 `DB-13` (**LANDED `eae4ba1d`/`4ab63cd5`**) was inserted for BOOT/API revoke after `DB-00/03`; nothing calls it yet.
 `DB-16 → 17 → 18 → 19 → 20`
 extend phase 2+/GC for the full-scanner exit.
 
 ### Step 2 — scanner (gated on DB releases; a local-FS subset and the SC-02 partial have landed)
-`SC-00/01` decisions → `SC-02` → `SC-03` → **`SC-05` first vertical** (needs the DB phase-1
-write subset + DB-11/typed folder query) → `SC-04` → `SC-06` complete phase 1 → `SC-07` →
+`SC-00/01` decisions → `SC-02` → `SC-03` → **`SC-05` first vertical** (needs the DB phase-1 write subset + DB-11 typed folder query — **DB-11 LANDED `52b04064`, so
+that prerequisite is met**, though SC-05 stays gated on `SC-01` ratification and its own decision set) → `SC-04` → `SC-06` complete phase 1 → `SC-07` →
 `SC-08` → (`PL-SERVICE` #23, then) `SC-09` → (`DB-20` released, then) `SC-10` → `SC-11` →
 `SC-14` integrated in-process release. `SC-12/13` recorded early but off the critical path.
 A local-filesystem storage/symlink-safe-classification subset LANDED at `e9dd8230`/`ff5b9c92` (std-`fs` list/stat/read/`read_link`/resolve/exists, `file://` URI parsing); it was a prerequisite-independent slice, **not** SC-01 ratification or SC-02 completion. **The SC-02 remainder (bounded walker, `.ndignore` ignore policy, folder hashing, cancellation) LANDED at `e3e0770a`**, fast-forwarded onto `2e7026b2` after rebase and re-review; the parent's gates at that HEAD are recorded in `../current-status.md`. That is still **partial**, not SC-02 completion: no scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration or watcher. `SC-01` ratification remains unrecorded, so SC-03+ remain gated.
@@ -166,20 +168,25 @@ step now that code has landed.
 
 ---
 
-## Current assignable packages (as of `e3e0770a`)
+## Current assignable packages (as of `96c495e7`)
 
 **LANDED:** DB-10 signed implementation `65072b89` / signed merge `6e5ca97d`; DB-12 signed implementation `e5d0592d`
 fast-forwarded, rustdoc fix `f80b9704`. Parent reports DB-10 review APPROVE with P3s fixed and DB-12 APPROVE after test fixes.
 Neither has a production scanner caller; DB-12 is not a worker/full scanner. Former DB-10/12 worktrees and branches are
 absent on the final verified worktree/ref check (external cleanup during this refresh, not performed by this lane).
 
-**LANDED since that row, partial scopes:** the **SC-02 partial** at `e3e0770a` (fast-forwarded onto `2e7026b2`): local
+**LANDED since that row, partial scopes:** **DB-11 `52b04064`** (executed typed scanner reads, the D-CURSOR cursor
+contract, `ScannerScope`/`UserScope`, `get_visible_media`; 21 executed tests; no production scanner caller, no
+`nd-scanner` consumption, not the full cursor/REST surface) and **DB-15's runtime half `96c495e7`** (annotation transfer
++ average-rating recalc on the caller's tx; 5 executed tests; durable Go oracle deferred to EVID — `../decisions.md` H6,
+so DB-15 is not fully DONE), plus the **SC-02 partial** at `e3e0770a` (fast-forwarded onto `2e7026b2`): local
 walker, `.ndignore`/ignore policy, folder hash and cancellation in `nd-scanner` with executed walker/ignore/hash/seam tests,
 manifest/lock delta limited to the six approved dependencies (`decisions.md` S9, `b1aeea2c`; corrected S9b `2e7026b2`).
 It is a partial slice — **not** SC-01 ratification, SC-02 completion or MusicFS readiness — and the former
 `rust-sc02-local-walker` worktree and branch are now absent (parent-controlled merge, then cleanup).
 
-**Landed since `ff900d3e`, partial scopes:** `DB-15` render-only repair `ab466928` (full annotation service NOT done),
+**Landed since `ff900d3e`, partial scopes:** `DB-15` render-only repair `ab466928` (superseded on the runtime items by
+`96c495e7`; the durable oracle and any annotation service/route remain NOT done),
 scanner local-FS subset `e9dd8230`/`ff5b9c92` (NOT SC-01/SC-02), `DB-00` typed seam `48e65806`/`ec84c176` (seam only),
 `DB-02` `6d9d984d`/`74ebd81c` (canonical TEXT stamps/cutoffs, `library_repo::zero_time_value()`, artwork-purge cutoff
 with executed coverage; it left scrobble-buffer integer stamps and no executed pin for
@@ -194,10 +201,13 @@ statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` wr
 **Ready now:**
 
 * **DB-22 LANDED `272c9c66`** (parent-validated 2026-11-20): executed genre/scrobble/playqueue/artwork reads with Go-compatible scalar codecs, strict timestamp scanning, BLOB-coercion fixtures, an allowlisted safe sort, and all-or-error queue chunks. C5 documents the narrow boundary (no expression/random sorts, no optioned Genre reads).
-* **DB-11 is next in the spine and now launchable:** all code prerequisites including DB-10 landed, and `D-CURSOR` and
-  `D-SCOPE` are recorded in `../decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`); the parent still
-  serializes its writer. DB-14 stays blocked on `SC.folder-write-batch-contract`; DB-15 runtime
-  is READY but parent-sequenced after DB-11, not technically blocked; DB-16…20 retain later decisions (`D-STATS`, `D-GC`) and DB-11 dependencies.
+* **DB-11 LANDED `52b04064`** and **DB-15's runtime half LANDED `96c495e7`** (dated parent measurements 2026-11-20): the
+  executed scanner read/cursor contract with typed scope authorities, and annotation transfer + average-rating recalc on
+  the caller's tx. Both stay partial — no production caller, and DB-15's durable Go oracle is deferred to the EVID lane
+  (`../decisions.md` H6). **Next is DB-14, LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as **D-BATCH** (per-folder
+  tx opened by DB, `persist_folder_delta_in_tx` pub(crate), parent-controlled `album_repo.rs` copy helper; `../decisions.md`
+  "Folder-write batch contract"). DB-16…20 retain later decisions (`D-STATS`, `D-GC`) and their DB-11/DB-15
+  dependencies, which are now satisfied.
 * **`SC-00` / `API-00`** (read-only/spec) — oracle manifest + native wire-contract capture, pending the
   oracle-authorization decision above.
 * **`OPS-01`** — re-derive the schema golden and keep DDL/data-seeding separate; prerequisite-independent and it also
@@ -207,8 +217,10 @@ statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` wr
 **Done (dated parent measurements):** `DB-01` `f57ae050`, `DB-03`/`D-OPEN` `4a8aac9f`, sort gate `62789ba2`,
 executed transcoding reads `f8ceeb8f`, `DB-00` `48e65806`/`ec84c176`, `DB-02` `6d9d984d`/`74ebd81c`, `DB-04` `c791dbc1`,
 `DB-05` `60be7534`, `DB-06` `bfdcfeca`, `DB-07` `2911b9ab`/`9be6ad0e`, `DB-08` `32c4fa5b`/`320b8b03`, `DB-09`
-`d938d159`/`842c32a2`, `DB-13` `eae4ba1d`/`4ab63cd5`, `BOOT-02` `c6e220eb`/`162fae1d`. Historical gates at `4ab63cd5` are
-recorded in [`../current-status.md`](../current-status.md); the latest parent gates at `e3e0770a` (92 suites, 2276/0/1) and
+`d938d159`/`842c32a2`, `DB-13` `eae4ba1d`/`4ab63cd5`, `BOOT-02` `c6e220eb`/`162fae1d`, `DB-11` `52b04064`,
+`DB-15` runtime half `96c495e7`. Historical gates at `4ab63cd5` are
+recorded in [`../current-status.md`](../current-status.md); the latest parent gates at `96c495e7` (94 suites, 2302/0/1),
+the intermediate `52b04064` block (2297/0/1), the `e3e0770a` block (92 suites, 2276/0/1) and
 the earlier `f80b9704` block are recorded there as well.
 
 Everything else waits on a recorded decision or an earlier release. Implementation assignments go one writer per

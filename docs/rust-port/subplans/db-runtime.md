@@ -1,10 +1,12 @@
 # DB runtime implementation subplan — assignment contracts, NOT implementation authorization
 
-**Package `Status:` lines below are the planner's state at `60cdd184`, amended to integrated `master` `e3e0770a`**
+**Package `Status:` lines below are the planner's state at `60cdd184`, amended to `96c495e7` (DB-11 `52b04064` + DB-15
+runtime `96c495e7`, on integrated `master` code HEAD `e3e0770a`)**
 and superseded where they conflict with
 [`../current-status.md`](../current-status.md) **and** [`../subplans/README.md`](../subplans/README.md) **(2026-11-20):**
 DB-01 LANDED `f57ae050`, DB-03 LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only repair LANDED
-`ab466928` (full DB-15 NOT done), scanner local-FS subset LANDED `e9dd8230`/`ff5b9c92` (not SC-01/SC-02), DB-02 LANDED
+`ab466928` **and its runtime half LANDED `96c495e7`** (DB-15 still not fully DONE — durable Go oracle deferred to EVID,
+`../decisions.md` H6), scanner local-FS subset LANDED `e9dd8230`/`ff5b9c92` (not SC-01/SC-02), DB-02 LANDED
 `6d9d984d`/`74ebd81c` (canonical TEXT stamps, `zero_time_value()`, artwork-purge cutoff; scrobble-buffer integer stamps and
 the un-pinned `find_recent_files_by_properties_sql` cutoff remain open). **Now also LANDED, each as an executed
 transaction-bound primitive: DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07
@@ -14,8 +16,12 @@ transaction-bound primitive: DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca
 and that auth router is mounted only in crate tests, not in a server. DB-10 is LANDED (`65072b89`, signed merge `6e5ca97d`); DB-12's executed artwork invalidation/enqueue subset is LANDED
 (`e5d0592d`, fast-forward; rustdoc follow-up `f80b9704`); DB-22 is LANDED `272c9c66` (executed genre/scrobble/playqueue/
 artwork reads, C5 narrow boundary). Neither has a production scanner caller; DB-12 is not a worker
-or full scanner. The DB spine resumes at **DB-11, next in order and launchable** — `D-CURSOR`/`D-SCOPE` are recorded in
-`../decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`) — with the parent still serializing its writer.
+or full scanner. **DB-11 is LANDED `52b04064`** (executed typed scanner reads, the D-CURSOR cursor contract,
+`ScannerScope`/`UserScope` and the `get_visible_media` point read; 21 executed tests in NEW
+`tests/runtime_scanner_queries.rs`; no production scanner caller, no `nd-scanner` consumption, not the full cursor/REST
+surface) and **DB-15's runtime half is LANDED `96c495e7`** (annotation transfer + average-rating recalc on the caller's
+tx; 5 executed tests; durable Go-harness oracle deferred to the EVID lane, `../decisions.md` H6). The spine's next
+package is **DB-14**, now **LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract") now that DB-15's runtime half has landed.
 The scanner side is unchanged by this plan: the SC-02 partial landed at `e3e0770a` (local walker, `.ndignore`, folder hash,
 cancellation) is a partial slice — not SC-01 ratification, SC-02 completion or MusicFS readiness — and still gives no
 `*_in_tx` write a production caller. Settled decisions now live in
@@ -350,7 +356,25 @@ result on identical fixtures).
 
 ## DB-11 — Typed scanner reads, cancellation/resource decision and API-safe point read
 
-1. **Status: decisions RECORDED, launchable (parent serializes the writer).** `D-CURSOR` and `D-SCOPE` are recorded in `../decisions.md` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`); prereqs DB-00/02/03/05/07/09/10 are landed. Remaining handshakes `SC.query-consumption`, `API.visible-media-contract` are the consumer-side bindings to resolve at assignment. Goal: executed scanner query shapes and explicit resource contract; not full REST/artist index/search, artwork cursor everywhere, mapping bridge or worker scheduler.
+1. **Status: LANDED at `52b04064`** (7 files, `nd-db`; parent gate at that HEAD 2297 / 0 / 1 — dated history). Implemented
+   shape matches the proposal below: NEW `src/scanner_queries.rs` with row-visitor cursors on one leased connection
+   (`Control`/`VisitOutcome`/`CursorError` = the `D-CURSOR` three-way stop taxonomy; `IdChunkedCursor` terminal after a
+   failed chunk), the eight executed scanner reads (`media_in_folder`/`media_in_album`/`media_in_filter`,
+   `missing_and_matching`, `recent_candidates`, `touched_albums`, `album_ids_by_folders`,
+   `sole_album_artist_ids_in_subtrees`, `media_by_paths`), the opaque authorities `ScannerScope` (system, configured
+   library ID only) and `UserScope` (resolved once per request; admin/headless(-1)/all-grants omit the clause, otherwise
+   the deny clause `library_id IN (SELECT … FROM user_library …)`; zero-grant and empty-library arms both deny; no `1=1`
+   for users), and `get_visible_media` as a thin wrapper over `MediaFileRepo::get`. Review fixes folded in:
+   `folder_subtree_filter` fresh-conjunction root return per Go (`folder_repository.go:214-216`; mixed root+path batches
+   bind and execute), sole-artist subtree builder dropped `album.missing` (parity `album_repository.go:294-296`),
+   `CURSOR_CHUNK_SIZE` 300 → 600 (`D-CURSOR`(4)). NEW `tests/runtime_scanner_queries.rs` = **21 executed tests**.
+   **Not done:** full cursor/REST completion (the `SEEDEDRAND` seeded full-set render is deferred to the REST/API lane),
+   no production scanner caller, no `nd-scanner` consumption. The handshakes `SC.query-consumption` and
+   `API.visible-media-contract` are **RESOLVED by this diff** — the typed scope authorities are the only public scope
+   inputs. `D-CURSOR`/`D-SCOPE` were recorded in `../decisions.md` (PARENT DECIDED 2026-11-20, corrected record
+   `8b5b3925`) and are now consumed by executed code; prereqs DB-00/02/03/05/07/09/10 were landed. V/proposal lines
+   below retain pre-implementation references. Goal at assignment: executed scanner query shapes and explicit resource
+   contract; not full REST/artist index/search, artwork cursor everywhere, mapping bridge or worker scheduler.
 2. **V:** Media get_all634 lacks QueryOptions filters, album get_all1508 likewise. Go scanner per-folder cursor `phase_1_folders.go:231`, per-album media `phase_3_refresh_albums.go:79`, missing/matching74/recent235/254 in phase2, touched albums50 in phase3, image changes80/93. Builders exist: media1691/1727/1777/1651/1514, album1315/1290; execution query_all collects Vec (`execution.rs:53-60`), folder CursorDrain1284-1340 is full drain only. Go cursor protocol `sql_base_repository.go:392-438`. Existing `mediafile_repo_get_random_phase_two_reapplies_the_library_filter`, g2 cursor prefix test and two-library tests are narrow precedents.
 3. **Own:** NEW `src/scanner_queries.rs`, NEW `tests/runtime_scanner_queries.rs`, `src/lib.rs`; add typed wrappers/internal renderer changes only in `mediafile_repo.rs`, `album_repo.rs`, `folder_repo.rs`, `artist_repo.rs` as enumerated before assignment. Existing raw SQL functions remain low-level trusted builders, not API inputs. Collision major repo files plus SC/BOOT consumers; no nd-model/mapping changes.
 4. **Proposal/gate:** typed methods for `media_in_folder`, `media_in_album`, `missing_and_matching(libraryId)`, `recent_candidates(Mbz/Properties,since)`, `touched_albums(libraryId)`, `album_ids_by_folders`, `sole_album_artist_ids_in_subtrees`, `media_by_paths` (phase4). Registered filter enums/typed IDs and chrono bounds; explicit stable PID order. **Recommend synchronous row visitor** `FnMut(OwnedRecord)->ControlFlow<()>` on a leased conn, per-row PostScan inside callback, then close before returning. SC may adapt to bounded channel in spawn_blocking; SC owns backpressure, DB visitor owns early-stop/cancel closure and cannot recheck out store. Approve bounded per-folder owned Vec only as an explicit phase1 alternative, not a complete cursor. General external callbacks must not retain Row/Statement/lease or perform nested DB writes. Decide first-error/prefix return and use typed `VisitOutcome{visited,stopped}` + Err; no false cursor parity.
@@ -402,7 +426,15 @@ result on identical fixtures).
 
 ## DB-14 — Final folder-delta persistence transaction (DB-owned SC seam)
 
-1. **Status: BLOCKED.** Prereqs DB-00/04/05/06/07/08/09/10/12/15 and `SC.folder-write-batch-contract`; DB-11 for integrated read-back. Goal: execute one folder delta in Go order with retry-safe inputs; NOT filesystem walk, tag mapping, album aggregation/equals, controller or phase scheduling.
+1. **Status: LAUNCHABLE — `SC.folder-write-batch-contract` RESOLVED as `D-BATCH` (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract"): per-folder tx opened by DB, `persist_folder_delta_in_tx` `pub(crate)`, warn-vs-fatal table, SC pre-generates folder/artist/album IDs, immutable batch with no in-attempt clocks, and a parent-controlled narrow `album_repo.rs` edit for the executed `copy_created_at_in_tx` helper (Go `album_repository.go:331-357` incl. `0001-`/empty skip; DB-16's planned `copy_album_created_at_in_tx` is the SAME helper — DB-14 writes it first, DB-16 reuses it).** Every DB-side prereq is landed:
+   DB-00/04/05/06/07/08/09/10/12, **DB-11 `52b04064`** (integrated typed scanner reads + cursor contract for read-back)
+   and **DB-15's runtime half `96c495e7`** (annotation transfer + average-rating recalc for general album-ID transitions;
+   its durable Go oracle is deferred to the EVID lane — `../decisions.md` H6 — which does not gate this package's
+   implementation). The "Own" line below gains exactly one parent-authorized repo edit (`album_repo.rs` copy helper);
+   no other repo edits. Goal: execute one folder delta in Go order with retry-safe inputs; NOT filesystem walk, tag
+   mapping, album aggregation/equals, controller or phase scheduling. Citation note: the V line's
+   `phase_1_folders.go:353-486` range truncates the warn-only ReassignAnnotation/CopyAttributes arms; the full
+   persistence sequence is `:348-506` (scout DB-14 memo citation audit).
 2. **V:** Go `scanner/phase_1_folders.go:353-486` persists in one retryable tx: folder, tags, artists+library links, albums, tracks, media artwork invalidation, missing marks/touches, queue. AlbumIDMap cloned on every retry375-380, postcommit image changes at363-370. Rust currently has no combined operation; store has only generic transaction seam.
 3. **Own:** NEW `src/scanner_writes.rs`, NEW `tests/runtime_folder_persistence.rs`, `src/lib.rs`; O folder-delta cases. Calls prior functions, no parallel edits to repo implementations or SC mapping files. Input types in same new module; collision SC consumes types, DB-16 may add transitions only after this writer stops.
 4. **Proposal:** immutable `FolderWriteBatch { library_id,folder:FolderRecord,tags,artists,albums,media,missing_media_ids,album_transitions,queue_items,full_scan_mode,clock }`; SC supplies fully constructed typed records, IDs/storage facts and aggregate decision. `persist_folder_delta(store,batch)->CommittedFolderOutcome` opens typed retry tx; internal `persist_folder_delta_in_tx` ordered statements. Publish IDs/warnings/affected sets ONLY after commit. Keep scope checks against batch library and ID existence; no untrusted public actor. Error severity: core writes fatal, artwork invalidation/enqueue and Go annotation/copy warn-only where Go does so, but transaction-aborted/commit errors always fatal. Define structured warnings with original cause, no secrets/record dumps. No mutation of shared batch maps during retries.
@@ -586,7 +618,19 @@ costs one test file. Do not add it before the mutation renderers stabilize (DB-0
 it will fail on intentionally-partial shapes like `refresh_counters_sql`.
 
 
-1. **Status: repair portion LANDED at `ab466928` (render-only rating repair — this does NOT complete DB-15); runtime half READY as a plan, currently unassigned and parent-sequenced after DB-11.** DB-00 (`48e65806`/`ec84c176`) and DB-03 (`4a8aac9f`) are landed; this plan records no remaining technical prerequisite for DB-15 itself. This is queue status, not a technical block. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation average on ID changes. Non-goals: general rating/starring endpoints.
+1. **Status: runtime half LANDED at `96c495e7`** (2 files, `nd-db`; 5 executed tests in NEW
+   `tests/runtime_annotation_transfers.rs`) **on top of the render-only repair LANDED at `ab466928`**; parent gate at
+   `96c495e7` is 2302 / 0 / 1 across 94 suites. Implemented shape matches the proposal below: `AnnotationEntityKind`
+   closed enum, `AnnotationWriteError`, `update_avg_rating_in_tx` and `reassign_annotation_in_tx` on the caller's tx
+   (DB-00 seam), with Go `ReassignAnnotation` parity (`sql_annotations.go:185-197`) — the OR IGNORE move keeps the
+   target's conflict, leaves the conflicting source row, and recalculates the target average in the same tx. **PARENT
+   DECISION (2026-11-20, `../decisions.md` H6): the durable Go-harness oracle is DEFERRED to the EVID lane**
+   (`evidence-ops.md`; authorization gate in `README.md`); Go behavior is pinned by source citations plus `/tmp`-local Go
+   driver evidence, labeled local and not committed. **DB-15 is therefore not fully DONE beyond what this plan's DoD
+   allows** — the oracle obligation stays open, and no annotation service/route caller exists (field 10's
+   "no runtime transfer caller before this passes" is satisfied: there is none). DB-00 (`48e65806`/`ec84c176`) and DB-03
+   (`4a8aac9f`) were already landed. Goal: prevent activating two-placeholder/three-bind renderer and preserve annotation
+   average on ID changes. Non-goals: general rating/starring endpoints.
 2. **V, newly found during planning:** `B/sql_annotations.rs:301-309` `update_avg_rating_sql` emits `SET average_rating=? WHERE id=?` but args `[itemId,table,itemId]`; the actual aggregate expression is separately `average_rating_expr_sql:314-316`, not embedded. Existing `update_avg_rating_binds_subquery_args_before_where_id`602-620 pins that inconsistent shape. Go `persistence/sql_annotations.go:151-162` embeds coalesced rounded avg positive ratings; `ReassignAnnotation:185-196` UPDATE OR IGNORE then update average. No execution by planner/parent claimed for this new renderer defect.
 3. **Own:** `src/sql_annotations.rs`, NEW `tests/runtime_annotation_transfers.rs`, O annotation fixtures. Prefer new runtime helper in this file or fixed registered entity enum in runtime_error/types; no arbitrary table input. Collision DB-16/20, shared helpers potential external API later.
 4. **Proposal:** repair SQL to embed average_rating_expr_sql and exactly3 ordered binds; `reassign_annotation_in_tx(tx,EntityKind,old,new)->Result<(),DbRuntimeError>` short-circuits empty/equal IDs per Go, moves OR IGNORE, recalculates target average in same tx. Duplicate per-user target annotation wins; do not merge or delete source conflict rows silently. Preserve zero/NULL/unrated average rule and type string `album` vs artwork prefix (not interchangeable).
@@ -816,11 +860,11 @@ DB-00/01/02/03/05 -> DB-07
 DB-00/02/03/05 -> DB-08
 DB-00/02/03/05/06/08 -> DB-09
 DB-00/02/03/05/06/08/09 -> DB-10
-D-CURSOR + D-SCOPE + SC.query-consumption + DB-00/02/03/05/07/09/10 -> DB-11
+D-CURSOR + D-SCOPE + SC.query-consumption + DB-00/02/03/05/07/09/10 -> DB-11  (LANDED 52b04064; handshakes resolved by that diff)
 DB-00/02/03 -> DB-12
 D-REVOKE + DB-00/03 -> DB-13 -> BOOT.epoch-revoke / API.revoke-authorization
-DB-00/03 -> DB-15 (renderer repair can precede these)
-SC.folder-write-batch-contract + DB-00/04/05/06/07/08/09/10/11/12/15 -> DB-14
+DB-00/03 -> DB-15 (renderer repair can precede these)  (repair ab466928 + runtime half 96c495e7 LANDED; durable Go oracle deferred to EVID)
+SC.folder-write-batch-contract + DB-00/04/05/06/07/08/09/10/11/12/15 -> DB-14  (all DB prereqs landed; the SC contract is the only remaining blocker)
 SC.mapping-bridge + SC.phase1-fixture + BOOT.configured-library-caller + DB-14 -> DB-21(P1-DB)
 DB-00/02/03/07/09/10/11/15 -> DB-16 -> SC.phase2
 DB-00/02/03/05/06/08/09/10 -> DB-17
@@ -832,9 +876,10 @@ DB-16/17/18/19/20 + SC.full-phase-contract + SC.playlist-import-contract -> DB-2
 
 DB-21's P1 exit requires only genuinely consumed phase1 APIs; e.g. API visible-point test and future phase2 reads in DB-11 need not delay a parent-approved narrower DB-11 phase1 handoff, but cannot be reported complete. If split, retain stable IDs with explicit acceptance checklist states; do not silently delete the unimplemented obligations. DB-14 needs DB-15 for phase1 album-ID transitions; a no-transition first fixture may demonstrate only a strictly narrower exit, not general phase1 parity.
 
-Recommended **serial** writer order (DB-01/02/03/00, DB-04…DB-10/DB-12/DB-13 are landed at `f80b9704`, DB-22 at `272c9c66`;
-the spine now resumes at **DB-11**, launchable because `D-CURSOR`/`D-SCOPE` are recorded in `../decisions.md` (`8b5b3925`)):
-DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**). Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10, the DB-12 subset and DB-22 `272c9c66` are landed, and the SC-02 partial landed at `e3e0770a` (a partial slice: no scanner entrypoint or ingest, not SC-01/SC-02 completion); DB-11 is launchable once the parent serializes its writer. DB-22's prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`.
+Recommended **serial** writer order (DB-01/02/03/00, DB-04…DB-10/DB-12/DB-13 are landed at `f80b9704`, DB-22 at `272c9c66`,
+**DB-11 at `52b04064`** and **DB-15's runtime half at `96c495e7`** — so the spine's next package is **DB-14**, blocked only
+on `SC.folder-write-batch-contract`):
+DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**). Then DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB). Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10, the DB-12 subset and DB-22 `272c9c66` are landed, as are **DB-11 `52b04064`** (executed typed scanner reads/cursors; `SEEDEDRAND` full-set render still with the REST/API lane) and **DB-15 runtime `96c495e7`** (durable Go oracle deferred to EVID, `../decisions.md` H6); the SC-02 partial landed at `e3e0770a` (a partial slice: no scanner entrypoint or ingest, not SC-01/SC-02 completion). No executed read or write has a production caller. DB-22's prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`.
 
 ## MUST-answer questions before relevant launch
 
@@ -1013,11 +1058,17 @@ DB-10 is LANDED `65072b89`/`6e5ca97d`; DB-12's artwork invalidation/enqueue subs
    artist/album/mediafile/playlist_tracks/plugin/scrobble; one reviewed package with the
    goldens, not twelve edits. Low priority: nil value impact.
 5. **Then mutations** (DB-04..DB-10), which is the real critical path into #17.
-6. **Cross-cutting follow-up (not DB-owned):** `nd-stream` lib test
-   `the_poller_exits_on_teardown_even_when_the_client_never_hangs_up` occasionally takes
-   ~30s against a 3s deadline under full-workspace load. Reproduced as a single failing
-   binary in one run, clean in the other three runs and isolated. Needs its own
-   investigation in `nd-stream`, not a DB change.
+6. **Cross-cutting follow-up (not DB-owned):** `nd-stream` **integration** test
+   `the_poller_exits_on_teardown_even_when_the_client_never_hangs_up`
+   (`rust/crates/nd-stream/tests/transcode_cache.rs:1582-1617`). **Record corrected 2026-11-20:** the original wording
+   here — "occasionally takes ~30s against a 3s deadline under full-workspace load" — was wrong on both numbers. There is
+   no 3 s deadline: `wait_for_poller` (`transcode_cache.rs:183-191`) polls 600 × 20 ms = 12 s in every revision, and the
+   ~30 s figure conflated wall-clock time serialized behind `PROCESS_LOCK` with that loop's deadline. No retained log
+   corroborates a failure (only `... ok` lines), a source audit of the poller finish paths found no unbounded hang, and
+   26+ clean runs include 3 full-binary runs under 8-core load; judgment is harness/load-sensitive plus environmental,
+   with a real bug ruled out. A causal `wait_for_entry_gone` before `wait_for_poller` is scoped for a later writer that
+   touches `nd-stream/tests/transcode_cache.rs` only; **not implemented and the flake is not claimed fixed** — needs its
+   own investigation in `nd-stream`, not a DB change.
 
 ## Coverage audit: renderers with no executed coverage (2026-11-18, parent-measured)
 
