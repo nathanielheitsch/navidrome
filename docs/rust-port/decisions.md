@@ -234,6 +234,20 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   must be parenthesized (`expr.go:384-386`) because SQL binds `AND` tighter than `OR`. Four fragments still emit a
   bare `OR` and are tracked as residuals in `hydrate-contract.md` (`child_playlist_filter_sql`,
   `criteria_sql::Cond`'s `Or` join, `playlist_track_repo::add_discs_sql`, `artwork_queue_repo::source_filter_sql`).
+- **S7 — Existing local walker remediation (PARENT DECIDED 2026-11-20; narrow, not SC-01 ratification).** Authorize only
+  fixes to the existing SC-02 local walker slice, with no new dependencies or manifest/lock changes: use logical library-relative
+  components for ancestor `.ndignore` preload; make async cancellation sticky for pre-subscription observers; report ignore-pattern
+  warnings once per actual file load/push (including repeated loads); exclude unrepresentable non-UTF-8 names with raw-path warnings
+  and mark the owning folder `EntriesIncomplete` without lossy identity/matcher conversion. `WalkHandle::terminal()` drains and
+  discards remaining events through channel EOF before joining; `Complete` means the producer completed, not that another caller
+  observed every event. Callers that need events use `next()`/`drain_and_join()`; preserve the worker's terminal error/outcome.
+  Match Go's broken-link `modTime` ordering without moving all accumulation after classification. Keep conservative regex refusal as
+  an explicit policy, correct its rationale/goldens; retain the typed hash error and exclusion for unavailable captured mtime and
+  correct its comment. Remove the unreachable `EnumerationIncomplete`/`Ignored` coverage variants/branch. Keep duplicate/overlapping
+  targets Go-compatible; their idempotent persistence obligation belongs to SC-06. This approves no other scanner interface,
+  dependency, manifest, Go-source or cross-package work; SC-01 remains **DECISION REQUIRED**, and these repairs do not establish
+  SC-01 ratification, SC-02 completion or MusicFS readiness. Merge remains gated on implementation, independent review and parent CLI
+  validation. Source basis: `/tmp/nav-sc02-final-review.md` and the read-only remediation plan; no execution is implied.
 
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
