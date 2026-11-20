@@ -1563,23 +1563,29 @@ pub fn sole_album_artist_filter_sql(artist_id: &str) -> Sql {
 /// `albumartist[0].id`. Repeated ids across chunks are fine (the queue
 /// upserts by PK, `:218`); `paths` chunks at 100
 /// (`subtreePathChunkSize`, `folder_repository.go:204`).
+///
+/// DB-11 corrected the statement to carry NO album-`missing` predicate: Go's
+/// `Where(And{soleAlbumArtistFilter, inSubtree})` (`album_repository.go:294-296`)
+/// has none, so a missing album in a matching subtree IS reported — which is what
+/// the image-change queue needs, since it must also see albums whose folders
+/// vanished. The previous `AND album.missing = ?` over-restricted the read. The
+/// only production caller of this builder is
+/// [`crate::scanner_queries::sole_album_artist_ids_in_subtrees`], so the fix is
+/// in place rather than in a parallel variant.
 #[must_use]
 pub fn get_sole_album_artist_ids_in_subtrees_sql(lib_id: i64, paths: &[String]) -> Vec<Sql> {
     const SUBTREE_PATH_CHUNK_SIZE: usize = 100;
     let mut result = Vec::new();
     for chunk in paths.chunks(SUBTREE_PATH_CHUNK_SIZE) {
         let (subtree_sql, subtree_args) = crate::folder_repo::folder_subtree_filter(lib_id, chunk);
-        let mut args = subtree_args;
-        args.push(Value::Bool(false));
         result.push((
             format!(
                 "SELECT distinct json_extract(participants, '$.albumartist[0].id') \
                  FROM {ALBUM_TABLE} WHERE {SOLE_ALBUM_ARTIST_FILTER} AND \
                  EXISTS (SELECT 1 FROM json_each(album.folder_ids) je \
-                 join folder on folder.id = je.value WHERE {subtree_sql}) \
-                 AND album.missing = ?"
+                 join folder on folder.id = je.value WHERE {subtree_sql})"
             ),
-            args,
+            subtree_args,
         ));
     }
     result

@@ -1812,6 +1812,36 @@ pub fn update_probe_data_sql(id: &str, data: &str) -> Sql {
 /// ways when its numeric prefix is ambiguous (`:364-374`).
 #[must_use]
 pub fn find_by_paths_sql(by_library: &[(i64, Vec<String>)], unqualified: &[String]) -> Option<Sql> {
+    find_by_paths_scoped_sql(by_library, unqualified, None)
+}
+
+/// [`find_by_paths_sql`] plus the caller's resolved library scope — the
+/// `applyLibraryFilter` that Go applies to this read
+/// (`mediafile_repository.go:397`: `r.applyLibraryFilter(ctx, r.newSelect(ctx)
+/// .Columns("*").Where(query))`).
+///
+/// ADDITIVE: the existing no-scope call keeps its exact statement text and arg
+/// order, so the admin/headless-context callers (`cmd/missing.go:139`,
+/// `core/playlists/parse_m3u.go:97`) are unchanged. `scope` is a DB-rendered
+/// clause (`crate::scanner_queries::membership_clause`), never raw caller SQL
+/// (`D-SCOPE(1)`), and it joins the already-open `WHERE` with ` AND `
+/// (squirrel's `WhereParts` rule, `select.go:112-117`) AFTER the path groups,
+/// matching Go's build order: `Where(query)` first, `applyLibraryFilter` last.
+/// Empty inputs still render `None` (`:393-395`), so a scope alone never issues
+/// a statement.
+///
+/// `#[doc(hidden)]`: the `scope` parameter is raw clause TEXT, so this is the
+/// internal renderer seam. The public entry point is
+/// [`crate::scanner_queries::media_by_paths`], which takes the opaque
+/// [`crate::scanner_queries::UserScope`] and renders the clause itself — no caller
+/// can hand this function SQL of its own.
+#[doc(hidden)]
+#[must_use]
+pub fn find_by_paths_scoped_sql(
+    by_library: &[(i64, Vec<String>)],
+    unqualified: &[String],
+    scope: Option<Sql>,
+) -> Option<Sql> {
     let mut groups: Vec<String> = Vec::new();
     let mut args: Vec<crate::sqlrepo::Value> = Vec::new();
     for (library_id, paths) in by_library {
@@ -1837,10 +1867,14 @@ pub fn find_by_paths_sql(by_library: &[(i64, Vec<String>)], unqualified: &[Strin
     if groups.is_empty() {
         return None;
     }
-    Some((
-        format!("SELECT * FROM {TABLE} WHERE ({})", groups.join(" OR ")),
-        args,
-    ))
+    let mut sql = format!("SELECT * FROM {TABLE} WHERE ({})", groups.join(" OR "));
+    if let Some((clause_sql, clause_args)) = scope {
+        // The path group's own parenthesized WHERE is already open, so the scope
+        // joins it with AND rather than opening a second WHERE.
+        sql.push_str(&format!(" AND {clause_sql}"));
+        args.extend(clause_args);
+    }
+    Some((sql, args))
 }
 
 /// `Delete` (`mediafile_repository.go:401-403`).

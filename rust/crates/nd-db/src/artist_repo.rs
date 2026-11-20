@@ -152,9 +152,14 @@ pub const INVALID_USER_ID: &str = "-1";
 /// `Some(id)` a logged-in non-admin.
 pub type User = Option<String>;
 
-/// `artworkChunkSize` (`artwork_hydration.go:16`, `artworkBatchSize`*3)
-/// of `GetCursor`'s id pre-pass (`streamByIDs`, `:24-34`).
-pub const CURSOR_CHUNK_SIZE: usize = 300;
+/// `artworkChunkSize` (`artwork_hydration.go:15-17`, `artworkBatchSize`*3 = 600)
+/// of `GetCursor`'s id pre-pass (`streamByIDs`, `:19-34`).
+///
+/// DB-11 corrected this constant from 300 to 600 per `D-CURSOR(4)`
+/// (`docs/rust-port/decisions.md`: cursor id chunk 600, artwork info batch 200):
+/// the previous 300 mis-mirrored Go's 600, and nothing in the crate consumed the
+/// constant before this lane, so no existing behavior changed.
+pub const CURSOR_CHUNK_SIZE: usize = 600;
 
 /// `RefreshStats`'s batch size (`:520`).
 pub const REFRESH_STATS_BATCH_SIZE: usize = 1000;

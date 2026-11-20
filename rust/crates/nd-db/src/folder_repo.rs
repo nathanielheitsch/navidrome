@@ -519,20 +519,32 @@ pub fn get_folder_update_info_batch_sql(lib_id: i64, target_paths: &[String]) ->
 /// each path's `folder.id`, `folder.path` and the escaped
 /// `folder.path LIKE … ESCAPE '\'` prefix (squirrel renders a flat `Or{…}`
 /// with one ` OR ` between every clause, no inner grouping). A path that
-/// cleans to `"."` selects the whole library and drops the path conditions
-/// (`:215-217`). The fragment is caller-bound (Go composes it inside
+/// cleans to `"."` selects the whole library and returns a FRESH clause: the
+/// path conditions AND the args accumulated so far are both dropped, wherever
+/// the root path sits in the batch (`:214-216`). The fragment is caller-bound
+/// (Go composes it inside
 /// `Exists(...)` joins, `album_repository.go:291-293`).
 #[must_use]
 pub fn folder_subtree_filter(lib_id: i64, paths: &[String]) -> Sql {
-    let mut args: Vec<Value> = vec![Value::Integer(lib_id), Value::Bool(false)];
+    // Go builds `conds` as it goes and RETURNS the fresh
+    // `And{Eq{library_id}, Eq{missing}}}` the moment a path cleans to "."
+    // (`folder_repository.go:214-216`), so earlier paths' conditions AND args are
+    // dropped. Args are therefore appended only AFTER the `.` check, per path:
+    // pre-building them would hand the whole-library clause stale extra args and
+    // every caller would fail binding with InvalidParameterCount.
+    let mut args: Vec<Value> = Vec::new();
     let mut or_clauses: Vec<String> = Vec::new();
     for p in paths {
         let clean = clean_path(p.strip_prefix('/').unwrap_or(p));
         if clean == "." {
             return (
                 "(folder.library_id = ? AND folder.missing = ?)".to_string(),
-                args,
+                vec![Value::Integer(lib_id), Value::Bool(false)],
             );
+        }
+        if args.is_empty() {
+            args.push(Value::Integer(lib_id));
+            args.push(Value::Bool(false));
         }
         or_clauses.push("folder.id = ?".to_string());
         or_clauses.push("folder.path = ?".to_string());
