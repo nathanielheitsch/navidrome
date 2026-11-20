@@ -4,9 +4,10 @@ Read order and authority: [`README.md`](README.md) → this current section (mil
 [`current-status.md`](current-status.md) (measured evidence) → [`decisions.md`](decisions.md) (binding decisions) →
 `subplans/` (bounded assignments). Everything below the separator is a **dated historical index**, not a scheduler.
 
-## Current execution plan (baseline integrated `master` `f80b9704`, updated 2026-11-19)
+## Current execution plan (baseline integrated `master` `272c9c66` (DB-22), re-dated 2026-11-20)
 
-`f80b9704` adds DB-12 `e5d0592d` (signed implementation, fast-forward), DB-10 `65072b89` (signed implementation) / signed
+`272c9c66` adds DB-22 (executed genre/scrobble/playqueue/artwork reads, C5 narrow boundary) to the prior boundary `f80b9704`
+which added DB-12 `e5d0592d` (signed implementation, fast-forward), DB-10 `65072b89` (signed implementation) / signed
 merge `6e5ca97d`, and DB-12 rustdoc fix `f80b9704` to the prior boundary:
 `4ab63cd5` = `74ebd81c` + `f03aff98`/merge `3b5e6c76` (docs consolidation) + `c791dbc1` (DB-04 property writes) +
 `60be7534` (DB-05 library writes + scan lifecycle) + `bfdcfeca` (DB-06 tag dictionary/library links) + `2911b9ab`/merge
@@ -14,7 +15,7 @@ merge `6e5ca97d`, and DB-12 rustdoc fix `f80b9704` to the prior boundary:
 parity) + `d938d159`/merge `842c32a2` (DB-09 atomic album writes) + `c6e220eb`/merge `162fae1d` (BOOT-02 native expiring
 login sessions) + `eae4ba1d`/merge `4ab63cd5` (DB-13 epoch-only revocation). Evidence is in `current-status.md`; this
 section only sets order. Nothing here authorizes implementation, commits, new workspaces, or completion claims. This
-docs lane runs in the **integrated master checkout itself** at `f80b9704`; latest Cargo gates are parent integration
+docs lane runs in the **integrated master checkout itself** at `272c9c66`; latest Cargo gates are parent integration
 results (logs checked here), while this lane's earlier `4ab63cd5` measurements remain historical.
 
 ### Authority and launch rules

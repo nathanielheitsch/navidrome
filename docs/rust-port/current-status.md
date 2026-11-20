@@ -155,7 +155,7 @@ stale.
 | Playlist tracks/scrobble buffer | Delegating hooks and builders present | Partial reads; buffer dequeue executes | Not full playlist/scrobbler services |
 | Artwork queue | Builders and plain mapper present | Reads/counts, `purge_queued`, transaction-bound enqueue variants and artwork delete-for-items execute (DB-12 `e5d0592d`) | No production scanner caller; worker lifecycle not implemented |
 | Transcoding module | Builders present | **Executed reads landed at `f8ceeb8f`** (`read_all`/`count_all`, `command` masked for a non-admin) | No route, no default-profile seed; profile **editing** out of scope |
-| Artwork/genre/playqueue/plugin/scrobble/smart_playlist | Reads remain builder-only in these repos; artwork invalidation now executes | Artwork item-image lookup separately executes in `artwork_hydration.rs`; artwork `delete_for_items_in_tx` executes | Not full repository/service completion; `plugin` scope decision pending (`next-work.md` §"Decision ask (scope)") |
+| Artwork/genre/playqueue/scrobble/plugin/smart_playlist | genre/playqueue/scrobble executed reads **landed at `272c9c66` (DB-22)**; artwork item-image lookup and invalidation execute; plugin/smart_playlist remain render-only | Artwork item-image lookup separately executes in `artwork_hydration.rs`; artwork `delete_for_items_in_tx` executes | Not full repository/service completion; `plugin` decided for deletion by D-PLUGIN (`decisions.md`, `89b72894`), not yet executed; `smart_playlist` not a separate Go repo |
 | DB store/pool | Sync/async lease and transaction/retry APIs exist | SQLite work runs on the blocking boundary | Effective per-connection configuration **landed** (DB-03); typed seam **landed** (`48e65806`/`ec84c176`, DB-00) and DB-04…DB-10/12/13 consume it |
 | Schema | Fresh DDL, migrations/marker, extensions, indexes, backup/optimize | Executed schema tests (61 at `4ab63cd5`) | No default library row; repair deferred; no bootstrap caller |
 | Tagreader/mapping | Real lofty backend and metadata mapping | Crate-level implementation/tests | No storage→record→DB ingest caller |
@@ -165,13 +165,15 @@ stale.
 | Scheduler | Scheduling primitives implemented | Crate tests | Full maintenance/logging and bootstrap remain |
 
 Repository sources: `rust/crates/nd-db/src/*_repo.rs`, `hydrate.rs`, `marshal.rs`, `store.rs`, `pool.rs`, `execution.rs`.
-Executed reads do not prove all methods execute. Re-counted at integrated `master` `f80b9704` by this lane
+Executed reads do not prove all methods execute. Re-counted at integrated `master` `272c9c66` (DB-22):
 (SOURCE-VERIFIED: grep for `execution::query`/`execution::execute`/`read_hydrated`/`prepare_and_then` across the 23
-`*_repo.rs` modules): **16 modules execute through the shared helper** (artwork, property, playlist_track, radio,
-scrobble_buffer, transcoding, album, artist, tag, folder, artwork_queue, mediafile, playlist, library, player, user),
-**2 execute on raw connections** outside it (`share`, `user_props`), and **five are render-only** (`genre`,
-`playqueue`, `plugin`, `scrobble`, `smart_playlist` — `smart_playlist` is not a separate Go repository; `plugin` scope
-decision pending). Twenty-two executed transaction-bound write functions exist (`grep 'pub fn .*_in_tx'`):
+`*_repo.rs` modules): **19 modules execute through the shared helper** (artwork, property, playlist_track, radio,
+scrobble_buffer, transcoding, album, artist, tag, folder, artwork_queue, mediafile, playlist, library, player, user,
+**genre, scrobble, playqueue** — the last three added by DB-22 `272c9c66`),
+**2 execute on raw connections** outside it (`share`, `user_props`), and **two are render-only** (`plugin`,
+`smart_playlist` — `smart_playlist` is not a separate Go repository; `plugin` is decided for deletion by D-PLUGIN
+`decisions.md`, record at `89b72894`, not yet executed).
+Twenty-two executed transaction-bound write functions exist (`grep 'pub fn .*_in_tx'`):
 property `put_in_tx`/`delete_in_tx`, library `put_in_tx`/`scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/
 `add_artist_in_tx`, tag `add_in_tx`, folder `put_folder_in_tx`/`mark_folders_missing_in_tx`, mediafile
 `mark_media_missing_in_tx`/`mark_media_missing_by_folder_in_tx`, artist `put_artist_in_tx`, album
