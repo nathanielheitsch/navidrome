@@ -282,42 +282,74 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
 
 ## Cursor and scope (D-CURSOR, D-SCOPE; record PARENT DECIDED, DB-11 still not launched)
 
-- **D-CURSOR — Typed cursor seam shape (PARENT DECIDED 2026-11-20; unblocks DB-11).** Go has no cursor abstraction
-  (SOURCE-VERIFIED): `executeSQL` (`sql_base_repository.go:340-362`) runs one statement to completion; `queryAll`/`queryAllSlice`
-  (Go :453-497) buffer into a slice; only `streamByIDs` (`artwork_hydration.go:19-34`, chunk `artworkChunkSize` = 600, defined :16-
-  17) streams, as a one-shot `iter.Seq2` that closes early on consumer `false` and yields a **zero T plus error** on chunk failure —
-  it cannot resume. Scanner cursors re-issue `WHERE id > ?`/`WHERE pid > ?` from persisted resume state
-  (`scanner/phase_2_artists.go:64-77`, `scanner/phase_3_albums.go:78-111`), never a held resource; **the resume pointer is written to Go memory
-  only, not `library`** (`library_repository.go` has no such column), so it dies with the process.
-  Decision: the port keeps this shape — (1) a `Cursor<'c>` owns its `&'c Connection` lease for the whole iteration; a pool-leased
-  connection must not be shared across concurrent cursor chunks; (2) error taxonomy is three-way — `Err(CursorError::Sqlite)` for query
-  failures (zero-value + error, Go streamByIDs parity), `Err(CursorError::Closed)` when the API is used after a completed stream, and
-  plain `Ok`-return/None for true end-of-stream, which the scanner MUST treat as "stop this folder, keep progress" — folding a SQLite
-  error into end-of-stream is the one forbidden conflation; (3) chunks are 600, mirroring `artworkChunkSize`; scanner `pid`-cursor
-  re-issue stays caller-owned (resume pointer in-memory, matching Go, not persisted to `library`); (4) `SEEDEDRAND` random is NOT a
-  cursor: Go seeds `hasher.Reseed(seedKey)` when `Offset == 0` (`sql_base_repository.go:334-338`) and renders the full set at once
-  (:320-332, CAST(%s.id AS TEXT) gotcha pinned at :325-326 and `playlist_track_repository_test.go:50`), so the port renders the same
-  full-set SQL and may stream it in 600-ID pages ONLY while preserving the seedKey (`%s|%016x` = lowercased `tableName|xxh3(userId)`,
-  :313-318) and the per-connection `SEEDEDRAND`/`NATSORT` registration. Evidence basis: scout brief 43a749bd (2026-11-20) plus
-  parent re-verification of `sql_base_repository.go:320-338,313-318` and `artwork_hydration.go:12-54`. DB-11 must pin every cursor
-  with an executed test before it claims executed-read state.
-- **D-SCOPE — Library scope + `loggedUser` context (PARENT DECIDED 2026-11-20; unblocks DB-11).** SOURCE-VERIFIED Go truth:
-  (1) scope is a **filter predicate, not a join**: `buildLibraryFilter` (`sql_tags.go:47-68`) renders `1=1` for headless/admin AND admin,
-  `library.id IN (ids)` for normal users — admin gets `1=1` even when `user.Libraries` is empty; the `user_library` join (sql_tags.go
-  :154-176) is added by `registerModel` only for repositories that call `registerModelWhiteList` + `registerLibraryFilter`, and
-  **`buildLibraryFilter` applies to every repository that registered it, admin included** — the only branch that drops it is the
-  headless/invalid-user AND-admin path; (2) `loggedUser` is per-request (per-`context`) — one `id`/`libs` pair, no per-row
-  re-resolution: `queryOne`/`queryAll` re-read it only for the `ErrNotFound` message (`sql_base_repository.go:445-452`),
-  `count()` (:566-576) drops user entirely, and writes re-read it only for ownership (`classifyOwnedWriteMiss` :554-563, A7);
-  (3) the port's shape is right: `SQLStore` carries `pool + user + admin` (`store.rs`), repositories take `logged: &LoggedUser`,
-  **no ambient context**; per-request re-resolution (a second query to fetch the user inside each repo call) is FORBIDDEN as a
-  scope strategy — the caller resolves scope once and passes the predicate; (4) DB-11's `library_filter: Option<Sql>` parameter is
-  therefore **redundant-with-the-store and must be dropped** from the cursor API unless a caller genuinely needs a second,
-  independently-composed predicate (none does today); keep the parameter only on the already-shipped narrow reads that use it.
-  Decision: DB-11 executes scope as `Option<Sql>` (None = headless/admin `1=1`, Some = `library.id IN (?)`), resolved once by the
-  caller from the store's user, never re-queried per chunk; admin-AND-empty-libraries must execute as `1=1` and is pinned by an
-  executed test. Evidence basis: scout brief 43a749bd plus parent re-verification of `sql_tags.go:47-68,154-176` and
-  `sql_base_repository.go:445-452,554-563`.
+- **D-CURSOR — Two cursor kinds, leased connection, three-way stop taxonomy (PARENT DECIDED 2026-11-20; unblocks DB-11).**
+  SOURCE-VERIFIED Go truth (re-verified against `scanner/*.go` and `persistence/` after the first recording's citations
+  failed audit — that version's `phase_2_artists.go:64-77`/`phase_3_albums.go:78-111` citations are WITHDRAWN: those files do
+  not exist and no `WHERE id > ?`/`pid > ?` re-issue exists anywhere in `scanner/**`; there is no Go resume-pointer concept
+  at all): the only streaming primitives are (i) `queryWithStableResults` (`sql_base_repository.go:411-439`) — one prepared
+  statement on a pool connection, `defer rows.Close()`, scan error yielded **beside the row** (:428-431, via `wrapCursor`
+  :392-406), driver error yielded as zero-value + error (:434-437), clean exhaustion = no further yield; and (ii)
+  `streamByIDs` (`artwork_hydration.go:19-34`) — id pre-pass then `GetAll` per chunk of `artworkChunkSize` = 600 (= `
+  artworkBatchSize` 200 × 3, defined :15-17), yielding `zero T + err` on chunk failure, non-resumable. Direct-statement
+  consumers: `GetMissingAndMatching` (`mediafile_repository.go:495-518`, ORDER BY pid, **library-ID-scoped, no user filter**)
+, `MediaFile.GetCursor` (:309-316), `GetTouchedAlbums` (`album_repository.go:393-403`, **library-ID-scoped, no user filter**)
+, folder `GetTouchedWithPlaylists`/`GetAllWithPlaylists` (`folder_repository.go:275-299`), playlist-track cursor
+  (`playlist_track_repository.go:131-141`). Id-chunked consumers: album/artist/playlist/mediafile-with-artwork GetCursor
+  (`album_repository.go:306-314`, `artist_repository.go:299-308`, `playlist_repository.go:225-234`,
+  `mediafile_repository.go:350-358`). Scanner interpretation: phases 2/3/4 treat **any** cursor Err as a fatal producer
+  error (`phase_2_missing_tracks.go:81-85`, `phase_3_refresh_albums.go:53-58`, `phase_4_playlists.go:84-88`); phase 1 aborts
+  only that folder (`phase_1_folders.go:231-244`); clean exhaustion is normal completion — NOT "stop, keep progress".
+  Decision: (1) DB-11 exposes **two typed kinds** — `SingleStatement` and `IdChunked` — and callers must know which they
+  hold; the "stable results" comment (:409-410) has no snapshot mechanism behind it, so stability is ordinary SQLite
+  statement semantics (a held read in the default `delete` journal mode blocks writers — INFERRED from
+  `nd-dbschema/src/schema.rs` pragma block); the id-chunked kind intentionally allows drift between pre-pass and chunk
+  re-queries; (2) a `Cursor<'c>` owns one `Lease<'c>`/`&Connection` for its whole life, never shares it across chunks, and
+  never re-checks out the store inside a visitor (`pool.rs` checkout blocks — a re-entrant visitor on a small pool
+  deadlocks); (3) stop taxonomy: `Err(CursorError::Sqlite)` for query/scan failures, `Err(CursorError::Closed)` for
+  post-completion use, and `Ok`-None / end of iteration = normal completion; call-site abort policy belongs to SC, per
+  the phase table above — folding a SQLite error into end-of-stream is the one forbidden conflation; (4) chunk constants:
+  cursor id chunk **600** (fix `artist_repo.rs:157 CURSOR_CHUNK_SIZE` from 300, which currently mis-mirrors 600 as 300 —
+  verified: Go :17 is 600 and nothing in Rust consumes the constant yet), artwork info batch 200, hydration flush 200,
+  touch/missing 200, subtree paths 100, `RefreshStats` 1000, `jsonCondBatchSize` 350; (5) `SEEDEDRAND` random is NOT a
+  cursor: Go seeds `hasher.Reseed(seedKey)` when `Offset == 0` (:334-338) and renders the full set at once (:320-332,
+  `CAST(%s.id AS TEXT)` gotcha pinned :325-326 and `playlist_track_repository_test.go:50`), so the port renders the same
+  full-set SQL and may page it in 600-ID chunks ONLY while preserving the seedKey (`%s|%016x` =
+  lowercased `tableName|xxh3(userId)`, :313-318) and per-connection `SEEDEDRAND`/`NATSORT` registration; (6) declared port
+  deviation: `folder_repo.rs` `CursorDrain` (:1194-1206, :1486-1520) collects rows and reports the failure WITHOUT the
+  failed-row prefix, where Go yields the row beside the error (:428-431) — recorded as a C5-style accepted deviation,
+  not a defect to fix silently. Evidence basis: scout brief 43a749bd, **corrected** by parent re-verification of
+  `sql_base_repository.go:320-338,392-439`, `artwork_hydration.go:12-54`, `mediafile_repository.go:495-518,309-316,350-358`
+, `album_repository.go:393-403,306-314`, `folder_repository.go:275-299`, `scanner/phase_*.go` error arms, and the `ls
+  scanner/` file census. Every cursor needs an executed test before DB-11 claims executed-read state.
+- **D-SCOPE — Scope is a caller-resolved predicate; system scope ≠ user scope (PARENT DECIDED 2026-11-20; unblocks DB-11).**
+  SOURCE-VERIFIED Go truth (corrected: the first recording's `buildLibraryFilter`/`sql_tags.go:47-68` citations are
+  WITHDRAWN — `buildLibraryFilter` does not exist and `sql_tags.go:47-68` is `updateTags`; the real contract is
+  `applyLibraryFilter`): `loggedUser` (`sql_base_repository.go:51-57`) yields the request user or `ID = "-1"` (headless).
+  `applyLibraryFilter` (:261-283) **omits the clause entirely** for admin and for headless; it also omits it for a
+  non-admin granted every library (`userSeesAllLibraries` :288-302 — `visible.count() == library.count()`; a user with
+  **zero** grants and a non-empty `library` table therefore does NOT match `1=1`, it falls through to the clause below
+  and matches **nothing**); otherwise it appends `<table>.library_id IN (SELECT ul.library_id FROM user_library ul WHERE
+  ul.user_id = ?)` (:271-283) — there is **no `1=1` predicate ever emitted for a user**; `1=1` appears only as
+  squirrel's empty-conjunction rendering elsewhere. Applied **selectively, not universally**: `mediafile_repository.go:
+  209` (via `newSelect`), `album_repository.go:231`, `folder_repository.go:77`, the id pre-passes; **NOT** applied to
+  `GetMissingAndMatching` (:493-518) or `GetTouchedAlbums` (:393-403) — those are library-ID-scoped scanner/system reads
+  on a headless context; artist uses a join path (`artist_repository.go:191-203` `applyLibraryFilterToArtistQuery` +
+  `artistLibraryFilter` :640, whose empty-list arm renders `Eq{"1": 2}` = match nothing); tags join `user_library`
+  (`sql_tags.go:165-176`). Ownership (`ownerFilter`/`addRestriction` :67-101, A7) is a separate axis from library
+  scope. Scanner scope = selected **configured library IDs**, no user filter (`phase_2_missing_tracks.go:73-75`,
+  `phase_3_refresh_albums.go:49-51`); phase 4 injects an admin user (`phase_4_playlists.go:57-64`) and defers via a
+  property flag when no admin exists. Decision: (1) `library_filter: Option<Sql>` stays the **only** scope parameter on
+  shipped builders and DB-11 cursor methods — None = the omitted-clause case (headless/admin/all-grants), Some = the
+  `library_id IN (…)` clause — resolved **once** by the caller from the store's user, never re-queried per chunk, and
+  never accepted as raw caller/user SQL (the parameter is DB-rendered `Sql`, matching every existing Rust builder);
+  (2) two authorities stay distinct types in the scanner layer: `ScannerScope` (configured library IDs, no user) and
+  `UserReadScope` (per-request grants); (3) a non-admin with an **empty** grant set against a non-empty `library` table
+  must render the deny clause (not `None`), and that is pinned by an executed test — mirroring `userSeesAllLibraries`
+  :296-298 (count 0 ⇒ `false` ⇒ clause applied ⇒ empty scope matches nothing). Evidence basis: scout brief 43a749bd
+  (corrected register above), verified by parent against `sql_base_repository.go:51-57,261-302`, `sql_tags.go:165-176`,
+  `artist_repository.go:191-203,640`, `mediafile_repository.go:205-212,493-518`, `album_repository.go:393-403`,
+  `folder_repository.go:77,275-299`, and `scanner/phase_*.go` scope sites. DB-11 must pin the empty-grant deny case,
+  the all-grants fast path, and the headless skip with executed tests.
 
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
