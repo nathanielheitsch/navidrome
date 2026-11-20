@@ -18,6 +18,13 @@
 //! for the user, and the `RETURNING token_epoch` leg is what lets the
 //! caller's own in-flight token be refreshed instead of logged out.
 //!
+//! DB-13 adds the epoch-only sibling [`revoke_tokens_in_tx`]: Go has no
+//! epoch-only operation (the bump only rides the password UPDATE), so a
+//! no-password `Put` cannot revoke anything and a password-carrying `Put`
+//! would rewrite unrelated columns and auto-assign libraries. This is an
+//! approved Rust API addition, not claimed Go endpoint parity
+//! (`docs/rust-port/subplans/db-runtime.md` DB-13 point 8).
+//!
 //! The executed half is [`UserRepo`] — `Get`/`GetAll`/`FindByUsername`/
 //! `FindFirstAdmin`/`CountAll`/`Put`/`UpdateLastLoginAt`/`UpdateLastAccessAt`/
 //! `Delete`/`SetUserLibraries` run through [`crate::execution`] on a leased
@@ -35,6 +42,7 @@
 //! `GetUserLibraries`'s full library-row hydration (`:485-495`, which reads
 //! every `library` column — the library repository's model half).
 
+use crate::runtime_error::DbOperationError;
 use crate::sqlrepo::{Repository, Value};
 
 /// `r.tableName` for the user repository (`user_repository.go:47`).
@@ -324,6 +332,216 @@ pub fn put_password_update_sql(values: &UserPutValues<'_>) -> Sql {
         ),
         args,
     )
+}
+/// The DB-13 epoch-only revocation statement: one guarded atomic increment
+/// that touches NOTHING else — no `updated_at`, no `last_access_at`, no
+/// `password`, no `is_admin`, and no `user_library` leg (compare
+/// [`put_password_update_sql`], whose `Put` caller then auto-assigns
+/// libraries at `user_repository.go:162-177`).
+///
+/// `token_epoch` is bumped by SQLite itself (`token_epoch + 1`), never by a
+/// Rust read-modify-write, so concurrent revocations cannot lose an update.
+/// BOTH predicates are load-bearing and BOTH run BEFORE any mutation.
+///
+/// `AND typeof(token_epoch) = 'integer'` rejects a cell whose storage class is
+/// not INTEGER. Without it SQLite performs the arithmetic — and INTEGER-affinity
+/// conversion — first, so a malformed REAL can become a valid INTEGER and the
+/// strict `row.get::<_, i64>` decode reports a SUCCESSFUL revocation for a row
+/// that never held an integer epoch. Executed on THIS crate's bundled SQLite
+/// (rusqlite 0.32 `bundled`, `rusqlite::version()` = 3.46.0) with the fresh DDL
+/// and no type guard: a cell holding `4503599627370495.5` (`typeof` = `'real'`)
+/// is rewritten to `4503599627370496` / `'integer'` — rounding across the f64
+/// precision boundary, not an i64 overflow — and returned as
+/// `Ok(NewTokenEpoch(4503599627370496))`, which a committing caller would
+/// publish; a cell holding `1.5` is rewritten to `2.5` before the decode fails.
+/// A valid result decode cannot certify the ORIGINAL storage class, so the type
+/// check has to be part of the predicate. Malformed rows are reported, never
+/// cast, repaired, or classified as a domain miss. An INTEGRAL REAL is refused
+/// too: on the fresh DDL INTEGER affinity stores `3.0` as an INTEGER cell, so only
+/// a schema that declares `token_epoch` REAL (a damaged or hand-edited DB) can hold
+/// one — executed on such a schema, the primitive reports the concrete decode
+/// failure and leaves the cell untouched.
+///
+/// `AND token_epoch < 9223372036854775807` is the upper bound: on the same
+/// build, an unguarded `token_epoch + 1` on a row holding `i64::MAX` SUCCEEDS
+/// and promotes the cell to REAL (`typeof` = `'real'`, value
+/// `9.223372036854776e+18`), corrupting the `token_epoch INTEGER` column
+/// declared at `nd-dbschema/src/schema_ddl.rs:57` and handing back a value no
+/// `i64` can hold. Either guard turning the statement into a no-row result is
+/// what [`revoke_tokens_in_tx`] classifies — as typed `Exhausted` for an INTEGER
+/// cell at the ceiling — BEFORE any mutation runs: the cell is never saturated,
+/// wrapped, reset, coerced, or promoted.
+///
+/// The bound is the exact `i64::MAX` decimal literal — SQLite parses it as
+/// INTEGER, while a literal above it would become REAL and quietly change
+/// the comparison. `id` is the statement's only bound value.
+#[must_use]
+pub fn increment_token_epoch_sql(id: &str) -> Sql {
+    (
+        format!(
+            "UPDATE {USER_TABLE} SET token_epoch = token_epoch + 1 \
+             WHERE id = ? AND typeof(token_epoch) = 'integer' \
+             AND token_epoch < {max} RETURNING token_epoch",
+            max = i64::MAX
+        ),
+        vec![Value::from(id)],
+    )
+}
+
+/// The existence read [`revoke_tokens_in_tx`] uses to classify a no-row
+/// increment: a bare single-row `SELECT` on the primary key with no JOIN and
+/// no `GROUP BY`, so it cannot multiply rows and does not pay for the
+/// `libraries_json` hydration the read paths use.
+///
+/// Deliberately carries NEITHER of the increment's guards and applies no CAST:
+/// it reports what the row actually holds, which is exactly why a malformed
+/// cell fails the caller's strict `i64` decode and stays a concrete SQLite error
+/// instead of being inferred to be an exhausted counter or a missing user.
+#[must_use]
+pub fn select_token_epoch_sql(id: &str) -> Sql {
+    (
+        format!("SELECT token_epoch FROM {USER_TABLE} WHERE id = ?"),
+        vec![Value::from(id)],
+    )
+}
+
+/// The epoch [`revoke_tokens_in_tx`] produced: a newtype over `i64` rather
+/// than a bare integer, so a caller cannot confuse an epoch read with a
+/// revocation result and the ADVISORY-until-commit contract below has one
+/// obvious carrier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct NewTokenEpoch(i64);
+
+impl NewTokenEpoch {
+    /// The post-bump `user.token_epoch` the guarded statement RETURNed.
+    ///
+    /// This value is ADVISORY until the caller's transaction commits: the
+    /// primitive owns no commit, so an epoch carried out of a rolled-back or
+    /// failed transaction was never a stored epoch.
+    #[must_use]
+    pub fn value(self) -> i64 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for NewTokenEpoch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Domain failures of [`revoke_tokens_in_tx`].
+///
+/// The two no-row outcomes of the guarded increment are deliberately
+/// DISTINCT variants: conflating them would make a user whose counter has
+/// reached the i64 ceiling indistinguishable from a user who does not exist,
+/// and the service/API layer (`BOOT.epoch-revoke` / `API-03`) decides
+/// separately what each means to a request. This primitive reports neither
+/// an HTTP status nor an authorization verdict.
+#[derive(Debug, thiserror::Error)]
+pub enum RevokeError {
+    /// No `user` row carries `id`, so nothing was revoked and nothing was
+    /// inserted. Classified by the existence read in the caller's own
+    /// transaction, so a rolled-back revoke publishes nothing.
+    #[error("record not found: user {id}")]
+    NotFound {
+        /// The id the caller asked to revoke.
+        id: String,
+    },
+
+    /// The row exists, holds an INTEGER `token_epoch`, and that integer is
+    /// `i64::MAX`, so the upper-bound guard refused the increment and the cell
+    /// remains an intact INTEGER. No revocation happened, so no token was
+    /// invalidated. A non-INTEGER cell is never reported here — it fails the
+    /// classification decode and stays a SQLite error.
+    #[error("token_epoch for user {id} is at the i64 maximum and cannot be incremented")]
+    Exhausted {
+        /// The id whose counter is spent.
+        id: String,
+    },
+}
+
+/// DB-13: revoke every token of one user by bumping its epoch, EXECUTED on
+/// the CALLER's transaction.
+///
+/// This is the epoch-only counterpart of the password bump
+/// ([`put_password_update_sql`]): it runs [`increment_token_epoch_sql`], a
+/// single guarded statement, and hands back the new epoch. It reuses no part
+/// of `Put` — a no-password [`UserRepo::put`] leaves `token_epoch` untouched,
+/// and a password-carrying `Put` rewrites every other column and
+/// auto-assigns libraries (`user_repository.go:149-165`).
+///
+/// Transaction-only by design: stage assignment (`Body`) and busy retry
+/// belong to the DB-00 executor, so there is NO connection-bound autocommit
+/// variant, and this never begins, commits, retries, nests a checkout, mints
+/// a token, touches a cache, or refreshes a `TokenEpochHolder`. Whether the
+/// caller's own session dies is the revoke route's decision, not this
+/// primitive's; authorization is trusted caller/API
+/// (`db-runtime.md` DB-13 point 4).
+/// A pooled lease cannot drive it either: a `&Connection` is not a
+/// `Transaction`, which the signature pins structurally.
+/// ```compile_fail
+/// let (_pool, first) = nd_db::pool::Pool::new(&nd_db::pool::PoolConfig::with_size(
+///     "file::memory:",
+///     1,
+/// ))
+/// .unwrap();
+/// let conn: &rusqlite::Connection = &first;
+/// let _ = nd_db::user_repo::revoke_tokens_in_tx(conn, "u1");
+/// ```
+///
+/// # Errors
+/// [`DbOperationError::Domain`]·[`RevokeError::NotFound`] when no row
+/// matches `id` (nothing is inserted) and [`RevokeError::Exhausted`] when the
+/// row exists and holds an INTEGER `token_epoch` at `i64::MAX` — the two
+/// no-row outcomes separated by [`select_token_epoch_sql`] IN THE SAME
+/// TRANSACTION, so neither result leaks past a rollback. Every other failure
+/// stays on the
+/// [`DbOperationError::Sqlite`] arm carrying the concrete `rusqlite::Error`
+/// with extended result codes intact (`SQLITE_BUSY` stays visible for the
+/// executor's retry classifier) and is NEVER mistaken for a domain miss: a
+/// SQL/prepare failure and a `token_epoch` cell that is not an INTEGER — REAL,
+/// TEXT, or BLOB — both surface as SQLite errors rather than `NotFound` or
+/// `Exhausted`.
+///
+/// A non-INTEGER cell is rejected by the increment's `typeof` predicate, so
+/// there is no mutation to unwind: the row is left exactly as found and the
+/// caller may commit its transaction without publishing a revocation. The
+/// strict `i64` decode of the classification read — with no CAST and no
+/// coercion — is what keeps malformed data on the SQLite arm.
+///
+/// The returned [`NewTokenEpoch`] is ADVISORY until the caller commits.
+pub fn revoke_tokens_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    user_id: &str,
+) -> Result<NewTokenEpoch, DbOperationError<RevokeError>> {
+    // Step 1: the guarded atomic increment. `query_optional` mirrors Go's
+    // `queryOne` `sql.ErrNoRows` mapping (`sql_base_repository.go:375-388`);
+    // no row here means either the user is absent or the guard refused,
+    // which step 2 separates.
+    let bumped = crate::execution::query_optional(tx, &increment_token_epoch_sql(user_id), |row| {
+        row.get::<_, i64>(0)
+    })
+    .map_err(DbOperationError::sqlite)?;
+    if let Some(epoch) = bumped {
+        return Ok(NewTokenEpoch(epoch));
+    }
+
+    // Step 2: classify the miss inside the caller's transaction. For an INTEGER
+    // cell the two guards are the only reasons for no row, and the upper bound
+    // can only be reached at exactly `i64::MAX`, so a present INTEGER row here
+    // means an exhausted counter. A cell that is not an INTEGER fails the strict
+    // decode below and stays a SQLite error: damaged data is reported, never
+    // inferred to be a missing user or an exhausted counter.
+    let stored = crate::execution::query_optional(tx, &select_token_epoch_sql(user_id), |row| {
+        row.get::<_, i64>(0)
+    })
+    .map_err(DbOperationError::sqlite)?;
+    let id = user_id.to_string();
+    match stored {
+        None => Err(DbOperationError::Domain(RevokeError::NotFound { id })),
+        Some(_epoch) => Err(DbOperationError::Domain(RevokeError::Exhausted { id })),
+    }
 }
 
 /// The `isNewUser` INSERT fallback of `Put` (`user_repository.go:140-147`):
