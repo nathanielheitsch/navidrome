@@ -944,6 +944,156 @@ pub struct RefreshStatsTotals {
     pub updated_at: DateTime<Utc>,
 }
 
+/// `RefreshStats` (`:196-251`) EXECUTED on the CALLER's transaction: the eight aggregate
+/// probes of [`refresh_stats_probes_sql`] read in probe order, then the totals UPDATE of
+/// [`refresh_stats_update_sql`] — the executed half of those two renderers, in Go's
+/// statement order (`:199-236` probes, `:237-250` update), and no third statement.
+///
+/// **Serial probes on ONE connection (documented deviation, and it is a small one).** Go
+/// declares the eight probes through `run.Parallel` (`:201`, `utils/run/run.go:19-29` — an
+/// `errgroup` that runs the closures on goroutines). Concurrency there does NOT mean eight
+/// connections: Go's production caller invokes this inside `WithTxRetry`, whose `WithTx`
+/// opens ONE `*dbx.Tx` and builds the whole repository set from it
+/// (`persistence/persistence.go:165-185`, `:43-52`), and `queryOne` executes through that
+/// same builder (`persistence/sql_base_repository.go:375-388`), i.e.
+/// `BaseBuilder.NewQuery`'s single `db`/`executor` (`dbx@v1.12.0/builder.go:131-133`), whose
+/// executor is the `*sql.Tx` itself (`dbx@v1.12.0/db.go:165-176`, `tx.go:10-13`) and is what
+/// `Query.execute` calls (`dbx@v1.12.0/query.go:214-240`).
+/// database/sql serializes statements on a single `*sql.Tx`, so Go's eight probes are
+/// already sequential-on-one-connection and one-snapshot for this caller. The port runs them
+/// sequentially on the caller's leased transaction connection (the subplan's approved
+/// equivalent, `subplans/db-runtime.md:707`),
+/// which MATCHES that production path: same count of statements, same order, same snapshot.
+/// No aggregate, predicate, or SET column differs and no WAL mode is assumed. The only
+/// real difference is thread form (goroutines vs one thread), which is unobservable here.
+/// For contrast, a pool-backed NON-transactional invocation — `persistence.New(conn)`'s
+/// `dbx.NewFromDB` builder (`persistence.go:70-72`) — really can hand each probe its own
+/// pooled connection; that is not the DB-17 surface, since no caller of this primitive owns
+/// a transaction-free store.
+///
+/// Caller-stamped clock (`D-TIME`/DB-02): `updated_at` comes from the caller's `now`
+/// through [`crate::time::value`] — the canonical `%F %T%.f%:z` TEXT — never from a
+/// `now()` call here and never from SQLite's `CURRENT_TIMESTAMP`. Go binds `time.Now()`
+/// (`:247`); the port takes the stamp as a parameter so a retry re-stamps identically and
+/// tests stay deterministic. `now` is the ONLY clock input; nothing in this function reads
+/// the wall clock.
+///
+/// NULL aggregates follow Go's zero semantics (`:221-231`): `ifnull(sum(…), 0)` is the
+/// SQL-side guard the renderer already carries, so an empty `album` population yields
+/// `total_size = 0` and `total_duration = 0.0` rather than NULL, and `count(*)` over no
+/// rows yields 0. `total_duration` is read as `f64` exactly like Go's `durationRes.Sum`,
+/// so a `sum(duration)` REAL cell lands as a float; the `ifnull` arm returning INTEGER 0
+/// scans as `0.0` (the driver converts, and Go's own `asString`+`ParseFloat` path agrees).
+/// Each probe is an aggregate, so it always returns exactly one row — the no-row arm of
+/// [`crate::execution::query_optional`] is structurally unreachable here and the default is
+/// a defensive fallback, not a behavior.
+///
+/// Returns the [`RefreshStatsTotals`] actually written (probes in probe order, plus the
+/// caller's stamp), which is what a caller logs and what a test asserts. Go's method
+/// returns only `error` (`:196`) and discards the UPDATE's affected-row count
+/// (`:249 _: err =`), so no row count is exposed here: a library id matching no row is a
+/// successful 0-row UPDATE, NOT an error and NOT a NotFound (Go's `executeSQL` reports the
+/// count and `RefreshStats` ignores it).
+///
+/// Zero free-form text anywhere: the eight probes carry their own
+/// `[library_id, missing(, 0)]`-style binds and the totals UPDATE carries TEN — the eight
+/// values, the caller's stamp, and the `WHERE id` — all of them bound through
+/// [`crate::execution`], none interpolated, and none chunked (contrast DB-18's four-fold
+/// 1000-id bind lists). Retryable: recomputes the probes and rewrites the same columns.
+///
+/// Scope: `library_artist.stats` writes and artist role stats are DB-18's (`D-STATS`
+/// pending), and no `mark_orphans_missing`/cleanup leg runs here. No production caller is
+/// wired: Go's trigger is `scanner.go:344` (`runUpdateLibraries`, inside `WithTxRetry`,
+/// `changesDetected`-gated at `:342`). SC/BOOT is the consumer, as for DB-14/15/16.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact, so `store::is_busy` still classifies `SQLITE_BUSY`) from any probe or from the
+/// UPDATE. [`DbOperationError::Domain`] is structurally uninhabited ([`LibraryScanError`]) —
+/// Go's `RefreshStats` has no domain error of its own.
+///
+/// **Rollback is the caller's, not this function's.** A probe or UPDATE failure returns an
+/// error; it does NOT roll anything back by itself. The statements after the failure do not
+/// run, but everything already applied in the caller's transaction — an earlier probe is
+/// read-only, yet a caller that ran the album/artist/tag refreshes first in the same tx has
+/// written real rows — stays visible until the transaction ends. Callers MUST propagate this
+/// error through the DB-00 typed seam (`store::try_with_tx`/`try_with_tx_sync`), which is
+/// what turns it into a rollback; a swallowed error COMMITS the partial results. Go has the
+/// same requirement, and its `runUpdateLibraries` callback returns the wrapped error for
+/// exactly that reason (`scanner.go:344-346` inside `WithTxRetry`). Executed both
+/// directions in `library_probe_failure_prevents_the_update_and_rolls_back_when_propagated`.
+///
+/// Divergence, deliberate: Go's caller wraps as
+/// `fmt.Errorf("refreshing library stats for %s: %w", lib.Name, err)` (`scanner.go:346`);
+/// the port keeps the raw cause on the `Sqlite` arm (`decisions.md` E1). Text differs,
+/// cause does not.
+pub fn refresh_library_totals_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    library_id: i64,
+    now: &chrono::DateTime<chrono::Utc>,
+) -> Result<RefreshStatsTotals, LibraryScanError> {
+    let probes = refresh_stats_probes_sql(library_id);
+    // Go's `run.Parallel` declaration order == probe order == SET order (`:238-246`), so
+    // reading them in renderer order is what pairs each aggregate with its column. A
+    // re-assignment of these locals to a different probe is exactly the mutation
+    // `library_totals_refresh_all_probes_distinct_columns` is designed to fail.
+    let read_i64 = |index: usize| -> Result<i64, LibraryScanError> {
+        crate::execution::query_optional(tx, &probes[index], |row| row.get::<_, i64>(0))
+            .map_err(DbOperationError::sqlite)
+            .map(|row| row.unwrap_or_default())
+    };
+
+    let songs = read_i64(PROBE_SONGS)?;
+    let albums = read_i64(PROBE_ALBUMS)?;
+    let artists = read_i64(PROBE_ARTISTS)?;
+    let folders = read_i64(PROBE_FOLDERS)?;
+    let files = read_i64(PROBE_FILES)?;
+    let missing = read_i64(PROBE_MISSING)?;
+    let size = read_i64(PROBE_SIZE)?;
+    // Probe 7 is Go's `struct{ Sum float64 }` (`:198`): the only REAL-valued aggregate.
+    let duration =
+        crate::execution::query_optional(tx, &probes[PROBE_DURATION], |row| row.get::<_, f64>(0))
+            .map_err(DbOperationError::sqlite)
+            .map(|row| row.unwrap_or_default())?;
+
+    let totals = RefreshStatsTotals {
+        id: library_id,
+        songs,
+        albums,
+        artists,
+        folders,
+        files,
+        missing,
+        size,
+        duration,
+        updated_at: *now,
+    };
+    // Go's UPDATE (`:238-248`): the eight values in probe order, then `updated_at`, then
+    // `WHERE id = ?`. Its affected-row count is discarded by Go and therefore by the port.
+    crate::execution::execute(tx, &refresh_stats_update_sql(&totals))
+        .map_err(DbOperationError::sqlite)?;
+    Ok(totals)
+}
+
+/// Probe indices, in `run.Parallel`'s declaration order (`:199-236`) and therefore in
+/// [`refresh_stats_probes_sql`] and `refresh_stats_update_sql`'s SET order. Named so the
+/// executed read cannot silently pair an aggregate with the wrong column.
+pub const PROBE_SONGS: usize = 0;
+/// `total_albums` (`album`, `missing = false`).
+pub const PROBE_ALBUMS: usize = 1;
+/// `total_artists` (`library_artist` INNER JOIN `artist`, `a.missing = false`).
+pub const PROBE_ARTISTS: usize = 2;
+/// `total_folders` (`folder`, `missing = false`, `num_audio_files > 0`).
+pub const PROBE_FOLDERS: usize = 3;
+/// `total_files` (`ifnull(sum(num_audio_files + num_playlists + json_array_length(image_files)),0)`).
+pub const PROBE_FILES: usize = 4;
+/// `total_missing_files` (`media_file`, `missing = true`).
+pub const PROBE_MISSING: usize = 5;
+/// `total_size` (`ifnull(sum(album.size),0)`).
+pub const PROBE_SIZE: usize = 6;
+/// `total_duration` (`ifnull(sum(album.duration),0)`, the only `f64` probe).
+pub const PROBE_DURATION: usize = 7;
+
 /// See [`RefreshStatsTotals`].
 pub fn refresh_stats_update_sql(totals: &RefreshStatsTotals) -> Sql {
     (

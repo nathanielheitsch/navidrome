@@ -1176,6 +1176,69 @@ pub fn mark_missing_sql() -> Sql {
     )
 }
 
+/// `RefreshPlayCounts` (`:441-460`) EXECUTED on the CALLER's transaction: the one
+/// zero-argument CTE upsert [`refresh_play_counts_sql`] renders, run verbatim through
+/// [`crate::execution::execute`] — the executed half of that renderer, not a second
+/// statement. DB-17 owns ONLY this method; `RefreshStats` (`:465-614`), its id selects
+/// ([`refresh_stats_ids_sql`]), the batched `library_artist.stats` UPDATE
+/// ([`refresh_stats_batch_sql`]), the cleanup delete ([`refresh_stats_cleanup_sql`]) and
+/// `markOrphansMissing` stay renderers owned by DB-18 (whose `D-STATS` gate is still open).
+///
+/// Go truth, SOURCE-VERIFIED at those lines: the CTE aggregates `sum(play_count)` /
+/// `max(play_date)` over `media_file JOIN annotation ON item_id = media_file.id` LEFT JOIN
+/// `json_tree(participants, '$.artist')` filtered to `atom is not null and key = 'id'`,
+/// grouped by `(user_id, atom)`, then upserts `item_type = 'artist'` rows setting only
+/// `play_count` and `play_date`. Pinned consequences:
+///
+/// * **`rating`/`starred`/`starred_at`/`rated_at` and `artist.average_rating` survive** —
+///   the conflict arm names only the two play columns.
+/// * **The fold is over the media file's OWN `participants` column**, so one play of a
+///   track with two `artist` entries credits BOTH artists (the aggregate is a fold, not a
+///   lookup of `media_file.artist_id`), and a media file whose `participants` carries no
+///   `$.artist` array contributes nothing to this statement.
+/// * **No `play_date` comparison guard**, exactly as in the album arm: the aggregate's
+///   `max(play_date)` replaces the stored value even when it is older.
+/// * **NULL aggregates**: `where total_play_count > 0` cannot match NULL, so an all-NULL
+///   `play_count` population inserts no row rather than a NULL one, and no `coalesce`
+///   exists in Go's text or here.
+///
+/// Returns the statement-level affected-row count — Go's `executeSQL` `RowsAffected`
+/// (`sql_base_repository.go:336-353`), returned unchanged at `:459`. Not an entity count:
+/// INSERT and existing-row UPDATE count alike, and a group whose aggregate equals the
+/// stored row still counts as one change.
+///
+/// Zero bound arguments — no chunking and no variable-number exposure (the 4×1000-param
+/// concern belongs to DB-18's batch builder). Retryable: a rerun recomputes the same
+/// aggregates onto the same rows.
+///
+/// No production caller is wired here: Go's trigger is `phase_3_refresh_albums.go:150`
+/// (inside `WithTxRetry`, `changesDetected`-gated at `:130`). SC's phase-3 lane is the
+/// consumer; this ships as a primitive, as DB-14/15/16 did.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact so the executor's busy classifier still sees `SQLITE_BUSY`), including the hard
+/// `malformed JSON` failure a damaged `participants` cell raises. [`DbOperationError::Domain`]
+/// is structurally uninhabited ([`ArtistPlayCountError`]).
+///
+/// Divergence, deliberate: Go's caller wraps as `fmt.Errorf("refreshing artist annotations:
+/// %w", err)` (`phase_3_refresh_albums.go:154`); the port keeps the raw cause on the
+/// `Sqlite` arm (`decisions.md` E1). Text differs, cause does not.
+pub fn refresh_play_counts_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<usize, ArtistPlayCountError> {
+    crate::execution::execute(tx, &refresh_play_counts_sql()).map_err(DbOperationError::sqlite)
+}
+
+/// Callback error of [`refresh_play_counts_in_tx`], which has no domain failure to carry:
+/// Go's `RefreshPlayCounts` returns `(int64, error)` whose error can only be a driver
+/// failure (`artist_repository.go:441-460`) — no validation, no `NotFound`, no permission
+/// check. `Infallible` makes the `Domain` arm structurally uninhabited rather than
+/// reserved, as in [`crate::album_repo::AlbumTouchError`] and
+/// [`crate::tag_repo::TagWriteError`], and keeps every SQLite failure on the `Sqlite` arm
+/// so `store::is_busy` still classifies `SQLITE_BUSY` for the executor's retry loop.
+pub type ArtistPlayCountError = DbOperationError<std::convert::Infallible>;
+
 /// `RefreshPlayCounts` (`:441-460`): the annotation upsert from the
 /// `json_tree` participant fold, verbatim.
 #[must_use]

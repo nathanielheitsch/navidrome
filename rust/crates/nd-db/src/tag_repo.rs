@@ -226,6 +226,86 @@ pub fn add_in_tx(
     Ok(())
 }
 
+/// `UpdateCounts` (`tag_repository.go:54-76`) EXECUTED on the CALLER's transaction: the
+/// TWO zero-argument upserts [`update_counts_sql`] renders — `album` first, then
+/// `media_file`, in Go's loop order (`:66`) — run verbatim through
+/// [`crate::execution::execute`]. This is the executed half of that renderer, not a second
+/// statement, and it executes exactly the templated text with `%[1]s` = the table name.
+///
+/// Go truth, SOURCE-VERIFIED at those lines: each statement aggregates
+/// `count(distinct <table>.id)` over `<table> JOIN json_tree(<table>.tags, '$.genre')`
+/// (`jt.atom IS NOT NULL AND jt.key = 'id'`) JOIN `tag ON tag.id = jt.value`, grouped by
+/// `(jt.value, <table>.library_id)`, and upserts `library_tag` with
+/// `DO UPDATE SET <table>_count = excluded.<table>_count`. Pinned consequences:
+///
+/// * **Only the genre projection is aggregated** (`'$.genre'`); no other tag name gets a
+///   count and nothing is ever cleared. The OTHER count column of a two-statement pair is
+///   untouched by the statement that did not run, so a partial invocation leaves the other
+///   column at its stored value.
+/// * **The `JOIN tag` is an INNER join**, so a genre id absent from the `tag` dictionary
+///   produces no row rather than a zeroed one — DB-06's dictionary `Add` is what makes an
+///   aggregated id countable at all.
+/// * **`ON CONFLICT DO UPDATE` on the `(tag_id, library_id)` PK** means an existing link
+///   row's count is REWRITTEN whenever its group is produced — including to a SMALLER value
+///   than the stored one, because the aggregate replaces it rather than taking a max. A row
+///   seeded at `0, 0` by [`add_in_tx`] therefore transitions to real counts through this
+///   statement — pinned in `tests/runtime_count_refresh.rs`.
+/// * **A group that produces no rows writes nothing at all: there is no zero-fill.** Once a
+///   library's rows stop carrying a genre, that `(tag, library)` group is absent from the
+///   projection, so no statement touches the row and its stored count stays STALE (it is not
+///   reset to 0). Dropping such rows is DB-20's `purgeUnused` (`tag_repository.go:85-104`)
+///   concern, not this statement's.
+///
+/// Returns the SUM of the two statements' affected-row counts — Go's `executeSQL`
+/// `RowsAffected` per statement (`sql_base_repository.go:336-353`), which Go only feeds to
+/// `log.Debug("updated", c)` (`:70`) and never returns. Read it as **statement writes, one
+/// per `(tag, library)` group each projection produced**: the album leg writes one row per
+/// genre/library pair its `album` projection yields, the media_file leg the same over
+/// `media_file`, and the return is their sum. So one genre in one library referenced by both
+/// an album and a media file contributes **2** while there is only **1** link row, and a
+/// group whose aggregate happens to equal the stored count still counts as **1** because
+/// `ON CONFLICT DO UPDATE` reports the write, not a no-op. It is therefore NOT an entity
+/// count — not the number of dictionary tags, not the number of `library_tag` rows, and not
+/// "tags updated". Executed in `tag_update_counts_from_db06_seeded_zero`: 3 dictionary tags
+/// and 4 link rows give 6 writes.
+///
+/// Zero bound arguments in both statements — no chunking, no variable-number exposure.
+/// Retryable: a rerun recomputes the same aggregates onto the same link rows.
+///
+/// Scope: `purge_unused_sql` (`tag_repository.go:85-104`, the private `purgeUnused`) is
+/// DB-20's and stays a renderer. No production caller is wired here; Go's trigger is
+/// `scanner.go:316` (`runRefreshStats`, inside `WithTxRetry` at `:315`). SC's finalize lane is the
+/// consumer, as for DB-14/15/16.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact) from either statement, including the hard `malformed JSON` failure a damaged
+/// `tags` cell raises. [`DbOperationError::Domain`] is structurally uninhabited
+/// ([`TagWriteError`]).
+///
+/// **Rollback is the caller's, not this function's.** When the second statement fails, this
+/// helper returns that error and stops — it does NOT undo the first statement, and the
+/// album-leg writes stay visible in the caller's transaction until it ends. Callers MUST
+/// propagate the error through the DB-00 typed seam (`store::try_with_tx`/`try_with_tx_sync`)
+/// so the wrapper rolls the whole transaction back; a swallowed error COMMITS the half-updated
+/// counts. Go relies on the same propagation (`scanner.go:316-321` returns the wrapped error
+/// out of the `WithTxRetry` callback). Executed both directions in
+/// `tag_statement_two_failure_rolls_back_statement_one_when_propagated`.
+///
+/// Divergence, deliberate: Go wraps the failure as
+/// `fmt.Errorf("updating %s library tag counts: %w", table, err)` (`:71`), so Go's message
+/// names the table; the port keeps the raw `rusqlite::Error` on the `Sqlite` arm instead,
+/// because the executor's retry classifier matches on that type and a stringified wrapper
+/// would hide `SQLITE_BUSY` (`decisions.md` E1, same call `add_in_tx` records). Message
+/// text differs; the cause does not.
+pub fn update_counts_in_tx(tx: &rusqlite::Transaction<'_>) -> Result<usize, TagWriteError> {
+    let mut total = 0usize;
+    for statement in update_counts_sql() {
+        total += crate::execution::execute(tx, &statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(total)
+}
+
 /// `UpdateCounts` (`tag_repository.go:48-69`): one upsert per stats table
 /// (`album`, `media_file`), Go's `fmt.Sprintf(template, table)` with `%[1]s`
 /// = the table name. Only genres (`json_tree(tags, '$.genre')`) aggregate.

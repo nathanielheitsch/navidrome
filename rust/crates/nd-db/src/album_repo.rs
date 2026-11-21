@@ -1625,6 +1625,64 @@ pub fn copy_attributes_update_sql(to_id: &str, columns: &[String], values: Vec<V
     )
 }
 
+/// `RefreshPlayCounts` (`album_repository.go:411-428`) EXECUTED on the CALLER's
+/// transaction: the one zero-argument CTE upsert [`refresh_play_counts_sql`] renders,
+/// run verbatim through [`crate::execution::execute`] — this is the executed half of that
+/// renderer, not a second statement.
+///
+/// Go truth, SOURCE-VERIFIED at those lines: the CTE aggregates `sum(play_count)` /
+/// `max(play_date)` over `media_file JOIN annotation ON item_id = media_file.id` grouped
+/// by `(user_id, album_id)`, then inserts `item_type = 'album'` rows and
+/// `on conflict (user_id, item_id, item_type) do update set play_count = excluded.play_count,
+/// play_date = excluded.play_date`. Two consequences of that text are pinned by
+/// `tests/runtime_count_refresh.rs`:
+///
+/// * **`rating`/`starred`/`starred_at`/`rated_at` survive.** The conflict arm names only
+///   `play_count` and `play_date`, so an existing annotation's rating, star and their
+///   stamps are untouched — a whole-row replacement would clobber them. `album.average_rating`
+///   is likewise not written here (that is [`crate::sql_annotations::update_avg_rating_in_tx`]).
+/// * **`where total_play_count > 0` is the only guard, and `play_date` has none.** Go's SET
+///   carries no `max(ifnull(play_date,''), ?)` comparison of the kind
+///   [`crate::sql_annotations::inc_play_count_sql`] uses (`sql_annotations.go:163-165`), so
+///   this refresh DOES overwrite `play_date` with the aggregate `max(play_date)` even when
+///   that is older than the stored value, and it never NULLs a `play_date` the aggregate
+///   did not produce — a group whose `max(play_date)` is NULL is excluded by the `> 0`
+///   filter only through its count, so a `play_count > 0` group with NULL dates writes a
+///   NULL `play_date`. That is Go's behavior; it is NOT an idempotence guard.
+/// * **An empty aggregate is 0, not NULL**: `where total_play_count > 0` cannot match NULL
+///   (`NULL > 0` is NULL), so a population whose `sum(play_count)` is NULL inserts nothing,
+///   and `max(play_date)` of no rows is NULL rather than an error. There is deliberately no
+///   `coalesce` in Go's statement, and none is added.
+///
+/// Returns the statement-level affected-row count, i.e. Go's `executeSQL` `RowsAffected`
+/// (`sql_base_repository.go:336-353`, which `RefreshPlayCounts` returns unchanged at
+/// `:427`). It is NOT an entity count: SQLite counts an INSERT and an existing-row UPDATE
+/// identically, and a group whose aggregate equals the stored row still counts as 1 change
+/// (the upsert reports the change, not a no-op).
+///
+/// Zero bound arguments, so there is no variable-number limit to plan around: this statement
+/// never needs chunking (contrast DB-18's four-fold 1000-id bind lists). Retryable — a rerun
+/// recomputes the same aggregates and lands on the same values.
+///
+/// No production caller is wired here: Go's trigger is `phase_3_refresh_albums.go:138`
+/// (inside `WithTxRetry` at `:136`), gated on `changesDetected` at `:129`, and the artist
+/// twin is `:150`. Like DB-14/15/16's primitives this ships as a primitive only; SC's
+/// phase-3 lane is the consumer.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended code
+/// intact, so `store::is_busy` still classifies `SQLITE_BUSY`), including the hard
+/// `malformed JSON` failure a damaged `participants`/`tags` cell can raise.
+/// [`DbOperationError::Domain`] is structurally uninhabited ([`AlbumTouchError`]).
+///
+/// Divergence, deliberate: Go's caller wraps failures as
+/// `fmt.Errorf("refreshing album annotations: %w", err)` (`phase_3_refresh_albums.go:142`),
+/// so Go's message gains a prefix; the port keeps the raw `rusqlite::Error` on the `Sqlite`
+/// arm (`decisions.md` E1). Message text differs, cause does not.
+pub fn refresh_play_counts_in_tx(tx: &rusqlite::Transaction<'_>) -> Result<usize, AlbumTouchError> {
+    crate::execution::execute(tx, &refresh_play_counts_sql()).map_err(DbOperationError::sqlite)
+}
+
 /// `RefreshPlayCounts` (`album_repository.go:411-428`): Go's literal CTE
 /// INSERT … ON CONFLICT upsert; the table names are compile-time constants,
 /// no user text reaches it.
