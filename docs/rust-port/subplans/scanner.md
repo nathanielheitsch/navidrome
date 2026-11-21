@@ -9,7 +9,9 @@ artwork invalidation/enqueue subset `e5d0592d` (fast-forward, rustdoc fix `f80b9
 `272c9c66` adds DB-22, and `e3e0770a` adds the **SC-02 partial** (local walker, `.ndignore`, folder hash, cancellation —
 a partial slice, **not** SC-01 ratification, SC-02 completion or MusicFS readiness). Settled decisions live in
 [`../decisions.md`](../decisions.md): `D-CURSOR`/`D-SCOPE` are recorded there (PARENT DECIDED 2026-11-20, corrected record
-`8b5b3925`), but **`SC-01` ratification still has no canonical record**, so packages gated on SC-01 stay blocked).
+`8b5b3925`), but **`SC-01` ratification still had no canonical record at that boundary**; it is now ratified NARROW
+(`../decisions.md` "SC-01 seams ratification", PARENT DECIDED 2026-11-21), so SC-03+ may proceed on the ratified seams
+while the progress sink, watcher, remote storage and `MusicFS`/`ReadTags` stay gated).
 Issue workspace `wks_7bb3344766422a39` on host `srv_QsD9e1TgIsNq`; the parent owns integration.
 Prepared READ-ONLY. Source inspection only; **no builds, tests, probes, formatting, repository edits, commits, or pushes were executed**. Only `/tmp` report/index files were written. Test names below are inspected source, not passing-test claims. All new signatures, modules, tests and recipes below are **proposals**, not existing public APIs or approved dependency changes.
 
@@ -130,7 +132,18 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** recipe `--check`/self-tests (proposed) and `cargo test --locked -p nd-scanner --test oracle_contract -- --nocapture`, V. Toolchain/TagLib build unavailability must be reported; do not fetch dependencies or change UI/generated build files without approval.
 10. **Review/done/report:** R; durable regeneration instructions independently reproducible; baseline manifest and evidence schema audited before goldens are accepted. READY does not authorize this child to edit repo or run recipe.
 
-## SC-01 — Ratify scanner seams and dependency authorization — DECISION REQUIRED
+## SC-01 — Ratify scanner seams and dependency authorization — **RATIFIED (narrow) 2026-11-21**
+
+> **2026-11-21 (SC-01 RATIFIED, NARROW scope — `../decisions.md` "SC-01 seams ratification"):** the five seams SC-05
+> needs are ratified (storage trait subset with local `FileStorage` only; DB-11 `visit_media_in_folder` frozen by
+> DB-21(P1-DB) `632271a9`; DB-14 `persist_folder_delta` as the single write seam; `CancelToken`→`Cancellation` adapter
+> owned by SC; nd-tagreader→nd-mapping→`to_media_file` mapping adapter), **and the `nd-scanner` manifest delta adding
+> `nd-db` is authorized here**. The following stay **UNRATIFIED and gated**: the progress/sink protocol (`ProgressInfo`
+> transport, buffer-100 channel semantics, gob/IPC — no wire protocol for the in-process fixture; SC-12/13 IPC already
+> deferred), the watcher (SC-08+), remote storage, full `MusicFS`/`ReadTags`, and phase-2+ orchestration contracts.
+> SC-03+ may proceed on the ratified seams. The DB-21 U-ledger entries `SC.mapping-bridge`/`SC.phase1-fixture` stay **U**
+> — they close with SC-03/SC-05 delivery, not with this record. The planner-time items below remain the acceptance bar
+> for anything beyond the ratified narrow scope.
 
 1. **Goal/non-goals/prereqs:** approve narrow interfaces/dependency edits and error/cancel boundaries. Prereq SC-00 schema; no scanner phase implementation, no DB substitute.
 2. **Starting evidence:** scanner only `OWNED_BY_ISSUE`; `nd-mapping::Metadata::new(path,info,FileStat,ctx)` (`metadata.rs:118`) and `to_media_file(library_id:i32,folder_id:&str,PidConfig)->MediaFile` (`map_mediafile.rs:24`) already exist; SQLStore async/sync APIs and limitations cited above; events Broker `send_broadcast(&dyn Event)` (`broker.rs:173`). No existing Scanner public service signature to preserve verbatim.
@@ -198,7 +211,7 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 
 ## SC-04 — Pure multi-track album aggregation and semantic equality — BLOCKED
 
-1. **Goal/non-goals/prereqs:** prereq SC-03 and SC-01 placement decision. Complete `ToAlbum`, media exact/equivalent comparison, album comparison needed by phases1/2/3; not DB writes or public nd-model overhaul. **Not a prerequisite of singleton SC-05**.
+1. **Goal/non-goals/prereqs:** prereq SC-03 and SC-01 placement decision (**SC-01 ratified NARROW 2026-11-21** — the mapping-bridge seam is among the five ratified seams; `../decisions.md`). Complete `ToAlbum`, media exact/equivalent comparison, album comparison needed by phases1/2/3; not DB writes or public nd-model overhaul. **Not a prerequisite of singleton SC-05**.
 2. **Starting evidence:** Go `model/mediafile.go:232-253,320-519`, `model/album.go:87-124`; Rust `nd-model/album.rs:174` ID-only equality is wrong for scanner. Existing Go `phase_3_refresh_albums_test.go:73,84,95` unchanged/changed/empty; many ToAlbum assertions in `model/mediafile_test.go` are independent model expectations. Current mapping DTO is not full persisted entity and cannot alone compare readback albums.
 3. **Ownership:** proposed `nd-scanner/src/{aggregate,compare}.rs`, extend `projection.rs` to delegate, `tests/{aggregate,semantic_compare}.rs`. No edit `nd-model/src/album.rs` unless model owner explicitly takes a separately serialized prerequisite; if so transfer exact behavior/tests, do not implement duplicate competing equals.
 4. **Contract:** pure functions accept owned/read-only full typed record lists and mapping album-level tag configuration; output typed album draft / equality boolean. Reject mixed album/library inputs as programmer/input error rather than silently combine. Sort a copy by **Path** first. Duration sums in Go f32 semantics then converts to DB f64; song_count, size, compilation OR, missing AND, timestamp newest/oldest, default disc1, disc subtitles, distinct folder IDs, tag frequency/filtering, participants merge, explicit e>c, MBZ frequency, original/release/date consensus, min/max years ignoring zero-min, non-NULL ReplayGain frequency with genuine 0.0 retained, artist fallback/Various Artists, cover lowest positive disc/path all mirror pinned Go. Album equality excludes Go hash-ignored fields and floors f32 duration; includes actual metadata, sets FolderIDs, respects zero/nil semantics; **not** DTO Eq or ID comparison. Exact media comparison follows Go Hash fields + tags/participants, excludes ID/PID/path/library/folder/album IDs/missing/times/probe/annotations/artwork. Equivalent means `utils.BaseName(Path)` equality, not full path or suffix-only.
@@ -211,7 +224,7 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 
 ## SC-05 — FIRST VERTICAL: singleton folder phase1 with actual commit/reopen/readback — BLOCKED
 
-1. **Goal/non-goals/prereqs (dated correction 2026-11-20):** prereqs SC-00/01/02/03. On the DB side the planner-time list is now largely satisfied: DB-02 timestamp lifecycle LANDED `6d9d984d`/`74ebd81c`, DB-00 callback/error seam LANDED `48e65806`/`ec84c176`, DB-01 bind repair LANDED `f57ae050`, the executed phase1 writes DB-04…DB-13 LANDED, typed folder/scanner children queries LANDED via **DB-11 `52b04064`** (`visit_media_in_folder` `scanner_queries.rs:344`, `ScannerScope` `:853`), and **DB-14 `de0f49ea` LANDED** supplies the executed per-folder transaction (`persist_folder_delta`). SC-05's remaining gates are therefore **SC-01 ratification + an `nd-scanner` manifest delta (an `nd-db` dependency is not yet declared)** and parent sequencing — not missing DB primitives. No missing mutation performed in initial empty-folder slice. **No phase2/3/4/final GC/controller/watcher/IPC, no false full-scan completion**. Fixture library7 explicitly set up; real bootstrap remains BOOT owner.
+1. **Goal/non-goals/prereqs (dated correction 2026-11-20):** prereqs SC-00/01/02/03. On the DB side the planner-time list is now largely satisfied: DB-02 timestamp lifecycle LANDED `6d9d984d`/`74ebd81c`, DB-00 callback/error seam LANDED `48e65806`/`ec84c176`, DB-01 bind repair LANDED `f57ae050`, the executed phase1 writes DB-04…DB-13 LANDED, typed folder/scanner children queries LANDED via **DB-11 `52b04064`** (`visit_media_in_folder` `scanner_queries.rs:344`, `ScannerScope` `:853`), and **DB-14 `de0f49ea` LANDED** supplies the executed per-folder transaction (`persist_folder_delta`). SC-05's remaining gates are therefore **SC-01 ratification + an `nd-scanner` manifest delta (an `nd-db` dependency is not yet declared)** and parent sequencing — not missing DB primitives. **Amended 2026-11-21:** SC-01 is **RATIFIED NARROW** and that `nd-db` manifest delta is **authorized by the ratification record** (`../decisions.md` "SC-01 seams ratification"), so SC-05's remaining gates are parent sequencing plus SC-00/02/03 delivery. No missing mutation performed in initial empty-folder slice. **No phase2/3/4/final GC/controller/watcher/IPC, no false full-scan completion**. Fixture library7 explicitly set up; real bootstrap remains BOOT owner.
 2. **Starting evidence (re-synced at `de0f49ea`):** Go processFolder `phase_1_folders.go:224-285`, tags `:292-325`, persistence `:374-475`; `MediaFileRepo::put_sql` (`nd-db/mediafile_repo.rs:1437`, planner cite `:1427` was baseline-relative) only renders, as do sibling builders — but the combined executed folder-delta seam now exists in `nd-db/src/scanner_writes.rs` (LANDED `de0f49ea`): `FolderWriteBatch` + `persist_folder_delta(store,&batch)`, which SC-05 consumes rather than driving `put_sql` itself. Existing `nd-db/tests/runtime_marshal.rs` `mediafile_write_read_and_update_keeps_created_at` (now at `:845`) manually executes builders; it is not proof of a callable executing Repo Put. Existing Go `scanner_test.go:140,150,163,177` imports folders/tracks/albums and queues artwork.
 3. **Ownership:** proposed `nd-scanner/src/{phase1,engine}.rs`, `tests/{phase1_fixture,phase1_faults}.rs`, `tests/common/mod.rs`; serial `lib.rs` export. No DB source edits in this task. Phase1 fixture should invoke a real public phase1 entry, not a test-only SQL driver.
 4. **Contract/tx:** empty library root plus artist/album/one actual supported media file. Root/ancestors are represented when needed, not indiscriminately removed as empty. Load child rows via typed query; read/map outside transaction; persist **one folder transaction in Go order**: Folder Put → Tag Add → each Artist restricted Put (`name,mbz_artist_id,sort_artist_name,order_artist_name,full_text,search_normalized,updated_at`) → Library AddArtist → Album Put → MediaFile Put; artwork delete/enqueue hooks preserved (seed preexisting artwork in test to make them observable). Return durable media ID and a committed report; reopen DB with fresh connection, query using real executed repos and independent SQL assertions. No final ScanEnd: this is phase1-only and cannot mark a library scan complete.
@@ -347,9 +360,9 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 
 ```
 SC-00 READY (oracle/manifest preparation)
-   => SC-01 DECISION REQUIRED (deps/API/error/cancel/domain placement)
+   => SC-01 RATIFIED (NARROW, 2026-11-21; five seams + nd-db manifest delta — progress sink/watcher/MusicFS still open)
       => SC-02 PARTIAL LANDED `e3e0770a` (storage/walk/ignore/folder hash/cancellation; entrypoint + ingest still open)
-      => SC-03 BLOCKED (Info/stat/library bridge + singleton projection)
+      => SC-03 BLOCKED (Info/stat/library bridge + singleton projection; gate is its own decision set, NOT SC-01 — the ratified seams are open)
              => SC-04 BLOCKED (full pure aggregation/equality; not first fixture gate)
 
 [SC-00,01,02,03 + DB phase1 subset + DB typed folder query + DB time/error]

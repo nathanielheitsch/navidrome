@@ -270,7 +270,9 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   Go's literal target-list loop. SC-06 owns persistence idempotency. This approves no other scanner interface, dependency, manifest, Go-source
   or cross-package work; SC-01 remains **DECISION REQUIRED**, and these repairs do not establish SC-01 ratification, SC-02 completion
   or MusicFS readiness. Merge remains gated on implementation, independent review and parent CLI validation. Source basis:
-  `/tmp/nav-sc02-final-review.md` and the read-only remediation plan; no execution is implied.
+  `/tmp/nav-sc02-final-review.md` and the read-only remediation plan; no execution is implied. **Amended 2026-11-21:** SC-01 was
+  subsequently ratified NARROW (see "SC-01 seams ratification" below); that record ratifies only the five listed seams plus the
+  `nd-db` manifest delta, and nothing in S7/S8/S9 counted as ratification.
 - **S8 — Second-reviewed SC-02 narrow repairs (PARENT DECIDED 2026-11-20; not ratification).** Authorize only source/test repairs in
   the existing scanner slice, without new dependencies or manifest/lock/Go changes: preflight every logical target component and reject
   non-UTF-8 targets with typed `NonUtf8Name` plus a raw-path `NameNotUtf8` summary warning; do not reject a non-UTF-8 configured root.
@@ -303,6 +305,48 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   exercised walk-level regression each where deterministically reachable, plus an `as_str()` table round-trip; where a kind is not
   deterministically reachable from a walk on this platform, that is stated, not papered over. Nothing here authorizes further scanner
   scope or claims SC-01/SC-02 completion or MusicFS readiness.
+## SC-01 seams ratification (SC-01 cont., NARROW; PARENT DECIDED 2026-11-21)
+
+- **SC-01 — Scanner seams ratified, NARROW scope (PARENT DECIDED 2026-11-21; unblocks SC-05, defers the progress-sink protocol).**
+  The SC-02 partial landed at `e3e0770a` (local walker, `.ndignore`/ignore policy, folder hash, cancellation)
+  but SC-01 ratification was unrecorded, gating SC-03+ and the SC-05 consumer lane. This record ratifies the
+  scanner/DB seams SC-05 needs and NOTHING more.
+
+  **Ratified seams (SC-05 may build on these):**
+  1. **Storage seam**: SC-05 consumes `nd-scanner`'s `Storage` trait (SC-02 local-FS storage subset,
+     `storage.rs` list/stat/read/read_link/resolve/exists) with the local `FileStorage` as the only implementor
+     for phase-1; remote/MusicFS backends remain UNRATIFIED — no `MusicFS`/`ReadTags` dispatch surface is claimed
+     or required. (SC-02 partial already bounded this; ratify, don't extend.)
+  2. **DB read seam**: phase-1 children reads use DB-11's `scanner_queries::visit_media_in_folder`
+     (`52b04064`) with `ScannerScope::for_library`; DB-21(P1-DB) `632271a9` freezes that surface — SC-05 must
+     consume the frozen API, not re-derive it.
+  3. **DB write seam**: one folder delta per commit via DB-14's `persist_folder_delta`
+     (`de0f49ea`, D-BATCH) — SC builds the immutable `FolderWriteBatch` (pre-generated folder/artist/album IDs,
+     caller stamps, full_scan_mode boolean from the library row), consumes `CommittedFolderOutcome`
+     post-commit only. No DB edits from SC; no second retry loop (the store owns retry; SC owns abort policy,
+     Go `stopWalk` :358).
+  4. **Cancellation**: the walker's `CancelToken` (SC-02, `contract.rs` wakeable cooperative token) is the
+     scanner-side cancellation; DB visitors take the plain `nd_utils::context::Cancellation` flag per D-CURSOR —
+     SC-05 adapts between them at the ingest boundary (single adapter, owned by SC).
+  5. **Tag-to-record adapter**: `nd-tagreader` (lofty) → `nd-mapping::Metadata` → `to_media_file` per-library PID
+     (SC-05's mapping-bridge; MP3/FLAC/M4A/Ogg fixture scope only — WMA unsupported, documented in
+     nd-tagreader README; no new extractors).
+
+  **DEFERRED (explicitly NOT ratified — stay gated):**
+  - **Progress/sink protocol** (`ProgressInfo` transport, buffer-100 channel semantics, gob/IPC): the in-process
+    phase-1 fixture needs NO wire protocol; SC-12/13 IPC was already deferred (README:93). Ratify the sink
+    protocol only when a real progress consumer exists (API-05/inspect or external scanner), not before.
+  - **Watcher** (SC-08+), **remote storage**, **full MusicFS/ReadTags**, **phase-2+ orchestration contracts**
+    (SC-06/07 consume DB-14/DB-16 directly; their own gates stand).
+  - **nd-scanner manifest delta**: authorized HERE as part of this ratification — add `nd-db` (path dep,
+    `features = []` default is sufficient: the consumed surface is pub) to `nd-scanner/Cargo.toml` + lock.
+    This is the only manifest change SC-01 authorizes; SC-05's brief carries the exact delta.
+
+  **Evidence basis**: SC-05 launch memo (2026-11-20 scout; DB-14 boundary binding, tagreader readiness,
+  fixture traps incl. the unescaped-LIKE `get_folder_update_info` selective-target SQL and the
+  `visit_media_in_album` unresolved-artwork deviation); D-BATCH consumed at `de0f49ea`; DB-21 U-ledger
+  `SC.mapping-bridge`/`SC.phase1-fixture` gates close with SC-03/SC-05 respectively, not with this record.
+
 
 ## Cursor and scope (D-CURSOR, D-SCOPE; record PARENT DECIDED, consumed by DB-11 `52b04064`)
 
@@ -419,7 +463,9 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   Decision: correct the workspace entry to `chrono = "^0.4"` (features per consumer) in the BOOT-00 manifest pass, and
   have consumers use `workspace = true` after that. This is a one-line manifest fix, not a new package; the lock edge
   already exists. Rationale: S9-style "record it or it bites later" — a placeholder that silently disagrees with every
-  real pin is a trap for the first HTTP/consumer crate.
+  real pin is a trap for the first HTTP/consumer crate. **Amended 2026-11-21:** the canonical form of this pin is
+  BOOT-00 **D3** (below, in the BOOT-00 D1-D3 record): `rust/Cargo.toml:66` becomes `chrono = "0.4"` — the `"^0.4"`
+  spelling here was never applied and D3 supersedes it.
 
 - **B2 — ffmpeg path resolution ignores loaded config (PARENT DECIDED 2026-11-20).** `nd-ffmpeg/src/ffmpeg_cmd.rs:
   63-95` resolves the ffmpeg binary from `nd_conf::Config::default().ffmpeg_path` (:76) — the hard-coded default struct
@@ -468,6 +514,34 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `core/stream/media_streamer.go:159-281`; `server/stream.go`/`range.go` and `core/stream/stream.go` do NOT exist). B1 remains
   BOOT-00 manifest work; B2 remains #07-owned boot-config injection (owner confirmation still open). Citation correction:
   API-04 is `boot-api.md:253` (the draft's `:246` was stale). This record ratifies Candidate B of the draft.
+- **BOOT-00 (D1-D3) — crate graph, lock-only deps, manifest pin repair (PARENT DECIDED 2026-11-21).**
+  From the BOOT-00/API-00 decision brief (2026-11-20 scout), parent-verified. D4 is resolved by the B3-ratified
+  record above (ordinary multi-thread Send-Axum); D5 (recipe ownership) stays with the lane report.
+
+  **D1 — crate graph:** `nd-http` depends on `nd-conf`/`nd-auth` only; `nd-api`'s router is injected into
+  `nd-cli` (the `dependency_graph_has_no_http_api_cycle` acceptance at boot-api.md:134 is only satisfiable
+  with injection; no `nd-http → nd-api` edge).
+
+  **D2 — dependencies:** first slice adds NO new lock entries. `axum 0.7.9`, `hyper-util 0.1.21`,
+  `http-body-util 0.1.5`, `tower 0.5.3`, `bytes 1.12.1`, `tokio 1.54.1` are already locked; `tower-http`,
+  `tokio-util`, `clap`, `tracing-subscriber`, `reqwest`, `uuid`, `md5` are declared in the workspace but
+  ABSENT from `rust/Cargo.lock` — using any of them is a new lock entry and needs its own brief line.
+
+  **D3 — manifest pin repair (execute in the same BOOT-00 lane as its first step, or as a parent-controlled
+  micro-lane BEFORE BOOT-01 writes any `workspace = true` dep):**
+  - `rust/Cargo.toml:66` `chrono = "^2"` → `chrono = "0.4"` (B1 was PARENT DECIDED at decisions.md:412 but
+    NEVER APPLIED; all five consumers already pin 0.4 directly; lock holds 0.4.45).
+  - `rust/Cargo.toml:60` `tracing = "^0.5"` → `tracing = "0.1"` (real series; lock 0.1.44) — UNRECORDED pin.
+  - `rust/Cargo.toml:61` `tracing-subscriber = "^0.1"` → `tracing-subscriber = "0.3"` (real series) — UNRECORDED pin.
+  - `rust/Cargo.toml:68` `base64 = "^0.8"` → `base64 = "0.22"` (lock 0.22.1 via jsonwebtoken; the `^0.8`
+    forces a duplicate major, violating BOOT-00's own no-duplicate-versions acceptance).
+  - Verify: `cargo build --locked --workspace` green after the edits, no lock delta beyond the dedup
+    (report the exact `git diff --stat rust/Cargo.lock`).
+  - Record these four pins as BOOT-00's D3 in decisions.md's B-series (the two tracing pins + base64 have
+    NEVER had a record; B1 covers only chrono). **Recorded here by this very entry.**
+
+  **Not re-litigatable in BOOT-00**: D-OPEN DSN/PRAGMA policy (LANDED `4a8aac9f`; the README "owned jointly"
+  row was corrected at `149403e3`); the goose/upgrade path (C1: fresh service, no Go upgrade path).
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
 - **A1 — Offset-without-limit renders `LIMIT -1`**: squirrel's bare `OFFSET n` is a SQLite parse error and SQLite is
@@ -608,6 +682,9 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `user_repo.rs:41,629,1054` and `time.rs:42`. DB-16 owns: the deletion, replacing the class-3 probe with a literal
   `SELECT * FROM plugin WHERE id = ?` prepare (still asserting `no such table: plugin`), rewording the prose mentions to
   'not ported, D-PLUGIN', and keeping the `schema_diff.rs`/`fresh_schema.rs` schema-golden assertions intact.
+  **EXECUTED at `7d022a02` (DB-16, 2026-11-21):** `plugin_repo.rs` (243 lines, 3 tests) and the `lib.rs` export are deleted, the
+  class-3 probe is a literal `SELECT * FROM plugin WHERE id = ?` prepare (still asserting `no such table: plugin`), the prose
+  mentions are reworded, the schema goldens are intact, and `nd-db/src` carries zero `plugin_repo` identifiers (grep-verified).
 ## DB-21 exit scope and prepared-statement gates (PARENT DECIDED 2026-11-21)
 
 - **DB-21 P1-DB scope narrowing (PARENT DECIDED 2026-11-21).** The launchable DB-21 exit is the **DB-side-only** P1 contract: composed regression through the real pool, the frozen API surface, and the CONSUMER_HANDOFF U-ledger pinning external acceptances as Unmet; `SC.mapping-bridge`, `SC.phase1-fixture` and `BOOT.configured-library-caller` stay U until their SC/BOOT lanes deliver caller evidence (`BOOT.configured-library-caller` gates on **BOOT-01 implementing**, with BOOT-00 a prerequisite — approval is not delivered caller evidence). Per `subplans/db-runtime.md:895` a narrowly-scoped exit may demonstrate only a strictly narrower scope, never the general one: the stable ID **DB-21 is not complete until FULL-SCANNER-DB**. Landed as `632271a9` (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests).

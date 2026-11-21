@@ -24,7 +24,7 @@ tx; 5 executed tests; durable Go-harness oracle deferred to the EVID lane, `../d
 (4 files, `nd-db`: NEW `src/scanner_writes.rs` 935 lines, NEW `tests/runtime_folder_persistence.rs` 17 executed tests, `lib.rs` +1,
 `album_repo.rs` +102 additions-only, delivering `album_repo::copy_album_created_at_in_tx`). Parent gates at `de0f49ea` (EXECUTED):
 workspace **2319 / 0 / 1 across 95 suites**, fmt + workspace clippy clean, `nd-db` rustdoc 22 warnings = baseline (zero for
-`scanner_writes.rs`. **DB-21(P1-DB) is now LANDED `632271a9`** (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests — the **DB-side-only P1 exit** per the parent scope narrowing of 2026-11-21, `../decisions.md`; parent gates at `632271a9`: workspace **2326 / 0 / 1 across 96 suites**). The spine's next package is **DB-16 or DB-17** — DB-16 reuses the landed `copy_album_created_at_in_tx` and carries the still-UNDELETED D-PLUGIN removal of `plugin_repo.rs` + `lib.rs:35`.
+`scanner_writes.rs`. **DB-21(P1-DB) is now LANDED `632271a9`** (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests — the **DB-side-only P1 exit** per the parent scope narrowing of 2026-11-21, `../decisions.md`; parent gates at `632271a9`: workspace **2326 / 0 / 1 across 96 suites**). **DB-16 LANDED `7d022a02`** (10 files, +3507/−308: executed `move_matched_mediafile`, `remap_missing_mediafile`, NEW `reassign_references_in_tx`, `delete_mediafile_in_tx`, `delete_all_missing_in_tx`; A8 `share update_sql` typed `EmptyUpdateColumns` rejection; **D-PLUGIN deletion executed** — `plugin_repo.rs` + the `lib.rs` export removed; 18 executed tests; parent gates: workspace **2343 / 0 / 1 across 97 suites**, `nd-db` 1053/0/0 across 48 suites). The spine's next package is **DB-17** — `DB-17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)` is the remaining forward spine.
 The scanner side is unchanged by this plan: the SC-02 partial landed at `e3e0770a` (local walker, `.ndignore`, folder hash,
 cancellation) is a partial slice — not SC-01 ratification, SC-02 completion or MusicFS readiness — and still gives no
 `*_in_tx` write a production caller. Settled decisions now live in
@@ -200,7 +200,7 @@ Full list: `library_repo.rs:531,628/636,658/664,674/681/683,725,741,839,1398`
 (`LibraryUpdate.updated_at`, `store_music_folder_sql`, `scan_begin_sql`, `scan_end_sql`,
 `scan_in_progress*`, `refresh_stats_update_sql`, ZERO_TIME uses), `mediafile_repo.rs:1597/1607,1644`
 (mark-missing stamps), `folder_repo.rs:896/900`, `album_repo.rs:1149,1170`,
-`playqueue_repo.rs:136-137`, `artwork_repo.rs:77/85,166/182`, `plugin_repo.rs:123,183-184`
+`playqueue_repo.rs:136-137`, `artwork_repo.rs:77/85,166/182`, `plugin_repo.rs:123,183-184` (the `plugin_repo.rs` citations are dated history — the module was deleted at `7d022a02` by D-PLUGIN)
 (unreachable module — see the plugin scope ask, but convert it anyway for consistency or delete it).
 **Not in scope, by design:** `scrobble_repo.rs:100` binds `submission_time` as an epoch integer,
 which is correct — Go stores `submissionTime.Unix()` (`persistence/scrobble_repository.go:52`) and
@@ -616,7 +616,9 @@ fails with `Wrong number of parameters`. Three other findings the by-inspection 
 - `plugin` is absent from the fresh DDL; `DELETE FROM plugin` therefore fails with
   `no such table: plugin`. Not a repo bug, but `plugin_repo.rs:11-14` claims the schema slice
   "owns adding it", which contradicts `schema-contract.md:93-96` (the table is deliberately
-  dropped). That comment is stale and needs the scope decision below.
+  dropped). That comment is stale and needs the scope decision below. **(Amended 2026-11-21: D-PLUGIN
+  deletion EXECUTED at `7d022a02` — `plugin_repo.rs` and its renderers no longer exist, so this class is
+  now pinned by a literal-SQL prepare in `runtime_scanner_persistence_contract.rs`.)**
 - `share::update_sql` with an empty `cols` renders `UPDATE share SET  WHERE id = ?`, a syntax
   error. Go's `updateOwned` path can never produce an empty SET because `filterUpdateValues`
   always adds `id` (`persistence/sql_base_repository.go:612-616`, `selectUpdateColumns :593-609`
@@ -672,6 +674,12 @@ The only production caller passes two columns (`core/share.go:51` `last_visited_
 `visit_count`; `core/share.go:148` forwards the API's `cols...`, which could be empty for a
 client sending none), so the divergence is reachable through the API path in principle.
 
+**RESOLVED per A8 (`../decisions.md` "Accepted deviations", PARENT DECIDED 2026-11-21, D-SHARE): `share::update_sql`
+now rejects an empty column list with the typed `ShareError::EmptyUpdateColumns` before any SQL text is built** — a
+deliberate typed rejection, not Go update-all parity (Go's empty path is unreachable in production: the `core/share.go`
+wrapper discards `cols`). Executed in DB-16 `7d022a02` (`share_repo.rs`), and the DB-21 deferred-prepare-gate class-2
+pin was re-executed against the new behavior. The parity analysis below is retained as the finding's history.
+
 **DB-16 (or a dedicated share lane) must:** (a) decide and document faithful parity — empty
 `cols` means "update all model columns except created_at/birth_time/user_id, plus id" — or a
 deliberate rejection error, with a citation; (b) prove the chosen behavior by executing against
@@ -681,7 +689,8 @@ refresh it); (c) never emit an empty SET silently. Do not "fix" this by defaulti
 `updated_at`-only, which is neither behavior.
 
 
-1. **Status: launchable-parent-sequenced (prereqs landed, no writer assigned).** Prereqs DB-00/02/03/07/09/10 **LANDED**, **DB-11 `52b04064`**, **DB-15 runtime half `96c495e7`** and **DB-14 `de0f49ea`** are LANDED (dated correction 2026-11-20; the planner-time `BLOCKED` framing is stale). Remaining gates: external `SC.move-selection` for integrated scanner matching (not DB implementation) and a parent sequencing slot. Goal: user-data-preserving executed operations; DB does not choose ambiguous candidate or maintain SC processed-album map.
+1. **Status: LANDED `7d022a02` (dated amendment 2026-11-21; the launchable-parent-sequenced framing below is history).** Executed in-lane: `move_matched_mediafile` (scanner move per `phase_2_missing_tracks.go:291-335`, `WithTxRetry` semantics via `try_with_tx_retry_sync`; target keeps its OWN `created_at`/`birth_time` — Go's update arm drops them at `sql_base_repository.go:605/608`, the carried stamp is inert; album reassign + copy ONLY on album-ID change, negative-controlled), `remap_missing_mediafile` (maintenance remap per `core/maintenance.go`, single `try_with_tx` — no retry), NEW `reassign_references_in_tx` (composes DB-15 annotation + avg-recalc, executed `reassign_bookmark_in_tx`, then playlist/scrobble/buffer legs in Go order; render-only `reassign_references_sql` untouched), `delete_mediafile_in_tx` (Go bare base-row delete; FK cascades + FTS trigger verified against Go migrations), `delete_all_missing_in_tx` (opt-in; the admin gate is caller policy, documented), and warn arms routed through the DB-14 tx-loss handler. **A8 implemented** and **D-PLUGIN deletion executed** (see the pre-flight block and `../decisions.md`). NEW `tests/runtime_move_persistence.rs` = 18 executed tests; review APPROVE-WITH-FIXES (a P2 copy-outcome misclassification fixed in-lane pre-commit, a P3 bookmark doc corrected). **NOT done:** no production caller (SC-06/BOOT maintenance are the consumers), no GC execution (caller step), no count refresh (DB-17), no playlist cleanup (DB-20). Parent gates at `7d022a02`: workspace **2343 / 0 / 1 across 97 suites**, `-p nd-db` **1053 / 0 / 0 across 48 suites**, fmt + workspace clippy clean, `nd-db` rustdoc **21** = post-DB-16 baseline (22 − 1 deleted-module link).
+   Prereqs at launch were DB-00/02/03/07/09/10 **LANDED**, **DB-11 `52b04064`**, **DB-15 runtime half `96c495e7`** and **DB-14 `de0f49ea`** (dated correction 2026-11-20; the planner-time `BLOCKED` framing is stale). External `SC.move-selection` remains an SC-side gate for integrated scanner matching (not DB implementation). Goal: user-data-preserving executed operations; DB does not choose ambiguous candidate or maintain SC processed-album map.
 2. **V:** `B/mediafile_repo.rs:2277-2304` reference bundle omits target avg recalculation because it calls only low-level reassign SQL (re-synced at `de0f49ea`; planner-time `1818-1853` was baseline-relative); Go `persistence/mediafile_repository.go:410-430` calls full ReassignAnnotation, bookmark, playlist, scrobbles, OR IGNORE buffer. Album copy builders `B/album_repo.rs:1497,1614` (was `1220,1235`); Go CopyAttributes331-356 casts text and skips NULL/empty/0001-created_at poison. **The executed copy helper already exists: `album_repo::copy_album_created_at_in_tx` at `album_repo.rs:1566` (LANDED `de0f49ea`)** — DB-16 reuses it rather than writing a second one. Scanner move291-335 in phase2 puts old ID onto target, deletes discarded new row, optional album reassignment/copy (not identical to generic ReassignReferences).
 3. **Own:** `src/{mediafile_repo.rs,album_repo.rs,sql_bookmarks.rs}` narrow runtime helpers, extend `scanner_writes.rs` (LANDED `de0f49ea`; see its API) if move executor belongs there; NEW `tests/runtime_move_persistence.rs`; O moves/reference/copy cases. Collision DB-14/15/20; no SC selection files.
 4. **Proposal:** `reassign_references_in_tx(tx,old,new)` uses full DB-15 then bookmark then playlist_tracks/scrobbles/buffer in Go order; `copy_album_created_at_in_tx` whitelists only needed column (not arbitrary SQL identifiers). `apply_selected_move(store,MoveWritePlan)->CommittedMoveOutcome`: immutable selected target snapshot/old identity/album transition already decided by SC; each retry clones original target, preserves missing.created_at, puts old ID at new path then deletes discarded target; no blanket reassign of old identity because that would contradict scanner move semantics. Separate generic reference API for actual callers. Warn/fatal classification mirrors Go caller policies, original errors available.
@@ -897,9 +906,11 @@ DB-16/17/18/19/20 + SC.full-phase-contract + SC.playlist-import-contract -> DB-2
 DB-21's P1 exit requires only genuinely consumed phase1 APIs; e.g. API visible-point test and future phase2 reads in DB-11 need not delay a parent-approved narrower DB-11 phase1 handoff, but cannot be reported complete. If split, retain stable IDs with explicit acceptance checklist states; do not silently delete the unimplemented obligations. DB-14 needs DB-15 for phase1 album-ID transitions; a no-transition first fixture may demonstrate only a strictly narrower exit, not general phase1 parity.
 
 Recommended **serial** writer order (DB-01/02/03/00, DB-04…DB-10/DB-12/DB-13 are landed at `f80b9704`, DB-22 at `272c9c66`,
-**DB-11 at `52b04064`**, **DB-15's runtime half at `96c495e7`** and **DB-14 at `de0f49ea`** — so the spine's next package is
-**DB-21(P1-DB) LANDED `632271a9` as the DB-side-only exit**, so the spine's next package is **DB-16 or DB-17** — DB-16 reuses the landed `copy_album_created_at_in_tx` and carries the D-PLUGIN deletion of `plugin_repo.rs` + the `lib.rs:35` export, which remains UNDELETED at `632271a9` (grep-verified: the file exists and `lib.rs:35` still declares `pub mod plugin_repo`).
-DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB), with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**), **DB-14 landed at `de0f49ea`** and **DB-21(P1-DB) landed at `632271a9`**. Then **DB-16 -> DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB)** remains the forward spine. Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10, the DB-12 subset and DB-22 `272c9c66` are landed, as are **DB-11 `52b04064`** (executed typed scanner reads/cursors; `SEEDEDRAND` full-set render still with the REST/API lane), **DB-15 runtime `96c495e7`** (durable Go oracle deferred to EVID, `../decisions.md` H6), **DB-14 `de0f49ea`** (`scanner_writes.rs` folder-delta persistence, 17 executed tests, no production caller) and **DB-21(P1-DB) `632271a9`** (DB-side-only P1 exit contract: executed composed regression + API freeze + U-ledger; no production caller, not the full exit); the SC-02 partial landed at `e3e0770a` (a partial slice: no scanner entrypoint or ingest, not SC-01/SC-02 completion). No executed read or write has a production caller. DB-22's prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`.
+**DB-11 at `52b04064`**, **DB-15's runtime half at `96c495e7`**, **DB-14 at `de0f49ea`**, **DB-21(P1-DB) at `632271a9`**
+and **DB-16 LANDED `7d022a02`** (executed move/reference-remap/delete primitives + A8 share typed rejection + **D-PLUGIN
+deletion executed** — `plugin_repo.rs` and the `lib.rs` export are gone at `7d022a02`, grep-verified zero `plugin_repo`
+identifiers under `nd-db/src`), so the spine's next package is **DB-17**.
+DB-00 -> DB-04 -> DB-05 -> DB-06 -> DB-07 -> DB-08 -> DB-09 -> DB-10 -> DB-11 -> DB-12 -> DB-15 -> DB-14 -> DB-21(P1-DB) -> DB-16, with DB-13 inserted at BOOT/API need after DB-00/03 (**inserted and landed there: `eae4ba1d`/`4ab63cd5`**), **DB-14 landed at `de0f49ea`**, **DB-21(P1-DB) landed at `632271a9`** and **DB-16 landed at `7d022a02`**. Then **DB-17 -> DB-18 -> DB-19 -> DB-20 -> DB-21(FULL-SCANNER-DB)** remains the forward spine. Independent decision/oracle investigations may be read-only; implementation always one writer. Parent may reorder independent completed prerequisites for consumer value, not bypass safety gates. Current state (not order): DB-10, the DB-12 subset and DB-22 `272c9c66` are landed, as are **DB-11 `52b04064`** (executed typed scanner reads/cursors; `SEEDEDRAND` full-set render still with the REST/API lane), **DB-15 runtime `96c495e7`** (durable Go oracle deferred to EVID, `../decisions.md` H6), **DB-14 `de0f49ea`** (`scanner_writes.rs` folder-delta persistence, 17 executed tests, no production caller), **DB-21(P1-DB) `632271a9`** (DB-side-only P1 exit contract: executed composed regression + API freeze + U-ledger; no production caller, not the full exit) and **DB-16 `7d022a02`** (executed move/reference-remap/delete primitives, A8 share rejection, D-PLUGIN deletion; 18 executed tests, no production caller — SC-06/BOOT maintenance are the consumers); the SC-02 partial landed at `e3e0770a` (a partial slice: no scanner entrypoint or ingest, not SC-01/SC-02 completion). No executed read or write has a production caller. DB-22's prerequisites are landed and DB-12 no longer owns `artwork_repo.rs`.
 
 ## MUST-answer questions before relevant launch
 
@@ -945,7 +956,7 @@ Measured per renderer (`file:line` = renderer, `g` = committed golden):
 | album | `album_repo.rs:338` | no | `:1658` | GAP |
 | mediafile | `mediafile_repo.rs:318` | no | `:1901` | GAP |
 | playlist_tracks | `playlist_track_repo.rs:234,:247` | no | `:801` | GAP |
-| plugin | `plugin_repo.rs:83` | no | none | GAP |
+| plugin | `plugin_repo.rs:83` | no | none | GAP — **module DELETED at `7d022a02`** (D-PLUGIN executed by DB-16); the 2026-11-18 row is dated history |
 | scrobble | `scrobble_repo.rs:109` | no | `:173` | GAP |
 
 - **Also found (2026-11-18 review):** `rust/crates/nd-db/src/library_repo.rs:84` and `:410` claim
@@ -1056,7 +1067,8 @@ either — annotations ride album/mediafile (`DB-15`), so no gap there.
 > `genre`, `playqueue`, `plugin` (scope pending), `scrobble`, `smart_playlist`. At `f80b9704`, DB-12 executes artwork
 > invalidation, leaving five render-only modules (artwork reads still pending); DB-22 `272c9c66` then executed genre,
 > scrobble and playqueue reads, and D-PLUGIN (`decisions.md`, record `89b72894`) decided `plugin_repo.rs` is out-of-scope
-> dead code to delete (not yet executed). See `../current-status.md` for the re-count.
+> dead code to delete (**deletion EXECUTED at `7d022a02`, DB-16** — the file, its tests and the `lib.rs` export are gone, and the
+> DB-21 class-3 probe is now literal SQL). See `../current-status.md` for the re-count.
 
 Near-term order after this commit, all DB-owned **(superseded 2026-11-19: DB-01 LANDED `f57ae050`,
 DB-03 / D-OPEN LANDED `4a8aac9f`, DB-00 LANDED `48e65806`/`ec84c176`, DB-15 render-only LANDED `ab466928`, DB-02 LANDED
@@ -1087,8 +1099,9 @@ DB-10 is LANDED `65072b89`/`6e5ca97d`; DB-12's artwork invalidation/enqueue subs
    corroborates a failure (only `... ok` lines), a source audit of the poller finish paths found no unbounded hang, and
    26+ clean runs include 3 full-binary runs under 8-core load; judgment is harness/load-sensitive plus environmental,
    with a real bug ruled out. A causal `wait_for_entry_gone` before `wait_for_poller` is scoped for a later writer that
-   touches `nd-stream/tests/transcode_cache.rs` only; **not implemented and the flake is not claimed fixed** — needs its
-   own investigation in `nd-stream`, not a DB change.
+   touches `nd-stream/tests/transcode_cache.rs` only; **Amended 2026-11-21: that fix LANDED at `7369daf4`** (verified across
+   36 runs including 8-core load). The original flake log remains unrecoverable, so the test stays tracked as hardened rather
+   than permanently fixed — needs no further `nd-stream` change.
 
 ## Coverage audit: renderers with no executed coverage (2026-11-18, parent-measured)
 
@@ -1099,7 +1112,7 @@ per module): `genre_repo` 0, `scrobble_repo` 0, `scrobble_buffer_repo` 0 (its en
 but nothing runs), `smart_playlist_repo` 0, `user_props_repo` 0 (it has 6 exec calls but zero
 read-path coverage), `playqueue_repo` 0, `artwork_repo` 0, `artwork_queue_repo` 0 (hydrates via
 `RowGet` inside `runtime_hydrate_folder_artwork_queue.rs`, but its own statements never execute),
-`tag_repo` 0, `plugin_repo` 0 (its renderers are callable — `lib.rs:35` exports the module — but no statement can run against the shipped schema because the table is dropped). Executed today: share 8, property 1,
+`tag_repo` 0, `plugin_repo` 0 (its renderers are callable — `lib.rs:35` exports the module — but no statement can run against the shipped schema because the table is dropped; **deleted at `7d022a02`, D-PLUGIN executed**). Executed today: share 8, property 1,
 radio 1, library 1, plus user/player/transcoding/album/artist/mediafile/folder/playlist paths.
 
 **(2) Public functions never named by any test** (script over `src/*.rs` vs `tests/*.rs`):

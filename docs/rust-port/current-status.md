@@ -31,7 +31,9 @@ record marshaling, all eight `PostScan`-equivalent hooks, substantial executed r
 media-file identity/base/junction writes, artist, album, user epoch revoke, artwork invalidation/enqueue) have landed;
 since `52b04064` the **typed filtered scanner reads and cursor contract** execute on a leased connection, and since
 `96c495e7` so do annotation transfer and average-rating recalc transactions, and since `de0f49ea` so does the **per-folder
-scan delta** (`persist_folder_delta`, D-BATCH). **Scanner orchestration, HTTP, API and CLI
+scan delta** (`persist_folder_delta`, D-BATCH), and since `7d022a02` so do the **executed move/reference-remap/delete
+primitives** (`move_matched_mediafile`, `remap_missing_mediafile`, `reassign_references_in_tx`, `delete_mediafile_in_tx`,
+`delete_all_missing_in_tx`) alongside the A8 share typed rejection and the D-PLUGIN deletion of `plugin_repo.rs`. **Scanner orchestration, HTTP, API and CLI
 remain scaffolds**: `nd-http` and `nd-api` are scaffolds (`nd-cli/src/main.rs` is an empty `main`); `nd-scanner` now
 holds the tested local-FS walker slice (`storage.rs` + `.ndignore`/folder-hash/cancellation, SC-02 partial at `e3e0770a`)
 but **no scanner entrypoint, tag-to-DB pipeline, or full-scan orchestration**. There is **no end-to-end/server readiness**, no
@@ -48,7 +50,28 @@ full cursor or REST surface. That is narrower than "no repository method is ever
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## Latest integrated gates (parent, HEAD `632271a9` / DB-21 P1-DB, 2026-11-21)
+## Latest integrated gates (parent, HEAD `7d022a02` / DB-16, 2026-11-21)
+
+DB-16 (`7d022a02`, 10 files in `nd-db`, +3507/−308) landed on this branch line: executed scanner move
+(`move_matched_mediafile`, `WithTxRetry` semantics via `try_with_tx_retry_sync` — the target keeps its OWN
+`created_at`/`birth_time` because Go's update arm drops them at `sql_base_repository.go:605/608`), maintenance remap
+(`remap_missing_mediafile`, single `try_with_tx` — no retry), NEW `reassign_references_in_tx` (composes DB-15 annotation +
+avg-recalc, executed `reassign_bookmark_in_tx`, then playlist/scrobble/buffer legs in Go order; render-only
+`reassign_references_sql` untouched), `delete_mediafile_in_tx` (Go bare base-row delete; FK cascades + FTS trigger verified
+against Go migrations), `delete_all_missing_in_tx` (opt-in; the admin gate is documented as caller policy), warn arms via the
+DB-14 tx-loss handler, **A8** (`share update_sql` typed `EmptyUpdateColumns` rejection before any SQL text; DB-21 class-2 pin
+re-executed) and **D-PLUGIN deletion executed** (`plugin_repo.rs` 243 lines / 3 tests + the `lib.rs` export deleted, class-3
+probe now literal SQL, prose reworded, schema goldens intact, zero `plugin_repo` identifiers under `nd-db/src`).
+NEW `tests/runtime_move_persistence.rs` = **18 executed tests**. Review APPROVE-WITH-FIXES (P2 copy-outcome
+misclassification fixed in-lane pre-commit; P3 bookmark doc corrected). Parent ran the authoritative gates at `7d022a02`
+with **Homebrew cargo/rustc 1.99.1** (EXECUTED): workspace tests **97 suites, 2343 passed / 0 failed / 1 ignored** (the single
+ignore is the pre-existing `dump_divergences`), `-p nd-db` all-targets **1053 / 0 / 0 across 48 suites**, `cargo fmt --all --
+--check` clean, `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings` clean, `git diff --check` clean,
+and `nd-db` rustdoc at **21 warnings = the post-DB-16 baseline** (22 − 1 deleted-module link from the D-PLUGIN deletion).
+**Not done:** no production caller (SC-06 and BOOT maintenance are the consumers), no GC execution (caller step), no count
+refresh (DB-17), no playlist cleanup (DB-20). The previous `632271a9` block below is dated history.
+
+## Previous integrated gates (parent, HEAD `632271a9` / DB-21 P1-DB, 2026-11-21)
 
 DB-21(P1-DB) (`632271a9`, 1 file in `nd-db`: NEW `tests/runtime_scanner_persistence_contract.rs` 4206 lines, 7 executed tests)
 landed on this branch line as the **DB-side-only P1 exit** (parent scope narrowing, `decisions.md`). Parent ran the authoritative
@@ -65,6 +88,7 @@ terminal; non-final Stop offers the next chunk; failure path fail()→Closed nev
 post-completion only. **DB-21(P1-DB) is not the full exit:** no production caller (SC-05 is the first consumer), no full-exit,
 the collection/count API for later API-F* still belongs to DB-21(FULL) and is NOT delivered, not #27A progress, and the stable
 ID DB-21 stays incomplete until FULL-SCANNER-DB.
+
 
 ## Previous integrated gates (parent, HEAD `de0f49ea` / DB-14, 2026-11-20)
 
@@ -159,14 +183,16 @@ ffmpeg/ffprobe **9.0.2** available. Some process tests return early when tools/c
 gates must require their prerequisites and record what was actually exercised. No run above booted a server or scanned
 a real library.
 
-**Rustdoc debt:** the `nd-db` doc build succeeds with **22 warnings** (8 unresolved links + 14 private-item links),
-re-measured at `4ab63cd5` by this lane; the set is unchanged from the earlier baseline and the parent's `96c495e7` gate
-again reported **22 = baseline**, with **zero** warnings in `sql_annotations.rs` (DB-15 runtime). Do not add rustdoc
+**Rustdoc debt:** the `nd-db` doc build succeeds with **21 warnings** at `7d022a02` (the D-PLUGIN deletion removed one
+deleted-module unresolved link from the previous **22** = 8 unresolved links + 14 private-item links),
+re-measured at `4ab63cd5` by this lane; the set is otherwise unchanged from the earlier baseline and the parent's `96c495e7`
+and `632271a9` gates both reported **22 = baseline** at their HEADs, with **zero** warnings in `sql_annotations.rs`
+(DB-15 runtime) and zero in `runtime_scanner_persistence_contract.rs` (DB-21 P1-DB). Do not add rustdoc
 `-D warnings` as a gate without resolving that debt, and do not call a successful doc build warning-free. Measurement
 pitfall recorded so it is not repeated: `grep -c '^warning:'` also counts rustdoc's own summary line, which produced a
 transient 23-warning report.
 
-**Known flake (non-DB, tracked; record CORRECTED 2026-11-20 — still open, NOT fixed):** the `nd-stream` **integration**
+**Known flake (non-DB, tracked; record CORRECTED 2026-11-20; causal-wait fix LANDED `7369daf4` 2026-11-21 — hardened, still tracked):** the `nd-stream` **integration**
 test `the_poller_exits_on_teardown_even_when_the_client_never_hangs_up` is at
 `rust/crates/nd-stream/tests/transcode_cache.rs:1582-1617` — an integration test, not a lib test. The earlier wording
 here ("took ~30s against its 3s deadline in one full-workspace run, 1837 passed / 1 failed") is replaced, dated 2026-11-20,
@@ -179,8 +205,9 @@ test, zero `FAILED`) — and a source audit of every poller
 finish path found no unbounded hang path (SOURCE-VERIFIED, high confidence); 26+ clean runs including 3 full-binary runs
 under 8-core CPU load. Judgment: harness/load-sensitive plus environmental, with a real product bug ruled out. A scoped
 fix for a later writer — a causal `wait_for_entry_gone` before `wait_for_poller` (entry finalization proves the `finish()`
-announcement landed), touching `nd-stream/tests/transcode_cache.rs` only — is **not implemented**, so the flake stays
-tracked and is not claimed fixed; only the record is corrected. `nd-stream`'s
+announcement landed), touching `nd-stream/tests/transcode_cache.rs` only — **LANDED at `7369daf4`** (2026-11-21), verified across
+36 runs including 8-core CPU-load runs. The original flake log remains unrecoverable, so the test stays tracked as hardened
+rather than claimed permanently fixed. `nd-stream`'s
 `transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` (counts live `sleep` stub PIDs via
 `ps`) is the other timing-sensitive one. The ignored test is `dump_divergences` (`nd-mapping/tests/go_oracle.rs`).
 `--all-targets` totals are not a claim that doctests were run.
@@ -202,6 +229,7 @@ tracked and is not claimed fixed; only the record is corrected. `nd-stream`'s
 | DB-01 | `f57ae050` | Missing-state bind order + executed regression gate |
 | DB-03 / D-OPEN | `4a8aac9f` | Go-DSN parity with pool-bound initializer tokens, per-connection effective-state read-back |
 | DB-15 **render-only** rating repair | `ab466928` | `update_avg_rating_sql` embeds the average-rating aggregate with 3 ordered binds, executed against a real schema by `runtime_annotation_rating.rs`; the three public renderers were kept and redocumented with their prepare failure pinned — **not** the full DB-15 annotation reassignment service. **Superseded on the runtime items by the `96c495e7` DB-15 runtime row below** (durable Go oracle still deferred) |
+| DB-16 move/reference-remap/delete + A8 share rejection + D-PLUGIN deletion | `7d022a02` | Executed `move_matched_mediafile` (`WithTxRetry` semantics), `remap_missing_mediafile` (single tx, no retry), NEW `reassign_references_in_tx`, `delete_mediafile_in_tx`, `delete_all_missing_in_tx` (opt-in); warn arms via the DB-14 tx-loss handler; `share update_sql` typed `EmptyUpdateColumns` rejection (A8); `plugin_repo.rs` + `lib.rs` export DELETED (D-PLUGIN executed). NEW `tests/runtime_move_persistence.rs` 18 executed tests; parent gates 2343/0/1 across 97 suites, `nd-db` 1053/0/0 (48 suites), `nd-db` rustdoc 21 = post-DB-16 baseline. No production caller; no GC/count-refresh/playlist-cleanup execution (DB-17/20) |
 | Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical paths, `file://` URI parsing, explicit symlink classification. At that commit the walker, `.ndignore`/ignore policy, folder hashing and cancellation were **not implemented** — **not** SC-01 ratification or SC-02 completion. **Superseded on those four items by the `e3e0770a` row below.** |
 | Scanner **SC-02 partial** (local walker + `.ndignore` + folder hash + cancellation) | `e3e0770a` (fast-forwarded onto `2e7026b2`) | `nd-scanner`: `contract.rs`/`walk.rs`/`ignore.rs`/`folder.rs` plus the `lib.rs`/`storage.rs` seam, and executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`; the six user-approved dependencies are recorded in `decisions.md` S9 and the manifest/lock delta is limited to that approved dep set. Review findings through S9b closed. **Partial scope**: no scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration, watcher or progress protocol — **not** SC-01 ratification, SC-02 completion, or MusicFS readiness, and no `*_in_tx` write has a scanner caller. |
 | DB-02 scanner timestamp contract | `6d9d984d` + merge `74ebd81c` | Scanner-facing stamps/cutoffs bound as canonical TEXT via `time::value`, `library_repo::zero_time_value()` replacing raw `ZERO_TIME` integers, artwork-purge cutoff fixed to a `DateTime` bound, `runtime_scan_clock.rs` executed coverage. **Not** full scanner writes: `scrobble_buffer` `play_time`/`enqueue_time` still bind integers (see Residuals) |
@@ -244,7 +272,7 @@ stale.
 | Playlist tracks/scrobble buffer | Delegating hooks and builders present | Partial reads; buffer dequeue executes | Not full playlist/scrobbler services |
 | Artwork queue | Builders and plain mapper present | Reads/counts, `purge_queued`, transaction-bound enqueue variants and artwork delete-for-items execute (DB-12 `e5d0592d`) | No production scanner caller; worker lifecycle not implemented |
 | Transcoding module | Builders present | **Executed reads landed at `f8ceeb8f`** (`read_all`/`count_all`, `command` masked for a non-admin) | No route, no default-profile seed; profile **editing** out of scope |
-| Artwork/genre/playqueue/scrobble/plugin/smart_playlist | genre/playqueue/scrobble executed reads **landed at `272c9c66` (DB-22)**; artwork item-image lookup and invalidation execute; plugin/smart_playlist remain render-only | Artwork item-image lookup separately executes in `artwork_hydration.rs`; artwork `delete_for_items_in_tx` executes | Not full repository/service completion; `plugin` decided for deletion by D-PLUGIN (`decisions.md`, `89b72894`), not yet executed; `smart_playlist` not a separate Go repo |
+| Artwork/genre/playqueue/scrobble/plugin/smart_playlist | genre/playqueue/scrobble executed reads **landed at `272c9c66` (DB-22)**; artwork item-image lookup and invalidation execute; plugin is **deleted** (D-PLUGIN executed at `7d022a02`); smart_playlist remains render-only | Artwork item-image lookup separately executes in `artwork_hydration.rs`; artwork `delete_for_items_in_tx` executes | Not full repository/service completion; `plugin` deleted by D-PLUGIN (`decisions.md`, executed at `7d022a02`, DB-16), so it is no longer a render-only module; `smart_playlist` not a separate Go repo |
 | DB store/pool | Sync/async lease and transaction/retry APIs exist | SQLite work runs on the blocking boundary | Effective per-connection configuration **landed** (DB-03); typed seam **landed** (`48e65806`/`ec84c176`, DB-00) and DB-04…DB-10/12/13 plus DB-15's runtime writes consume it; DB-11's cursors hold one lease for the whole iteration (D-CURSOR). **DB-21(P1-DB) `632271a9`** adds the executed **DB-side-only P1 exit**: composed phase-1 regression driven through the real pool (both `full_scan_mode` values, second pass over committed dirty-state arms) plus a compile-checked API freeze (51 SigNN pins) — an executed contract on the pooled path, **still no production caller** |
 | Schema | Fresh DDL, migrations/marker, extensions, indexes, backup/optimize | Executed schema tests (61 at `4ab63cd5`) | No default library row; repair deferred; no bootstrap caller |
 | Tagreader/mapping | Real lofty backend and metadata mapping | Crate-level implementation/tests | No storage→record→DB ingest caller |
@@ -259,9 +287,10 @@ Executed reads do not prove all methods execute. Re-counted at integrated `maste
 `*_repo.rs` modules): **19 modules execute through the shared helper** (artwork, property, playlist_track, radio,
 scrobble_buffer, transcoding, album, artist, tag, folder, artwork_queue, mediafile, playlist, library, player, user,
 **genre, scrobble, playqueue** — the last three added by DB-22 `272c9c66`),
-**2 execute on raw connections** outside it (`share`, `user_props`), and **two are render-only** (`plugin`,
-`smart_playlist` — `smart_playlist` is not a separate Go repository; `plugin` is decided for deletion by D-PLUGIN
-`decisions.md`, record at `89b72894`, not yet executed).
+**2 execute on raw connections** outside it (`share`, `user_props`), and at that boundary **two were render-only** (`plugin`,
+`smart_playlist` — `smart_playlist` is not a separate Go repository). **Amended at `7d022a02` (DB-16): `plugin` is DELETED**
+(D-PLUGIN, `decisions.md`, record at `89b72894`), so the census is now **22 modules — 19 via the shared helper, 2 on raw
+connections, 1 render-only (`smart_playlist`)**.
 
 Re-counted at `de0f49ea` (SOURCE-VERIFIED): the 23-module census above is unchanged, `src/scanner_queries.rs` remains a
 **new executed-read module outside that census** — its visitors and `IdChunkedCursor` prepare and drain statements on a
@@ -272,6 +301,11 @@ tx-bound writes (`update_avg_rating_in_tx`, `reassign_annotation_in_tx`) at `96c
 on the DB-owned retrying transaction rather than adding its own helper path.
 **Twenty-five `pub` executed transaction-bound write functions plus one `pub(crate)` seam** exist
 (`grep 'pub fn .*_in_tx'` = 25 at `de0f49ea`, plus `persist_folder_delta_in_tx`):
+**Amended at `7d022a02` (DB-16): 29 `pub fn *_in_tx` + 3 `pub(crate) fn *_in_tx` = 32** (`git grep` at that HEAD) — DB-16 added four
+`pub fn *_in_tx` (`mediafile_repo::reassign_references_in_tx`, `reassign_bookmark_in_tx`, `delete_mediafile_in_tx`,
+`delete_all_missing_in_tx`) and two `pub(crate) fn *_in_tx` (`move_matched_mediafile_in_tx`, `remap_missing_mediafile_in_tx`)
+behind the `pub` store-level entrypoints `move_matched_mediafile`/`remap_missing_mediafile`, and deleted
+`plugin_repo` (no `*_in_tx` surface). The enumeration below is the `de0f49ea` inventory:
 property `put_in_tx`/`delete_in_tx`, library `put_in_tx`/`scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/
 `add_artist_in_tx`, tag `add_in_tx`, folder `put_folder_in_tx`/`mark_folders_missing_in_tx`, mediafile
 `mark_media_missing_in_tx`/`mark_media_missing_by_folder_in_tx`, artist `put_artist_in_tx`, album
@@ -310,9 +344,10 @@ DB-12's executed subset are merged into `f80b9704`; **the SC-02 partial (local w
 cancellation) is LANDED at `e3e0770a`** — a partial slice, not SC-02 completion. DB-22's former DB-12 ownership block is
 released. **DB-11 is LANDED at `52b04064`**, **DB-15's runtime half at `96c495e7`**, and **DB-14 at `de0f49ea`**, so
 `D-CURSOR`/`D-SCOPE` (`decisions.md`, corrected record `8b5b3925`) and `D-BATCH` are now consumed by executed code; the
-spine's next package is **DB-16 or DB-17** (`DB-16 → 17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`). **DB-21(P1-DB) is LANDED at
+spine's next package is **DB-17** (`DB-17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`). **DB-21(P1-DB) is LANDED at
 `632271a9`** as the DB-side-only P1 exit (executed composed contract + API freeze + executed U-ledger), so it adds **no
-production caller** and is not the full DB-21 exit.
+production caller** and is not the full DB-21 exit; **DB-16 is LANDED at `7d022a02`** (executed move/reference-remap/delete
+primitives, A8 share typed rejection, D-PLUGIN deletion; 18 executed tests, also with no production caller).
 
 ## Remaining blockers and integration obligations (SOURCE-VERIFIED)
 
@@ -345,9 +380,9 @@ production caller** and is not the full DB-21 exit.
    cleanup and recovered slots with real tools/codecs; an early-returning test is not lifecycle evidence.
 5. **No library row** — fresh DDL has none; configured-library creation belongs to an explicit bootstrap
    transaction/caller using typed executed DB methods, not an invented schema-golden seed.
-6. **Scope decisions** — `plugin_repo.rs` is **DECIDED** (D-PLUGIN, `decisions.md`, record `89b72894`: delete the module,
-   its tests and the `lib.rs` export as out-of-scope dead code) but **not yet executed**; the `plugin` table is absent from
-   the fresh schema, so every statement that module renders fails until deletion lands. Still open: Part C per-key config
+6. **Scope decisions** — `plugin_repo.rs` is **DECIDED and EXECUTED** (D-PLUGIN, `decisions.md`, record `89b72894`: delete the module,
+   its tests and the `lib.rs` export as out-of-scope dead code; **executed at `7d022a02`** by DB-16, so no render-only plugin surface
+   remains). Still open: Part C per-key config
    scopes; oracle-harness authorization for new tracked Go harnesses.
 
 ## Bounded source-level residuals (amended at integrated `master` `f80b9704`; older line references retained, not a completeness claim; SC-02 partial landed later at `e3e0770a`, and DB-11 `52b04064` / DB-15 runtime `96c495e7` did not re-check these lines)

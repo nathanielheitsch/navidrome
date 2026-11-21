@@ -11,15 +11,17 @@
 > SC-01/SC-02 completion) are LANDED, as are **DB-11 `52b04064`** (executed typed scanner reads, `D-CURSOR` cursor
 > contract, `ScannerScope`/`UserScope`, `get_visible_media` — so `EXT-DB-SCOPED-LOOKUP`/`EXT-DB-QUERY` and
 > `API.visible-media-contract` are resolved on the DB side; API-02 still owns the route, revalidation and response) and
-> **DB-15's runtime half `96c495e7`** and **DB-14 `de0f49ea`** (`scanner_writes.rs` per-folder persistence seam, consumed D-BATCH);
-> still no production scanner caller or artwork worker/full scanner — `nd-scanner` declares no `nd-db` dependency — and collection/
+> **DB-15's runtime half `96c495e7`** and **DB-14 `de0f49ea`** (`scanner_writes.rs` per-folder persistence seam, consumed D-BATCH), and
+> **DB-16 LANDED `7d022a02`** (executed move/reference-remap/delete primitives, A8 share typed rejection, D-PLUGIN deletion; 18 executed tests —
+> consumed by SC-06/BOOT maintenance, not by BOOT-01); still no production scanner caller or artwork worker/full scanner — `nd-scanner` declares no `nd-db` dependency — and collection/
 > count for later API-F* still belongs to DB-21(FULL) — **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract
 > (4206 lines, 7 executed tests), whose executed U-ledger asserts `BOOT.configured-library-caller` as **Unmet**: the gate is
 > **BOOT-01 implementing** with BOOT-00 a prerequisite, and approval is not delivered caller evidence. Latest parent gates at
-> `632271a9` (Homebrew cargo/rustc 1.99.1, EXECUTED): fmt, workspace
-> clippy and workspace tests pass — **2326/0/1 across 96 workspace suites** (the ignore is the pre-existing `dump_divergences`);
-> `-p nd-db` all-targets **1036/0/0 across 47 suites**; `nd-db` rustdoc is at **22 warnings = baseline** (zero for
-> `runtime_scanner_persistence_contract.rs`). The `de0f49ea` block (**2319/0/1 across 95 suites**), the `96c495e7` block (**2302/0/1 across 94 suites**),
+> `7d022a02` (Homebrew cargo/rustc 1.99.1, EXECUTED): fmt, workspace
+> clippy and workspace tests pass — **2343/0/1 across 97 workspace suites** (the ignore is the pre-existing `dump_divergences`);
+> `-p nd-db` all-targets **1053/0/0 across 48 suites**; `nd-db` rustdoc is at **21 warnings = the post-DB-16 baseline**
+> (22 − 1 deleted-module link from the D-PLUGIN deletion). The `632271a9` block (**2326/0/1 across 96 suites**, `-p nd-db`
+> 1036/0/0 across 47 suites, rustdoc 22 = baseline), the `de0f49ea` block (**2319/0/1 across 95 suites**), the `96c495e7` block (**2302/0/1 across 94 suites**),
 > the prior `e3e0770a` block (**2276/0/1 across 92 suites**, `nd-scanner` docs at 4 pre-existing warnings) and the intermediate
 > `52b04064` block (2297/0/1) are dated history.
 > the prior `e3e0770a` block (**2276/0/1 across 92 suites**, `nd-scanner` docs at 4 pre-existing warnings) and the intermediate
@@ -35,7 +37,9 @@
 > (`native_session_token_authenticates_the_api_gate_and_epoch_revokes_it`) and a legacy audience-less **negative control**
 > (`legacy_aud_less_token_is_a_deliberate_api_gate_negative_control`). That is the bounded login-session correction
 > only — **not** full auth/API integration: no router is mounted, HTTP API-key extraction/issuance middleware does not
-> exist, and the remaining packages stay unbuilt — BOOT-00 is `DECISION REQUIRED`, API-00 is READY for specification only
+> exist, and the remaining packages stay unbuilt — BOOT-00 was `DECISION REQUIRED` at that boundary; **its D1-D3 are now
+> recorded and D4 is B3-ratified (2026-11-21, `../decisions.md`), so BOOT-00 is launchable-parent-sequenced** (see its status
+> amendment below). API-00 is READY for specification only
 > with launches blocked on BOOT-00, API-04 is `DECISION REQUIRED` then blocked, and BOOT-01/03/04 plus API-01/02/03/05/06 are
 > BLOCKED — so #27A stays gated. `D-REVOKE` still has no canonical entry in
 > `../decisions.md` (the DB-13 shape was settled in lane review), so API-03's revoke contract remains an open decision
@@ -81,6 +85,9 @@ All evidence here is **source-inspected**, not executed by this planner.
 | Stream **crate complete, not HTTP ready** | `handler.rs:1033 StreamHandler::new(Box<dyn TranscodeSource<D>>)`, `:1044 plan(&StreamRequest)`, private prepare, `:1302 serve(&mut self,&StreamRequest,&mut W,D)->StreamResponse where W:Sink,D:Unpin` | NOT an Axum router/body. `serve` returns status/headers only AFTER pumping and teardown. `plan` alone cannot commit real status: cache open can become complete/seekable or fail at prepare. Separate API-04 seam is necessary. |
 | Async/send seam | `archiver.rs:78 BoxFuture<'a,T>=Pin<Box<dyn Future<Output=T>+'a>>` lacks Send; handler source/CachedTranscode objects lack Send; `SinkAdapter` (`handler.rs:1576`, impl `:1580`) `poll_write` `:1581-1593` recreates/drops its write future after a Pending poll (planner cite `:1570-1588` mislocated the impl block; `nd-stream` is unchanged since the baseline, so this was already imprecise) | Blind tokio::spawn/Body adapter may not compile and a bounded asynchronous Sink can lose a pending send. Need API-04 compatibility/pending-write design, not just replacing test ChannelSink with a bounded sender. |
 | Cache/limits | `TranscodeLimiter::new(i32,i32) :44` shareable clone; `CacheTranscodeSource::new(Arc<TranscodeCache>,limiter) :1403`; only implements `TranscodeSource<SharedDisconnect>` at `:1604`; `SharedDisconnect::spawn/finish :1324/:1365` (`CacheTranscodeSource`/`SharedDisconnect` are in `transcode_cache.rs`; `TranscodeLimiter::new` is `limiter.rs:44` — neither file changed since the baseline, so these were already exact but mis-attributed to `handler.rs`) | One cache + limiter per service, source/handler per request. Signal type is concrete, not arbitrary D for cache adapter. No global lock held for full body. Cache source is not a ready HTTP body. |
+> **Table note (2026-11-21):** no row above restates the workspace manifest pins (`chrono "^2"`, `tracing "^0.5"`,
+> `tracing-subscriber "^0.1"`, `base64 "^0.8"`); those dead pins are **recorded for repair at BOOT-00 D3**
+> (`../decisions.md`) and this table is not rewritten for them.
 
 Useful existing tests to preserve: `nd-auth/tests/login_http.rs::{first_admin_login_and_wrong_password_use_stored_hash,body_cap_and_invalid_limiter_fail_closed,concurrent_admin_requests_use_production_retry_schedule,setup_transaction_rolls_back_user_and_marker_together}`; `nd-auth/tests/http_auth.rs::{refresh_carries_committed_handler_epoch,refresh_includes_header_for_empty_response,conflicting_auth_sources_are_rejected_not_silently_preferred,token_bound_to_a_different_id_fails_revalidation}`. Stream tests `nd-stream/tests/handler.rs::{range_request_answers_206_with_the_exact_window,not_modified_answers_304_and_opens_no_file,saturated_cap_answers_429_and_launches_nothing,failing_command_fails_at_serve_with_a_500_before_any_byte,complete_cache_entry_is_served_as_a_seekable_body,in_progress_cache_entry_streams_as_a_pipe_and_closes,client_disconnect_mid_body_leaves_zero_surviving_children,no_children_accumulate_across_repeated_disconnects,dropping_the_serve_future_leaves_no_child}`. They are source-inspected, not rerun. Some ffmpeg tests early-return when ffmpeg is absent; integrated gate must not.
 
@@ -130,13 +137,21 @@ Proposed minimal membership clause built by trusted code, for nonadmin:
 
 Every package inherits §§6-8 validation/provenance/review gates. Status is implementation readiness **today**, not a claim that code exists. One writer across this checkout, including different crates. No Cargo edits until BOOT-00 approval. Future test fixtures must live under each package's owned test paths; each matrix test named below is **proposed** unless listed in §1.
 
-### BOOT-00 — Approve construction/dependency/launch deltas — DECISION REQUIRED
+### BOOT-00 — Approve construction/dependency/launch deltas — **DECISIONS RECORDED → LAUNCHABLE-parent-sequenced**
+
+> **Status amendment (2026-11-21):** D1-D3 are **recorded** in `../decisions.md` ("BOOT-00 (D1-D3) — crate graph, lock-only
+> deps, manifest pin repair", PARENT DECIDED 2026-11-21); D4 is resolved by the **B3-ratified** record in the same section
+> (ordinary multi-thread Send-Axum, Candidate B); D5 (recipe ownership) stays with the lane report. BOOT-00 is therefore no
+> longer `DECISION REQUIRED` — it is launchable subject to parent sequencing and one-writer serialization. Its first action
+> is the D3 manifest pin repair (`rust/Cargo.toml:60/61/66/68`: `tracing "^0.5"`→`"0.1"`, `tracing-subscriber "^0.1"`→`"0.3"`,
+> `chrono "^2"`→`"0.4"`, `base64 "^0.8"`→`"0.22"`, verify with `cargo build --locked --workspace`); those dead pins are
+> **recorded for repair at D3** — the §1 table and the planner-time text below are not rewritten.
 
 **Goal:** materialize the minimum service graph with approved dependencies and launch/test permissions. **Prerequisites:** none. **Non-goals:** rewriting the workspace, upgrading pins, adding all future services, broad formatting.
 
 **Owns:** only parent-authorized manifest deltas in `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/crates/{nd-cli,nd-http,nd-api,nd-auth,nd-stream}/Cargo.toml`; dependency decision doc `docs/rust-port/boot-api-contract.md` (proposed parent-owned integration doc). Manifest/lock edits are forbidden in the current assignment.
 
-**Decisions:** minimum internal deps CLI -> conf/dbschema/db/auth/http/api/stream, HTTP -> conf/auth (API router injected to avoid cycle), API -> db/auth/stream/conf/id as needed. Tokio/axum/tower/serde/serde_json/anyhow/rusqlite already appear in lock/workspace but must be explicitly declared by each consumer. `tower-http` workspace pin has historical feature/version declarations and is not evidence of an already locked usable combination; inspect actual features/version before selecting. `bytes`, `http-body-util`, `hyper-util` have locked entries but direct declarations still need approval. Prefer no new third-party crate for a bounded body adapter (custom http-body via existing axum reexports if sufficient); if using tokio-util/ReceiverStream/clap/TLS/tracing packages, provide exact lock/license/MSRV delta. **Dated corrections 2026-11-20:** (a) `D-OPEN` is **LANDED `4a8aac9f` and decided** (`../decisions.md` "DB open/configuration (D-OPEN, landed `4a8aac9f`") — `EXT-DB-CONNECTION` is satisfied on the DB side and **BOOT-00 must not re-litigate DSN/PRAGMA policy**; its own scope is the manifest/construction graph only. (b) The chrono item is **decided as B1** (`../decisions.md` B1): `rust/Cargo.toml:66` `chrono = "^2"` is a dead, non-resolvable placeholder (no crate consumes it; the lock holds `chrono 0.4.45`, and every real consumer pins `0.4` directly), so BOOT-00's manifest pass corrects it to `"^0.4"` and consumers then use `workspace = true` — not a blind dependency that changes versions.
+**Decisions:** minimum internal deps CLI -> conf/dbschema/db/auth/http/api/stream, HTTP -> conf/auth (API router injected to avoid cycle), API -> db/auth/stream/conf/id as needed. Tokio/axum/tower/serde/serde_json/anyhow/rusqlite already appear in lock/workspace but must be explicitly declared by each consumer. `tower-http` workspace pin has historical feature/version declarations and is not evidence of an already locked usable combination; inspect actual features/version before selecting. `bytes`, `http-body-util`, `hyper-util` have locked entries but direct declarations still need approval. Prefer no new third-party crate for a bounded body adapter (custom http-body via existing axum reexports if sufficient); if using tokio-util/ReceiverStream/clap/TLS/tracing packages, provide exact lock/license/MSRV delta. **Dated corrections 2026-11-20:** (a) `D-OPEN` is **LANDED `4a8aac9f` and decided** (`../decisions.md` "DB open/configuration (D-OPEN, landed `4a8aac9f`") — `EXT-DB-CONNECTION` is satisfied on the DB side and **BOOT-00 must not re-litigate DSN/PRAGMA policy**; its own scope is the manifest/construction graph only. (b) The chrono item is **decided as B1** (`../decisions.md` B1): `rust/Cargo.toml:66` `chrono = "^2"` is a dead, non-resolvable placeholder (no crate consumes it; the lock holds `chrono 0.4.45`, and every real consumer pins `0.4` directly), so BOOT-00's manifest pass corrects it to `"^0.4"` and consumers then use `workspace = true` — not a blind dependency that changes versions. **Superseded 2026-11-21:** B1 was never applied; the canonical pin is BOOT-00 **D3** — `rust/Cargo.toml:66` becomes `chrono = "0.4"`, together with the three other unrecorded pins (`tracing`, `tracing-subscriber`, `base64`).
 
 **Steps/exit:** list exact consumer/features/version graph -> choose ordinary Send Axum runtime vs specialized local executor for stream -> approve manifests and new fixture/oracle recipe ownership -> compile minimal typed construction skeleton -> lock diff review. New packages or changed lock require explicit approval. Acceptance: `dependency_graph_has_no_http_api_cycle`, locked build from clean artifacts, no duplicate accidental major versions, no forbidden dependency. Old behavior main exits0 without boot; `help_and_unknown_command_exit_table` must distinguish real CLI from issue-number scaffold. Validation BOOT-00: locked build/fmt/clippy focused packages + full integration later. Fresh reviewer verifies exact declared rather than assumed features.
 

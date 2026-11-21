@@ -26,7 +26,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `632271a9`; earlier `de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `7d022a02`; earlier `632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -74,7 +74,11 @@ the D-CURSOR cursor contract + `ScannerScope`/`UserScope` + `get_visible_media`;
 production scanner caller) and **DB-15 runtime half LANDED `96c495e7`** (annotation transfer + average-rating recalc;
 its durable Go oracle is deferred to the EVID lane, `decisions.md` H6, so DB-15 is not fully DONE). `D-CURSOR`/`D-SCOPE`
 (`decisions.md`, PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) are now **consumed by executed code**, and
-**D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code; deletion pending). **DB-14 LANDED
+**D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code; **deletion EXECUTED at `7d022a02`**). **DB-14 LANDED
 `de0f49ea`** — `SC.folder-write-batch-contract` resolved as D-BATCH and consumed (`decisions.md` "Folder-write batch contract") —
-so the spine's next package is **DB-16 or DB-17** (forward spine `DB-16 → 17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`), since **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests; parent scope narrowing 2026-11-21, `decisions.md`). See `current-status.md` and
-`next-work.md` for the details.
+and **DB-16 LANDED `7d022a02`** (executed move/reference-remap/delete primitives, A8 share typed rejection, D-PLUGIN deletion; 18 executed
+tests; gates 2343/0/1 across 97 suites),
+so the spine's next package is **DB-17** (forward spine `DB-17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`), since **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests; parent scope narrowing 2026-11-21, `decisions.md`). See `current-status.md` and
+`next-work.md` for the details. Two parent decision records landed the same day (`decisions.md`): **SC-01 ratified NARROW**
+(the five SC-05 seams plus the authorized `nd-scanner` `nd-db` manifest delta; progress sink, watcher, remote storage and
+`MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified), so BOOT-00 is launchable-parent-sequenced.
