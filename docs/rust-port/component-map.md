@@ -17,7 +17,7 @@ LANDED, with no production scanner callers,
 no scanner entrypoint or tag-to-DB ingest, and no worker/full-scanner completion — the SC-02 slice is **not** SC-01
 ratification, SC-02 completion or MusicFS readiness, and neither DB-11 nor DB-15's runtime half is a full package.
 `D-CURSOR`/`D-SCOPE` (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`) are now consumed by executed code;
-D-PLUGIN decided the same day (delete `plugin_repo.rs`). **Next is DB-14, LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (`decisions.md` "Folder-write batch contract").
+D-PLUGIN decided the same day (delete `plugin_repo.rs`; deletion pending). **DB-14 LANDED `de0f49ea`** — `SC.folder-write-batch-contract` resolved as D-BATCH and consumed (`decisions.md` "Folder-write batch contract"); **next is DB-16 or DB-21(P1-DB)**.
 
 In particular: C10's cancelled C29 edge must not gate scanner work; C10/C19 scanner/playlist relationships must be
 split into phase-1 ingest, playlist import service, and later phase-4 integration; C22/C30 construction/service

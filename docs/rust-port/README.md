@@ -14,7 +14,8 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
    stable home for citations from Rust sources and test comments.
 4. [`subplans/README.md`](subplans/README.md) — the single task/dependency index: package IDs, cross-lane prerequisite
    aliases, decision gates, ownership. Then read the assigned package's subplan file.
-5. [`HANDOFF.md`](HANDOFF.md) — launch/execution/review/report rules for a bounded task.
+5. [`HANDOFF.md`](HANDOFF.md) — launch/execution/review/report rules for a bounded task. Bounded-task briefs are written
+   from [`assignment-template.md`](assignment-template.md) (the parent's standard section format; it carries no authorization).
 6. Source contracts as needed: [`schema-contract.md`](schema-contract.md),
    [`config-contract.md`](config-contract.md), [`credentials.md`](credentials.md),
    [`entity-write-contract.md`](entity-write-contract.md), [`hydrate-contract.md`](hydrate-contract.md),
@@ -25,7 +26,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `96c495e7`; earlier `e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `de0f49ea`; earlier `96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -73,5 +74,7 @@ the D-CURSOR cursor contract + `ScannerScope`/`UserScope` + `get_visible_media`;
 production scanner caller) and **DB-15 runtime half LANDED `96c495e7`** (annotation transfer + average-rating recalc;
 its durable Go oracle is deferred to the EVID lane, `decisions.md` H6, so DB-15 is not fully DONE). `D-CURSOR`/`D-SCOPE`
 (`decisions.md`, PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) are now **consumed by executed code**, and
-**D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code). The spine's next package is
-**DB-14**, now **LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (`decisions.md` "Folder-write batch contract"). See `current-status.md` and `next-work.md` for the details.
+**D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code; deletion pending). **DB-14 LANDED
+`de0f49ea`** — `SC.folder-write-batch-contract` resolved as D-BATCH and consumed (`decisions.md` "Folder-write batch contract") —
+so the spine's next package is **DB-16 or DB-21(P1-DB)**, both launchable-parent-sequenced. See `current-status.md` and
+`next-work.md` for the details.

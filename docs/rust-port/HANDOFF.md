@@ -10,12 +10,14 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 - Repository: this navidrome fork checkout (Go sources at the root, Rust workspace `rust/`). Resolve paths from the
   working directory — never a developer's absolute path, and never a hardcoded worktree name.
-- Authoritative source baseline: this branch line at `96c495e7` — **DB-11 LANDED `52b04064`** and **DB-15's runtime half
-  LANDED `96c495e7`** on top of integrated `master`'s code HEAD `e3e0770a` (**SC-02 partial** — local walker, `.ndignore`,
-  folder hash, cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and `f80b9704` (prior
+- Authoritative source baseline: this branch line at `de0f49ea` — **DB-14 LANDED `de0f49ea`** on top of **DB-11 `52b04064`** and
+  **DB-15's runtime half `96c495e7`**, which sit on integrated `master`'s code HEAD `e3e0770a` (**SC-02 partial** — local walker,
+  `.ndignore`, folder hash, cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and `f80b9704` (prior
   `4ab63cd5` plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`).
   That SC-02 slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness; DB-11 is the executed
-  read/cursor contract only and DB-15 is its runtime half only (durable Go oracle deferred — `decisions.md` H6). A docs
+  read/cursor contract only, DB-15 is its runtime half only (durable Go oracle deferred — `decisions.md` H6), and DB-14 is the
+  executed folder-delta persistence seam only (no production caller, no `nd-db` dependency in `nd-scanner`, no walk/mapping/
+  aggregation, no finalize). A docs
   lane may be cut from an earlier boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master`
   instead of measuring it in your own worktree. Earlier audited boundaries are listed in `current-status.md`'s
   landed-history table; older handoff baselines are history.
@@ -36,13 +38,16 @@ The workspace passes its regression gates and is **not** a runnable server or sc
 local-FS walker slice (SC-02 partial at `e3e0770a`) but **no scanner entrypoint, tag-to-DB pipeline or full-scan
 orchestration**; `nd-http` and `nd-api` are scaffolds and the CLI main is empty. Shared codecs, record marshaling, the eight row
 hooks, substantial
-executed reads **and twenty-four executed transaction-bound `*_in_tx` writes** are landed, including DB-10 identity/base/
+executed reads **and twenty-six executed transaction-bound `*_in_tx` primitives** (25 `pub`, plus DB-14's
+`persist_folder_delta_in_tx` `pub(crate`) — the DB-14 lane added `copy_album_created_at_in_tx` and that seam) are landed, including DB-10 identity/base/
 junction writes and DB-12 artwork invalidation/enqueue; **DB-11 LANDED `52b04064`** adds the executed typed scanner reads,
 the D-CURSOR cursor contract, the `ScannerScope`/`UserScope` authorities and the `get_visible_media` point read (21
-tests), and **DB-15's runtime half LANDED `96c495e7`** adds annotation transfer + average-rating recalc (5 tests). Typed
+tests), **DB-15's runtime half LANDED `96c495e7`** adds annotation transfer + average-rating recalc (5 tests), and
+**DB-14 LANDED `de0f49ea`** adds executed per-folder persistence (`FolderWriteBatch`, `persist_folder_delta`,
+`CommittedFolderOutcome`, `FolderWriteStage`/`ScopeRejection`/`FolderWriteWarning`, `scan_artwork_item`; 17 executed tests). Typed
 specialized scanner reads are no longer "not landed" — GC and move/reference transactions still are, and neither DB-11's
-reads nor any write has a production caller. Tests that manually execute SQL bundles are not production repository methods,
-and none of the `*_in_tx` primitives has a production caller (`nd-auth` calls `UserRepo` methods outside them from its own
+reads nor any write has a production caller (DB-14's seam has no caller either: `nd-scanner` declares no `nd-db` dependency and
+SC-05 is its intended consumer). Tests that manually execute SQL bundles are not production repository methods,
 production code, but its router is mounted only in crate tests). DB-01 (missing-state bind order), DB-03/D-OPEN
 (effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`),
 DB-02 (`6d9d984d`/`74ebd81c`), DB-15's **render-only** rating repair (`ab466928`) **and its runtime half (`96c495e7`)** are
@@ -59,16 +64,20 @@ watcher, and **not** SC-01 ratification, SC-02 completion or MusicFS readiness; 
 worktree/branch are removed. **DB-11 LANDED `52b04064`** (executed typed scanner reads, cursor contract,
 `ScannerScope`/`UserScope`, `get_visible_media`) and **DB-15's runtime half LANDED `96c495e7`** (annotation transfer +
 average-rating recalc on the caller's tx); `D-CURSOR`/`D-SCOPE` (`decisions.md`, corrected record `8b5b3925`) are now
-consumed by executed code. DB-22
-LANDED `272c9c66`. Latest parent gates at `96c495e7` (cargo/rustc 1.99.1, EXECUTED): 2302/0/1 across 94 workspace suites
+consumed by executed code, and **DB-14 LANDED `de0f49ea`** (`SC.folder-write-batch-contract` resolved as **D-BATCH** and consumed:
+per-folder tx opened by DB, `persist_folder_delta_in_tx` `pub(crate)`, warn-vs-fatal table, SC pre-generated IDs, immutable
+no-clock batch, and the parent-controlled `album_repo.rs` copy helper — landed as `copy_album_created_at_in_tx`,
+`album_repo.rs:1566`, which DB-16 reuses). DB-22
+LANDED `272c9c66`. Latest parent gates at `de0f49ea` (cargo/rustc 1.99.1, EXECUTED): **2319/0/1 across 95 workspace suites**
 (the ignore is the pre-existing `dump_divergences`), fmt check, workspace clippy and `git diff --check` clean, `nd-db`
-rustdoc at 22 warnings = baseline (zero for `sql_annotations.rs`); the intermediate `52b04064` block (2297/0/1), the
+rustdoc at 22 warnings = baseline (zero for `scanner_writes.rs`); the `96c495e7` block (2302/0/1 across 94 suites), the
+intermediate `52b04064` block (2297/0/1), the
 `e3e0770a` block (2276/0/1 across 92 suites, `nd-scanner` docs at 4 pre-existing warnings), the earlier `272c9c66` block
 (2171/0/1 across 88 suites, `nd-db` docs at 23 pre-existing warnings) and older blocks remain dated history. See
-`current-status.md` for attribution/logs. **Next is DB-14, LAUNCHABLE** — its last blocker, the
-`SC.folder-write-batch-contract` decision, is resolved as **D-BATCH** (PARENT DECIDED 2026-11-20, `decisions.md`
-"Folder-write batch contract": per-folder tx opened by DB, `persist_folder_delta_in_tx` `pub(crate)`, warn-vs-fatal
-table, SC pre-generated IDs, parent-controlled `album_repo.rs` `copy_created_at_in_tx` helper for DB-16's later reuse). BOOT-02's login-session
+`current-status.md` for attribution/logs. **Next is DB-16 or DB-21(P1-DB)**, both launchable-parent-sequenced and neither
+picked by the docs lane (DB-16 reuses `copy_album_created_at_in_tx`; DB-21's P1-DB exit is blocked on SC/BOOT consumers, not on DB).
+**SC-05 is unblocked on the DB side by DB-14** — its remaining gates are SC-01 ratification plus an `nd-scanner` manifest delta
+(`nd-db` dependency), and it still needs SC-00/02/03. BOOT-02's login-session
 native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middleware, a mounted router, and stream
 prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and

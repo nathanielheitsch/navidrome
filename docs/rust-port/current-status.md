@@ -1,16 +1,17 @@
 # Rust port — audited capability snapshot
 
-**Authoritative baseline: this branch line at `96c495e7`** — **DB-11 LANDED `52b04064`** and **DB-15's runtime half
-LANDED `96c495e7`** — landed on top of integrated `master`'s code HEAD `e3e0770a` (SC-02 partial: local walker,
-`.ndignore`, folder hash, cancellation) and its docs HEAD `795e8986`, dated 2026-11-20. That boundary extends the
+**Authoritative baseline: this branch line at `de0f49ea`** — **DB-14 LANDED `de0f49ea`** on top of **DB-11 `52b04064`** and
+**DB-15's runtime half `96c495e7`** — landed on top of integrated `master`'s code HEAD `e3e0770a` (SC-02 partial: local walker,
+`ndignore`, folder hash, cancellation) and its docs HEAD `795e8986`, dated 2026-11-20. That boundary extends the
 previously audited `272c9c66` (DB-22) and `f80b9704` boundaries (DB-04…DB-10/12/13 and BOOT-02; DB-12 signed `e5d0592d`,
 rustdoc fix `f80b9704`; DB-10 signed `65072b89` / merge `6e5ca97d`). Decision records: S9 (SC-02 dependency set +
-close-out, `b1aeea2c`), D-CURSOR/D-SCOPE (now **consumed** by DB-11's executed code), D-PLUGIN, and the DB-15 durable
-Go-oracle deferral (all in `decisions.md`). **DB-11 and DB-15's runtime half are LANDED** with executed tests, and both
-remain partial: no production scanner caller, no `nd-scanner` consumption, no full cursor/REST surface, and DB-15 keeps
-its durable Go oracle deferred. The **SC-02 partial** remains a scoped slice — **not** SC-01 ratification, SC-02
-completion, or MusicFS readiness. Latest gates below are **parent integration evidence EXECUTED at `96c495e7`**; this
-docs lane did not rerun Cargo. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
+close-out, `b1aeea2c`), D-CURSOR/D-SCOPE (now **consumed** by DB-11's executed code), D-PLUGIN, D-BATCH (now **consumed**
+by DB-14's executed code), and the DB-15 durable
+Go-oracle deferral (all in `decisions.md`). **DB-11, DB-15's runtime half and DB-14 are LANDED** with executed tests, and each
+remains partial: no production scanner caller, no `nd-scanner` consumption (DB-14's seam is landed but uncalled), no full
+cursor/REST surface, and DB-15 keeps its durable Go oracle deferred. The **SC-02 partial** remains a scoped slice — **not**
+SC-01 ratification, SC-02 completion, or MusicFS readiness. Latest gates below are **parent integration evidence EXECUTED at
+`de0f49ea`**; this docs lane did not rerun Cargo. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
 This document records **evidence**, not implementation authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
 [`decisions.md`](decisions.md); bounded assignments in `subplans/`. Older dated blocks are history, not current
 readiness. Resolve contradictions against the pinned source and the current contract amendments, never against a larger
@@ -23,14 +24,16 @@ record marshaling, all eight `PostScan`-equivalent hooks, substantial executed r
 **executed transaction-bound leaf and entity writes** (property, library incl. scan lifecycle, tag, folder,
 media-file identity/base/junction writes, artist, album, user epoch revoke, artwork invalidation/enqueue) have landed;
 since `52b04064` the **typed filtered scanner reads and cursor contract** execute on a leased connection, and since
-`96c495e7` so do annotation transfer and average-rating recalc transactions. **Scanner orchestration, HTTP, API and CLI
+`96c495e7` so do annotation transfer and average-rating recalc transactions, and since `de0f49ea` so does the **per-folder
+scan delta** (`persist_folder_delta`, D-BATCH). **Scanner orchestration, HTTP, API and CLI
 remain scaffolds**: `nd-http` and `nd-api` are scaffolds (`nd-cli/src/main.rs` is an empty `main`); `nd-scanner` now
 holds the tested local-FS walker slice (`storage.rs` + `.ndignore`/folder-hash/cancellation, SC-02 partial at `e3e0770a`)
 but **no scanner entrypoint, tag-to-DB pipeline, or full-scan orchestration**. There is **no end-to-end/server readiness**, no
 mounted router, no production scan, and no integrated stream HTTP adapter. None of the executed transaction-bound write
-primitives — and none of DB-11's executed scanner reads — has a **production caller** at `96c495e7` (SOURCE-VERIFIED:
-`_in_tx`/`scanner_queries` references outside their own definitions are tests/doctests or internal helpers, not
-scanner/bootstrap/route/CLI entrypoints). DB-12 is only the executed artwork
+primitives — none of DB-11's executed scanner reads, and not DB-14's folder-delta seam — has a **production caller**
+(SOURCE-VERIFIED at `de0f49ea`:
+`_in_tx`/`scanner_queries`/`scanner_writes` references outside their own definitions are tests/doctests or internal
+helpers, not scanner/bootstrap/route/CLI entrypoints; `nd-scanner` declares no `nd-db` dependency). DB-12 is only the executed artwork
 invalidation/enqueue subset, not a worker or full scanner, and DB-11 is only the executed read/cursor contract, not the
 full cursor or REST surface. That is narrower than "no repository method is ever called":
 `nd-auth` **does** call
@@ -39,7 +42,21 @@ full cursor or REST surface. That is narrower than "no repository method is ever
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## Latest integrated gates (parent, HEAD `96c495e7` / DB-11 + DB-15 runtime, 2026-11-20)
+## Latest integrated gates (parent, HEAD `de0f49ea` / DB-14, 2026-11-20)
+
+DB-14 (`de0f49ea`, 4 files in `nd-db`: NEW `src/scanner_writes.rs` 935 lines, NEW `tests/runtime_folder_persistence.rs`
+17 executed tests, `src/lib.rs` +1, `album_repo.rs` +102 additions-only delivering `copy_album_created_at_in_tx`) landed
+on this branch line. Parent ran the authoritative gates at `de0f49ea` with cargo/rustc **1.99.1** (EXECUTED): workspace
+tests **95 suites, 2319 passed / 0 failed / 1 ignored** (the single ignore is the pre-existing `dump_divergences` in
+`nd-mapping/tests/go_oracle.rs`), `cargo fmt --all -- --check` clean (exit 0), `cargo clippy --locked --workspace
+--all-targets --all-features -- -D warnings` clean (exit 0), `git diff --check` clean, and `nd-db` rustdoc at **22
+warnings = the recorded baseline** (zero warnings in `scanner_writes.rs`). Review came back REQUEST-CHANGES and both
+findings were fixed before landing (P1 tx-loss atomicity — `warn_arm` detects a lost transaction via `is_autocommit` and
+returns the original typed SQLite error as fatal; P2 consumed-transitions retry proof), with the parent re-running every
+gate. DB-14 is not a full scanner package: no production caller, no `nd-db` dependency in `nd-scanner`, no walk/tag-mapping/
+album aggregation (SC-owned) and no missing-folder finalize (SC-06).
+
+## Previous integrated gates (parent, HEAD `96c495e7` / DB-11 + DB-15 runtime, 2026-11-20)
 
 DB-11 (`52b04064`, 7 files in `nd-db`) and DB-15's runtime half (`96c495e7`, 2 files in `nd-db`) landed on this branch
 line. Parent ran the authoritative gates at `96c495e7` with cargo/rustc **1.99.1** (EXECUTED): workspace tests
@@ -176,12 +193,13 @@ tracked and is not claimed fixed; only the record is corrected. `nd-stream`'s
 | DB-13 epoch-only token revocation | `eae4ba1d` + merge `4ab63cd5` | `user_repo::increment_token_epoch_sql` (guarded `token_epoch = token_epoch + 1 … RETURNING token_epoch` with `typeof(token_epoch) = 'integer'` and `< i64::MAX`) executed by `revoke_tokens_in_tx` on the caller's tx, with `RevokeError::NotFound`/`Exhausted` classified by a same-tx existence read; `tests/runtime_token_revoke.rs` (18 executed tests). Epoch-only revoke is a **Rust-side addition** — Go bumps the epoch only inside the password UPDATE. No route/BOOT consumer exists |
 | DB-11 executed scanner reads, cursor contract, API-safe point read | `52b04064` | NEW `nd-db/src/scanner_queries.rs`: row-visitor cursors on one leased connection (`Control`/`VisitOutcome`/`CursorError` implementing the D-CURSOR three-way stop taxonomy; `IdChunkedCursor` terminal after a failed chunk), eight executed scanner reads (`media_in_folder`/`media_in_album`/`media_in_filter` counted as one read, plus `missing_and_matching`, `recent_candidates`, `touched_albums`, `album_ids_by_folders`, `sole_album_artist_ids_in_subtrees`, `media_by_paths`), the opaque scope authorities `ScannerScope` (system, configured library ID only) and `UserScope` (resolved once per request: admin/headless(-1)/all-grants omit the clause, otherwise the deny clause `library_id IN (SELECT … FROM user_library …)`; zero-grant and empty-library arms both deny; **no `1=1` for users**), plus the `get_visible_media` point read as a thin wrapper over `MediaFileRepo::get`. Review fixes folded in: `folder_subtree_filter` returns a fresh conjunction root per Go (`folder_repository.go:214-216`; mixed root+path batches bind and execute), the sole-album-artist subtree builder drops `album.missing` (parity `album_repository.go:294-296`), and `CURSOR_CHUNK_SIZE` 300 → 600 (D-CURSOR(4)). NEW `tests/runtime_scanner_queries.rs` = **21 executed tests**. **Not done:** full cursor/REST completion (the `SEEDEDRAND` seeded full-set render is deferred to the REST/API lane), no production scanner caller, no `nd-scanner` consumption |
 | DB-15 runtime annotation transfers + avg-rating recalc | `96c495e7` | `sql_annotations.rs`: `AnnotationEntityKind` closed enum and `AnnotationWriteError`; `update_avg_rating_in_tx` and `reassign_annotation_in_tx` execute on the caller's tx (DB-00 seam). Go `ReassignAnnotation` parity (`sql_annotations.go:185-197`): the OR IGNORE move keeps the target's conflict, leaves the conflicting source row, and recalculates the target average in the same tx. NEW `tests/runtime_annotation_transfers.rs` = **5 executed tests** (pre-fix param-count control, conflict identity, type isolation, absent-source no-op recalc, FK-injection rollback with row and cache read-back). **The durable Go-harness oracle is deferred to the EVID lane** (PARENT DECIDED 2026-11-20, `decisions.md` H6; authorization gate in `subplans/README.md`); Go behavior is pinned by source citations plus `/tmp`-local Go driver evidence, labeled local and not committed. With the `ab466928` render-only repair this covers DB-15's plan scope **except that oracle** — DB-15 is not fully DONE |
+| DB-14 executed folder-delta persistence (DB-owned SC seam) | `de0f49ea` | **LANDED.** NEW `nd-db/src/scanner_writes.rs` (935 lines): `FolderWriteBatch` (immutable; SC pre-generated folder/artist/album IDs; caller stamps `FolderStamps`; `full_scan_mode`; `album_transitions`), `persist_folder_delta(store,&batch) -> Result<CommittedFolderOutcome,FolderRunError>` (DB-owned per-folder retrying tx per `D-BATCH`), `persist_folder_delta_in_tx` **pub(crate)**, `FolderWriteStage` (12 arms, `is_fatal`), `ScopeRejection` (11 arms, validated pre-checkout), `FolderWriteWarning{stage,item_id,related_id,source}`, `CommittedFolderOutcome` (publish-only-after-commit), `scan_artwork_item`. NEW `tests/runtime_folder_persistence.rs` = **17 executed tests**; `src/lib.rs` +1; `album_repo.rs` +102 additions-only delivering `copy_album_created_at_in_tx` (`album_repo.rs:1566`, Go `album_repository.go:331-357` incl. the `0001-`/empty skip). Go `persistFolder`/`persistAlbum` order (`phase_1_folders.go:348-506`); warn arms route through `warn_arm`, which detects transaction loss via `is_autocommit` and returns the original typed SQLite error as fatal (never a warning); ABORT-class statement failures still warn and commit; `MediaIdentity` per-record; Go `c == 0` missing-quirk preserved. Review REQUEST-CHANGES, both findings closed (P1 tx-loss atomicity, P2 consumed-transitions retry proof), parent re-ran all gates at `de0f49ea` (**2319 / 0 / 1 across 95 suites**, fmt + workspace clippy clean, `nd-db` rustdoc 22 = baseline). **Not done:** no production caller (SC-05 is the consumer, `nd-scanner` has no `nd-db` dependency), no walk/tag-mapping/album aggregation (SC-owned), no missing-folder finalize (SC-06) |
 | BOOT-02 native expiring login sessions | `c6e220eb` + merge `162fae1d` | `login.rs` mints via `Authenticator::create_native_session_token` (native audience + checked positive `exp`), replacing the audience-less `create_token` call that made the login token unusable at `AuthGate::Api`; `tests/login_http.rs` (14) and `tests/http_auth.rs` (14) executed, including a legacy audience-less **negative control** and an epoch-revoke round-trip. The remaining HTTP API-key extraction/issuance middleware is **not** part of this scope |
 
 Executed write primitives are **transaction-bound and caller-trusted** (`WHERE id = ?` and nothing else, exactly like
-Go): they own no scope filter, no auth check, and no commit. None has a production caller at `96c495e7` either
-(SOURCE-VERIFIED: `*_in_tx` and `scanner_queries` references outside their definitions are tests/doctests or internal
-helpers).
+Go): they own no scope filter, no auth check, and no commit. None has a production caller at `de0f49ea` either
+(SOURCE-VERIFIED: `*_in_tx`, `scanner_queries` and `scanner_writes` references outside their definitions are tests/doctests or internal
+helpers; `nd-scanner` declares no `nd-db` dependency).
 
 The old scout's S-D3b meant folder/playlist and its S-D3c meant album/media-file; `hydrate-scan-contract.md` numbers
 the same lanes differently (see the numbering-drift note in `next-work.md`'s historical index). All rows above are in
@@ -220,19 +238,23 @@ scrobble_buffer, transcoding, album, artist, tag, folder, artwork_queue, mediafi
 `smart_playlist` — `smart_playlist` is not a separate Go repository; `plugin` is decided for deletion by D-PLUGIN
 `decisions.md`, record at `89b72894`, not yet executed).
 
-Re-counted at `96c495e7` (SOURCE-VERIFIED): the 23-module census above is unchanged, and `src/scanner_queries.rs` is a
+Re-counted at `de0f49ea` (SOURCE-VERIFIED): the 23-module census above is unchanged, `src/scanner_queries.rs` remains a
 **new executed-read module outside that census** — its visitors and `IdChunkedCursor` prepare and drain statements on a
 leased `&Connection` held for the whole iteration (D-CURSOR), so they do not go through the `execution` helper, and
 `get_visible_media` reaches the already-executed `MediaFileRepo::get`. `sql_annotations.rs` gained two executed
-tx-bound writes (`update_avg_rating_in_tx`, `reassign_annotation_in_tx`) at `96c495e7`.
-Twenty-four executed transaction-bound write functions exist (`grep 'pub fn .*_in_tx'` at `96c495e7`):
+tx-bound writes (`update_avg_rating_in_tx`, `reassign_annotation_in_tx`) at `96c495e7`, and `src/scanner_writes.rs`
+(**LANDED `de0f49ea`**) is a second module outside that census: it drives writes through the landed `*_in_tx` primitives
+on the DB-owned retrying transaction rather than adding its own helper path.
+**Twenty-five `pub` executed transaction-bound write functions plus one `pub(crate)` seam** exist
+(`grep 'pub fn .*_in_tx'` = 25 at `de0f49ea`, plus `persist_folder_delta_in_tx`):
 property `put_in_tx`/`delete_in_tx`, library `put_in_tx`/`scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/
 `add_artist_in_tx`, tag `add_in_tx`, folder `put_folder_in_tx`/`mark_folders_missing_in_tx`, mediafile
 `mark_media_missing_in_tx`/`mark_media_missing_by_folder_in_tx`, artist `put_artist_in_tx`, album
 `put_album_in_tx`/`touch_albums_in_tx`/`touch_albums_with_missing_folders_globally_in_tx`, user
 `revoke_tokens_in_tx`, plus DB-10 `put_mediafile_in_tx`, artwork `delete_for_items_in_tx`, and queue
 `enqueue_in_tx`/`enqueue_all_missing_in_tx`/`enqueue_if_missing_in_tx`, plus DB-15 `sql_annotations::update_avg_rating_in_tx`/
-`reassign_annotation_in_tx` (`96c495e7`). `annotation_repo.rs` does not exist because annotations ride album/media-file
+`reassign_annotation_in_tx` (`96c495e7`), plus DB-14 `album_repo::copy_album_created_at_in_tx` and the
+`pub(crate)` `scanner_writes::persist_folder_delta_in_tx` (`de0f49ea`). `annotation_repo.rs` does not exist because annotations ride album/media-file
 (DB-15), so that is not a gap.
 
 ## Landed safety gates (former open blockers, now closed with executed regressions)
@@ -261,9 +283,9 @@ First-wave lanes (DB-01, DB-03, DB-00, DB-02, plus the DB-15 render-only repair 
 subset) are merged into `74ebd81c`, and DB-04 through DB-09 plus DB-13 and BOOT-02 are merged into `4ab63cd5`. DB-10 and
 DB-12's executed subset are merged into `f80b9704`; **the SC-02 partial (local walker, `.ndignore`, folder hash,
 cancellation) is LANDED at `e3e0770a`** — a partial slice, not SC-02 completion. DB-22's former DB-12 ownership block is
-released. **DB-11 is LANDED at `52b04064`** and **DB-15's runtime half at `96c495e7`**, so `D-CURSOR`/`D-SCOPE`
-(`decisions.md`, corrected record `8b5b3925`) are now consumed by executed code; the spine's next package is **DB-14**,
-which needs only `SC.folder-write-batch-contract` now that DB-15's runtime half has landed.
+released. **DB-11 is LANDED at `52b04064`**, **DB-15's runtime half at `96c495e7`**, and **DB-14 at `de0f49ea`**, so
+`D-CURSOR`/`D-SCOPE` (`decisions.md`, corrected record `8b5b3925`) and `D-BATCH` are now consumed by executed code; the
+spine's next package is **DB-16 or DB-21(P1-DB)**, both launchable-parent-sequenced and neither picked here.
 
 ## Remaining blockers and integration obligations (SOURCE-VERIFIED)
 
@@ -272,7 +294,7 @@ which needs only `SC.folder-write-batch-contract` now that DB-15's runtime half 
    junction atomicity (`c791dbc1`, `60be7534`, `bfdcfeca`, `2911b9ab`, `32c4fa5b`, `d938d159`), plus DB-13 epoch revoke
    (`eae4ba1d`), DB-10 identity/base/junction writes (`65072b89`), DB-12 artwork invalidation/enqueue (`e5d0592d`),
    **DB-11 typed scanner reads/cursors and the API-safe point read (`52b04064`)** and **DB-15 annotation transfer/avg-
-   rating execution (`96c495e7`)**. **Still unexecuted:** the DB-14 folder-delta transaction, move/reference transactions
+   rating execution (`96c495e7`)** and **DB-14 executed folder-delta persistence (`de0f49ea`)**. **Still unexecuted:** move/reference transactions
    (DB-16), and scoped eleven-operation GC. `MediaFileRepo::get_all` still does not forward arbitrary scanner filters
    (DB-11's typed reads are the scoped path), and a raw user-supplied SQL fragment is not an acceptable substitute.
    Executed primitives also still have **no production caller**: nothing invokes them from a scanner, bootstrap, or route.
@@ -310,7 +332,7 @@ which needs only `SC.folder-write-batch-contract` now that DB-15's runtime half 
 - `find_recent_files_by_properties_sql` (`mediafile_repo.rs:1903`) is converted to the TEXT cutoff shape but has **no
   executed regression pin**; the sibling MBZ path is pinned (`runtime_scan_clock.rs:222`, which executes
   `find_recent_files_by_mbz_track_id_sql`), so the properties path is the uncovered one.
-- **Still unexecuted on this branch line:** the DB-14 folder-delta transaction and DB-16 move/reference transactions.
+- **Still unexecuted on this branch line:** DB-16 move/reference transactions and the scoped GC.
   DB-11's typed scanner reads/cursors landed at `52b04064` (the `SEEDEDRAND` seeded full-set render and cursor
   consumption on the REST/API side stay with that lane) and DB-15's annotation execution at `96c495e7` (its durable Go
   oracle is deferred to the EVID lane). Tag count refresh and purge (`update_counts_sql`/`purge_unused_sql`) and

@@ -12,7 +12,7 @@ Lane files (verbatim planner output, parent-published):
 
 | File | Covers | Packages | Verdict |
 | --- | --- | --- | --- |
-| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` **and its runtime half LANDED `96c495e7`** (`AnnotationEntityKind`, `AnnotationWriteError`, `update_avg_rating_in_tx`, `reassign_annotation_in_tx`, 5 executed tests) — DB-15 is **not** fully DONE: the durable Go-harness oracle is deferred to the EVID lane (`../decisions.md` H6; authorization gate in this index). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** **DB-22 LANDED `272c9c66` (executed genre/scrobble/playqueue/artwork reads; narrow-read subset per C5 — not full Go parity).** **DB-11 LANDED `52b04064`** (executed typed scanner reads + cursor contract + `ScannerScope`/`UserScope` + `get_visible_media`; 21 executed tests; not the full cursor/REST surface — the `SEEDEDRAND` seeded full-set render stays with the REST/API lane; no production scanner caller and no `nd-scanner` consumption). The **SC-02 partial LANDED `e3e0770a`** (local walker, `.ndignore`, folder hash, cancellation — not SC-01/SC-02 completion, no scanner entrypoint or ingest). **DB-14 is next in spine order and LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as D-BATCH (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract") |
+| [`db-runtime.md`](db-runtime.md) | #04/#05 executed persistence | DB-00 … DB-22 (DB-22 is parent-added) | DB-00/01/02/03 **and** DB-04 `c791dbc1`, DB-05 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/`9be6ad0e`, DB-08 `32c4fa5b`/`320b8b03`, DB-09 `d938d159`/`842c32a2`, DB-13 `eae4ba1d`/`4ab63cd5` LANDED (each a partial scope; no `*_in_tx` primitive has a production caller, although `nd-auth` calls `UserRepo` methods outside them); DB-15 render-only LANDED `ab466928` **and its runtime half LANDED `96c495e7`** (`AnnotationEntityKind`, `AnnotationWriteError`, `update_avg_rating_in_tx`, `reassign_annotation_in_tx`, 5 executed tests) — DB-15 is **not** fully DONE: the durable Go-harness oracle is deferred to the EVID lane (`../decisions.md` H6; authorization gate in this index). **DB-10 LANDED `65072b89`/`6e5ca97d`; DB-12 executed artwork invalidation/enqueue subset LANDED `e5d0592d` (rustdoc fix `f80b9704`), no production scanner callers or worker/full scanner.** **DB-22 LANDED `272c9c66` (executed genre/scrobble/playqueue/artwork reads; narrow-read subset per C5 — not full Go parity).** **DB-11 LANDED `52b04064`** (executed typed scanner reads + cursor contract + `ScannerScope`/`UserScope` + `get_visible_media`; 21 executed tests; not the full cursor/REST surface — the `SEEDEDRAND` seeded full-set render stays with the REST/API lane; no production scanner caller and no `nd-scanner` consumption). The **SC-02 partial LANDED `e3e0770a`** (local walker, `.ndignore`, folder hash, cancellation — not SC-01/SC-02 completion, no scanner entrypoint or ingest). **DB-14 LANDED `de0f49ea`** (4 files: NEW `src/scanner_writes.rs` 935 lines, NEW `tests/runtime_folder_persistence.rs` 17 executed tests, `lib.rs` +1, `album_repo.rs` +102 additions-only — `copy_album_created_at_in_tx`; no production caller, no `nd-db` dependency in `nd-scanner`). **Next in spine order is DB-16 or DB-21(P1-DB)** — both launchable-parent-sequenced, neither picked here: DB-16 reuses `copy_album_created_at_in_tx`, DB-21 is the P1-DB exit contract (whose remaining gates are SC-side/BOOT-side) |
 | [`scanner.md`](scanner.md) | #17 staged scanner | SC-00 … SC-14 | BLOCKED for code; SC-00 prep READY. A local-FS storage subset LANDED `e9dd8230`/`ff5b9c92`, and the **SC-02 partial LANDED `e3e0770a`** (fast-forwarded onto `2e7026b2`): bounded local walker, `.ndignore`/ignore policy, folder hashing and cancellation with executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`, and the six approved dependencies recorded in `../decisions.md` S9 (`b1aeea2c`, corrected at `2e7026b2`). **Partial scope**: no scanner entrypoint, `MusicFS`/`ReadTags` dispatch, tag-to-DB ingest, full-scan orchestration or watcher — **not** SC-01 ratification, not SC-02 completion, not MusicFS readiness. `SC-01` ratification remains unrecorded, so SC-03+ stay gated. |
 | [`boot-api.md`](boot-api.md) | #24, #33 graph, #27A | BOOT-00…04, API-00…06, API-F1…F7, BOOT-F1 | spec-first; #27A gated. **BOOT-02 landed** `c6e220eb`/`162fae1d` (login mints a native expiring session) — the login-session correction only, **not** full auth/API integration: BOOT-00 and API-04 are `DECISION REQUIRED`, API-00 is READY for specification with launches blocked on BOOT-00, and BOOT-01/03/04 plus API-01/02/03/05/06 are BLOCKED; no router is mounted. |
 | [`evidence-ops.md`](evidence-ops.md) | parity residual + #03/#31 | EVID-01…08, OPS-01…07, FRONT-* | mostly BLOCKED/decision; EVID-01's snapshot/contract amendments largely folded into these docs |
@@ -38,7 +38,7 @@ agent message — the dependency is met only by a verified, reviewed package.**
 
 | Alias | Concrete package(s) | Lane | Note |
 | --- | --- | --- | --- |
-| `EXT-DB-CONNECTION` | **DB-03** (+ **DB-00** typed seam) | DB | Decision `D-OPEN` owned jointly with **BOOT-00**. Bundled SQLite is FK=1 / busy 5000 ms; do not assume FK-off. |
+| `EXT-DB-CONNECTION` | **DB-03** (+ **DB-00** typed seam) — **LANDED `4a8aac9f`** | DB | Decision `D-OPEN` is **LANDED and decided** (`../decisions.md` "DB open/configuration (D-OPEN, landed `4a8aac9f`", `db-runtime.md` "D-OPEN as implemented"); effective per-handle settings verified) — **BOOT-00 must not re-litigate DSN/PRAGMA policy**. Bundled SQLite is FK=1 / busy 5000 ms; do not assume FK-off. |
 | `EXT-DB-LIBRARY` | **DB-05** | DB | BOOT-01 owns configured-library policy; DB-05 owns executed typed insert/update. |
 | `EXT-DB-SCOPED-LOOKUP` | **DB-11** (API-safe point read) — **LANDED `52b04064`** | DB | `D-SCOPE` consumed by the executed `UserScope` authority: internally-built membership only, no raw user SQL, deny arms for zero-grant/empty library. Not #27A-blocking on its own; API-02 still owns the route. |
 | `EXT-DB-EPOCH` | **DB-13** | DB | Epoch-only increment + RETURNING; `D-REVOKE`; consumed by BOOT/API, not a route. |
@@ -50,7 +50,7 @@ agent message — the dependency is met only by a verified, reviewed package.**
 | Handshake | Provided by | Consumed by |
 | --- | --- | --- |
 | `SC.query-consumption` | SC-05/SC-06 | DB-11 (cancel/backpressure boundary) — **RESOLVED by DB-11 `52b04064`**: the DB side ships the visitor/`Control`/`VisitOutcome`/`CursorError` contract and owns early-stop plus lease release; SC still owns backpressure when it consumes these APIs |
-| `SC.folder-write-batch-contract` | **RESOLVED as D-BATCH (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract"): per-folder tx opened by DB, `persist_folder_delta_in_tx` pub(crate)** | SC-05/SC-06 consume the batch types | DB-14 (launchable) |
+| `SC.folder-write-batch-contract` | **RESOLVED as D-BATCH (PARENT DECIDED 2026-11-20, `../decisions.md` "Folder-write batch contract") and CONSUMED by DB-14 `de0f49ea`** — per-folder tx opened by DB, `persist_folder_delta_in_tx` pub(crate), warn-vs-fatal table, SC pre-generated IDs, immutable batch | SC-05/SC-06 consume the delivered batch types (`FolderWriteBatch`, `CommittedFolderOutcome`) | DB-14 (**LANDED `de0f49ea`**; no production caller yet) |
 | `SC.mapping-bridge` | SC-03 | DB-21 (P1-DB exit) |
 | `SC.phase1-fixture` | SC-05 | DB-21 (P1-DB exit) |
 | `SC.move-selection` | SC-07 | DB-16 |
@@ -93,7 +93,7 @@ blocked by `D-PLAYER26`, now **decided** (retain player-session service, drop mp
 | `SC-12/13` | Watcher backend + external progress-IPC mode (deferred, not first-slice gates) | SC-12/13/SC-14 mode ledger | SC + parent |
 | `D-PLAYER26` | **DECIDED 2026-11-18 — user-approved in-session (explicit): split #26.** Retain the player-session service (`Get`/`Register`/`Touch` over the landed `PlayerRepo`); **drop** the mpv/jukebox device service. Canonical register/touch placement belongs to API-01. See "#26 scope analysis" below. Neither half gates #27A. | `FRONT-26`, API-F1/F5, player wiring — resolved | parent/user |
 | `D-PLAYER-EDIT` | **DECIDED 2026-11-18 — user-approved in-session (explicit): per-device preference editing is retained product scope.** A device profile is editable by its owner: `GET`/`PUT /api/player/{id}` stays canonical with ownership-restricted writes (`user_id` immutable, field whitelist enforced), and the profile list a client picks `transcoding_id` from needs a **read-only** `GET /api/transcoding` (profile *creation/editing* stays dropped, Part C item 1). The executing `transcoding_repo` read **landed at `f8ceeb8f`**, so the remaining prerequisites are the BOOT-owned `DEFAULT_TRANSCODINGS` seed and the route. See "Per-device editing (D-PLAYER-EDIT)" below. | API-00 registry capture, API-01, API-03, API-F1/F5, `FRONT-26` — read resolved; seed + route remain | parent/user |
-| `plugin_repo` scope | **OPEN — parent's call, not resolved by the docs lane.** Whether `plugin_repo.rs` belongs in the port at all: the `plugin` table is dropped (`../schema-contract.md`, Part C item 14) and every statement it renders fails with `no such table: plugin`. Options/recommendation: [`../next-work.md`](../next-work.md) §"Decision ask". | Any lane touching `plugin_repo.rs`; plugin surface in `FRONT-*` | parent |
+| `plugin_repo` scope | **DECIDED 2026-11-20 (`../decisions.md` "Plugin scope (D-PLUGIN)")** — `plugin_repo.rs` is out of scope: the `plugin` table is dropped (`../schema-contract.md`, Part C item 14), `nd-dbschema`'s fresh DDL has no `plugin` table, and every statement the file renders fails with `no such table: plugin`. Decision: delete `rust/crates/nd-db/src/plugin_repo.rs`, its tests and the `lib.rs:35` export in a follow-up lane; Go's `plugin_cleanup.go` hooks are NOT ported. **Deletion pending** — the file and `pub mod plugin_repo` (`lib.rs:35`) still exist at `de0f49ea` (DB-11/14/15 lanes did not touch it), so the deletion is assigned to whichever lane next touches `nd-db`'s repo modules. | Any lane touching `plugin_repo.rs`; plugin surface in `FRONT-*` | parent (decided) |
 | Oracle harness | Approve new tracked Go harness under `testdata` (no Go-source edits) or an approved alternative; toolchain availability | EVID-02/03, SC-00 durable captures, and the **DB-15 durable annotation-transfer oracle deferred here (PARENT DECIDED 2026-11-20, `../decisions.md` H6)** | parent |
 | Fixture/toolchain | Durable fixture location/recipe, synthetic-only credentials, `ffmpeg`/`ffprobe` provenance, native path disclosure/redaction | EVID-03, SC-00, API-06 | parent |
 
@@ -112,7 +112,7 @@ Two independent milestones from the boot-api lane, kept separate:
 ### Step 0 — decisions & spec freeze (no code, parallel read-only)
 
 `BOOT-00`, `API-00` (native wire-contract capture), `SC-00` (oracle/manifest prep),
-`SC-01` (seam/dependency ratify), `EVID-02` (oracle authorization gate), and the `plugin_repo` scope decision.
+`SC-01` (seam/dependency ratify) and `EVID-02` (oracle authorization gate). `plugin_repo` scope is **decided (D-PLUGIN)** — deletion pending, see the decision table above.
 `D-ERROR`/`D-TIME`/`D-OPEN`/`D-PLAYER26`/`D-PLAYER-EDIT` are recorded above, and `EVID-01`'s snapshot plus the
 `DefaultGet`/gob/ProgressInfo contract amendments are already folded into these docs — its remaining part is durable
 evidence capture, not new planning.
@@ -126,7 +126,7 @@ Dependency order: `DB-01` (**LANDED `f57ae050`**) → `DB-02` (**LANDED `6d9d984
 `65072b89`/`6e5ca97d`**) → `DB-11` (**LANDED `52b04064`: `D-CURSOR`/`D-SCOPE`, recorded in `../decisions.md`
 (PARENT DECIDED 2026-11-20, corrected record `8b5b3925`), now consumed by executed code**) → `DB-12`
 (**LANDED executed subset `e5d0592d`, rustdoc fix `f80b9704`**) → `DB-15` (**runtime half LANDED `96c495e7`** on the
-render-only repair `ab466928`) → `DB-14` (**next; LAUNCHABLE — `SC.folder-write-batch-contract` resolved as D-BATCH**) → `DB-21(P1-DB)`.
+render-only repair `ab466928`) → `DB-14` (**LANDED `de0f49ea`** — `SC.folder-write-batch-contract` resolved as D-BATCH and consumed) → `DB-21(P1-DB)`, with `DB-16` also launchable-parent-sequenced after DB-14.
 `DB-15`'s **render-only** rating repair LANDED at `ab466928` and its **runtime half** — the typed annotation
 reassignment/average-recalc transactions — LANDED at `96c495e7`; DB-15 is still **not** fully DONE because the durable
 Go-harness oracle is deferred to the EVID lane (`../decisions.md` H6), and no annotation service or route caller exists.
@@ -204,10 +204,11 @@ statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` wr
 * **DB-11 LANDED `52b04064`** and **DB-15's runtime half LANDED `96c495e7`** (dated parent measurements 2026-11-20): the
   executed scanner read/cursor contract with typed scope authorities, and annotation transfer + average-rating recalc on
   the caller's tx. Both stay partial — no production caller, and DB-15's durable Go oracle is deferred to the EVID lane
-  (`../decisions.md` H6). **Next is DB-14, LAUNCHABLE** — `SC.folder-write-batch-contract` resolved as **D-BATCH** (per-folder
-  tx opened by DB, `persist_folder_delta_in_tx` pub(crate), parent-controlled `album_repo.rs` copy helper; `../decisions.md`
-  "Folder-write batch contract"). DB-16…20 retain later decisions (`D-STATS`, `D-GC`) and their DB-11/DB-15
-  dependencies, which are now satisfied.
+  (`../decisions.md` H6). **DB-14 LANDED `de0f49ea`** (per-folder persistence seam; `SC.folder-write-batch-contract` resolved as
+  **D-BATCH** — per-folder tx opened by DB, `persist_folder_delta_in_tx` pub(crate), parent-controlled `album_repo.rs` copy helper
+  `copy_album_created_at_in_tx` at `album_repo.rs:1566`; `../decisions.md` "Folder-write batch contract"), so **next is DB-16 or
+  DB-21(P1-DB)** — both launchable-parent-sequenced, neither picked. DB-16…20 retain later decisions (`D-STATS`, `D-GC`) and their
+  DB-11/DB-15 dependencies, which are now satisfied.
 * **`SC-00` / `API-00`** (read-only/spec) — oracle manifest + native wire-contract capture, pending the
   oracle-authorization decision above.
 * **`OPS-01`** — re-derive the schema golden and keep DDL/data-seeding separate; prerequisite-independent and it also
@@ -218,9 +219,9 @@ statement), and `DB-13` `eae4ba1d`/`4ab63cd5`. None of the executed `*_in_tx` wr
 executed transcoding reads `f8ceeb8f`, `DB-00` `48e65806`/`ec84c176`, `DB-02` `6d9d984d`/`74ebd81c`, `DB-04` `c791dbc1`,
 `DB-05` `60be7534`, `DB-06` `bfdcfeca`, `DB-07` `2911b9ab`/`9be6ad0e`, `DB-08` `32c4fa5b`/`320b8b03`, `DB-09`
 `d938d159`/`842c32a2`, `DB-13` `eae4ba1d`/`4ab63cd5`, `BOOT-02` `c6e220eb`/`162fae1d`, `DB-11` `52b04064`,
-`DB-15` runtime half `96c495e7`. Historical gates at `4ab63cd5` are
-recorded in [`../current-status.md`](../current-status.md); the latest parent gates at `96c495e7` (94 suites, 2302/0/1),
-the intermediate `52b04064` block (2297/0/1), the `e3e0770a` block (92 suites, 2276/0/1) and
+`DB-15` runtime half `96c495e7` and `DB-14` `de0f49ea`. Historical gates at `4ab63cd5` are
+recorded in [`../current-status.md`](../current-status.md); the latest parent gates at `de0f49ea` (95 suites, 2319/0/1),
+the `96c495e7` block (94 suites, 2302/0/1), the intermediate `52b04064` block (2297/0/1), the `e3e0770a` block (92 suites, 2276/0/1) and
 the earlier `f80b9704` block are recorded there as well.
 
 Everything else waits on a recorded decision or an earlier release. Implementation assignments go one writer per

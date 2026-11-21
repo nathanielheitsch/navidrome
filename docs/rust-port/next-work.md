@@ -4,7 +4,7 @@ Read order and authority: [`README.md`](README.md) → this current section (mil
 [`current-status.md`](current-status.md) (measured evidence) → [`decisions.md`](decisions.md) (binding decisions) →
 `subplans/` (bounded assignments). Everything below the separator is a **dated historical index**, not a scheduler.
 
-## Current execution plan (baseline this branch line at `96c495e7` — DB-11 `52b04064` + DB-15 runtime `96c495e7` on integrated `master` code HEAD `e3e0770a` (SC-02 partial), re-dated 2026-11-20)
+## Current execution plan (baseline this branch line at `de0f49ea` — DB-11 `52b04064` + DB-15 runtime `96c495e7` + DB-14 `de0f49ea` on integrated `master` code HEAD `e3e0770a` (SC-02 partial), re-dated 2026-11-20)
 
 `96c495e7` adds **DB-15's runtime half** (annotation transfer + average-rating recalc on the caller's tx, 5 executed
 tests) and `52b04064` adds **DB-11** (executed typed scanner reads, the D-CURSOR cursor contract, the API-safe point
@@ -42,7 +42,7 @@ lane's earlier `4ab63cd5` measurements remain historical.
   read-only review after writing stops, then selected fixes and parent CLI gates. Scratch only in `/tmp`; no automatic
   formatting.
 
-### Landed and verified (dated measurements, in this baseline; latest parent gates at `96c495e7` (94 suites / 2302 / 0 / 1); earlier `e3e0770a`, `272c9c66`, `f80b9704` and docs-lane totals at `4ab63cd5` are history)
+### Landed and verified (dated measurements, in this baseline; latest parent gates at `de0f49ea` (95 suites / 2319 / 0 / 1); earlier `96c495e7`, `e3e0770a`, `272c9c66`, `f80b9704` and docs-lane totals at `4ab63cd5` are history)
 
 1. **Sort-gate parity — DONE at `62789ba2`.** Executed REST reads in `player_repo.rs`, `library_repo.rs`, `tag_repo.rs`,
    `radio_repo.rs` take `RestQueryOptions` and parse internally, matching Go; `runtime_rest_sort_gate.rs` proves hostile
@@ -68,6 +68,7 @@ lane's earlier `4ab63cd5` measurements remain historical.
 
 | Assignment | Commit | Scope actually landed — and what is **not** done |
 |---|---|---|
+| DB-14 executed folder-delta persistence (DB-owned SC seam) | `de0f49ea` (4 files, `nd-db`) | **LANDED.** NEW `src/scanner_writes.rs` (935 lines): `FolderWriteBatch` (immutable; SC pre-generated folder/artist/album IDs; caller-stamped `FolderStamps`; `full_scan_mode`; `album_transitions`), `persist_folder_delta(store,&batch) -> Result<CommittedFolderOutcome,FolderRunError>` (DB-owned per-folder retrying tx per D-BATCH), `persist_folder_delta_in_tx` **pub(crate)**, `FolderWriteStage` (12 arms, `is_fatal`), `ScopeRejection` (11 arms, validated pre-checkout), `FolderWriteWarning{stage,item_id,related_id,source}`, `CommittedFolderOutcome` (publish-only-after-commit), `scan_artwork_item`. NEW `tests/runtime_folder_persistence.rs` = 17 executed tests; `lib.rs` +1; `album_repo.rs` +102 additions-only delivering `copy_album_created_at_in_tx` (`album_repo.rs:1566`, Go `album_repository.go:331-357` incl. `0001-`/empty skip — the helper DB-16 reuses). Warn arms route through `warn_arm`, which detects transaction loss via `is_autocommit` and returns the original typed SQLite error as FATAL (never a warning); ABORT-class statement failures still warn+commit; `MediaIdentity` per-record; Go `c == 0` missing-quirk preserved. Review REQUEST-CHANGES then both findings fixed (P1 tx-loss atomicity, P2 consumed-transitions retry proof); parent re-ran all gates at `de0f49ea` (**2319/0/1 across 95 suites**, fmt/clippy clean, `nd-db` rustdoc 22 = baseline). **Not done:** no production caller (SC-05 is the consumer; `nd-scanner` still has no `nd-db` dependency), no walk/tag-mapping/album aggregation (SC-owned), no missing-folder finalize (SC-06). Not move/GC semantics. |
 | DB-15 **render-only** rating repair | `ab466928` | `update_avg_rating_sql` embeds `average_rating_expr_sql()` with 3 ordered binds, and `tests/runtime_annotation_rating.rs` executes it against a real schema. The three public annotation renderers were deliberately **kept and redocumented** (their `annotation.id` prepare failure pinned), not left undecided. **Full DB-15 is NOT done:** typed annotation reassignment/merge transactions and the annotation read APIs are unimplemented. |
 | Scanner local-FS storage subset | `e9dd8230` + merge `ff5b9c92` | `nd-scanner/src/storage.rs` only: std-`fs` `list`/`stat`/`read`/`read_link`/`resolve`/`exists`, logical-path handling, `file://` URI parsing and explicit symlink classification. At that commit the walker, `.ndignore`/ignore policy, folder hashing, cancellation, `MusicFS`/`ReadTags`, registry dispatch and watcher were **not implemented**; the walker/ignore/hash/cancellation portion landed later at `e3e0770a` (row below). **Not** SC-01 ratification and **not** SC-02 completion. |
 | Scanner **SC-02 partial** (local walker, `.ndignore`, folder hash, cancellation) | `e3e0770a` (fast-forwarded onto `2e7026b2`) | **LANDED partial slice.** `nd-scanner`: `contract.rs`/`walk.rs`/`ignore.rs`/`folder.rs` plus the `lib.rs`/`storage.rs` seam, with executed `tests/{folder_hash,ignore_policy,storage_seam,walk_policy}.rs`. The manifest/lock delta is limited to the six user-approved dependencies recorded in `decisions.md` S9 (`b1aeea2c`; false order-divergence claim withdrawn at `2e7026b2`). Review findings through S9b closed; parent gates at `e3e0770a` are 92 suites / 2276 passed / 0 failed / 1 ignored with fmt, workspace clippy and `git diff --check` clean. **Not implemented:** a scanner entrypoint, `MusicFS`/`ReadTags` registry dispatch, tag-to-DB ingest, full-scan orchestration, watcher or progress protocol. **Not** SC-01 ratification, SC-02 completion or MusicFS readiness. The former `rust-sc02-local-walker` worktree and branch are removed. |
@@ -87,10 +88,11 @@ lane's earlier `4ab63cd5` measurements remain historical.
 
 ### Live wave (verified checkout state; never mark DONE from a message)
 
-At `96c495e7` (this branch line: DB-11 `52b04064` and DB-15 runtime `96c495e7` on top of integrated `master` code HEAD
-`e3e0770a`), **DB-10, the DB-12 executed subset, DB-22, the SC-02 partial, DB-11 and DB-15's runtime half are LANDED**.
+At `de0f49ea` (this branch line: DB-11 `52b04064`, DB-15 runtime `96c495e7`, docs sync `b213755f` and DB-14 `de0f49ea` on top of
+integrated `master` code HEAD `e3e0770a`), **DB-10, the DB-12 executed subset, DB-22, the SC-02 partial, DB-11, DB-15's runtime
+half and DB-14 are LANDED**.
 Verified `git worktree list` and branch refs during this refresh: `master` at `795e8986` (code HEAD `e3e0770a`) and this
-lane's worktree at `96c495e7` on `resuscitate-dead-agent-capture-worktree-state`, which is 2 ahead of `master` and has
+lane's worktree at `de0f49ea` on `resuscitate-dead-agent-capture-worktree-state`, which is 4 ahead of `master` and has
 `master` as an ancestor (a parent fast-forward is available); the former DB-10/DB-12 and `rust-sc02-local-walker`
 worktrees/branches are absent (parent-controlled merges, then cleanup). This docs lane removed nothing.
 
@@ -111,15 +113,17 @@ at `e3e0770a`.
 
 ### Next dependencies (order, not estimates)
 
-1. **DB-11 LANDED → DB-15 runtime LANDED → DB-14 → DB-21(P1-DB)** — DB-04…DB-10/DB-12/DB-13 are landed and the spine's
-   next two packages are now in: **DB-11 LANDED `52b04064`** (typed filtered scanner reads, D-CURSOR cursor contract,
-   `ScannerScope`/`UserScope`, `get_visible_media`) and **DB-15's runtime half LANDED `96c495e7`** (annotation transfer +
-   average-rating recalc, with its durable Go oracle deferred to the EVID lane — `decisions.md` H6). `D-CURSOR`/`D-SCOPE`
-   were recorded in `decisions.md` (PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) and are now **consumed by
-   executed code**. Next is **DB-14**, now **LAUNCHABLE** — `SC.folder-write-batch-contract` is resolved as
-   **D-BATCH** (PARENT DECIDED 2026-11-20, `decisions.md` "Folder-write batch contract": per-folder tx opened by DB,
-   `persist_folder_delta_in_tx` `pub(crate)`, warn-vs-fatal table, SC pre-generated IDs, parent-controlled
-   `album_repo.rs` copy helper); DB-16…20 retain later decisions (`D-STATS`, `D-GC`). DB-12 has already released the artwork subset.
+1. **DB-11 LANDED → DB-15 runtime LANDED → DB-14 LANDED `de0f49ea` → next DB-16 or DB-21(P1-DB)** — DB-04…DB-10/DB-12/DB-13 are
+   landed and the spine's last three packages are in: **DB-11 LANDED `52b04064`** (typed filtered scanner reads, D-CURSOR cursor
+   contract, `ScannerScope`/`UserScope`, `get_visible_media`), **DB-15's runtime half LANDED `96c495e7`** (annotation transfer +
+   average-rating recalc, durable Go oracle deferred to the EVID lane — `decisions.md` H6) and **DB-14 LANDED `de0f49ea`**
+   (`SC.folder-write-batch-contract` resolved as **D-BATCH** and consumed: `FolderWriteBatch`, `persist_folder_delta`,
+   `persist_folder_delta_in_tx` `pub(crate)`, warn-vs-fatal table, SC pre-generated IDs, and the parent-controlled
+   `album_repo.rs` copy helper — landed as `copy_album_created_at_in_tx` at `album_repo.rs:1566`, which DB-16 reuses; 17 executed
+   tests; review findings P1/P2 closed and the parent re-ran all gates). `D-CURSOR`/`D-SCOPE`
+   were recorded in `decisions.md` (PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) and are **consumed by executed code**.
+   **Next is DB-16 or DB-21(P1-DB)**, both launchable-parent-sequenced and neither picked by the docs lane; DB-16…20 retain later
+   decisions (`D-STATS`, `D-GC`, both still without a canonical `decisions.md` record). DB-12 has already released the artwork subset.
    **DB-22 LANDED `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 documents the narrow boundary).
    DB-16…20 (move/reference,
    tag counts, artist stats, playlist cleanup, GC) extend the phase-2+/full-scanner exit. Each lane consumes the landed
@@ -127,13 +131,15 @@ at `e3e0770a`.
    configuration — adopt them rather than re-deriving helper behavior. Add executed write→read-back regressions, not more
    renderer-only assertions (`decisions.md` W0/W1); the DB-02 gaps (`scrobble_buffer` integer stamps,
    `find_recent_files_by_properties_sql` executed pin) belong to whichever lane owns those statements. Landed lanes also
-   still need **production callers**: no executed write or executed scanner read is invoked from a scanner, bootstrap,
-   or route yet.
-2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `96c495e7`
-   (cargo/rustc 1.99.1, EXECUTED): workspace tests **2302 / 0 / 1 across 94 suites** (the single ignore is the
+   still need **production callers**: DB-14's folder-delta seam is landed but uncalled (`nd-scanner` declares no `nd-db`
+   dependency; SC-05 is its consumer), and no executed write or scanner read is invoked from a scanner, bootstrap, or route yet.
+2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `de0f49ea`
+   (cargo/rustc 1.99.1, EXECUTED): workspace tests **2319 / 0 / 1 across 95 suites** (the single ignore is the
    pre-existing `dump_divergences`), with `cargo fmt --all -- --check`, workspace clippy
    (`--all-targets --all-features -- -D warnings`) and `git diff --check` clean, and `nd-db` rustdoc at **22 warnings =
-   baseline** (zero for `sql_annotations.rs`). The intermediate block at `52b04064` (**2297 / 0 / 1**) and the prior
+   baseline** (zero for `scanner_writes.rs`). The block at `b213755f` (**2317 / 0 / 1** — the docs-only sync commit on top of
+   `96c495e7` before DB-14's suites were added — superseded by `de0f49ea`), the block at `96c495e7` (**2302 / 0 / 1 across 94 suites**),
+   the intermediate block at `52b04064` (**2297 / 0 / 1**), the prior
    blocks at `e3e0770a` (92 suites / 2276 / 0 / 1), `272c9c66` (88 suites / 2171 / 0 / 1) and `f80b9704` (87 suites /
    2159 / 0 / 1, logs `/tmp/nav-db10-integrated-{clippy,tests,doc}.log`) remain dated history, not proof for a later diff.
 3. **Honest scanner phase-1 vertical slice** — storage/stat/symlink/ignore landed (`e9dd8230`/`ff5b9c92`, then the
@@ -190,8 +196,9 @@ outside the file; `plugin_cleanup.go:8,50` updates the `plugin` table from user/
 2. **Bounded DB runtime packages** — DB-04 property, DB-05 library + scan lifecycle, DB-06 tag, DB-07 folder/missing/touch,
    DB-08 artist, DB-09 album and DB-13 epoch revoke are **landed**; DB-10/12 are now landed too, as is DB-22 `272c9c66`,
    **DB-11 `52b04064`** (`D-CURSOR`/`D-SCOPE`, recorded at `8b5b3925`, now consumed by executed code) and **DB-15's runtime
-   half `96c495e7`**; the spine's next package is **DB-14**, now **LAUNCHABLE** — `SC.folder-write-batch-contract`
-   resolved as D-BATCH (PARENT DECIDED 2026-11-20, `decisions.md` "Folder-write batch contract"). Library
+   half `96c495e7`** and **DB-14 `de0f49ea`** (D-BATCH consumed); the spine's next package is **DB-16 or DB-21(P1-DB)**,
+   both launchable-parent-sequenced and neither picked by the docs lane (DB-16 reuses the landed
+   `album_repo::copy_album_created_at_in_tx`; DB-21's P1-DB exit needs SC/BOOT consumers). Library
    bootstrap policy belongs to the bootstrap caller, DB supplies typed executed operations. Test rollback, retry, immutable
    fields, non-target rows, empty/chunk boundaries, and actual read-back through production methods.
 3. **Honest scanner phase-1 vertical slice** — as above; the old "8 repos + 1 mapper" is a core-read inventory, not a

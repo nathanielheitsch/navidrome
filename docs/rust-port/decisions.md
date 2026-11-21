@@ -375,7 +375,7 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `folder_repository.go:77,275-299`, and `scanner/phase_*.go` scope sites. DB-11 must pin the empty-grant deny case,
   the all-grants fast path, and the headless skip with executed tests.
 
-## Folder-write batch contract (D-BATCH; PARENT DECIDED 2026-11-20, unblocks DB-14)
+## Folder-write batch contract (D-BATCH; PARENT DECIDED 2026-11-20, unblocks DB-14; record consumed by DB-14 `de0f49ea`)
 
 - **D-BATCH — Per-folder tx opened by DB; `persist_folder_delta_in_tx` pub(crate) (PARENT DECIDED 2026-11-20; resolves `SC.folder-write-batch-contract`).**
   SOURCE-VERIFIED Go truth (scout DB-14 memo, parent re-verified): phase 1 persists **exactly one tx per folder** —
@@ -406,7 +406,10 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   resolved). (6) **Go quirk preserved:** `mark_media_missing_in_tx` early-return on `err != nil || c == 0`
   (`mediafile_repository.go:463-467`) stays; fixtures must not expect a zero-matching chunk's siblings to be marked.
   Evidence basis: scout DB-14 launch memo (citation audit + HEAD primitive locations), parent re-verification of the
-  Go arms cited above. DB-14 is launchable once this record lands and the parent serializes its writer.
+  Go arms cited above. **DB-14 landed at `de0f49ea`** and consumed this record: `persist_folder_delta`/`persist_folder_delta_in_tx`
+  (pub(crate)), the `FolderWriteStage`/`ScopeRejection`/`FolderWriteWarning` table, SC-side ID assumptions, immutable batch with
+  caller-stamped `FolderStamps`, and `album_repo::copy_album_created_at_in_tx` (`album_repo.rs:1566`, the same helper DB-16 reuses).
+  Review findings closed (P1 tx-loss atomicity via `is_autocommit` detection in `warn_arm`; P2 consumed-transitions retry proof).
 ## Bootstrap and stream seams (BOOT-00, API-04, ffmpeg; drafts 2026-11-20)
 
 - **B1 — Workspace `chrono` placeholder is dead and wrong (PARENT DECIDED 2026-11-20).** `rust/Cargo.toml:66`
@@ -448,8 +451,8 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `.await`s `Sink::write_all` directly, removing the re-poll defect; one-shot `Start{status,headers}` + bounded `Data`
   frames + terminal `Completion` carrying the existing `StreamResponse` observability fields) vs two-phase prepared body
   vs LocalSet actor — plus LocalSet vs dedicated `std::thread` for the non-Send owner, channel capacity/chunk bound
-  (recommendation: capacity 2, 32 KiB chunks), and whether the transport module lives in `nd-stream` (boot-api.md:239)
-  vs `nd-http`. This blocks API-05/BOOT-03 stream-lifecycle claims.
+  (recommendation: capacity 2, 32 KiB chunks), and whether the transport module lives in `nd-stream`
+  vs `nd-http` (the API-04 section is `subplans/boot-api.md:246`; this record pointed at `:239` when drafted — API-04 is at `:246`). This blocks API-05/BOOT-03 stream-lifecycle claims.
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
 - **A1 — Offset-without-limit renders `LIMIT -1`**: squirrel's bare `OFFSET n` is a SQLite parse error and SQLite is
