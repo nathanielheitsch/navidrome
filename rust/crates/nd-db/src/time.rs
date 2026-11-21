@@ -39,8 +39,7 @@
 //! Converted here: `share_repo`, `radio_repo`, `artist_repo`,
 //! `artwork_queue_repo`, and (DB-02) scanner timestamp writers/read bounds in
 //! `library_repo`, `mediafile_repo`, `folder_repo`, and `album_repo`; timestamp
-//! writes in `playqueue_repo`, `artwork_repo`, and `plugin_repo` also use this
-//! format. `scrobble_repo.submission_time` deliberately remains Unix INTEGER.
+//! writes in `playqueue_repo` and `artwork_repo` also use this format. `scrobble_repo.submission_time` deliberately remains Unix INTEGER.
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 

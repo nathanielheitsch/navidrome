@@ -218,6 +218,64 @@ pub fn clean_bookmarks_sql(table: &str) -> Sql {
     )
 }
 
+/// Callback-level failure of the executed bookmark writes
+/// ([`reassign_bookmark_in_tx`]).
+///
+/// `Infallible` is the honest domain type: `reassignBookmark`
+/// (`sql_bookmarks.go:149-153`) returns the bare driver error of one
+/// `executeSQL` call — no `ErrNotFound`, no validation, no affected-row
+/// contract. So the `Domain` arm is structurally uninhabited rather than
+/// reserved, exactly as [`crate::sql_annotations::AnnotationWriteError`] does.
+pub type BookmarkWriteError = crate::runtime_error::DbOperationError<std::convert::Infallible>;
+
+/// `reassignBookmark` (`sql_bookmarks.go:149-153`) EXECUTED on the caller's
+/// transaction: move this entity's bookmarks from `prev_id` onto `new_id` with
+/// `update or ignore` — the exact statement [`reassign_bookmark_sql`] renders,
+/// no new SQL text.
+///
+/// The `or ignore` is Go's (`:150`): `bookmark` is `unique (user_id, item_id,
+/// item_type)` (`nd-dbschema/src/schema_ddl.rs:60`), so a user who bookmarked
+/// BOTH ids keeps their own row on `new_id` and the conflicting source row is
+/// skipped rather than aborting the statement — it STAYS on `prev_id`, is never
+/// merged, and is never deleted. An `or replace` shortcut would overwrite the
+/// target's own bookmark position.
+///
+/// There is NO empty/equal-id guard here, because Go has none (`:149-153`
+/// executes unconditionally, unlike `ReassignAnnotation`'s guard at
+/// `sql_annotations.go:186-188`), and this port adds none either. So empty ids are
+/// NOT refused and NOT generally no-ops — their effect is pure statement semantics:
+/// an empty `prev_id` matches a row only if some row actually stores `item_id = ''`
+/// (real ids never are, so in practice nothing moves), and an empty `new_id` MOVES
+/// matching rows to `''` — Go's `update or ignore` would do exactly the same. Equal
+/// ids re-write the same value and change nothing. A SQL `NULL` id is unrepresentable
+/// through this `&str` signature, unlike Go's `string`, so that shape cannot be
+/// reached from here at all. Go discards the affected-row count, so `()` is the
+/// return; the moved population is observable by reading `bookmark` rows back.
+///
+/// `entity` is the closed [`crate::sql_annotations::AnnotationEntityKind`] set:
+/// Go's `r.tableName` is set once by the repository constructor and never taken
+/// from a caller, and the only Go caller of `reassignBookmark` is
+/// `mediaFileRepository.ReassignReferences` (`mediafile_repository.go:414`).
+///
+/// Retryable: rerunning it moves nothing new once the rows already carry
+/// `new_id`.
+///
+/// # Errors
+/// [`BookmarkWriteError::Sqlite`] carrying the concrete `rusqlite::Error`
+/// (extended code intact, so `store::is_busy` still classifies it). A zero-row
+/// move is `Ok`, not an error.
+/// [`BookmarkWriteError::Domain`] is structurally uninhabited.
+pub fn reassign_bookmark_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    entity: crate::sql_annotations::AnnotationEntityKind,
+    prev_id: &str,
+    new_id: &str,
+) -> Result<(), BookmarkWriteError> {
+    crate::execution::execute(tx, &reassign_bookmark_sql(entity.table(), prev_id, new_id))
+        .map_err(crate::runtime_error::DbOperationError::sqlite)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

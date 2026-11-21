@@ -1410,7 +1410,7 @@ fn mediafile_derived(
 ///
 /// # Errors
 ///
-/// Returns [`crate::marshal::MarshalError`] when the map carries `id`
+/// Returns [`MediaFileWriteError`] when the map carries `id`
 /// (impossible from [`mediafile_row`]) or the UPDATE set is empty.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PutMediaFileSql {
@@ -1584,7 +1584,7 @@ pub struct MediaFileWriteResult {
 /// Callback error of the executed [`put_mediafile_in_tx`].
 ///
 /// The builder arm is REAL and must stay off the SQLite arm: [`put_sql`] returns
-/// [`crate::marshal::MarshalError`], so a failure to materialize the legs is a domain
+/// [`MediaFileWriteError`], so a failure to materialize the legs is a domain
 /// failure, not a driver one. `Infallible` would force such a failure onto
 /// [`DbOperationError::Sqlite`], which `D-ERROR` forbids — the concrete cause would be
 /// lost and `store::is_busy` would be asked to classify a non-driver failure.
@@ -1896,7 +1896,7 @@ pub fn delete_all_missing_sql() -> Sql {
     )
 }
 
-/// `DeleteMissing` (`mediafile_repository.go:415-431`): both Eq keys in one
+/// `DeleteMissing` (`mediafile_repository.go:442-453`): both Eq keys in one
 /// clause — `Eq{"missing": true, "id": ids}` renders alphabetically
 /// (`id` < `missing`), the id slice expanding to placeholders.
 #[must_use]
@@ -2266,7 +2266,7 @@ pub fn find_recent_files_by_properties_sql(m: &RecentFileByProperties<'_>) -> Sq
     )
 }
 
-/// `ReassignReferences` (`mediafile_repository.go:415-432`): the four
+/// `ReassignReferences` (`mediafile_repository.go:410-432`): the four
 /// reference rewrites in Go's order — annotation reassign, bookmark
 /// reassign, playlist_tracks, scrobbles — plus the `OR IGNORE` buffered
 /// scrobbles update (unique on `(user_id, service, media_file_id,
@@ -2301,6 +2301,699 @@ pub fn reassign_references_sql(prev_id: &str, new_id: &str) -> Vec<Sql> {
             ],
         ),
     ]
+}
+
+/// Callback-level failure of the executed reference/delete primitives
+/// ([`reassign_references_in_tx`], [`delete_mediafile_in_tx`],
+/// [`delete_all_missing_in_tx`]).
+///
+/// `Infallible` is the honest domain type: `ReassignReferences`
+/// (`mediafile_repository.go:410-432`) wraps every leg in `fmt.Errorf` around a
+/// driver failure only — no `NotFound`, no validation, no permission check — and
+/// `Delete` (`:406-408`) returns `sqlRepository.delete`'s bare error, whose
+/// affected-row count is discarded (`sql_base_repository.go:644-647`). The
+/// `fmt.Errorf` texts are log text, not error identity, so the port keeps the
+/// concrete driver cause on [`DbOperationError::Sqlite`] and `store::is_busy`
+/// still classifies it.
+///
+/// `DeleteAllMissing`'s admin check (`mediafile_repository.go:433-440`,
+/// `rest.ErrPermissionDenied`) is NOT modelled as a domain arm here: it reads the
+/// logged user from Go's ambient `ctx`, which this crate has no equivalent of, and
+/// it is the caller/service's policy (see [`delete_all_missing_in_tx`]).
+pub type MediaReferenceError = DbOperationError<std::convert::Infallible>;
+
+/// `ReassignReferences` (`mediafile_repository.go:410-432`) EXECUTED on the
+/// CALLER's transaction, in Go's exact leg order:
+///
+/// 1. `ReassignAnnotation` (`:411`, `sql_annotations.go:185-197`) — through the
+///    landed DB-15 helper [`crate::sql_annotations::reassign_annotation_in_tx`],
+///    which runs the `update or ignore` move AND the target's `updateAvgRating`
+///    recalculation in this same transaction. The render-only
+///    [`reassign_references_sql`] bundle does NOT carry the average leg — that
+///    omission is precisely why the executed half delegates rather than reusing
+///    that bundle (`:411` calls the FULL repository method, not its SQL).
+/// 2. `reassignBookmark` (`:414`, `sql_bookmarks.go:149-153`) — through
+///    [`crate::sql_bookmarks::reassign_bookmark_in_tx`].
+/// 3. `UPDATE playlist_tracks SET media_file_id = ? WHERE media_file_id = ?`
+///    (`:417`).
+/// 4. `UPDATE scrobbles SET media_file_id = ? WHERE media_file_id = ?` (`:421`).
+/// 5. `update or ignore scrobble_buffer set media_file_id = ? where
+///    media_file_id = ?` (`:426-428`), `OR IGNORE` because the table is unique on
+///    `(user_id, service, media_file_id, play_time)`
+///    (`nd-dbschema/src/schema_ddl.rs:77`): a queued scrobble of BOTH ids for the
+///    same user/service/play_time keeps the target's row and skips the source's
+///    rather than aborting the statement.
+///
+/// Legs 3-5 execute exactly the statements [`reassign_references_sql`] renders at
+/// its playlist/scrobble/buffer positions — no new SQL text — so the existing
+/// renderer pin stays the statement-level contract and this function is the
+/// executed half of the SAME bundle plus the annotation/bookmark legs' executed
+/// halves.
+///
+/// No guard of its own: Go's `ReassignReferences` has none either, so equal/empty
+/// ids degrade per leg — the annotation leg short-circuits on Go's guard
+/// (`sql_annotations.go:186-188`, NEITHER statement runs), the bookmark leg
+/// executes a 0-row move (`sql_bookmarks.go:149-153` has no guard), and the
+/// playlist/scrobble/buffer legs match nothing on an empty `prev_id`. That
+/// asymmetry is Go's and is asserted, not smoothed over.
+///
+/// Retryable: rerunning converges, because every leg keys on `media_file_id`/
+/// `item_id` = `prev_id` and a committed run leaves nothing matching.
+///
+/// Scope: caller-trusted, like every write primitive in this crate. No library
+/// predicate, no auth guard; `annotation`/`bookmark` rows are restricted by
+/// `item_type`, which is the closed [`crate::sql_annotations::AnnotationEntityKind`]
+/// set rather than caller text.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended
+/// code intact) from the FIRST failing leg, raw and unwrapped exactly like Go
+/// (`:412-430` adds only `fmt.Errorf` prefixes). A leg that matches zero rows is
+/// `Ok`, not an error. [`DbOperationError::Domain`] is structurally uninhabited.
+pub fn reassign_references_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    entity: crate::sql_annotations::AnnotationEntityKind,
+    prev_id: &str,
+    new_id: &str,
+) -> Result<(), MediaReferenceError> {
+    // :411 — the FULL ReassignAnnotation, average recalculation included.
+    crate::sql_annotations::reassign_annotation_in_tx(tx, entity, prev_id, new_id)
+        .map_err(|err| DbOperationError::Sqlite(driver_error(err)))?;
+    // :414 — the bookmark leg (Go has no guard here).
+    crate::sql_bookmarks::reassign_bookmark_in_tx(tx, entity, prev_id, new_id)
+        .map_err(|err| DbOperationError::Sqlite(driver_error(err)))?;
+
+    // :417-428 — playlist_tracks, scrobbles, then the OR-IGNORE buffer, in that
+    // order. Rendered by the sibling entries of the bundle above, so the statement
+    // text is the renderer's, not a copy.
+    let bundle = reassign_references_sql(prev_id, new_id);
+    for statement in bundle.iter().skip(2) {
+        crate::execution::execute(tx, statement).map_err(DbOperationError::sqlite)?;
+    }
+    Ok(())
+}
+
+/// `Delete` (`mediafile_repository.go:406-408`) EXECUTED on the CALLER's
+/// transaction: `r.delete(Eq{"id": id})` — the ONE `DELETE FROM media_file WHERE
+/// id = ?` [`delete_sql`] renders, and nothing else.
+///
+/// Go's `sqlRepository.delete` (`sql_base_repository.go:644-647`) discards the
+/// affected-row count and checks only the error, so a missing id is a SUCCESSFUL
+/// NO-OP, not `ErrNotFound` — `deleteByID` (`:650-658`) is the arm that reports a
+/// miss, and `mediaFileRepository.Delete` does not use it. The count is returned
+/// here as advisory observability only; no policy rides on it.
+///
+/// Cascade (`nd-dbschema/src/schema_ddl.rs`, source-verified before pinning): the
+/// statement deletes ONLY the base row. Rows whose FK declares
+/// `ON DELETE CASCADE` go with it — `media_file_artists` (`:73`), `media_file_tags`
+/// (`:74`), `scrobbles` (`:78`) and `scrobble_buffer` (`:77`, `media_file_id` FK
+/// with `ON UPDATE CASCADE ON DELETE CASCADE`) — and the FTS `media_file_fts_ad`
+/// trigger (`:83`) removes the index entry. NO other table is touched: `annotation`
+/// (`:59`) and `bookmark` (`:60`) key on `(user_id, item_id, item_type)` and
+/// reference `user`, not `media_file`, so an annotation/bookmark of a DELETED track
+/// SURVIVES as an orphan until `cleanAnnotations`/`cleanBookmarks` run in `GC`
+/// (`persistence/persistence.go:269,271`) — that is Go's behavior and the reason
+/// `ReassignReferences` exists before a delete. `playlist_tracks` (`:76`) has a FK
+/// on `playlist` only, so its `media_file_id` is NOT cascaded and its rows survive
+/// pointing at the deleted id (Go's `removeOrphans` in `GC`, `:273`, owns them).
+/// Foreign keys must therefore be ON for the cascade to be observable
+/// (Go runs with FKs ON: the DSN parameter `_foreign_keys=on` at `db/db.go:55`
+/// and `PRAGMA foreign_keys=on` after migrations at `db/db.go:87`).
+///
+/// Scope: caller-trusted. `WHERE id = ?` and nothing else — no ownership guard, no
+/// admin check. `DeleteAllMissing`/`DeleteMissing`'s admin gate
+/// (`mediafile_repository.go:433-453`) stays the caller's policy.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] carrying the concrete `rusqlite::Error` (extended
+/// code intact) from the statement — e.g. an FK refusal from a cascade onto a row
+/// that forbids it. A zero-row delete is `Ok`. [`DbOperationError::Domain`] is
+/// structurally uninhabited.
+pub fn delete_mediafile_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+) -> Result<usize, MediaReferenceError> {
+    crate::execution::execute(tx, &delete_sql(id)).map_err(DbOperationError::sqlite)
+}
+
+/// `DeleteAllMissing` (`mediafile_repository.go:433-440`) EXECUTED on the CALLER's
+/// transaction: `DELETE FROM media_file WHERE missing = ?` with `true` bound
+/// ([`delete_all_missing_sql`]), returning Go's affected-row count
+/// (`executeSQL`'s count, which the Go caller returns as `(int64, error)`).
+///
+/// **Opt-in only, and that is the binding rule.** Go's method starts with
+/// `loggedUser(ctx); if !user.IsAdmin { return 0, rest.ErrPermissionDenied }`
+/// (`:434-437`). This crate has no ambient user, so the gate cannot be enforced
+/// here: it is a policy-gated primitive that must be reached ONLY through an
+/// admin-authorized caller (the maintenance/API lane), never from a scan or move
+/// path, and never with a default caller. There is deliberately NO default caller
+/// in this crate. Go's own callers are the admin-only routes
+/// (`core/maintenance.go:52` `DeleteAllMissingFiles`).
+///
+/// The predicate is `missing = ?`, not `missing`: Go's `Eq` binds a boolean
+/// (`sql_base_repository.go` `toSQLArgs`), and the fresh schema stores booleans as
+/// INTEGER 0/1, so a TEXT bind would match nothing.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] from the statement. Zero matching rows is
+/// `Ok(0)`, not an error.
+pub fn delete_all_missing_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+) -> Result<usize, MediaReferenceError> {
+    crate::execution::execute(tx, &delete_all_missing_sql()).map_err(DbOperationError::sqlite)
+}
+/// Which album arm an executed move sequence runs, and with which ids.
+///
+/// The DECISION is the caller's, never this layer's: the scanner's phase-2 walk owns the
+/// `processedAlbumAnnotations` claim (`scanner/phase_2_missing_tracks.go:280-289`) and
+/// maintenance owns its own zero-track condition (`core/maintenance.go:96-109`), so a
+/// plan carries the transition only when the caller has already decided to run it.
+/// `from_id == to_id` is not a rejection — the annotation leg's own guard
+/// (`sql_annotations.go:186-188`) makes that a successful no-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlbumAnnotationTransfer {
+    /// `oldAlbumID` — the source of annotations and of `created_at`.
+    pub from_id: String,
+    /// `newAlbumID` — the destination.
+    pub to_id: String,
+}
+
+/// A warn-only arm's degradation in the move sequences — the same shape as
+/// [`crate::scanner_writes::FolderWriteWarning`], because Go's policy is the same:
+/// `log.Warn` and the transaction still commits
+/// (`scanner/phase_2_missing_tracks.go:310-325`).
+#[derive(Debug)]
+pub struct MoveWriteWarning {
+    /// Which arm degraded.
+    pub stage: MoveWriteStage,
+    /// The primary id the arm targeted.
+    pub item_id: String,
+    /// The second id where the arm has two; empty otherwise.
+    pub related_id: String,
+    /// The original driver cause, retained as the concrete `rusqlite::Error`.
+    pub source: rusqlite::Error,
+}
+
+/// Which arm of a move sequence failed or degraded. Fatal/warn-only follows each
+/// Go caller's own policy — the two sequences differ, and that difference is the
+/// whole point of keeping them separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveWriteStage {
+    /// `MediaFile().Put` — fatal in BOTH sequences
+    /// (`scanner/phase_2_missing_tracks.go:301-303`, `core/maintenance.go:85-87`).
+    MediaFilePut,
+    /// `MediaFile().Delete(discardedID)` — fatal in both
+    /// (`:306-308`, `:92-94`).
+    DeleteDiscarded,
+    /// `MediaFile().ReassignReferences` — maintenance ONLY and FATAL there
+    /// (`core/maintenance.go:89-91`). The scanner move never runs it.
+    ReassignReferences,
+    /// `Album().CountAll(album_id = old)` — maintenance ONLY and fatal there
+    /// (`core/maintenance.go:97-101`); it gates the album legs on a 0-track count.
+    CountOldAlbumTracks,
+    /// `Album().ReassignAnnotation` — WARN-only in the scanner move
+    /// (`:313-315`), FATAL in maintenance (`:102-104`).
+    ReassignAlbumAnnotation,
+    /// `Album().CopyAttributes(…, "created_at")` — WARN-only in the scanner move
+    /// (`:319-323`, `ErrNotFound` ignored entirely), FATAL in maintenance except
+    /// `ErrNotFound` (`:105-107`).
+    CopyAlbumCreatedAt,
+}
+
+impl MoveWriteStage {
+    /// Stable machine-readable token, for a warning sink (Go's `log.Warn` message).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MediaFilePut => "media_file_put",
+            Self::DeleteDiscarded => "delete_discarded",
+            Self::ReassignReferences => "reassign_references",
+            Self::CountOldAlbumTracks => "count_old_album_tracks",
+            Self::ReassignAlbumAnnotation => "reassign_album_annotation",
+            Self::CopyAlbumCreatedAt => "copy_album_created_at",
+        }
+    }
+}
+
+/// Callback-level failure of the executed move sequences.
+///
+/// The ONLY domain arm is the Put's builder failure, whose cause is the concrete
+/// [`MediaFileWriteError`] (itself carrying
+/// [`crate::marshal::MarshalError`]); forcing it onto the SQLite arm would lose
+/// that cause, which `D-ERROR` forbids. Every other leg of both sequences can
+/// only fail on the driver, and Go's wrappers are `fmt.Errorf` around a driver
+/// error (`phase_2_missing_tracks.go:302`, `maintenance.go:86,90,93,99`) — log
+/// text, not error identity — so the port keeps the raw cause unwrapped.
+#[derive(Debug, thiserror::Error)]
+pub enum MoveWriteError {
+    /// [`put_mediafile_in_tx`] could not materialize its statement bundle.
+    #[error(transparent)]
+    Builder(#[from] MediaFileWriteError),
+}
+
+/// Callback-level failure of the executed move sequences on one transaction.
+pub type MoveWriteFailure = DbOperationError<MoveWriteError>;
+
+/// The full typed boundary of [`move_matched_mediafile`] and
+/// [`remap_missing_mediafile`]: `Sqlite`/`BusyExhausted`/`RollbackFailed`/`Pool`
+/// from the executor, and `Domain` only for [`MoveWriteError::Builder`].
+pub type MoveRunError = crate::DbRuntimeError<MoveWriteError>;
+
+/// What [`move_matched_mediafile`] publishes, built ONLY from the committed
+/// attempt. Nothing is observable before the commit, and a rolled-back attempt
+/// publishes nothing at all.
+/// `rusqlite::Error` is not `Clone`, so this outcome is `Debug` only — the same
+/// tradeoff as `scanner_writes::CommittedFolderOutcome`.
+#[derive(Debug)]
+pub struct CommittedMoveOutcome {
+    /// The id the Put wrote — the MISSING file's id (Go's `moved.ID = missing.ID`,
+    /// `scanner/phase_2_missing_tracks.go:300`).
+    pub id: String,
+    /// The row the Put took (`:301` `Put` → `sql_base_repository.go:624-641`).
+    pub inserted: bool,
+    /// The discarded (freshly-imported) row's id, deleted after the Put
+    /// (`:306`).
+    pub discarded_id: String,
+    /// Rows the discard delete affected (advisory; Go discards the count).
+    pub discarded_rows_deleted: usize,
+    /// The album transition the caller authorized, when any (`:310-325`).
+    pub album_transfer: Option<AlbumAnnotationTransfer>,
+    /// The copy arm's actual result: `Some` means the arm RAN and was classified
+    /// (`Copied`/`SkippedPoisonedSource`/`SourceNotFound` are all success in Go,
+    /// `:319-323`). `None` means the arm was NOT classified — either it never ran
+    /// (`album_transfer` is `None`) or it FAILED. The two `None` cases are told apart by
+    /// the presence of a [`MoveWriteStage::CopyAlbumCreatedAt`] entry in
+    /// [`CommittedMoveOutcome::warnings`]: a driver failure deliberately publishes no
+    /// classification rather than a misleading `SkippedPoisonedSource` (a valid source
+    /// whose destination UPDATE aborted is not poisoned).
+    pub copy_outcome: Option<crate::album_repo::CopyAlbumCreatedAtOutcome>,
+    /// Warn-only arms that degraded, in Go's execution order. Empty on a clean run.
+    pub warnings: Vec<MoveWriteWarning>,
+}
+
+/// What [`remap_missing_mediafile`] publishes after its commit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CommittedRemapOutcome {
+    /// The id the Put wrote — the MISSING file's id (`core/maintenance.go:84`).
+    pub id: String,
+    /// The Put's leg (`sql_base_repository.go:624-641`).
+    pub inserted: bool,
+    /// The discarded target row's id (`:75` `discardedID`), deleted after the
+    /// reference reassignment (`:86`).
+    pub discarded_id: String,
+    /// Rows the discard delete affected (advisory).
+    pub discarded_rows_deleted: usize,
+    /// `true` when the old album held 0 tracks AFTER the Put+delete, i.e. when the
+    /// album legs ran (`:96-106`).
+    pub old_album_empty: bool,
+    /// The album transfer actually run (`None` when the old album still had
+    /// tracks, or the album did not change).
+    pub album_transfer: Option<AlbumAnnotationTransfer>,
+    /// The copy arm's result when the album legs ran (`None` when they did not).
+    /// This sequence is fatal on a driver failure, so an unclassified attempt never
+    /// reaches the outcome.
+    pub copy_outcome: Option<crate::album_repo::CopyAlbumCreatedAtOutcome>,
+}
+
+/// The scanner's move input (`scanner/phase_2_missing_tracks.go:275-335`), an
+/// IMMUTABLE snapshot of the freshly-imported target plus the missing row's
+/// identity. Retry safety by construction: every attempt re-derives the moved
+/// record from this same input, so a rerun starts from the ORIGINAL target —
+/// Go's own rule (`:293-294`: "A rerun must start from the original target, not
+/// the one the rolled-back attempt changed").
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectedMove {
+    /// The target row as the caller loaded it (`target` in Go). Never mutated.
+    pub target: MediaFileRecord,
+    /// `missing.ID` — becomes the moved record's id (`:302`).
+    pub missing_id: String,
+    /// `missing.CreatedAt` — becomes the moved record's `created_at` (`:296`).
+    /// INERT on the UPDATE arm: `selectUpdateColumns` drops `created_at`
+    /// (`sql_base_repository.go:605`), so the existing row keeps its OWN value.
+    pub missing_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Caller clock for the `created_at` stamp on an INSERT arm only
+    /// (`mediafile_repository.go:185-187`); never read here.
+    pub now: chrono::DateTime<chrono::Utc>,
+    /// Config-resolved `FullTitle()` switch, passed through to
+    /// [`put_mediafile_in_tx`] rather than read from config.
+    /// Config-resolved `FullTitle()` switch for the moved record's FTS columns
+    /// (`conf.Server.Subsonic.AppendSubtitle` is config state this layer must not
+    /// read, so the plan carries it — same rule as
+    /// [`FolderWriteBatch::append_subtitle`][crate::scanner_writes]).
+    pub append_subtitle: bool,
+    /// The album transition the caller's claim granted (`:280-289`). `None` when
+    /// the album is unchanged OR another move already claimed the target album.
+    pub album_transfer: Option<AlbumAnnotationTransfer>,
+}
+
+/// The maintenance remap input (`core/maintenance.go:56-135`). The pre-checks Go
+/// runs OUTSIDE the transaction (ids differ, the missing row really is missing,
+/// the target really is not, both reads) are the caller's: this primitive takes
+/// the loaded rows and the caller's decision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MissingRemap {
+    /// The target row as loaded (`GetWithParticipants` in Go, `:70`).
+    pub target: MediaFileRecord,
+    /// `missingID` — the identity the remap adopts (`:77`).
+    pub missing_id: String,
+    /// `missing.CreatedAt`, carried onto the moved record (`:76`). Also INERT on
+    /// the UPDATE arm for the same reason as [`SelectedMove::missing_created_at`].
+    pub missing_created_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Caller clock, INSERT arm only.
+    pub now: chrono::DateTime<chrono::Utc>,
+    /// Config-resolved `FullTitle()` switch, same rule as
+    /// [`SelectedMove::append_subtitle`].
+    pub append_subtitle: bool,
+    /// `missing.AlbumID` (`:73` `oldAlbumID`). Compared with
+    /// [`MissingRemap::target`]`'s` `album_id` here, exactly like Go (`:96`).
+    pub old_album_id: String,
+}
+
+/// The moved record both sequences write: Go's `moved := target` plus
+/// `moved.CreatedAt = missing.CreatedAt` and `moved.ID = missing.ID`. The port
+/// clones rather than mutating, so a retry re-derives the same value from the
+/// caller's untouched input.
+#[must_use]
+fn moved_record(
+    target: &MediaFileRecord,
+    missing_id: &str,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> MediaFileRecord {
+    let mut moved = target.clone();
+    moved.id = missing_id.to_string();
+    moved.created_at = created_at;
+    moved
+}
+
+/// The scanner's phase-2 move, EXECUTED in ONE retrying transaction:
+/// `persistence.go:207-228` `WithTxRetry` over
+/// `scanner/phase_2_missing_tracks.go:291-335`, i.e.
+/// [`crate::store::SQLStore::try_with_tx_retry_sync`] (`store.rs:429`), which holds ONE lease
+/// across attempts and retries ONLY `SQLITE_BUSY`
+/// (`decisions.md` `H2`; `db/db.go:137-140`).
+///
+/// In-tx order (`:291-333`): Put of the moved record under the MISSING id
+/// (`:301`) → Delete of the discarded target id (`:306`) → optional album
+/// ReassignAnnotation (`:313`) + CopyAttributes of `created_at` (`:319`).
+///
+/// **NO `ReassignReferences`** (`pin 3`): the scanner's target is freshly
+/// imported and carries no user data of its own, so Go never reassigns anything
+/// for it. Running the bundle here would move annotations the missing row already
+/// owns — see [`crate::album_repo`]'s and `tests/runtime_move_persistence.rs`'s
+/// negative control. Only the ALBUM legs run, and both are warn-only there.
+///
+/// Identity (`pin 3`): `moved.ID = missing.ID` is the ONLY identity rewrite, and
+/// `MediaIdentity::Id` makes it Go's direct `put` (`sql_base_repository.go:578-580`
+/// — a non-empty id never probes). No blanket id reassignment, no GUID churn.
+///
+/// `created_at` (`pin 1`): the assignment reaches the record but the UPDATE arm
+/// DROPS `created_at` and `birth_time` (`sql_base_repository.go:605,608`, mirrored
+/// by `marshal::UPDATE_DROP`), so the target row KEEPS ITS OWN `created_at` — the
+/// assignment only matters if the row is missing and the INSERT leg runs. This is
+/// Go's behavior and is deliberately NOT "fixed".
+///
+/// Warn-vs-fatal (`D-BATCH`'s table, applied to this sequence): Put and Delete are
+/// fatal (`:305-311` return the error, aborting the tx); the album annotation and
+/// copy arms are `log.Warn` and the tx still commits (`:315`, `:323`). A warn arm
+/// may NOT swallow a failure that ENDED the transaction: `warn_move_arm` checks
+/// SQLite's own autocommit flag, exactly like `scanner_writes::warn_arm`.
+///
+/// Not included, deliberately: the `processedAlbumAnnotations` claim and its
+/// release-on-failure (`:280-289`, `:329-333` — SC state), candidate selection,
+/// `changesDetected` (`:336`), count refresh (DB-17), and GC.
+///
+/// # Errors
+/// [`MoveRunError::Sqlite`]/[`MoveRunError::BusyExhausted`] for a fatal arm or an
+/// executor failure — the transaction is rolled back and NOTHING is published;
+/// [`MoveRunError::RollbackFailed`] when cleanup itself failed;
+/// [`MoveRunError::Pool`] for checkout. Warnings are not errors: they land in
+/// [`CommittedMoveOutcome::warnings`].
+pub fn move_matched_mediafile(
+    store: &crate::store::SQLStore,
+    plan: &SelectedMove,
+) -> Result<CommittedMoveOutcome, MoveRunError> {
+    store.try_with_tx_retry_sync(|tx| move_matched_mediafile_in_tx(tx, plan))
+}
+
+/// The maintenance remap's reference-preserving half, EXECUTED in ONE
+/// NON-RETRYING transaction: `core/maintenance.go:79` uses `ds.WithTx`, not
+/// `WithTxRetry`, so this goes through [`crate::store::SQLStore::try_with_tx_sync`]
+/// (`store.rs:415`) — the retry-policy split from the scanner move is Go's own
+/// (pin 2) and a BUSY failure here fails on the FIRST occurrence
+/// (`persistence.go:218`).
+///
+/// In-tx order (`:79-111`): Put of the moved record under the MISSING id (`:85`) →
+/// `ReassignReferences(discardedID, missingID)` (`:89`) → Delete of the discarded
+/// id (`:92`) → album legs ONLY when the old album now holds 0 tracks (`:96-109`).
+///
+/// The `ReassignReferences` call is what distinguishes this sequence: unlike the
+/// scanner's fresh target, a remap target "may carry history of its own"
+/// (Go's comment `:82`), so the FULL bundle runs — annotation move + target
+/// average recalculation, bookmark, playlist_tracks, scrobbles, OR-IGNORE buffer —
+/// through [`reassign_references_in_tx`].
+///
+/// Album legs are FATAL here (Go returns every error, `:100-107`), except
+/// `CopyAttributes`' `ErrNotFound` arm, which Go ignores (`:105-107`) and the port
+/// reports as [`crate::album_repo::CopyAlbumCreatedAtOutcome::SourceNotFound`].
+///
+/// The post-commit steps stay the CALLER's, exactly as in Go: `ds.GC()`
+/// (`:112`), `Artist().RefreshStats` (`:118`) and the album count refresh
+/// (`:122-130`, DB-17). This function never runs GC and never claims it did.
+///
+/// # Errors
+/// [`MoveRunError::Sqlite`] from any arm (all fatal here) — the whole transaction
+/// rolls back, so no partial reference move survives; [`MoveRunError::Pool`] for
+/// checkout. No busy retry, so [`MoveRunError::BusyExhausted`] is unreachable on
+/// this path by construction.
+pub fn remap_missing_mediafile(
+    store: &crate::store::SQLStore,
+    plan: &MissingRemap,
+) -> Result<CommittedRemapOutcome, MoveRunError> {
+    store.try_with_tx_sync(|tx| remap_missing_mediafile_in_tx(tx, plan))
+}
+
+/// The scanner move on the CALLER's transaction, in Go's statement order. Kept
+/// `pub(crate)` by the same `D-BATCH` reasoning as
+/// [`crate::scanner_writes::persist_folder_delta_in_tx`]: exposing a caller-owned
+/// variant now would make multi-move transactions reachable whose busy retry
+/// replays sibling moves.
+pub(crate) fn move_matched_mediafile_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    plan: &SelectedMove,
+) -> Result<CommittedMoveOutcome, MoveWriteFailure> {
+    let mut warnings: Vec<MoveWriteWarning> = Vec::new();
+    let moved = moved_record(&plan.target, &plan.missing_id, plan.missing_created_at);
+
+    // :300-303 — Put under the missing id. Go's `moved.ID` is non-empty, so this
+    // is `put` directly, never `putByMatch`.
+    let put = put_mediafile_in_tx(
+        tx,
+        &MediaIdentity::Id(plan.missing_id.clone()),
+        &moved,
+        &plan.now,
+        plan.append_subtitle,
+    )
+    .map_err(put_failure)?;
+
+    // :306-308 — discard the row the import created.
+    let discarded_rows_deleted =
+        delete_mediafile_in_tx(tx, &plan.target.id).map_err(sqlite_only)?;
+
+    let mut copy_outcome = None;
+    if let Some(transfer) = plan.album_transfer.as_ref() {
+        // :313-315 — warn-only annotation move (the FULL method, average leg
+        // included: `Album().ReassignAnnotation`).
+        if let Err(err) = crate::sql_annotations::reassign_annotation_in_tx(
+            tx,
+            crate::sql_annotations::AnnotationEntityKind::Album,
+            &transfer.from_id,
+            &transfer.to_id,
+        ) {
+            warnings.push(warn_move_arm(
+                tx,
+                MoveWriteStage::ReassignAlbumAnnotation,
+                err,
+                transfer.from_id.clone(),
+                transfer.to_id.clone(),
+            )?);
+        }
+        // :319-323 — warn-only copy of `created_at`, NotFound ignored. The SAME
+        // DB-14 helper (Sig41-pinned), not a second copy implementation.
+        match crate::album_repo::copy_album_created_at_in_tx(tx, &transfer.from_id, &transfer.to_id)
+        {
+            Ok(outcome) => copy_outcome = Some(outcome),
+            // A driver failure is NOT a classification: the source may have been perfectly
+            // valid and only the destination UPDATE aborted, so reporting
+            // `SkippedPoisonedSource` here would be false. The outcome stays `None` and the
+            // structured warning carries the stage plus the concrete cause.
+            Err(err) => {
+                warnings.push(warn_move_arm(
+                    tx,
+                    MoveWriteStage::CopyAlbumCreatedAt,
+                    err,
+                    transfer.from_id.clone(),
+                    transfer.to_id.clone(),
+                )?);
+            }
+        }
+    }
+
+    Ok(CommittedMoveOutcome {
+        id: put.id,
+        inserted: put.inserted,
+        discarded_id: plan.target.id.clone(),
+        discarded_rows_deleted,
+        album_transfer: plan.album_transfer.clone(),
+        copy_outcome,
+        warnings,
+    })
+}
+
+/// The maintenance remap on the CALLER's transaction, in Go's statement order.
+pub(crate) fn remap_missing_mediafile_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    plan: &MissingRemap,
+) -> Result<CommittedRemapOutcome, MoveWriteFailure> {
+    let discarded_id = plan.target.id.clone();
+    let new_album_id = plan.target.album_id.clone();
+    let moved = moved_record(&plan.target, &plan.missing_id, plan.missing_created_at);
+
+    // :76-81 — Put under the missing id, carrying the missing row's created_at
+    // (inert on the UPDATE arm).
+    let put = put_mediafile_in_tx(
+        tx,
+        &MediaIdentity::Id(plan.missing_id.clone()),
+        &moved,
+        &plan.now,
+        plan.append_subtitle,
+    )
+    .map_err(put_failure)?;
+
+    // :89-91 — the FULL reference bundle, from the discarded id to the missing
+    // id. Fatal, and it runs BEFORE the delete so nothing is orphaned.
+    reassign_references_in_tx(
+        tx,
+        crate::sql_annotations::AnnotationEntityKind::MediaFile,
+        &discarded_id,
+        &plan.missing_id,
+    )
+    .map_err(sqlite_only)?;
+
+    // :92-94 — discard the target row.
+    let discarded_rows_deleted = delete_mediafile_in_tx(tx, &discarded_id).map_err(sqlite_only)?;
+
+    let mut album_transfer = None;
+    let mut copy_outcome = None;
+    let mut old_album_empty = false;
+    if plan.old_album_id != new_album_id {
+        // :96-101 — CountAll(Eq{"album_id": oldAlbumID}) on THIS transaction, after
+        // the Put+delete. `filtersNeedAnnotation` is false for this filter
+        // (`sql_annotations.go:51-61` scans for annotation columns), so no
+        // annotation join — exactly what `count_all_sql` renders.
+        let tracks = crate::execution::query_optional(
+            tx,
+            &mediafile_album_count_statement(&plan.old_album_id),
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(DbOperationError::sqlite)?
+        .unwrap_or(0);
+        old_album_empty = tracks == 0;
+        if old_album_empty {
+            // :102-104 — fatal annotation reassign (full method, average leg included).
+            crate::sql_annotations::reassign_annotation_in_tx(
+                tx,
+                crate::sql_annotations::AnnotationEntityKind::Album,
+                &plan.old_album_id,
+                &new_album_id,
+            )
+            .map_err(sqlite_only)?;
+            // :105-107 — fatal except NotFound, which the outcome arm reports.
+            copy_outcome = Some(
+                crate::album_repo::copy_album_created_at_in_tx(
+                    tx,
+                    &plan.old_album_id,
+                    &new_album_id,
+                )
+                .map_err(sqlite_only)?,
+            );
+            album_transfer = Some(AlbumAnnotationTransfer {
+                from_id: plan.old_album_id.clone(),
+                to_id: new_album_id.clone(),
+            });
+        }
+    }
+
+    Ok(CommittedRemapOutcome {
+        id: put.id,
+        inserted: put.inserted,
+        discarded_id,
+        discarded_rows_deleted,
+        old_album_empty,
+        album_transfer,
+        copy_outcome,
+    })
+}
+
+/// Count read shared by nothing else: the media-file row count for one album id,
+/// through the production [`count_all_sql`] renderer (Go's `CountAll` with
+/// `Eq{"album_id": …}`, `mediafile_repository.go:150-158`).
+#[must_use]
+fn mediafile_album_count_statement(album_id: &str) -> Sql {
+    let clause = crate::scanner_queries::MediaPhaseFilter::InAlbum { album_id }.clause();
+    count_all_sql(None, Some(clause), false)
+}
+
+/// Extract the concrete driver error from a primitive that has no domain failure.
+///
+/// # Panics
+/// Only if an `Infallible` domain type were somehow inhabited, which the type
+/// system rules out for every primitive reached here (`AnnotationWriteError`,
+/// `BookmarkWriteError`, `MediaReferenceError`,
+/// `crate::album_repo::AlbumCopyError`). Same precedent as
+/// `scanner_writes::driver_error`.
+fn driver_error(err: DbOperationError<std::convert::Infallible>) -> rusqlite::Error {
+    match err {
+        DbOperationError::Sqlite(source) => source,
+        DbOperationError::Domain(cause) => match cause {},
+    }
+}
+
+/// A driver-only leg's failure, re-typed for the move sequences.
+fn sqlite_only(err: DbOperationError<std::convert::Infallible>) -> MoveWriteFailure {
+    DbOperationError::Sqlite(driver_error(err))
+}
+
+/// The Put leg's failure: the builder arm stays a DOMAIN error with its concrete
+/// [`MediaFileWriteError`] (`D-ERROR`), and a driver failure stays raw.
+fn put_failure(err: DbOperationError<MediaFileWriteError>) -> MoveWriteFailure {
+    match err {
+        DbOperationError::Sqlite(source) => DbOperationError::Sqlite(source),
+        DbOperationError::Domain(cause) => DbOperationError::Domain(MoveWriteError::Builder(cause)),
+    }
+}
+
+/// Warn-only arm handling for the move sequences: capture the driver error UNLESS
+/// the transaction has already ended, in which case the failure is fatal
+/// (`scanner_writes::warn_arm`'s reasoning: after `RAISE(ROLLBACK)` every later
+/// statement would run in AUTOCOMMIT and stay durable even though the executor's
+/// `COMMIT` fails).
+fn warn_move_arm(
+    tx: &rusqlite::Transaction<'_>,
+    stage: MoveWriteStage,
+    err: crate::sql_annotations::AnnotationWriteError,
+    item_id: String,
+    related_id: String,
+) -> Result<MoveWriteWarning, MoveWriteFailure> {
+    let source = driver_error(err);
+    if tx.is_autocommit() {
+        return Err(DbOperationError::Sqlite(source));
+    }
+    Ok(MoveWriteWarning {
+        stage,
+        item_id,
+        related_id,
+        source,
+    })
 }
 
 #[cfg(test)]

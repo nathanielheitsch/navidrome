@@ -172,6 +172,18 @@ pub enum ShareError {
     #[error("share expired")]
     Expired,
 
+    /// An empty SET-column list was handed to [`update_sql`] or
+    /// [`ShareRepo::update`]. Deliberate typed rejection rather than Go's
+    /// update-all-column parity (`A8`/`D-SHARE`, `decisions.md`): Go's
+    /// `filterUpdateValues` always re-adds `id`
+    /// (`sql_base_repository.go:612-616`) so an empty SET is unreachable there,
+    /// and its only wrapper discards the incoming columns and always sends 2-3
+    /// (`core/share.go:141-148`), so the empty path is unreachable in production
+    /// Go too. Raised BEFORE any SQL is rendered, so no statement reaches
+    /// SQLite and the never-empty-SET invariant holds by construction.
+    #[error("share update requires at least one column")]
+    EmptyUpdateColumns,
+
     /// The row exists but the caller may not touch it — Go's
     /// `rest.ErrPermissionDenied` via `classifyOwnedWriteMiss`
     /// (`sql_base_repository.go:554-564`).
@@ -244,8 +256,35 @@ pub fn count_sql(owner: Option<String>) -> Sql {
 /// to `owner` when one applies (`ownedRow`, `sql_base_repository.go:97-101`).
 /// `user_id` is never a SET column: ownership is immutable on update
 /// (`:504` `delete(updateValues, "user_id")`).
-#[must_use]
-pub fn update_sql(id: &str, cols: &[Col], owner: Option<String>) -> Sql {
+///
+/// **Never-empty-SET invariant (A8 / `D-SHARE`, `decisions.md`: PARENT DECIDED a**
+/// typed rejection rather than Go's update-all-column parity).** An empty `cols`
+/// would render `UPDATE share SET  WHERE id = ?`, which SQLite rejects with
+/// `near "WHERE": syntax error` — a RENDERER defect (an empty SET list), not a
+/// schema defect. Go cannot produce that statement: `filterUpdateValues` re-adds
+/// `id` (`sql_base_repository.go:612-616`) so its SET is never empty, and an
+/// empty `colsToUpdate` would instead keep EVERY model column
+/// (`selectUpdateColumns` `:600`, with `created_at`/`birth_time` dropped at
+/// `:605`/`:608`). The port deliberately does NOT reproduce that update-all arm.
+///
+/// The empty path is unreachable in production Go, which is what makes the
+/// rejection safe: the only wrapper (`core/share.go:141`) takes `_ ...string` —
+/// it DISCARDS the incoming columns and always sends 2-3 (`:142-148`), and the
+/// visit bump sends 2 (`core/share.go:51`). A8 CORRECTS the subplan pre-flight's
+/// claim that `core/share.go:148` forwards the API's `cols...`; the empty path is
+/// reachable only in `share_repository_test.go:465-479`. The planned Rust caller
+/// ([`ShareRepo::load`], #19's visit bump) sends 3 columns; the recorded caller
+/// rule is always >= 1 column.
+///
+/// # Errors
+/// [`ShareError::EmptyUpdateColumns`] when `cols` is empty — raised BEFORE any
+/// statement text is built, so no SQL reaches SQLite.
+pub fn update_sql(id: &str, cols: &[Col], owner: Option<String>) -> Result<Sql, ShareError> {
+    // A8 / D-SHARE: never emit an empty SET. Rejected before any SQL text is
+    // built, so the syntax-error shape Go cannot produce is unreachable here.
+    if cols.is_empty() {
+        return Err(ShareError::EmptyUpdateColumns);
+    }
     let set = cols
         .iter()
         .map(|c| format!("{} = ?", c.column))
@@ -260,10 +299,10 @@ pub fn update_sql(id: &str, cols: &[Col], owner: Option<String>) -> Sql {
         }
         None => "id = ?",
     };
-    (
+    Ok((
         format!("UPDATE {SHARE_TABLE} SET {set} WHERE {where_sql}"),
         args,
-    )
+    ))
 }
 
 /// `Delete` (`share_repository.go:10-14` via `deleteOwnedAll`,
@@ -361,10 +400,13 @@ impl<'a> ShareRepo<'a> {
     /// repository's — pass `updated_at` in `cols` to match Go.
     ///
     /// # Errors
+    /// [`ShareError::EmptyUpdateColumns`] when `cols` is empty — the typed
+    /// rejection runs BEFORE any SQL is rendered, so no statement reaches
+    /// SQLite (A8 / `D-SHARE`);
     /// [`ShareError::NotFound`] when no row matched (the port's pinned
     /// miss class, see module docs); [`ShareError::Sqlite`] on failure.
     pub fn update(&self, id: &str, cols: &[Col], owner: Option<String>) -> Result<(), ShareError> {
-        let (sql, args) = update_sql(id, cols, owner);
+        let (sql, args) = update_sql(id, cols, owner)?;
         let count = self
             .conn
             .execute(&sql, rusqlite::params_from_iter(bind_values(&args)))?;
@@ -640,7 +682,8 @@ mod tests {
             Col::timestamp("updated_at", &at(2024, 1, 2, 0, 0, 0)),
         ];
         // Act:
-        let (sql, args) = update_sql("tok1", &cols, Some("user1".to_string()));
+        let (sql, args) = update_sql("tok1", &cols, Some("user1".to_string()))
+            .expect("a non-empty column list still renders");
         // Assert: SET columns in order, then id, then the owner restriction.
         assert_eq!(
             sql,
@@ -657,6 +700,44 @@ mod tests {
                 Value::Text("user1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn update_sql_rejects_an_empty_column_list_before_rendering() {
+        // A8 / D-SHARE (`decisions.md`): the typed rejection replaces the old
+        // empty-SET render. Go's filterUpdateValues always re-adds `id`
+        // (sql_base_repository.go:612-616), so `UPDATE share SET  WHERE id = ?`
+        // is a shape Go cannot produce; the port refuses it rather than
+        // reproducing Go's update-all-columns arm.
+        // Act:
+        let empty = update_sql("tok1", &[], None);
+        let owned = update_sql("tok1", &[], Some("user1".to_string()));
+        // Assert: the typed error on both owner shapes, and NO SQL text escapes.
+        assert!(matches!(empty, Err(ShareError::EmptyUpdateColumns)));
+        assert!(matches!(owned, Err(ShareError::EmptyUpdateColumns)));
+        assert_eq!(
+            empty.unwrap_err().to_string(),
+            "share update requires at least one column",
+            "the rejection text is part of the typed surface"
+        );
+    }
+
+    #[test]
+    fn update_rejects_empty_cols_without_touching_the_stored_row() {
+        // Executed half of the same guard: the rejection happens before prepare,
+        // so the row is untouched and no SQLite syntax error is ever raised.
+        let conn = conn();
+        let repo = ShareRepo::new(&conn);
+        repo.save(&record("tok1", None)).expect("row seeds");
+        // Act:
+        let err = repo
+            .update("tok1", &[], None)
+            .expect_err("an empty column list is a typed rejection");
+        // Assert:
+        assert!(matches!(err, ShareError::EmptyUpdateColumns));
+        let found = repo.get("tok1", None).expect("the row survived");
+        assert_eq!(found.share.visit_count, 0);
+        assert_eq!(found.share.updated_at, at(2024, 1, 1, 0, 0, 0));
     }
 
     #[test]

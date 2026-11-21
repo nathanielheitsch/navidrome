@@ -650,35 +650,28 @@ const LEDGER_PIN_LINE: &str = "DB-21(P1-DB)'s DB-side exit is delivered by THIS 
 //    aggregate row, so `args.len() != parameter_count()` by design. Owning lanes:
 //    **DB-04..DB-17** — the subplan says to wait for the mutation renderers to stabilize, or
 //    the gate fails on this intentionally-partial shape.
-// 2. `share_repo::update_sql` (:248) with an EMPTY `cols` list — renders
-//    `UPDATE share SET  WHERE id = ?`, which SQLite rejects as a PARSE/SYNTAX error
-//    (`near "WHERE": syntax error`, rusqlite `SqliteFailure(Error::SqliteBuild, …)`), because
-//    Go's `filterUpdateValues` always re-adds `id` (`persistence/sql_base_repository.go:612-616`,
-//    `selectUpdateColumns` :593-609). Owning lane: **DB-16**, whose brief asserts an empty column
-//    list must never reach this renderer. Gate-scoping TRAP: a prepare gate that accepts BOTH
-//    `no such column:` and `syntax error` conceals which category this is — it is a RENDERER
-//    defect (an empty SET list), not a schema defect, and the assertion below pins exactly the
-//    syntax-error category.
-// 3. `plugin_repo` — every renderer fails with `no such table: plugin` because the table is
-//    deliberately dropped (**D-PLUGIN**, `decisions.md`; `schema-contract.md:93-96`). Owning
-//    lane: **DB-16**, whose brief carries the deletion of `plugin_repo.rs` and the `lib.rs:35`
-//    export. This lane owns neither file and deletes nothing.
-// 4. `sql_annotations::annotation_count_sql` (:622) — emits `count(distinct annotation.id)`
-//    while `annotation` has NO `id` column (`schema_ddl.rs:59`), so it can never prepare.
-//    Known and pinned at **DB-15** (parent decision: keep-and-redocument, with the exact
-//    `no such column: annotation.id` failure asserted rather than silently shipped).
-// 5. Clause FRAGMENTS — `artist_scope_clause` (:630), `membership_clause`,
-//    `media_cursor_sql`'s predicate and `album_repo::select_album`'s raw filters are
-//    conjunctions joined by the caller, not standalone statements; preparing one alone is
-//    meaningless. Exclude them by SHAPE (fragment vs statement), not by a name whitelist that
-//    drifts as lanes land.
-//
-// Executed in `deferred_renderer_prepare_gate_classes_are_executed` so a future gate cannot
-// claim any of these classes is schema-supported.
+// 2. `share_repo::update_sql` (:283) with an EMPTY `cols` list — DELIVERED by **DB-16**
+//    as a typed rejection (`ShareError::EmptyUpdateColumns`, A8/`D-SHARE`
+//    `decisions.md`) raised BEFORE any statement text is built, so the old
+//    `UPDATE share SET  WHERE id = ?` render and its SQLite PARSE/SYNTAX error
+//    (`near "WHERE": syntax error`) are unreachable. Go never produced that shape:
+//    `filterUpdateValues` always re-adds `id`
+//    (`persistence/sql_base_repository.go:612-616`, `selectUpdateColumns` :593-609).
+//    The class STAYS in this inventory because a future prepare gate cannot reach it
+//    at all — there is no statement to prepare — and because the historical
+//    gate-scoping TRAP still applies to any re-derivation: an empty SET list is a
+//    RENDERER defect (now refused), not a schema defect.
+// 3. The `plugin` table — every statement that names it fails with
+//    `no such table: plugin` because the table is deliberately dropped
+//    (**D-PLUGIN**, `decisions.md`; `schema-contract.md:93-96`). `plugin_repo.rs` and
+//    its `lib.rs` export were DELETED by DB-16, so this class is probed with a
+//    LITERAL statement below rather than through a renderer that no longer exists.
+//    The class stays: a naive gate would still false-fail on any statement naming
+//    the dropped table.
 const DEFERRED_GATE_CLASSES: [&str; 5] = [
     "refresh_counters_sql partial shape (owning lanes DB-04..DB-17)",
-    "share::update_sql empty cols -> syntax error (owning lane DB-16)",
-    "plugin_repo no such table: plugin (D-PLUGIN; deletion in DB-16's brief)",
+    "share::update_sql empty cols -> typed ShareError::EmptyUpdateColumns, no statement to prepare (owning lane DB-16)",
+    "plugin table dropped: no such table: plugin (D-PLUGIN; plugin_repo deleted by DB-16)",
     "annotation_count_sql no such column: annotation.id (owning lane DB-15)",
     "clause fragments artist_scope_clause/membership_clause/media_cursor_sql (exclude by shape)",
 ];
@@ -4044,11 +4037,13 @@ fn deferred_renderer_prepare_gate_classes_are_executed() {
     let (db, path) = fresh_store("deferred-gate");
     seed_libraries(&db);
 
-    // Class 3 (D-PLUGIN): every `plugin_repo` renderer fails on a missing table because the
-    // table is deliberately dropped. Owning lane DB-16 carries the file deletion.
-    let plugin_sql = nd_db::plugin_repo::get_sql("p-1");
-    let err =
-        prepare_probe(&db, &plugin_sql.0).expect_err("the plugin table does not exist by D-PLUGIN");
+    // Class 3 (D-PLUGIN): the `plugin` table is deliberately dropped, so every
+    // statement that names it fails on prepare. `nd_db::plugin_repo` was DELETED by
+    // DB-16 (`decisions.md` `D-PLUGIN`, "Deletion assignment (2026-11-21)"), so this
+    // probe uses a LITERAL statement in Go's shape rather than a renderer that no
+    // longer exists — the class stays real for any statement naming the table.
+    let err = prepare_probe(&db, "SELECT * FROM plugin WHERE id = ?")
+        .expect_err("the plugin table does not exist by D-PLUGIN");
     assert!(err.contains("no such table: plugin"), "{err}");
 
     // Class 4 (DB-15): `annotation_count_sql` references `annotation.id`, which the migrated
@@ -4058,21 +4053,38 @@ fn deferred_renderer_prepare_gate_classes_are_executed() {
         .expect_err("annotation has no id column (schema_ddl.rs:59)");
     assert!(err.contains("no such column: annotation.id"), "{err}");
 
-    // Class 2 (DB-16): an empty column list renders `UPDATE share SET  WHERE id = ?`, which is
-    // a SYNTAX/PARSE error — not a `no such column:` schema error. The dual-accept form
-    // (`no such column:` OR `syntax error`) used to conceal the wrong explanation, so the exact
-    // category is pinned here and the schema-error category is asserted ABSENT.
+    // Class 2 (DB-16, DELIVERED): an empty column list is now a TYPED REJECTION
+    // (`ShareError::EmptyUpdateColumns`, A8/`D-SHARE`) raised before any statement
+    // text exists, so the old `UPDATE share SET  WHERE id = ?` render and its
+    // `near "WHERE": syntax error` are unreachable — a prepare gate has nothing to
+    // prepare. Asserted through the repo's PUBLIC API: neither `update_sql` nor
+    // `ShareRepo::update` yields SQL, and a NON-EMPTY list still renders (the
+    // regression arm below), which is what makes the rejection a scope change rather
+    // than a broken renderer.
     let empty = nd_db::share_repo::update_sql("s-1", &[], None);
-    assert_eq!(
-        empty.0, "UPDATE share SET  WHERE id = ?",
-        "the renderer really emits an empty SET list"
-    );
-    let err = prepare_probe(&db, &empty.0).expect_err("empty SET clause is invalid SQL");
-    assert!(err.contains(r#"near "WHERE": syntax error"#), "{err}");
+    assert!(matches!(
+        empty,
+        Err(nd_db::share_repo::ShareError::EmptyUpdateColumns)
+    ));
+    let owned = nd_db::share_repo::update_sql("s-1", &[], Some("u-fan".to_string()));
+    assert!(matches!(
+        owned,
+        Err(nd_db::share_repo::ShareError::EmptyUpdateColumns)
+    ));
+    let statement = nd_db::share_repo::update_sql(
+        "s-1",
+        &[nd_db::share_repo::Col::integer("visit_count", 1)],
+        None,
+    )
+    .expect("a non-empty column list still renders");
     assert!(
-        !err.contains("no such column:"),
-        "the failure is a parse error, not a missing-column error: {err}"
+        !statement.0.contains("SET  WHERE"),
+        "the renderer never emits an empty SET list: {}",
+        statement.0
     );
+    // SET column, then `id`: two placeholders, and `id` is what keeps the SET non-empty in
+    // Go too (`sql_base_repository.go:612-616`).
+    assert_eq!(prepare_probe(&db, &statement.0), Ok(2));
 
     // Class 1 (DB-04..DB-17): `refresh_counters_sql` is INTENTIONALLY PARTIAL — its UPDATE
     // leg's args are completed by the caller from the SELECT's aggregate row, so a naive

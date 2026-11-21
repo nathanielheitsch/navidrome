@@ -33,8 +33,10 @@
 //! ADVISORY until the caller commits, so nothing here caches a path and a rolled
 //! back Put publishes nothing. `Delete`'s admin/ID-1 checks (`:254-259`) stay
 //! auth-layer policy applied before [`delete_sql`] runs; its artist-orphan
-//! reconcile and plugin-reference cleanup (`:266-279`) belong to the artist/plugin
-//! lanes. `StoreMusicFolder` (`:138-150`) stays the privileged config-change
+//! reconcile belongs to the artist lane and its `cleanupPluginLibraryReferences`
+//! (`:266-279`) is NOT ported (`D-PLUGIN`, `decisions.md`: the `plugin` table is
+//! dropped, so a user/library delete has no plugin-cleanup step). The
+//! `StoreMusicFolder` (`:138-150`) method stays the privileged config-change
 //! renderer [`store_music_folder_sql`] rather than a bypass of [`put_in_tx`]'s
 //! guard, and `RefreshStats` (`:196-251`) keeps only its renderers (DB-17 owns the
 //! executed stats, `D-STATS` undecided). The REST shims `Count`/`Read`/`ReadAll`
@@ -966,8 +968,9 @@ pub fn refresh_stats_update_sql(totals: &RefreshStatsTotals) -> Sql {
 }
 
 /// `Delete` (`library_repository.go:253-281`): the row delete — the admin/ID-1
-/// validation (`:254-259`) and the artist-orphan/plugin cleanups (`:266-279`) are the
-/// caller's (auth, artist/plugin lanes). DB-05 deliberately executes NO delete.
+/// validation (`:254-259`) and the artist-orphan cleanup are the caller's (auth,
+/// artist lane); Go's `cleanupPluginLibraryReferences` (`:266-279`) is NOT ported
+/// (`D-PLUGIN`). DB-05 deliberately executes NO delete.
 #[must_use]
 pub fn delete_sql(id: i64) -> Sql {
     (

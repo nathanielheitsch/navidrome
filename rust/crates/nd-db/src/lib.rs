@@ -32,7 +32,6 @@ pub mod player_repo;
 pub mod playlist_repo;
 pub mod playlist_track_repo;
 pub mod playqueue_repo;
-pub mod plugin_repo;
 pub mod pool;
 pub mod property_repo;
 pub mod radio_repo;

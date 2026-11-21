@@ -38,7 +38,7 @@
 //! permission wrappers `Count`/`Read`/`ReadAll`/`Save`/`Update`
 //! (`:206-252`, nd-api), `validatePasswordChange`/`validateUsernameUnique`/
 //! `validateScrobbleFilter` (`:254-318`, nd-api),
-//! `cleanupPluginUserReferences` (`:330-337`, plugin slice), and
+//! `cleanupPluginUserReferences` (`:330-337`, NOT ported — `D-PLUGIN`), and
 //! `GetUserLibraries`'s full library-row hydration (`:485-495`, which reads
 //! every `library` column — the library repository's model half).
 
@@ -626,7 +626,8 @@ pub fn update_last_access_at_sql(id: &str, now: &str) -> Sql {
 
 /// `deleteByID` for `Delete` (`user_repository.go:329-332` via
 /// `sql_base_repository.go`): one id per statement, executed in a loop.
-/// `cleanupPluginUserReferences` belongs to the plugin slice and is absent.
+/// `cleanupPluginUserReferences` is NOT ported (`D-PLUGIN`: the `plugin` table is
+/// dropped, so a user delete has no plugin-cleanup step).
 #[must_use]
 pub fn delete_user_sql(id: &str) -> Sql {
     (
@@ -1051,8 +1052,8 @@ impl<'a> UserRepo<'a> {
 
     /// `Delete` (`:320-327`) through `deleteByID`
     /// (`sql_base_repository.go:650-659`): a zero-row delete is
-    /// `model.ErrNotFound`. Go's `cleanupPluginUserReferences` is the plugin
-    /// slice and does not run here.
+    /// `model.ErrNotFound`. Go's `cleanupPluginUserReferences` is NOT ported
+    /// (`D-PLUGIN`) and does not run here.
     ///
     /// # Errors
     /// [`UserError::NotFound`] when the id matches no row;
