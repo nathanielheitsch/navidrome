@@ -7,3 +7,11 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+# BOOT-00 D1 boundary (decisions.md:521): nd-conf + nd-auth only. axum is
+# declared here solely for the RouterInjection type; axum 0.7.9 is already
+# locked via nd-auth, so this adds a dependency EDGE and no new lock entry.
+[dependencies]
+nd-conf = { path = "../nd-conf" }
+nd-auth = { path = "../nd-auth" }
+axum = { workspace = true }
