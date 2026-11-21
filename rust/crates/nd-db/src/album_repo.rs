@@ -1506,6 +1506,108 @@ pub fn copy_attributes_read_sql(from_id: &str, columns: &[String]) -> Sql {
     )
 }
 
+/// The only column the folder transaction copies (`scanner/phase_1_folders.go:496`,
+/// `repo.CopyAttributes(ctx, prevID, a.ID, "created_at")`). Named as a constant because the
+/// poison guard below is spelled for THIS column exactly as Go's is
+/// (`album_repository.go:343-350`: `if col == "created_at" && …`), and
+/// [`copy_album_created_at_in_tx`] executes exactly this one-column pair.
+pub const COPY_CREATED_AT_COLUMN: &str = "created_at";
+
+/// What [`copy_album_created_at_in_tx`] did. Go returns a bare `error` and its caller only
+/// distinguishes `model.ErrNotFound` (`scanner/phase_1_folders.go:497-500`), so the two
+/// successful SKIP arms are port-side observability rather than a Go distinction — kept
+/// distinct because they are the cases a fixture has to pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyAlbumCreatedAtOutcome {
+    /// The source's `created_at` was read and written onto the target id: one UPDATE that
+    /// ran (`album_repository.go:355-356`).
+    Copied,
+    /// The source row exists but its `created_at` is poison — NULL, empty, or `0001-`
+    /// prefixed (`:343-350`) — so Go's `if len(to) == 0 { return nil }` (`:351-353`) runs NO
+    /// UPDATE. This is the guard that stops an aggregated album's birth time being
+    /// overwritten with a zero value on every metadata-driven album-ID change (Go's comment
+    /// at `:344-346`).
+    SkippedPoisonedSource,
+    /// No source row at `from_id`: Go's `queryOne` maps `sql.ErrNoRows` to `model.ErrNotFound`
+    /// (`sql_base_repository.go:382-385`) and the folder transaction SILENTLY ignores that
+    /// error (`scanner/phase_1_folders.go:497-500`). Reported as its own arm precisely so the
+    /// caller reproduces that ignore instead of guessing it from a zero-row UPDATE.
+    SourceNotFound,
+}
+
+/// `CopyAttributes(ctx, fromID, toID, "created_at")` (`album_repository.go:331-357`)
+/// EXECUTED on the CALLER's transaction: read the source row cast to text through
+/// [`copy_attributes_read_sql`], then run the SET-map UPDATE through
+/// [`copy_attributes_update_sql`]. No new statement text — this is the executed half of the
+/// two renderers above, and it is the SAME helper DB-16's planned
+/// `copy_album_created_at_in_tx` needs, so it is written once (DB-14, per `D-BATCH`).
+///
+/// Go casts to text on the read (`:333-334`) precisely so a datetime cell is not decoded and
+/// re-formatted by the driver; rusqlite hands back the stored TEXT for a `cast(… as text)`
+/// column, so the port binds that text unchanged and the stored spelling round-trips byte for
+/// byte.
+///
+/// The poison rule is Go's, verbatim (`:343-350`): skip when the value is invalid (NULL),
+/// empty, or starts with `0001-`. A poisoned source means NO UPDATE at all (`:351-353`),
+/// which is success, not an error.
+///
+/// Scope: caller-trusted, like every write primitive in this crate — `WHERE id = ?` and
+/// nothing else (`:356`). No library predicate, no auth guard.
+///
+/// Retryable: rerunning it copies the same source value onto the same target, and this
+/// method never writes the source's own `created_at`.
+///
+/// # Errors
+/// [`DbOperationError::Sqlite`] from either statement, retaining the concrete
+/// `rusqlite::Error`. A missing source row is NOT an error — it is
+/// [`CopyAlbumCreatedAtOutcome::SourceNotFound`], the arm the caller ignores.
+/// [`DbOperationError::Domain`] is structurally uninhabited (there is no validation to fail:
+/// both ids are the caller's and both statements are fixed).
+pub fn copy_album_created_at_in_tx(
+    tx: &rusqlite::Transaction<'_>,
+    from_id: &str,
+    to_id: &str,
+) -> Result<CopyAlbumCreatedAtOutcome, DbOperationError<std::convert::Infallible>> {
+    // Go's read arm (`:336-341`): `queryOne` over the cast projection. `query_optional`'s
+    // `None` is that repository's `model.ErrNotFound`, which the folder tx ignores.
+    let source = crate::execution::query_optional(
+        tx,
+        &copy_attributes_read_sql(from_id, &[COPY_CREATED_AT_COLUMN.to_string()]),
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .map_err(DbOperationError::sqlite)?;
+    let Some(stored) = source else {
+        return Ok(CopyAlbumCreatedAtOutcome::SourceNotFound);
+    };
+
+    // Go's poison guard (`:343-350`): `!v.Valid || v.String == "" ||
+    // strings.HasPrefix(v.String, "0001-")`. `stored.is_none()` is the `!v.Valid` arm (a NULL
+    // cell); the prefix arm catches a Go zero `time.Time` stored as TEXT, which is what
+    // actually reaches this column in production.
+    if stored
+        .as_deref()
+        .is_none_or(|text| text.is_empty() || text.starts_with("0001-"))
+    {
+        // Go: `continue` skips the column, `len(to) == 0`, `return nil` (`:351-353`). No
+        // UPDATE runs, so the target keeps its own `created_at`.
+        return Ok(CopyAlbumCreatedAtOutcome::SkippedPoisonedSource);
+    }
+
+    // Go's write arm (`:355-356`): `Update(table).SetMap(to).Where(Eq{"id": toID})`, whose
+    // affected-row count `executeSQL` discards for this caller. A zero-row match (target
+    // absent) is therefore success, exactly as in Go.
+    crate::execution::execute(
+        tx,
+        &copy_attributes_update_sql(
+            to_id,
+            &[COPY_CREATED_AT_COLUMN.to_string()],
+            vec![crate::sqlrepo::Value::Text(stored.expect("checked above"))],
+        ),
+    )
+    .map_err(DbOperationError::sqlite)?;
+    Ok(CopyAlbumCreatedAtOutcome::Copied)
+}
+
 /// See [`copy_attributes_read_sql`]; `values` are the read row's text values
 /// for exactly `columns`, in order.
 #[must_use]
