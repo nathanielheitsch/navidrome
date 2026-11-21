@@ -465,7 +465,7 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   already exists. Rationale: S9-style "record it or it bites later" — a placeholder that silently disagrees with every
   real pin is a trap for the first HTTP/consumer crate. **Amended 2026-11-21:** the canonical form of this pin is
   BOOT-00 **D3** (below, in the BOOT-00 D1-D3 record): `rust/Cargo.toml:66` becomes `chrono = "0.4"` — the `"^0.4"`
-  spelling here was never applied and D3 supersedes it.
+  spelling here was never applied and D3 supersedes it. **EXECUTED at `6d6938b1`** (2026-11-21) as `chrono = "0.4"`.
 
 - **B2 — ffmpeg path resolution ignores loaded config (PARENT DECIDED 2026-11-20).** `nd-ffmpeg/src/ffmpeg_cmd.rs:
   63-95` resolves the ffmpeg binary from `nd_conf::Config::default().ffmpeg_path` (:76) — the hard-coded default struct
@@ -514,18 +514,22 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `core/stream/media_streamer.go:159-281`; `server/stream.go`/`range.go` and `core/stream/stream.go` do NOT exist). B1 remains
   BOOT-00 manifest work; B2 remains #07-owned boot-config injection (owner confirmation still open). Citation correction:
   API-04 is `boot-api.md:253` (the draft's `:246` was stale). This record ratifies Candidate B of the draft.
-- **BOOT-00 (D1-D3) — crate graph, lock-only deps, manifest pin repair (PARENT DECIDED 2026-11-21).**
+- **BOOT-00 (D1-D3) — crate graph, lock-only deps, manifest pin repair (PARENT DECIDED 2026-11-21; **EXECUTED `6d6938b1`, 2026-11-21** — D3 pin repair + D1 typed boundary + executed `dependency_graph_has_no_http_api_cycle`; gate work only, no production behavior).**
   From the BOOT-00/API-00 decision brief (2026-11-20 scout), parent-verified. D4 is resolved by the B3-ratified
   record above (ordinary multi-thread Send-Axum); D5 (recipe ownership) stays with the lane report.
 
   **D1 — crate graph:** `nd-http` depends on `nd-conf`/`nd-auth` only; `nd-api`'s router is injected into
   `nd-cli` (the `dependency_graph_has_no_http_api_cycle` acceptance at boot-api.md:134 is only satisfiable
-  with injection; no `nd-http → nd-api` edge).
+  with injection; no `nd-http → nd-api` edge). **EXECUTED at `6d6938b1`**: the acceptance runs as a test in
+  `nd-http/src/lib.rs` (`cargo metadata --locked` graph check + negative control) and the injection shape is
+  `nd_http::RouterInjection = fn(axum::Router, &nd_conf::Config) -> axum::Router`.
 
   **D2 — dependencies:** first slice adds NO new lock entries. `axum 0.7.9`, `hyper-util 0.1.21`,
   `http-body-util 0.1.5`, `tower 0.5.3`, `bytes 1.12.1`, `tokio 1.54.1` are already locked; `tower-http`,
   `tokio-util`, `clap`, `tracing-subscriber`, `reqwest`, `uuid`, `md5` are declared in the workspace but
   ABSENT from `rust/Cargo.lock` — using any of them is a new lock entry and needs its own brief line.
+  **Verified at `6d6938b1`:** BOOT-00's own delta added zero new lock entries; `nd-http` declares only
+  `nd-conf`, `nd-auth` and `axum` (an edge, not a new entry).
 
   **D3 — manifest pin repair (execute in the same BOOT-00 lane as its first step, or as a parent-controlled
   micro-lane BEFORE BOOT-01 writes any `workspace = true` dep):**
@@ -535,10 +539,15 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   - `rust/Cargo.toml:61` `tracing-subscriber = "^0.1"` → `tracing-subscriber = "0.3"` (real series) — UNRECORDED pin.
   - `rust/Cargo.toml:68` `base64 = "^0.8"` → `base64 = "0.22"` (lock 0.22.1 via jsonwebtoken; the `^0.8`
     forces a duplicate major, violating BOOT-00's own no-duplicate-versions acceptance).
+    **EXECUTED at `6d6938b1`** (2026-11-21): all four pins are now `chrono "0.4"`, `tracing "0.1"`,
+    `tracing-subscriber "0.3"`, `base64 "0.22"` with **zero new lock entries** — the lock diff is only the `nd-http`
+    dependency-edge stanza.
   - Verify: `cargo build --locked --workspace` green after the edits, no lock delta beyond the dedup
     (report the exact `git diff --stat rust/Cargo.lock`).
   - Record these four pins as BOOT-00's D3 in decisions.md's B-series (the two tracing pins + base64 have
-    NEVER had a record; B1 covers only chrono). **Recorded here by this very entry.**
+    NEVER had a record; B1 covers only chrono). **Recorded here by this very entry.** **Amended 2026-11-21: those three
+    previously-unrecorded pins are now FIXED in the manifest, executed at `6d6938b1`** (`tracing 0.1`,
+    `tracing-subscriber 0.3`, `base64 0.22`), so the "never recorded" caveat applies to the history only.
 
   **Not re-litigatable in BOOT-00**: D-OPEN DSN/PRAGMA policy (LANDED `4a8aac9f`; the README "owned jointly"
   row was corrected at `149403e3`); the goose/upgrade path (C1: fresh service, no Go upgrade path).

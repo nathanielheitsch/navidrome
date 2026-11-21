@@ -4,7 +4,7 @@ Read order and authority: [`README.md`](README.md) → this current section (mil
 [`current-status.md`](current-status.md) (measured evidence) → [`decisions.md`](decisions.md) (binding decisions) →
 `subplans/` (bounded assignments). Everything below the separator is a **dated historical index**, not a scheduler.
 
-## Current execution plan (baseline this branch line at `7d022a02` — DB-16 `7d022a02` + DB-21(P1-DB) `632271a9` + DB-14 `de0f49ea` + DB-15 runtime `96c495e7` + DB-11 `52b04064` on integrated `master` code HEAD `e3e0770a` (SC-02 partial), re-dated 2026-11-21)
+## Current execution plan (baseline this branch line at `6d6938b1` — BOOT-00 `6d6938b1` + DB-17 `b3dee0a6` + DB-16 `7d022a02` + DB-21(P1-DB) `632271a9` + DB-14 `de0f49ea` + DB-15 runtime `96c495e7` + DB-11 `52b04064` on integrated `master` code HEAD `e3e0770a` (SC-02 partial), re-dated 2026-11-21)
 
 `96c495e7` adds **DB-15's runtime half** (annotation transfer + average-rating recalc on the caller's tx, 5 executed
 tests) and `52b04064` adds **DB-11** (executed typed scanner reads, the D-CURSOR cursor contract, the API-safe point
@@ -23,9 +23,12 @@ section only sets order. Nothing here authorizes implementation, commits, new wo
 **SC-02 partial** is a scoped slice — not SC-01 ratification, SC-02 completion, MusicFS readiness, or a runnable scanner;
 **DB-11** is the executed read/cursor contract only (no production scanner caller, no `nd-scanner` consumption, not the
 full cursor/REST surface) and **DB-15** is its runtime half only (durable Go oracle deferred to the EVID lane).
-`632271a9` adds **DB-21(P1-DB)** and `7d022a02` adds **DB-16** (executed move/reference-remap/delete primitives, the A8
-share typed rejection and the D-PLUGIN deletion; 18 executed tests). This docs lane runs at `7d022a02`; latest Cargo gates
-are parent integration results (logs checked here), while this lane's earlier `4ab63cd5` measurements remain historical.
+`632271a9` adds **DB-21(P1-DB)**, `7d022a02` adds **DB-16** (executed move/reference-remap/delete primitives, the A8
+share typed rejection and the D-PLUGIN deletion; 18 executed tests), `b3dee0a6` adds **DB-17** (four caller-tx count-refresh
+helpers + `tests/runtime_count_refresh.rs`, 20 executed tests) and `6d6938b1` adds **BOOT-00** (D3 manifest pin repair + the D1
+dependency boundary with the executed `dependency_graph_has_no_http_api_cycle`; gate work only, no production behavior). This docs
+lane runs at `6d6938b1`; latest Cargo gates are parent integration results on the merged tree (logs checked here), while this
+lane's earlier `4ab63cd5` measurements remain historical.
 
 ### Authority and launch rules
 
@@ -43,7 +46,7 @@ are parent integration results (logs checked here), while this lane's earlier `4
   read-only review after writing stops, then selected fixes and parent CLI gates. Scratch only in `/tmp`; no automatic
   formatting.
 
-### Landed and verified (dated measurements, in this baseline; latest parent gates at `7d022a02` (97 suites / 2343 / 0 / 1, `nd-db` 1053 / 0 / 0 across 48 suites); earlier `632271a9` (96 suites / 2326 / 0 / 1), `de0f49ea` (95 suites / 2319 / 0 / 1), `96c495e7`, `e3e0770a`, `272c9c66`, `f80b9704` and docs-lane totals at `4ab63cd5` are history)
+### Landed and verified (dated measurements, in this baseline; latest parent gates at `6d6938b1` (98 suites / 2363 / 0 / 1, `nd-db` 1073 / 0 / 0 across 49 suites, `nd-http` 1 / 1); earlier `7d022a02` (97 suites / 2343 / 0 / 1, `nd-db` 1053 / 0 / 0 across 48 suites), `632271a9` (96 suites / 2326 / 0 / 1), `de0f49ea` (95 suites / 2319 / 0 / 1), `96c495e7`, `e3e0770a`, `272c9c66`, `f80b9704` and docs-lane totals at `4ab63cd5` are history)
 
 1. **Sort-gate parity — DONE at `62789ba2`.** Executed REST reads in `player_repo.rs`, `library_repo.rs`, `tag_repo.rs`,
    `radio_repo.rs` take `RestQueryOptions` and parse internally, matching Go; `runtime_rest_sort_gate.rs` proves hostile
@@ -69,6 +72,8 @@ are parent integration results (logs checked here), while this lane's earlier `4
 
 | Assignment | Commit | Scope actually landed — and what is **not** done |
 |---|---|---|
+| BOOT-00 construction/dependency/launch gate (D1-D3 executed, D4 via B3-ratified) | `6d6938b1` (6 files, +177/−19; `rust/Cargo.toml`, `rust/Cargo.lock`, `nd-http`, `nd-api`, `nd-cli`) | **LANDED** (isolated-worktree lane, parent-merged and re-verified on the merged tree). **D3 manifest pin repair executed:** `chrono "^2"`→`"0.4"` (B1 was decided but never applied), `tracing "^0.5"`→`"0.1"`, `tracing-subscriber "^0.1"`→`"0.3"` (both previously unrecorded and unresolvable), `base64 "^0.8"`→`"0.22"`; **zero NEW lock entries** — the lock diff is only the `nd-http` dependency-edge stanza (axum/nd-auth/nd-conf, all already locked). **D1:** the `nd-http` scaffold became a typed module with the **EXECUTED** `dependency_graph_has_no_http_api_cycle` acceptance (`cargo metadata --locked` graph check + a negative control that fails on an injected `nd-api` edge) and the `RouterInjection = fn(axum::Router, &nd_conf::Config) -> axum::Router` shape; `nd-cli`/`nd-api` rustdoc boundary notes record the `ND_CONFIGFILE` resolution gap (Go `conf/configuration.go:1201`; Rust doc-only at `nd-conf/src/config.rs:390`) and the `Dir::path` `create_dir_all` hazard. **D4** was already resolved by the B3-ratified record; D5 (recipe ownership) stays with the lane report. Parent gates on the merged tree at `6d6938b1`: **2363/0/1 across 98 suites**, `-p nd-db` **1073/0/0** (49 suites), `nd-http` **1/1**, fmt + workspace clippy `-D warnings` clean, `nd-db` rustdoc **21** = post-DB-16 baseline. **Not done:** no production behavior — `main` is still empty, nothing listens or boots; **BOOT-01** owns `ND_CONFIGFILE` resolution, B2 ffmpeg-config injection and the bootstrap sequence. |
+| DB-17 playcount/tag/library count refresh execution | `b3dee0a6` (5 files, +2817 additions-only, `nd-db`) | **LANDED.** Executed four caller-tx refresh helpers: `album_repo::refresh_play_counts_in_tx`, `artist_repo::refresh_play_counts_in_tx`, `tag_repo::update_counts_in_tx`, `library_repo::refresh_library_totals_in_tx(id, now)` (8 probes then the 10-bind update; Go discards `RowsAffected` at `library_repository.go:249` and Rust returns the written `RefreshStatsTotals` — documented deviation). Semantics pinned by **20 executed tests** in NEW `tests/runtime_count_refresh.rs`: bare `play_date = excluded.play_date` — **Go's REPLAY backwards-overwrite is faithful, NO monotonic guard added** (executed pin); zero-arg statements; caller-stamped canonical TEXT (no clock in SQL); NULL-exclusion (an empty population writes nothing); statement-level `RowsAffected` vs entity counts; probe-then-update sequencing; swallowed- and propagated-failure both directions with **rollback as the CALLER's obligation via the DB-00 typed seam** (all four helpers' docs say so). Review APPROVE-WITH-FIXES (F1 `run.Parallel` misconception corrected — the production caller already shares one `*dbx.Tx` per `scanner.go:330-346`; F2 rollback docs; F3 two helper-internal failure regressions; F4 three doc inaccuracies). **Not done:** no production caller (the phase-3 `:138`/`:150` and `scanner.go:316`/`:344` triggers are SC's); DB-18/20 surfaces untouched (rustdoc boundary fencing only); DB-21 SigNN freeze unaffected. |
 | DB-16 executed move/reference-remap/delete primitives + A8 share rejection + D-PLUGIN deletion | `7d022a02` (10 files, +3507/−308, `nd-db`) | **LANDED.** Executed: `move_matched_mediafile` (scanner move per `phase_2_missing_tracks.go:291-335`, `WithTxRetry` semantics via `try_with_tx_retry_sync`; target keeps its OWN `created_at`/`birth_time` — Go's update arm drops them at `sql_base_repository.go:605/608`, the carried stamp is inert; album reassign + copy ONLY on album-ID change, negative-controlled), `remap_missing_mediafile` (maintenance remap per `core/maintenance.go`, single `try_with_tx` — no retry) composing the full bundle with the old-album zero-track gate, NEW `reassign_references_in_tx` (DB-15 annotation + avg-recalc, executed `reassign_bookmark_in_tx`, then playlist/scrobble/buffer legs in Go order; render-only `reassign_references_sql` untouched), `delete_mediafile_in_tx` (Go bare base-row delete; FK cascades + FTS trigger verified against Go migrations), `delete_all_missing_in_tx` (opt-in; the admin gate is documented as caller policy); warn arms route through the DB-14 tx-loss-as-fatal handler, and `CommittedMoveOutcome.copy_outcome` is `None` on failure (P2 fix — a failed copy is no longer misclassified as `SkippedPoisonedSource`). **A8/D-SHARE:** `share update_sql` rejects empty cols with typed `ShareError::EmptyUpdateColumns` before any SQL text (Go's empty path unreachable in production — `core/share.go:141` discards `cols`); the DB-21 deferred-gate class-2 pin re-executed. **D-PLUGIN deletion executed:** `plugin_repo.rs` (243 lines, 3 tests) + the `lib.rs` export deleted, the class-3 probe replaced with literal SQL, prose reworded, schema goldens intact, zero `plugin_repo` identifiers under `nd-db/src`. NEW `tests/runtime_move_persistence.rs` = **18 executed tests**. Review APPROVE-WITH-FIXES (P2 copy-outcome misclassification fixed in-lane pre-commit; P3 bookmark doc corrected). Parent gates at `7d022a02`: **2343/0/1 across 97 suites**, `-p nd-db` **1053/0/0** (48 suites), fmt + workspace clippy clean, `nd-db` rustdoc **21 = post-DB-16 baseline** (22 − 1 deleted-module link). **Not done:** no production caller (SC-06/BOOT maintenance are the consumers), no GC execution (caller step), no count refresh (DB-17), no playlist cleanup (DB-20). |
 | DB-21 **P1-DB exit contract** (DB-side-only) | `632271a9` (1 file, `nd-db`) | **LANDED (P1-DB half only).** NEW `tests/runtime_scanner_persistence_contract.rs` (4206 lines, **7 executed tests**): composed regression through the **real pool** (4 deltas / 2 libraries / 3 album-ID transitions, both `full_scan_mode` values, a second pass over 7 committed dirty-state arms with stored-effect assertions, control pass); frozen API surface (**51 compile-checked SigNN pins** across the landed phase-1 primitives + DB-11/14/15 public surface, Go literals 50/600/200/100, executed unknown-album queue-exclusion sentinel); executed **U-ledger** pinning `SC.mapping-bridge`, `SC.phase1-fixture`, `BOOT.configured-library-caller` (gate **BOOT-01 implementing**, BOOT-00 prerequisite — approval is not delivered caller evidence) and `production_full_finalize_db_contract` as **Unmet**, plus `db_internal_contract` for the `pub(crate)` compile-pin gap; and the executed 5-class inventory behind the **deferred renderer-prepare gate**. Parent decisions recorded in `decisions.md` "DB-21 exit scope and prepared-statement gates" (PARENT DECIDED 2026-11-21). Review REQUEST-CHANGES (6 findings) → APPROVE-WITH-FIXES; parent applied 3 P3 comment fixes. Parent gates at `632271a9`: **2326/0/1 across 96 suites**, `-p nd-db` 1036/0/0 (47 suites), fmt/clippy/`diff --check` clean, `nd-db` rustdoc 22 = baseline. **Not done:** no production caller (SC-05 is the first consumer); no full-exit — the collection/count API for later API-F* still belongs to **DB-21(FULL)**; not #27A progress; stable ID DB-21 incomplete until FULL-SCANNER-DB. |
 | DB-14 executed folder-delta persistence (DB-owned SC seam) | `de0f49ea` (4 files, `nd-db`) | **LANDED.** NEW `src/scanner_writes.rs` (935 lines): `FolderWriteBatch` (immutable; SC pre-generated folder/artist/album IDs; caller-stamped `FolderStamps`; `full_scan_mode`; `album_transitions`), `persist_folder_delta(store,&batch) -> Result<CommittedFolderOutcome,FolderRunError>` (DB-owned per-folder retrying tx per D-BATCH), `persist_folder_delta_in_tx` **pub(crate)**, `FolderWriteStage` (12 arms, `is_fatal`), `ScopeRejection` (11 arms, validated pre-checkout), `FolderWriteWarning{stage,item_id,related_id,source}`, `CommittedFolderOutcome` (publish-only-after-commit), `scan_artwork_item`. NEW `tests/runtime_folder_persistence.rs` = 17 executed tests; `lib.rs` +1; `album_repo.rs` +102 additions-only delivering `copy_album_created_at_in_tx` (`album_repo.rs:1566`, Go `album_repository.go:331-357` incl. `0001-`/empty skip — the helper DB-16 reuses). Warn arms route through `warn_arm`, which detects transaction loss via `is_autocommit` and returns the original typed SQLite error as FATAL (never a warning); ABORT-class statement failures still warn+commit; `MediaIdentity` per-record; Go `c == 0` missing-quirk preserved. Review REQUEST-CHANGES then both findings fixed (P1 tx-loss atomicity, P2 consumed-transitions retry proof); parent re-ran all gates at `de0f49ea` (**2319/0/1 across 95 suites**, fmt/clippy clean, `nd-db` rustdoc 22 = baseline). **Not done:** no production caller (SC-05 is the consumer; `nd-scanner` still has no `nd-db` dependency), no walk/tag-mapping/album aggregation (SC-owned), no missing-folder finalize (SC-06). Not move/GC semantics. |
@@ -82,7 +87,7 @@ are parent integration results (logs checked here), while this lane's earlier `4
 | Docs consolidation | `f03aff98` + merge `3b5e6c76` | `current-status.md`, `next-work.md`, `decisions.md` and the subplan headers consolidated into one authority chain; historical blocks marked superseded. |
 | DB-04 executed property writes | `c791dbc1` | `property_repo::put_in_tx`/`delete_in_tx` on the caller's tx (update-first, insert on zero rows, Go order), 12 executed tests. No connection-bound `PropertyRepo::put`/`delete`, no production caller. |
 | DB-05 executed library writes + scan lifecycle | `60be7534` | `library_repo::put_in_tx` (typed `LibraryColumn`, id-1 path guard, autoincrement/predefined-id arms, admin assignment in-tx), `scan_begin_in_tx`/`scan_end_in_tx`/`set_scanned_pid_in_tx`/`add_artist_in_tx`, 8 executed tests. **Not** the bootstrap caller — no code creates a configured library row. |
-| DB-06 executed tag Add | `bfdcfeca` | `tag_repo::add_in_tx` — dictionary INSERT then `library_tag` link INSERT per 200-chunk on the caller's tx, 9 executed tests. `update_counts_sql`/`purge_unused_sql` remain renderers (DB-17/20). |
+| DB-06 executed tag Add | `bfdcfeca` | `tag_repo::add_in_tx` — dictionary INSERT then `library_tag` link INSERT per 200-chunk on the caller's tx, 9 executed tests. `update_counts_sql`/`purge_unused_sql` were renderers at that HEAD; `update_counts_sql`'s execution **landed at `b3dee0a6`** (DB-17, `tag_repo::update_counts_in_tx`), `purge_unused_sql` remains a renderer owned by DB-20. |
 | DB-07 folder missing-state + album touch | `2911b9ab` + merge `9be6ad0e` | `put_folder_in_tx`, `mark_folders_missing_in_tx`, `mark_media_missing_in_tx`, `mark_media_missing_by_folder_in_tx`, `touch_albums_in_tx`, `touch_albums_with_missing_folders_globally_in_tx` (deliberately GLOBAL, Go predicate retained), 10 executed tests. Not walk/finalize/purge policy. |
 | DB-08 artist writes + partial timestamp parity | `32c4fa5b` + merge `320b8b03` | `artist_repo::put_artist_in_tx` with typed `ArtistColumn`; **fixed** the renderer defect that appended `updated_at` to every filtered SET (Go `selectUpdateColumns` semantics restored and re-pinned in `runtime_timestamp_convention.rs`). `library_artist` link stays DB-05's `add_artist_in_tx`. 10 executed tests. |
 | DB-09 atomic album base/participants/tags | `d938d159` + merge `842c32a2` | `album_repo::put_album_in_tx`: base upsert, unconditional participant delete + optional insert, unconditional tag delete + optional insert, one tx. FTS is maintained by the schema's own `album_fts_*` triggers, not by an issued statement — the tests observe it via `MATCH`/row count. 18 executed tests. Album aggregation/`equals` remain SC-owned (`decisions.md` S4). |
@@ -91,14 +96,17 @@ are parent integration results (logs checked here), while this lane's earlier `4
 
 ### Live wave (verified checkout state; never mark DONE from a message)
 
-At `7d022a02` (this branch line: DB-11 `52b04064`, DB-15 runtime `96c495e7`, docs sync `149403e3`, DB-14 `de0f49ea`,
-DB-21(P1-DB) `632271a9`, the `nd-stream` causal-wait fix `7369daf4`, A8/B3/D-PLUGIN decision records `2b3fa921` and
-DB-16 `7d022a02` on top of integrated `master` code HEAD `e3e0770a`), **DB-10, the DB-12 executed subset, DB-22,
-the SC-02 partial, DB-11, DB-15's runtime half, DB-14, DB-21(P1-DB) and DB-16 are LANDED**.
-Verified `git worktree list` and branch refs during this refresh: this lane's worktree sits at `7d022a02` on
+At `6d6938b1` (this branch line: DB-11 `52b04064`, DB-15 runtime `96c495e7`, docs sync `149403e3`, DB-14 `de0f49ea`,
+DB-21(P1-DB) `632271a9`, the `nd-stream` causal-wait fix `7369daf4`, A8/B3/D-PLUGIN decision records `2b3fa921`,
+DB-16 `7d022a02`, the SC-01/BOOT-00 docs record `f3bb81b2`, DB-17 `b3dee0a6` and BOOT-00 `6d6938b1` on top of integrated
+`master` code HEAD `e3e0770a`), **DB-10, the DB-12 executed subset, DB-22, the SC-02 partial, DB-11, DB-15's runtime half,
+DB-14, DB-21(P1-DB), DB-16, DB-17 and BOOT-00 are LANDED**.
+Verified `git worktree list` and branch refs during this refresh: this lane's worktree sits at `6d6938b1` on
 `resuscitate-dead-agent-capture-worktree-state`, which is ahead of `master` and has `master` as an ancestor (a parent
 fast-forward is available); the former DB-10/DB-12 and `rust-sc02-local-walker`
-worktrees/branches are absent (parent-controlled merges, then cleanup). This docs lane removed nothing.
+worktrees/branches are absent (parent-controlled merges, then cleanup). **One sibling worktree remains:**
+`~/.paseo/worktrees/0xo97qr3/boot00` on branch `boot00-manifest-pins-scaffold`, at the same commit `6d6938b1` with its BOOT-00
+work already parent-integrated here — recorded as integrated and eligible for user cleanup; this docs lane removed nothing.
 
 | Assignment | Commit / branch | Verified state |
 |---|---|---|
@@ -108,6 +116,8 @@ worktrees/branches are absent (parent-controlled merges, then cleanup). This doc
 | DB-11 executed typed scanner reads, cursor contract, API-safe point read | `52b04064` (7 files, `nd-db`) | **LANDED** on this branch line (`master` is its ancestor; integration/merge is the parent's). NEW `src/scanner_queries.rs` + `tests/runtime_scanner_queries.rs` (21 executed tests) with additive scoped variants in `mediafile_repo.rs`/`album_repo.rs`/`folder_repo.rs`/`artist_repo.rs` and the `lib.rs` export; review fixes folded in (`folder_subtree_filter` fresh-conjunction root per `folder_repository.go:214-216`, sole-artist subtree drops `album.missing` per `album_repository.go:294-296`, `CURSOR_CHUNK_SIZE` 300 → 600). Parent gate at that HEAD: 2297 / 0 / 1 (dated history). **Not done:** full cursor/REST completion (`SEEDEDRAND` seeded full-set render deferred to the REST/API lane), no production scanner caller, no `nd-scanner` consumption. |
 | DB-15 runtime annotation transfers + avg-rating recalc | `96c495e7` (2 files, `nd-db`) | **LANDED runtime half.** `AnnotationEntityKind`, `AnnotationWriteError`, `update_avg_rating_in_tx`, `reassign_annotation_in_tx` on the caller's tx; `tests/runtime_annotation_transfers.rs` (5 executed tests). The durable Go-harness oracle is **deferred to the EVID lane** (PARENT DECIDED, `decisions.md` H6). DB-15 is **not** fully DONE; no annotation service/route caller exists. |
 | DB-16 executed move/reference-remap/delete + A8 share rejection + D-PLUGIN deletion | `7d022a02` (10 files, +3507/−308, `nd-db`) | **LANDED.** `move_matched_mediafile` (`WithTxRetry` semantics via `try_with_tx_retry_sync`), `remap_missing_mediafile` (single `try_with_tx` — no retry), NEW `reassign_references_in_tx` (DB-15 annotation + avg-recalc, executed bookmark leg, playlist/scrobble/buffer legs in Go order), `delete_mediafile_in_tx`, `delete_all_missing_in_tx` (opt-in; admin gate is caller policy); NEW `tests/runtime_move_persistence.rs` = 18 executed tests. A8 `ShareError::EmptyUpdateColumns` before any SQL text; D-PLUGIN `plugin_repo.rs` + `lib.rs` export deleted (class-3 probe now literal SQL). Review APPROVE-WITH-FIXES (P2 copy-outcome fixed in-lane; P3 bookmark doc). Parent gates: **2343/0/1 across 97 suites**, `nd-db` **1053/0/0** (48 suites), fmt/clippy clean, `nd-db` rustdoc **21** = post-DB-16 baseline. **Not done:** no production caller (SC-06/BOOT maintenance), no GC execution, no count refresh (DB-17), no playlist cleanup (DB-20). |
+| DB-17 playcount/tag/library count refresh | `b3dee0a6` (5 files, +2817 additions-only, `nd-db`) | **LANDED.** `album_repo::refresh_play_counts_in_tx`, `artist_repo::refresh_play_counts_in_tx`, `tag_repo::update_counts_in_tx`, `library_repo::refresh_library_totals_in_tx(id, now)` (8 probes + 10-bind update; Go's `RowsAffected` discarded at `library_repository.go:249`, Rust returns the written `RefreshStatsTotals` — documented deviation); NEW `tests/runtime_count_refresh.rs` = 20 executed tests (faithful REPLAY backwards-overwrite with no monotonic guard, zero-arg statements, caller-stamped canonical TEXT, NULL-exclusion, statement-level `RowsAffected` vs entity counts, probe-then-update order, failure both directions with rollback as the CALLER's obligation via the DB-00 seam). Review APPROVE-WITH-FIXES (F1/F2/F3/F4). Parent gates on the merged tree at `6d6938b1`: **2363/0/1 across 98 suites**, `nd-db` **1073/0/0** (49 suites), fmt/clippy clean, `nd-db` rustdoc **21** = post-DB-16 baseline. **Not done:** no production caller (SC's phase-3 `:138`/`:150` and `scanner.go:316`/`:344` triggers), DB-18/20 surfaces untouched, DB-21 SigNN freeze unaffected. |
+| BOOT-00 construction/dependency/launch gate | `6d6938b1` (6 files, +177/−19; was branch `boot00-manifest-pins-scaffold` in `~/.paseo/worktrees/0xo97qr3/boot00`, parent-merged) | **LANDED** (gate work only, re-verified on the merged tree). D3 pins repaired (`chrono 0.4`, `tracing 0.1`, `tracing-subscriber 0.3`, `base64 0.22`; zero new lock entries — lock diff is only the `nd-http` dependency-edge stanza); D1 `nd-http` typed boundary with the EXECUTED `dependency_graph_has_no_http_api_cycle` + `RouterInjection` shape; D4 via B3-ratified. `nd-cli`/`nd-api` rustdoc record the `ND_CONFIGFILE` gap and the `Dir::path` hazard for BOOT-01. **No production behavior:** `main` empty, nothing listens. The sibling `boot00` worktree still exists at `6d6938b1` and is eligible for user cleanup (not performed by this lane). |
 | Wave-2 docs refresh | `rust-wave2-status-refresh`, base `320b8b03`; no worktree | 0 ahead / 8 behind `master`. Stale docs attempt, no recovered output; superseded by this refresh. |
 
 Merges are parent-controlled; this docs lane is support work, not a rebalance of implementation lanes. Historical record:
@@ -118,8 +128,8 @@ at `e3e0770a`.
 
 ### Next dependencies (order, not estimates)
 
-1. **DB-11 LANDED → DB-15 runtime LANDED → DB-14 LANDED `de0f49ea` → DB-21(P1-DB) LANDED `632271a9` → DB-16 LANDED `7d022a02` → next DB-17** — DB-04…DB-10/DB-12/DB-13 are
-   landed and the spine's last four packages are in: **DB-11 LANDED `52b04064`** (typed filtered scanner reads, D-CURSOR cursor
+1. **DB-11 LANDED → DB-15 runtime LANDED → DB-14 LANDED `de0f49ea` → DB-21(P1-DB) LANDED `632271a9` → DB-16 LANDED `7d022a02` → DB-17 LANDED `b3dee0a6` → next DB-18 (pending `D-STATS`)** — DB-04…DB-10/DB-12/DB-13 are
+   landed and the spine's last five packages are in: **DB-11 LANDED `52b04064`** (typed filtered scanner reads, D-CURSOR cursor
    contract, `ScannerScope`/`UserScope`, `get_visible_media`), **DB-15's runtime half LANDED `96c495e7`** (annotation transfer +
    average-rating recalc, durable Go oracle deferred to the EVID lane — `decisions.md` H6) and **DB-14 LANDED `de0f49ea`**
    (`SC.folder-write-batch-contract` resolved as **D-BATCH** and consumed: `FolderWriteBatch`, `persist_folder_delta`,
@@ -132,26 +142,32 @@ at `e3e0770a`.
    `BOOT.configured-library-caller` and `production_full_finalize_db_contract` as Unmet; **not done** — no production caller,
    no full-exit, collection/count still belongs to DB-21(FULL), not #27A progress). `D-CURSOR`/`D-SCOPE`
    were recorded in `decisions.md` (PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) and are **consumed by executed code**.
-   **Next is DB-17**, on the forward spine `DB-17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; **DB-16 LANDED `7d022a02`**
+   **Next is DB-18**, on the forward spine `DB-18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; **DB-17 LANDED `b3dee0a6`**
+   (four caller-tx count-refresh helpers — album/artist playcounts, tag `update_counts_in_tx`, library 8-probe + 10-bind
+   `refresh_library_totals_in_tx`; 20 executed tests; faithful REPLAY backwards-overwrite with no monotonic guard; rollback stays
+   the CALLER's obligation via the DB-00 seam; no production caller — SC's phase-3 `:138`/`:150` and `scanner.go:316`/`:344`
+   triggers are the consumers) and **DB-16 LANDED `7d022a02`**
    (executed move/reference-remap/delete primitives, A8 share typed rejection, D-PLUGIN deletion executed, 18 executed tests,
-   no production caller — SC-06/BOOT maintenance are the consumers). DB-18…20 retain later
-   decisions (`D-STATS`, `D-GC`, both still without a canonical `decisions.md` record); DB-17 carries no decision gate, only
-   one-writer serialization and parent sequencing. DB-12 has already released the artwork subset.
+   no production caller — SC-06/BOOT maintenance are the consumers). **DB-18 is gated on `D-STATS`, which still has no canonical
+   `decisions.md` record**, and DB-20 retains `D-GC`; DB-19 needs its boundary approval. DB-12 has already released the artwork subset.
    **DB-22 LANDED `272c9c66`** (executed genre/scrobble/playqueue/artwork reads; C5 documents the narrow boundary).
-   DB-16…20 (move/reference,
-   tag counts, artist stats, playlist cleanup, GC) extend the phase-2+/full-scanner exit. Each lane consumes the landed
+   DB-18…20 (artist stats,
+   playlist cleanup, GC) extend the phase-2+/full-scanner exit; DB-16 (move/reference) and DB-17 (tag/library counts) are in. Each lane consumes the landed
    DB-00 typed transaction/error seam, the DB-02 canonical TEXT stamp convention, and the DB-03 effective pool
    configuration — adopt them rather than re-deriving helper behavior. Add executed write→read-back regressions, not more
    renderer-only assertions (`decisions.md` W0/W1); the DB-02 gaps (`scrobble_buffer` integer stamps,
    `find_recent_files_by_properties_sql` executed pin) belong to whichever lane owns those statements. Landed lanes also
    still need **production callers**: DB-14's folder-delta seam is landed but uncalled (`nd-scanner` declares no `nd-db`
-   dependency; SC-05 is its consumer), and no executed write or scanner read is invoked from a scanner, bootstrap, or route yet.
-2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `7d022a02`
-   (this machine's toolchain: **Homebrew cargo/rustc 1.99.1**, `/opt/homebrew/bin`, EXECUTED): workspace tests
-   **2343 / 0 / 1 across 97 suites** (the single ignore is the pre-existing `dump_divergences`), `-p nd-db` all-targets
-   **1053 / 0 / 0 across 48 suites**, with `cargo fmt --all -- --check`, workspace clippy
+   dependency; SC-05 is its consumer), DB-17's refresh helpers are landed but uncalled (SC's phase-3 triggers), and no executed
+   write or scanner read is invoked from a scanner, bootstrap, or route yet.
+2. **Re-date the gate block** after each merge; `current-status.md` records parent integration gates at `6d6938b1`
+   (this machine's toolchain: **Homebrew cargo/rustc 1.99.1**, `/opt/homebrew/bin`, EXECUTED on the merged tree): workspace tests
+   **2363 / 0 / 1 across 98 suites** (the single ignore is the pre-existing `dump_divergences`), `-p nd-db` all-targets
+   **1073 / 0 / 0 across 49 suites** and `nd-http` **1 / 1** (the BOOT-00 cycle test), with `cargo fmt --all -- --check`, workspace clippy
    (`--all-targets --all-features -- -D warnings`) and `git diff --check` clean, and `nd-db` rustdoc at **21 warnings =
-   post-DB-16 baseline** (22 − 1 deleted-module link from the D-PLUGIN deletion). The block at `632271a9` (**2326 / 0 / 1 across
+   post-DB-16 baseline** (22 − 1 deleted-module link from the D-PLUGIN deletion). Arithmetic: `2343` at `7d022a02` `+ 20`
+   (DB-17's suite) `+ 0` (BOOT-00: `+1` cycle test `− 1` dropped `nd-http` scaffold test) `= 2363`; suites `97 → 98`.
+   The block at `7d022a02` (**2343 / 0 / 1 across 97 suites**, `-p nd-db` 1053/0/0 across 48 suites), the block at `632271a9` (**2326 / 0 / 1 across
    96 suites**, `-p nd-db` 1036/0/0 across 47 suites, rustdoc 22 = baseline), the block at `de0f49ea` (**2319 / 0 / 1 across 95 suites**),
    the block at `b213755f` (**2317 / 0 / 1** — the docs-only sync commit on top of
    `96c495e7` before DB-14's suites were added — superseded by `de0f49ea`), the block at `96c495e7` (**2302 / 0 / 1 across 94 suites**),
@@ -162,8 +178,12 @@ at `e3e0770a`.
    SC-02 partial walker/ignore/hash/cancellation slice at `e3e0770a`); what remains is the metadata→record adapter, real
    library/folder IDs, pure album aggregation/change detection, and one fixture-tree ingest over those DB APIs
    (`decisions.md` S1-S4). Call it phase 1, not complete #17: there is still no scanner entrypoint or tag-to-DB pipeline.
-4. **Bootstrap/HTTP/canonical route contracts** — scoped API manifest capture, configuration → schema/pool → configured
-   library/admin → router/listener wiring, HTTP API-key extraction/issuance middleware (login-session/native-audience is
+4. **Bootstrap/HTTP/canonical route contracts** — **BOOT-00 LANDED `6d6938b1`** (D3 manifest pins repaired with zero new lock
+   entries; D1 `nd-http` typed boundary + executed `dependency_graph_has_no_http_api_cycle` + the `RouterInjection` shape; D4 via
+   B3-ratified; **no production behavior — `main` is still empty and nothing listens**), so **BOOT-01** is the next launchable boot
+   package and owns the `ND_CONFIGFILE` resolution gap (`nd-conf/src/config.rs:390`, Go `conf/configuration.go:1201`) and the B2
+   ffmpeg-config injection. Then scoped API manifest capture (API-00, no longer blocked on BOOT-00), configuration → schema/pool →
+   configured library/admin → router/listener wiring, HTTP API-key extraction/issuance middleware (login-session/native-audience is
    landed at BOOT-02 `c6e220eb`/`162fae1d`), stream
    prepare/header/Send/body-ownership seams. Contract capture and read-only investigation may proceed before ingest;
    implementation still has one writer per checkout.
@@ -215,10 +235,11 @@ outside the file; `plugin_cleanup.go:8,50` updates the `plugin` table from user/
    DB-08 artist, DB-09 album and DB-13 epoch revoke are **landed**; DB-10/12 are now landed too, as is DB-22 `272c9c66`,
    **DB-11 `52b04064`** (`D-CURSOR`/`D-SCOPE`, recorded at `8b5b3925`, now consumed by executed code) and **DB-15's runtime
    half `96c495e7`**, **DB-14 `de0f49ea`** (D-BATCH consumed), **DB-21(P1-DB) `632271a9`** (DB-side-only P1 exit contract)
-   and **DB-16 `7d022a02`** (executed move/reference-remap/delete, A8 share rejection, D-PLUGIN deletion);
-   the spine's next package is **DB-17**,
-   launchable-parent-sequenced and not picked by the docs lane (DB-16 landed and reused the landed
-   `album_repo::copy_album_created_at_in_tx`; DB-21(FULL-SCANNER-DB) needs SC/BOOT consumers plus DB-17..20). Library
+   and **DB-16 `7d022a02`** (executed move/reference-remap/delete, A8 share rejection, D-PLUGIN deletion) and
+   **DB-17 `b3dee0a6`** (four caller-tx count-refresh helpers, 20 executed tests); **BOOT-00 LANDED `6d6938b1`** on the boot track;
+   the spine's next package is **DB-18**,
+   gated on `D-STATS` and not picked by the docs lane (DB-16 landed and reused the landed
+   `album_repo::copy_album_created_at_in_tx`; DB-21(FULL-SCANNER-DB) needs SC/BOOT consumers plus DB-18..20). Library
    bootstrap policy belongs to the bootstrap caller, DB supplies typed executed operations. Test rollback, retry, immutable
    fields, non-target rows, empty/chunk boundaries, and actual read-back through production methods.
 3. **Honest scanner phase-1 vertical slice** — as above; the old "8 repos + 1 mapper" is a core-read inventory, not a

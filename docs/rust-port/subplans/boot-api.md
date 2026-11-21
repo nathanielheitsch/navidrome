@@ -16,14 +16,15 @@
 > consumed by SC-06/BOOT maintenance, not by BOOT-01); still no production scanner caller or artwork worker/full scanner — `nd-scanner` declares no `nd-db` dependency — and collection/
 > count for later API-F* still belongs to DB-21(FULL) — **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract
 > (4206 lines, 7 executed tests), whose executed U-ledger asserts `BOOT.configured-library-caller` as **Unmet**: the gate is
-> **BOOT-01 implementing** with BOOT-00 a prerequisite, and approval is not delivered caller evidence. Latest parent gates at
-> `7d022a02` (Homebrew cargo/rustc 1.99.1, EXECUTED): fmt, workspace
+> **BOOT-01 implementing** with BOOT-00 a prerequisite (now **LANDED `6d6938b1`** — see its status amendment), and approval is not delivered caller evidence. Latest parent gates at
+> `6d6938b1` (Homebrew cargo/rustc 1.99.1, EXECUTED on the merged tree): fmt, workspace clippy and workspace tests pass —
+> **2363/0/1 across 98 workspace suites** (`nd-db` all-targets **1073/0/0 across 49 suites**, `nd-http` 1/1 = the BOOT-00 cycle test; the single ignore is the pre-existing `dump_divergences`);
+> `nd-db` rustdoc remains at **21 warnings = the post-DB-16 baseline**.
+> The prior gates at `7d022a02` (Homebrew cargo/rustc 1.99.1, EXECUTED): workspace
 > clippy and workspace tests pass — **2343/0/1 across 97 workspace suites** (the ignore is the pre-existing `dump_divergences`);
 > `-p nd-db` all-targets **1053/0/0 across 48 suites**; `nd-db` rustdoc is at **21 warnings = the post-DB-16 baseline**
 > (22 − 1 deleted-module link from the D-PLUGIN deletion). The `632271a9` block (**2326/0/1 across 96 suites**, `-p nd-db`
 > 1036/0/0 across 47 suites, rustdoc 22 = baseline), the `de0f49ea` block (**2319/0/1 across 95 suites**), the `96c495e7` block (**2302/0/1 across 94 suites**),
-> the prior `e3e0770a` block (**2276/0/1 across 92 suites**, `nd-scanner` docs at 4 pre-existing warnings) and the intermediate
-> `52b04064` block (2297/0/1) are dated history.
 > the prior `e3e0770a` block (**2276/0/1 across 92 suites**, `nd-scanner` docs at 4 pre-existing warnings) and the intermediate
 > `52b04064` block (2297/0/1) are dated history.
 > Named logs and historical measurements are in
@@ -38,9 +39,10 @@
 > (`legacy_aud_less_token_is_a_deliberate_api_gate_negative_control`). That is the bounded login-session correction
 > only — **not** full auth/API integration: no router is mounted, HTTP API-key extraction/issuance middleware does not
 > exist, and the remaining packages stay unbuilt — BOOT-00 was `DECISION REQUIRED` at that boundary; **its D1-D3 are now
-> recorded and D4 is B3-ratified (2026-11-21, `../decisions.md`), so BOOT-00 is launchable-parent-sequenced** (see its status
-> amendment below). API-00 is READY for specification only
-> with launches blocked on BOOT-00, API-04 is `DECISION REQUIRED` then blocked, and BOOT-01/03/04 plus API-01/02/03/05/06 are
+> recorded and D4 is B3-ratified (2026-11-21, `../decisions.md`), and BOOT-00 is **LANDED `6d6938b1`** (gate work only: D3 manifest
+> pin repair executed, D1 typed boundary + executed `dependency_graph_has_no_http_api_cycle`, D4 via B3-ratified; no production
+> behavior). API-00 is READY for specification only
+> with launches no longer blocked on BOOT-00, API-04 is `DECISION REQUIRED` then blocked, and BOOT-01/03/04 plus API-01/02/03/05/06 are
 > BLOCKED — so #27A stays gated. `D-REVOKE` still has no canonical entry in
 > `../decisions.md` (the DB-13 shape was settled in lane review), so API-03's revoke contract remains an open decision
 > rather than a settled prerequisite. Live status: [`../current-status.md`](../current-status.md); dependency order and
@@ -86,8 +88,10 @@ All evidence here is **source-inspected**, not executed by this planner.
 | Async/send seam | `archiver.rs:78 BoxFuture<'a,T>=Pin<Box<dyn Future<Output=T>+'a>>` lacks Send; handler source/CachedTranscode objects lack Send; `SinkAdapter` (`handler.rs:1576`, impl `:1580`) `poll_write` `:1581-1593` recreates/drops its write future after a Pending poll (planner cite `:1570-1588` mislocated the impl block; `nd-stream` is unchanged since the baseline, so this was already imprecise) | Blind tokio::spawn/Body adapter may not compile and a bounded asynchronous Sink can lose a pending send. Need API-04 compatibility/pending-write design, not just replacing test ChannelSink with a bounded sender. |
 | Cache/limits | `TranscodeLimiter::new(i32,i32) :44` shareable clone; `CacheTranscodeSource::new(Arc<TranscodeCache>,limiter) :1403`; only implements `TranscodeSource<SharedDisconnect>` at `:1604`; `SharedDisconnect::spawn/finish :1324/:1365` (`CacheTranscodeSource`/`SharedDisconnect` are in `transcode_cache.rs`; `TranscodeLimiter::new` is `limiter.rs:44` — neither file changed since the baseline, so these were already exact but mis-attributed to `handler.rs`) | One cache + limiter per service, source/handler per request. Signal type is concrete, not arbitrary D for cache adapter. No global lock held for full body. Cache source is not a ready HTTP body. |
 > **Table note (2026-11-21):** no row above restates the workspace manifest pins (`chrono "^2"`, `tracing "^0.5"`,
-> `tracing-subscriber "^0.1"`, `base64 "^0.8"`); those dead pins are **recorded for repair at BOOT-00 D3**
+> `tracing-subscriber "^0.1"`, `base64 "^0.8"`); those dead pins were **recorded for repair at BOOT-00 D3**
 > (`../decisions.md`) and this table is not rewritten for them.
+> **Amended 2026-11-21:** all four dead pins are **FIXED, executed at `6d6938b1`** (`chrono 0.4`, `tracing 0.1`,
+> `tracing-subscriber 0.3`, `base64 0.22`), with zero new lock entries — the lock delta is only the `nd-http` dependency-edge stanza.
 
 Useful existing tests to preserve: `nd-auth/tests/login_http.rs::{first_admin_login_and_wrong_password_use_stored_hash,body_cap_and_invalid_limiter_fail_closed,concurrent_admin_requests_use_production_retry_schedule,setup_transaction_rolls_back_user_and_marker_together}`; `nd-auth/tests/http_auth.rs::{refresh_carries_committed_handler_epoch,refresh_includes_header_for_empty_response,conflicting_auth_sources_are_rejected_not_silently_preferred,token_bound_to_a_different_id_fails_revalidation}`. Stream tests `nd-stream/tests/handler.rs::{range_request_answers_206_with_the_exact_window,not_modified_answers_304_and_opens_no_file,saturated_cap_answers_429_and_launches_nothing,failing_command_fails_at_serve_with_a_500_before_any_byte,complete_cache_entry_is_served_as_a_seekable_body,in_progress_cache_entry_streams_as_a_pipe_and_closes,client_disconnect_mid_body_leaves_zero_surviving_children,no_children_accumulate_across_repeated_disconnects,dropping_the_serve_future_leaves_no_child}`. They are source-inspected, not rerun. Some ffmpeg tests early-return when ffmpeg is absent; integrated gate must not.
 
@@ -135,17 +139,23 @@ Proposed minimal membership clause built by trusted code, for nonadmin:
 
 ## 3. Bounded packages
 
-Every package inherits §§6-8 validation/provenance/review gates. Status is implementation readiness **today**, not a claim that code exists. One writer across this checkout, including different crates. No Cargo edits until BOOT-00 approval. Future test fixtures must live under each package's owned test paths; each matrix test named below is **proposed** unless listed in §1.
+Every package inherits §§6-8 validation/provenance/review gates. Status is implementation readiness **today**, not a claim that code exists. One writer across this checkout, including different crates. No Cargo edits until BOOT-00 approval (**amended 2026-11-21: BOOT-00 LANDED `6d6938b1`, so its authorized manifest/lock delta is applied — a later Cargo edit still needs its own package authorization**). Future test fixtures must live under each package's owned test paths; each matrix test named below is **proposed** unless listed in §1.
 
-### BOOT-00 — Approve construction/dependency/launch deltas — **DECISIONS RECORDED → LAUNCHABLE-parent-sequenced**
+### BOOT-00 — Approve construction/dependency/launch deltas — **LANDED `6d6938b1`** (gate work only; was `DECISION REQUIRED` → DECISIONS RECORDED → launchable-parent-sequenced)
 
-> **Status amendment (2026-11-21):** D1-D3 are **recorded** in `../decisions.md` ("BOOT-00 (D1-D3) — crate graph, lock-only
-> deps, manifest pin repair", PARENT DECIDED 2026-11-21); D4 is resolved by the **B3-ratified** record in the same section
-> (ordinary multi-thread Send-Axum, Candidate B); D5 (recipe ownership) stays with the lane report. BOOT-00 is therefore no
-> longer `DECISION REQUIRED` — it is launchable subject to parent sequencing and one-writer serialization. Its first action
-> is the D3 manifest pin repair (`rust/Cargo.toml:60/61/66/68`: `tracing "^0.5"`→`"0.1"`, `tracing-subscriber "^0.1"`→`"0.3"`,
-> `chrono "^2"`→`"0.4"`, `base64 "^0.8"`→`"0.22"`, verify with `cargo build --locked --workspace`); those dead pins are
-> **recorded for repair at D3** — the §1 table and the planner-time text below are not rewritten.
+> **Status amendment (2026-11-21, LANDED `6d6938b1`):** D1-D3 are **recorded** in `../decisions.md` ("BOOT-00 (D1-D3) — crate graph,
+> lock-only deps, manifest pin repair", PARENT DECIDED 2026-11-21); D4 is resolved by the **B3-ratified** record in the same section
+> (ordinary multi-thread Send-Axum, Candidate B); D5 (recipe ownership) stays with the lane report. **EXECUTED at `6d6938b1`**
+> (6 files, +177/−19, an isolated-worktree lane merged by the parent and re-verified on the merged tree):
+> **D3 manifest pin repair** — `rust/Cargo.toml`: `chrono "^2"`→`"0.4"`, `tracing "^0.5"`→`"0.1"`,
+> `tracing-subscriber "^0.1"`→`"0.3"`, `base64 "^0.8"`→`"0.22"`; **zero NEW lock entries** — the lock diff is only the
+> `nd-http` dependency-edge stanza (axum/nd-auth/nd-conf, all already locked). **D1 boundary** — the `nd-http` scaffold became a
+> typed module with the **EXECUTED** `dependency_graph_has_no_http_api_cycle` acceptance (a `cargo metadata --locked` graph check plus
+> a negative control that fails on an injected `nd-api` edge) and the `RouterInjection = fn(axum::Router, &nd_conf::Config) -> axum::Router`
+> shape; `nd-cli` and `nd-api` carry rustdoc boundary notes, including the `ND_CONFIGFILE` resolution gap (Go `conf/configuration.go:1201`;
+> Rust doc-only at `nd-conf/src/config.rs:390`) and the `Dir::path` `create_dir_all` hazard — **BOOT-01 owns both**. **D4** was already
+> resolved by B3-ratified. **No production behavior changed**: this is gate/manifest/boundary work only, and nothing listens or boots.
+> The §1 table and the planner-time text below are not rewritten.
 
 **Goal:** materialize the minimum service graph with approved dependencies and launch/test permissions. **Prerequisites:** none. **Non-goals:** rewriting the workspace, upgrading pins, adding all future services, broad formatting.
 
@@ -155,9 +165,9 @@ Every package inherits §§6-8 validation/provenance/review gates. Status is imp
 
 **Steps/exit:** list exact consumer/features/version graph -> choose ordinary Send Axum runtime vs specialized local executor for stream -> approve manifests and new fixture/oracle recipe ownership -> compile minimal typed construction skeleton -> lock diff review. New packages or changed lock require explicit approval. Acceptance: `dependency_graph_has_no_http_api_cycle`, locked build from clean artifacts, no duplicate accidental major versions, no forbidden dependency. Old behavior main exits0 without boot; `help_and_unknown_command_exit_table` must distinguish real CLI from issue-number scaffold. Validation BOOT-00: locked build/fmt/clippy focused packages + full integration later. Fresh reviewer verifies exact declared rather than assumed features.
 
-### API-00 — Capture/freeze native wire contracts before handlers — READY for specification; launches BLOCKED pending BOOT-00
+### API-00 — Capture/freeze native wire contracts before handlers — READY for specification; BOOT-00 prerequisite **met at `6d6938b1`** (launches still need parent sequencing)
 
-**Goal:** durable tracked native response corpus + explicit new-route semantic transcript + machine-readable route registry; prerequisites BOOT-00 for binaries/Go-run permission. **Non-goals:** regenerating Subsonic goldens, pretending new stream route exists in Go, regenerating fixtures with Rust output.
+**Goal:** durable tracked native response corpus + explicit new-route semantic transcript + machine-readable route registry; prerequisite BOOT-00 (**LANDED `6d6938b1`**) for binaries/Go-run permission. **Non-goals:** regenerating Subsonic goldens, pretending new stream route exists in Go, regenerating fixtures with Rust output.
 
 **Owns proposed:** `rust/crates/nd-api/tests/data/native/{manifest.json,cases/*.json}`, `rust/crates/nd-api/tests/data/stream/{manifest.json,cases/*.json}`, `rust/crates/nd-api/tests/testdata/go_native/{README.md,capture.sh,seed.sql,requests.json}`; if a new Go harness is needed, request authorization for a new `go_native/main.go` (never alter existing Go sources/generated sources). `docs/rust-port/boot-api-contract.md` is parent integration ownership; API lane reports fixture decisions rather than writing colliding docs.
 
@@ -169,9 +179,9 @@ Every package inherits §§6-8 validation/provenance/review gates. Status is imp
 
 **Acceptance tests:** `native_corpus_has_source_and_toolchain_provenance`, `missing_fixture_fails_not_skips`, `route_contract_has_no_uncaptured_existing_native_operation`, `canonical_stream_cases_are_not_labelled_go_native`, `null_omit_and_f32_cases_survive_canonicalizer`. Non-vacuity: reject empty corpus, all-empty seed, one fixture reused for unrelated routes, and wrong status/content type even if JSON decodes. Required order: capture -> parent approval of deliberate deltas -> implement serializers/handlers. Freeze can be incremental per bounded package, but never implement that package first and backfill its oracle from Rust.
 
-### BOOT-01 — Fresh DB, configured library, secrets and transactional setup — BLOCKED
+### BOOT-01 — Fresh DB, configured library, secrets and transactional setup — **next launchable boot package** (BOOT-00 prerequisite met at `6d6938b1`; two documented gaps it owns)
 
-**Prerequisites:** BOOT-00; EXT-DB-CONNECTION; EXT-DB-LIBRARY. **Goal:** restartable initialization before any listener. **Non-goals:** auto repair, full maintenance, automatic scan orchestration, schema data seeds, upgrading/importing existing Go installations.
+**Prerequisites:** BOOT-00 (**LANDED `6d6938b1`**); EXT-DB-CONNECTION (**resolved on the DB side — `D-OPEN` LANDED `4a8aac9f`**, DB-03); EXT-DB-LIBRARY (**DB-05 executed library insert/update LANDED `60be7534`**, no bootstrap caller — the configured-library policy is BOOT-01's own). Two further gaps are recorded as BOOT-01-owned and are prerequisites of a real boot, not of this lane's scoping: **(a) `ND_CONFIGFILE` resolution** — `nd_conf::Config::load(None)` never consults `ND_CONFIGFILE` (Go `conf/configuration.go:1201`; the Rust gap is doc-only at `nd-conf/src/config.rs:390`), so the CLI must resolve flag → `ND_CONFIGFILE` → default and pass `Some(path)`; **(b) B2 ffmpeg-config injection** — `nd-ffmpeg` resolves the binary from `Config::default()` behind a `OnceLock` (`decisions.md` B2; owner confirmation for the #07-owned edit was still open at that record), so a configured `FFMPEGPath` is invisible at runtime. Note also the `Dir::path` `create_dir_all` hazard: correct for data/cache/backup dirs, never for the music root (`nd-conf/src/dir.rs:56-70`). **Goal:** restartable initialization before any listener. **Non-goals:** auto repair, full maintenance, automatic scan orchestration, schema data seeds, upgrading/importing existing Go installations.
 
 **Owns proposed:** `nd-cli/src/{bootstrap.rs,state.rs}`, `nd-cli/tests/bootstrap.rs`. Any transaction-scoped setup helper change in `nd-auth/src/setup_store.rs` and `nd-auth/tests/login_http.rs` is a **separate #13-authorized edit lane**, sequential, not CLI lane edit permission. Generic `nd-db/src/{library_repo,property_repo,store,pool}.rs` and `nd-dbschema/src/{migrate,schema}.rs` remain DB owners. No schema_ddl/golden insert invention.
 
@@ -190,7 +200,7 @@ Every package inherits §§6-8 validation/provenance/review gates. Status is imp
 
 ### BOOT-02 — Correct login-session native audience integration — **LANDED `c6e220eb` + merge `162fae1d`** (bounded #13 correction; the planner-time status was BLOCKED on approval)
 
-**Prerequisites:** BOOT-00, API-00 auth contract. **Owns:** `nd-auth/src/{credentials.rs,claims.rs,login.rs}`, `nd-auth/tests/{login_http.rs,http_auth.rs}`; necessary comments/docs in same module. **Non-goals:** non-expiring login tokens, audience relaxation, adding legacy audiences, secret rotation redesign.
+**Prerequisites:** BOOT-00 (**LANDED `6d6938b1`**), API-00 auth contract. **Owns:** `nd-auth/src/{credentials.rs,claims.rs,login.rs}`, `nd-auth/tests/{login_http.rs,http_auth.rs}`; necessary comments/docs in same module. **Non-goals:** non-expiring login tokens, audience relaxation, adding legacy audiences, secret rotation redesign.
 
 **Recommendation:** make the canonical session mint include explicit native audience **and** expiry=now+SessionTimeout, issuer ND, uid/adm/ep/sub. Either change existing `create_token` if all consumers are canonical (preferred clean service), or introduce clearly named `create_native_session_token` and route every login/first-admin caller to it; do not call `create_api_token`, which is non-expiring. Preserve strict native audience and uid/epoch revalidation. The mounted canonical session gate must additionally require nonempty uid/sub and an expiry; current `validation()` deliberately permits missing exp for nonexpiring API JWT helpers and `check_session_claims` permits empty uid (`credentials.rs:206-213/:270`). Keep public-link validation separate; never let those helper allowances weaken canonical sessions. Refresh touches expiry without dropping aud or committed epoch; no response body can contain salt/t or password/hash. Session timeout overflow/zero policy must be explicit at boot. First-admin empty username/password and account naming validation must be frozen (recommend reject400 before write); login empty/wrong credentials remain indistinguishable401.
 
@@ -210,7 +220,7 @@ package as proof that mounted auth works end-to-end.
 
 ### API-01 — Canonical principal / API-key middleware and authorization adapter — BLOCKED
 
-**Prerequisites:** BOOT-00, API-00 transport/error choices, BOOT-02, EXT-DB-SCOPED-LOOKUP. **Owns proposed:** `nd-api/src/{principal.rs,policy.rs,data.rs,error.rs}`, `nd-api/tests/{auth_roundtrip.rs,library_scope.rs}`. HTTP key-credential changes, if centralized in nd-auth (recommended for single verifier), own separate `nd-auth/src/{api_key.rs,middleware.rs,verifier.rs}` and associated tests under a #13 edit assignment. No scattered custom crypto/checks in handlers.
+**Prerequisites:** BOOT-00 (**LANDED `6d6938b1`**), API-00 transport/error choices, BOOT-02, EXT-DB-SCOPED-LOOKUP. **Owns proposed:** `nd-api/src/{principal.rs,policy.rs,data.rs,error.rs}`, `nd-api/tests/{auth_roundtrip.rs,library_scope.rs}`. HTTP key-credential changes, if centralized in nd-auth (recommended for single verifier), own separate `nd-auth/src/{api_key.rs,middleware.rs,verifier.rs}` and associated tests under a #13 edit assignment. No scattered custom crypto/checks in handlers.
 
 **Contract:** validate key exact `^nds_[0-9A-Za-z]{22}$`, use `PlayerRepo::find_by_api_key(&str)` (`player_repo.rs:1179`, re-synced at `de0f49ea`; planner-time `1156` was baseline-relative) indexed SHA256 path, then `UserRepo::get(owner)` and current privileges. Present malformed/unknown/revoked key -> same401; store/decode failures -> sanitized500 (current authenticate flattens lookup failures to401, another explicit policy delta). No username query needed; no key scopes. API principal includes player ID, owner user, credential kind. JWT claim check and key ownership must not use claimed username to choose a different user. Every agreeing multi-source credential must meet current uid/epoch gates. Do not mint a session from API key. Key-only requests get no session-refresh header. User library grants are consulted per operation/current DB, not cached indefinitely in token/principal. Admin gets all libraries; no user/grants never means all.
 
@@ -220,7 +230,7 @@ package as proof that mounted auth works end-to-end.
 
 ### BOOT-03 — Minimum HTTP shell/middleware/listener lifecycle — BLOCKED
 
-**Prerequisites:** BOOT-00, API-00 registry/errors, BOOT-02/API-01 for protected mount (shell-only tests can precede API-01). **Owns proposed:** `nd-http/src/{lib.rs,router.rs,middleware.rs,peer.rs,server.rs,shutdown.rs}`, `nd-http/tests/{routing.rs,middleware_order.rs,listener.rs}`. Consumes API router supplied by CLI; no nd-http -> nd-api -> nd-http cycle.
+**Prerequisites:** BOOT-00 (**LANDED `6d6938b1`**), API-00 registry/errors, BOOT-02/API-01 for protected mount (shell-only tests can precede API-01). **Owns proposed:** `nd-http/src/{lib.rs,router.rs,middleware.rs,peer.rs,server.rs,shutdown.rs}`, `nd-http/tests/{routing.rs,middleware_order.rs,listener.rs}`. Consumes API router supplied by CLI; no nd-http -> nd-api -> nd-http cycle.
 
 **Mount contract:** explicit route manifest, BasePath exact prefix, root404 and removedpaths404, public ping; bind before reporting ready, no arbitrary 50ms proof. Recommended initial TCP HTTP listener; bind Addr/Port from config; transport ConnectInfo -> ProxyPeer, never accept preinstalled header claims. TLS/unix must either be implemented in an approved follow-up or reject configured mode before bind with nonzero, not quietly serve insecure TCP. Don't unlink an arbitrary Unix path as cleanup; future Unix implementation verifies socket ownership/type and mode; destructive replacement requires user permission. No image throttle/compression/rendered index/static UI in minimum shell. JSON compression/CORS/security headers can use approved existing deps; **never compress audio/Range/stream**, rewrite Content-Length or buffer an entire response. Carry `nosniff`, frame options, referrer and permissions policy; CORS no credentials, expose x-content-duration/x-total-count/x-nd-authorization/content-range/accept-ranges as approved; avoid wildcard secrets. Metadata logs are redacted and never log raw URI containing credentials.
 
@@ -267,7 +277,7 @@ package as proof that mounted auth works end-to-end.
 
 ### API-04 — #15-owned HTTP handoff/Send/backpressure prerequisite — DECISION REQUIRED then BLOCKED
 
-**Prerequisites:** BOOT-00 runtime/dependency decision, API-00 stream semantic transcript. **Owns #15 lane only:** `nd-stream/src/{handler.rs,transcode_body.rs,transcode_cache.rs}` and if needed `archiver.rs` type-alias compatibility (do not indiscriminately change all BoxFuture users), proposed `nd-stream/src/transport.rs`, `nd-stream/tests/{transport.rs,handler.rs,transcode_cache.rs}`. API/HTTP lanes consume it; they may not edit #15 internals. Full crate-level #15 completion stays recorded; this is **HTTP integration readiness**, not rewriting completed range/decision/cache contracts.
+**Prerequisites:** BOOT-00 runtime/dependency decision (**LANDED `6d6938b1`**), API-00 stream semantic transcript. **Owns #15 lane only:** `nd-stream/src/{handler.rs,transcode_body.rs,transcode_cache.rs}` and if needed `archiver.rs` type-alias compatibility (do not indiscriminately change all BoxFuture users), proposed `nd-stream/src/transport.rs`, `nd-stream/tests/{transport.rs,handler.rs,transcode_cache.rs}`. API/HTTP lanes consume it; they may not edit #15 internals. Full crate-level #15 completion stays recorded; this is **HTTP integration readiness**, not rewriting completed range/decision/cache contracts.
 
 **Why mandatory:** `serve` has final status/headers only after all bytes. Sending predicted plan headers then running serve can emit200 before429/open failure, miss complete-cache Range206, or fail to convert an error before first byte. Waiting until serve returns while collecting Vec buffers whole media (or deadlocks bounded channel) and destroys streaming. Test ChannelSink is unbounded and not production acceptable. Standard Axum bodies/handlers need Send; current BoxFuture/source/cache traits are not. Current SinkAdapter must not recreate an async bounded channel send on each Pending poll.
 
@@ -400,7 +410,7 @@ Definition of done is package exit criteria plus actual evidence, not number of 
 ## 9. Dependency DAG / launch decisions
 
 ```
-BOOT-00 approval
+BOOT-00 approval  (**LANDED `6d6938b1`** — gate/manifest/D1 boundary work only; no production behavior, nothing listens)
   +-> API-00 native capture + new-route semantic freeze (before affected handlers)
   +-> EXT-DB-CONNECTION + EXT-DB-LIBRARY -> BOOT-01 initialization
   +-> API-00(auth) -> BOOT-02 native expiring login correction
@@ -429,4 +439,4 @@ service-specific methods + #12 -> BOOT-F1; #32 remains optional.
 7. Minimal CLI/transport capabilities: TCP-only first slice may reject TLS/unix; scanner true cannot be silently ignored before SC integration. No automatic activation of stub services or pretending all cmd parity exists. Clarify missing external ffmpeg operation error versus **mandatory required-tool test gate**.
 8. Durable fixture location/recipe/new-Go-harness approval, fixed synthetic-only credentials, actual toolchain provenance, and native path disclosure/redaction decision. No fixture regeneration from Rust, broad sorting away nondeterminism, or optional skip counted as required external gate.
 
-**Next recommended authorized work:** BOOT-00 + API-00 first; then independent read-only/serialized implementation prerequisites BOOT-02 and API-04; BOOT-01 follows DB initialization seam. Build early boot/read-only HTTP coverage without waiting on all scanner/service packages; keep API-06 explicitly blocked until real scan and real ffmpeg disconnect evidence exist.
+**Next recommended authorized work:** BOOT-00 is **LANDED `6d6938b1`**, so the next launchable boot package is **BOOT-01** (it owns the `ND_CONFIGFILE` resolution gap, the B2 ffmpeg-config injection, and the `Dir::path` music-root hazard); `API-00` native capture is no longer blocked on BOOT-00 and remains a separate lane. Then independent read-only/serialized implementation prerequisites BOOT-03 and API-04. Build early boot/read-only HTTP coverage without waiting on all scanner/service packages; keep API-06 explicitly blocked until real scan and real ffmpeg disconnect evidence exist.

@@ -26,7 +26,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `7d022a02`; earlier `632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `6d6938b1` (2363/0/1 across 98 suites); earlier `7d022a02`/`632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -53,6 +53,8 @@ Rules that keep the docs from fighting each other:
 Source baseline integrated `master` code HEAD `e3e0770a` (the **SC-02 partial** — local walker, `.ndignore`, folder hash
 and cancellation — fast-forwarded onto `2e7026b2`, docs HEAD `795e8986`) plus **DB-11 LANDED `52b04064`** and **DB-15's
 runtime half LANDED `96c495e7`**, which extend `272c9c66` (DB-22) and the `f80b9704` boundary before it
+(**amended 2026-11-21:** this branch line now sits at `6d6938b1` — DB-14 `de0f49ea`, DB-21(P1-DB) `632271a9`, DB-16 `7d022a02`,
+DB-17 `b3dee0a6` and BOOT-00 `6d6938b1` on top; the `96c495e7` gate quoted below is dated history)
 (`74ebd81c` + docs consolidation `f03aff98`/merge `3b5e6c76` + the executed write lanes DB-04 `c791dbc1`, DB-05
 `60be7534`, DB-06 `bfdcfeca`, DB-07 `2911b9ab`/merge `9be6ad0e`, DB-08 `32c4fa5b`/merge `320b8b03`, DB-09
 `d938d159`/merge `842c32a2`, DB-13 `eae4ba1d`/merge `4ab63cd5`, BOOT-02 native expiring login sessions
@@ -77,8 +79,15 @@ its durable Go oracle is deferred to the EVID lane, `decisions.md` H6, so DB-15 
 **D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code; **deletion EXECUTED at `7d022a02`**). **DB-14 LANDED
 `de0f49ea`** — `SC.folder-write-batch-contract` resolved as D-BATCH and consumed (`decisions.md` "Folder-write batch contract") —
 and **DB-16 LANDED `7d022a02`** (executed move/reference-remap/delete primitives, A8 share typed rejection, D-PLUGIN deletion; 18 executed
-tests; gates 2343/0/1 across 97 suites),
-so the spine's next package is **DB-17** (forward spine `DB-17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`), since **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests; parent scope narrowing 2026-11-21, `decisions.md`). See `current-status.md` and
+tests; gates 2343/0/1 across 97 suites), **DB-17 LANDED `b3dee0a6`** (four caller-tx count-refresh helpers — album/artist playcounts, tag
+`update_counts_in_tx`, library 8-probe + 10-bind `refresh_library_totals_in_tx`; 20 executed tests in NEW `tests/runtime_count_refresh.rs`; no
+production caller — SC's phase-3 triggers are the consumers) and **BOOT-00 LANDED `6d6938b1`** (D3 manifest pin repair with zero new lock entries
++ the D1 `nd-http` dependency boundary with the executed `dependency_graph_has_no_http_api_cycle`; **gate work only, no production behavior**).
+Latest merged-tree gates at `6d6938b1`: **2363 / 0 / 1 across 98 suites**, `-p nd-db` **1073 / 0 / 0 across 49 suites**, `nd-http` 1/1, `nd-db`
+rustdoc 21 = post-DB-16 baseline (arithmetic: `2343` at `7d022a02` `+ 20` DB-17 `+ 0` BOOT-00, suites `97 → 98`).
+The spine's next package is therefore **DB-18** (forward spine `DB-18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; DB-18 is gated on `D-STATS`, still without a
+canonical record), since **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests; parent scope narrowing 2026-11-21, `decisions.md`). See `current-status.md` and
 `next-work.md` for the details. Two parent decision records landed the same day (`decisions.md`): **SC-01 ratified NARROW**
 (the five SC-05 seams plus the authorized `nd-scanner` `nd-db` manifest delta; progress sink, watcher, remote storage and
-`MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified), so BOOT-00 is launchable-parent-sequenced.
+`MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified) and **EXECUTED at `6d6938b1`**, so BOOT-01 is the
+next launchable boot package.
