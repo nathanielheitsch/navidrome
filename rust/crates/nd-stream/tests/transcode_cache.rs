@@ -1602,16 +1602,21 @@ async fn the_poller_exits_on_teardown_even_when_the_client_never_hangs_up() {
     let mut handler = cache_handler(Arc::clone(&arc), TranscodeLimiter::new(2, 1), true);
     let mut sink = Vec::new();
     let mf = media_file(&source, "pt-mf", "mp3", 20.0);
-    let req = transcode_request(&source, mf, "mp3", 128);
+    let req = transcode_request(&source, mf.clone(), "mp3", 128);
+    let key = stream_cache_key(&mf, &transcode_job(&req, &endless_mp3_command(&bin)));
     let response = handler.serve(&req, &mut sink, observer.clone()).await;
     assert_eq!(response.status, 200);
     assert!(response.written > 0);
 
     // `_tx` is still alive, so the only thing that can release the task is the
-    // producer's teardown announcement. Whether that announcement has already landed
-    // when `serve` returns depends on the drain task's scheduling (Go runs
-    // `copyAndClose` in its own goroutine), so only the exit itself is asserted —
-    // and the mutation check proves a poller that ignores the announcement hangs.
+    // producer's teardown announcement. The producer runs `drop(sink);
+    // observer.finish();` before the drain task's `finalize` removes the map entry
+    // (`transcode_cache.rs:1584-1586`), so a finalized entry proves the announcement
+    // has landed: waiting for it makes the causal ordering explicit instead of
+    // relying on scheduling, and `wait_for_poller` below then tests only the poller's
+    // exit. A poller that ignores the announcement still hangs here, which is the
+    // behavior under test.
+    wait_for_entry_gone(&arc, &key).await;
     wait_for_poller(&observer).await;
     assert_no_poller_leak(base, "the poller exited on the teardown announcement").await;
 }
