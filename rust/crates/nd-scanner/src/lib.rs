@@ -37,6 +37,9 @@
 pub mod contract;
 pub mod folder;
 pub mod ignore;
+// SC-03: the tag→record bridge and the singleton folder projection.
+pub mod mapping_bridge;
+pub mod projection;
 pub mod storage;
 pub mod walk;
 

@@ -23,6 +23,19 @@ regex = "1.13"
 tokio = { workspace = true }
 # thiserror: typed scanner errors, per the workspace error-type freeze.
 thiserror = { workspace = true }
+# SC-03 additions (parent-authorized in the SC-03 brief, extending the `nd-db` edge the
+# SC-01 ratification already authorized): the mapping bridge and the singleton
+# projection consume the DB record types and the checked role bridge. All three are
+# workspace path crates already pinned in rust/Cargo.lock, so the lock diff is only
+# nd-scanner's dependency-edge stanzas — zero new [[package]] entries.
+# nd-db: MediaFileRecord/AlbumRecord/ArtistRecord, sql_participations::role_from_id,
+#        sql_tags::DbTags, album_repo::NamedParticipant.
+nd-db = { path = "../nd-db" }
+# nd-id: Go model.Role constants for the participant projection.
+nd-id = { path = "../nd-id" }
+# nd-tagreader: read_metadata over the real committed fixtures, so the bridge is
+# exercised on actual parses rather than a stubbed Info.
+nd-tagreader = { path = "../nd-tagreader" }
 
 [lints]
 workspace = true
