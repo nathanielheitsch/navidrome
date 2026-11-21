@@ -1,17 +1,23 @@
 # Rust port — audited capability snapshot
 
-**Authoritative baseline: this branch line at `de0f49ea`** — **DB-14 LANDED `de0f49ea`** on top of **DB-11 `52b04064`** and
+**Authoritative baseline: this branch line at `632271a9`** — **DB-21(P1-DB) LANDED `632271a9`** (the **DB-side-only P1 exit**
+contract, per the parent scope narrowing of 2026-11-21, `decisions.md` "DB-21 exit scope and prepared-statement gates") on top
+of **DB-14 `de0f49ea`**, **DB-11 `52b04064`** and
 **DB-15's runtime half `96c495e7`** — landed on top of integrated `master`'s code HEAD `e3e0770a` (SC-02 partial: local walker,
 `ndignore`, folder hash, cancellation) and its docs HEAD `795e8986`, dated 2026-11-20. That boundary extends the
 previously audited `272c9c66` (DB-22) and `f80b9704` boundaries (DB-04…DB-10/12/13 and BOOT-02; DB-12 signed `e5d0592d`,
 rustdoc fix `f80b9704`; DB-10 signed `65072b89` / merge `6e5ca97d`). Decision records: S9 (SC-02 dependency set +
 close-out, `b1aeea2c`), D-CURSOR/D-SCOPE (now **consumed** by DB-11's executed code), D-PLUGIN, D-BATCH (now **consumed**
 by DB-14's executed code), and the DB-15 durable
-Go-oracle deferral (all in `decisions.md`). **DB-11, DB-15's runtime half and DB-14 are LANDED** with executed tests, and each
+Go-oracle deferral (all in `decisions.md`); the 2026-11-21 records add the **DB-21 exit scope narrowing**, the
+**renderer-prepare gate deferral** and the **proof-of-delivery** process ruling (`decisions.md`, `assignment-template.md`).
+**DB-11, DB-15's runtime half, DB-14 and DB-21(P1-DB) are LANDED** with executed tests, and each
 remains partial: no production scanner caller, no `nd-scanner` consumption (DB-14's seam is landed but uncalled), no full
 cursor/REST surface, and DB-15 keeps its durable Go oracle deferred. The **SC-02 partial** remains a scoped slice — **not**
-SC-01 ratification, SC-02 completion, or MusicFS readiness. Latest gates below are **parent integration evidence EXECUTED at
-`de0f49ea`**; this docs lane did not rerun Cargo. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
+SC-01 ratification, SC-02 completion, or MusicFS readiness. **DB-21(P1-DB) is the DB-side-only exit**: an executed composed
+contract plus an API freeze and an executed U-ledger — it adds **no production caller** and is not the full DB-21 exit.
+Latest gates below are **parent integration evidence EXECUTED at
+`632271a9`**; this docs lane did not rerun Cargo. Its earlier direct measurements at `4ab63cd5` remain historical evidence.
 This document records **evidence**, not implementation authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
 [`decisions.md`](decisions.md); bounded assignments in `subplans/`. Older dated blocks are history, not current
 readiness. Resolve contradictions against the pinned source and the current contract amendments, never against a larger
@@ -42,7 +48,25 @@ full cursor or REST surface. That is narrower than "no repository method is ever
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## Latest integrated gates (parent, HEAD `de0f49ea` / DB-14, 2026-11-20)
+## Latest integrated gates (parent, HEAD `632271a9` / DB-21 P1-DB, 2026-11-21)
+
+DB-21(P1-DB) (`632271a9`, 1 file in `nd-db`: NEW `tests/runtime_scanner_persistence_contract.rs` 4206 lines, 7 executed tests)
+landed on this branch line as the **DB-side-only P1 exit** (parent scope narrowing, `decisions.md`). Parent ran the authoritative
+gates at `632271a9` with this machine's toolchain — **Homebrew cargo/rustc 1.99.1** (`/opt/homebrew/bin`, rustup stable default;
+the recorded gate baselines use it) — EXECUTED: workspace tests **96 suites, 2326 passed / 0 failed / 1 ignored** (the single
+ignore is the pre-existing `dump_divergences` in `nd-mapping/tests/go_oracle.rs`), `-p nd-db` all-targets **1036 / 0 / 0 across
+47 suites**, `cargo fmt --all -- --check` clean (exit 0), `cargo clippy --locked --workspace --all-targets --all-features --
+-D warnings` clean (exit 0), `git diff --check` clean, and `nd-db` rustdoc at **22 warnings = the recorded baseline** (zero
+warnings in the new file). Review came back REQUEST-CHANGES with 6 findings (vacuous second-pass stamps/mutations, unexecuted
+`f`-alias, wrong-type cursor stops, lifecycle column, BOOT-00-vs-BOOT-01 ledger entry, misdescribed share prepare error) and
+landed APPROVE-WITH-FIXES; the parent applied 3 P3 comment fixes. Accepted deviations: the `f`-alias executed via a
+`#[doc(hidden)]` seam (DB-owned test, flagged), and `IdChunkedCursor` stop semantics pinned AS LANDED (final-chunk Stop
+terminal; non-final Stop offers the next chunk; failure path fail()→Closed never resumes) — `D-CURSOR`(3) read as
+post-completion only. **DB-21(P1-DB) is not the full exit:** no production caller (SC-05 is the first consumer), no full-exit,
+the collection/count API for later API-F* still belongs to DB-21(FULL) and is NOT delivered, not #27A progress, and the stable
+ID DB-21 stays incomplete until FULL-SCANNER-DB.
+
+## Previous integrated gates (parent, HEAD `de0f49ea` / DB-14, 2026-11-20)
 
 DB-14 (`de0f49ea`, 4 files in `nd-db`: NEW `src/scanner_writes.rs` 935 lines, NEW `tests/runtime_folder_persistence.rs`
 17 executed tests, `src/lib.rs` +1, `album_repo.rs` +102 additions-only delivering `copy_album_created_at_in_tx`) landed
@@ -54,7 +78,7 @@ warnings = the recorded baseline** (zero warnings in `scanner_writes.rs`). Revie
 findings were fixed before landing (P1 tx-loss atomicity — `warn_arm` detects a lost transaction via `is_autocommit` and
 returns the original typed SQLite error as fatal; P2 consumed-transitions retry proof), with the parent re-running every
 gate. DB-14 is not a full scanner package: no production caller, no `nd-db` dependency in `nd-scanner`, no walk/tag-mapping/
-album aggregation (SC-owned) and no missing-folder finalize (SC-06).
+album aggregation (SC-owned) and no missing-folder finalize (SC-06). That block is dated history, not proof for a later diff.
 
 ## Previous integrated gates (parent, HEAD `96c495e7` / DB-11 + DB-15 runtime, 2026-11-20)
 
@@ -194,6 +218,7 @@ tracked and is not claimed fixed; only the record is corrected. `nd-stream`'s
 | DB-11 executed scanner reads, cursor contract, API-safe point read | `52b04064` | NEW `nd-db/src/scanner_queries.rs`: row-visitor cursors on one leased connection (`Control`/`VisitOutcome`/`CursorError` implementing the D-CURSOR three-way stop taxonomy; `IdChunkedCursor` terminal after a failed chunk), eight executed scanner reads (`media_in_folder`/`media_in_album`/`media_in_filter` counted as one read, plus `missing_and_matching`, `recent_candidates`, `touched_albums`, `album_ids_by_folders`, `sole_album_artist_ids_in_subtrees`, `media_by_paths`), the opaque scope authorities `ScannerScope` (system, configured library ID only) and `UserScope` (resolved once per request: admin/headless(-1)/all-grants omit the clause, otherwise the deny clause `library_id IN (SELECT … FROM user_library …)`; zero-grant and empty-library arms both deny; **no `1=1` for users**), plus the `get_visible_media` point read as a thin wrapper over `MediaFileRepo::get`. Review fixes folded in: `folder_subtree_filter` returns a fresh conjunction root per Go (`folder_repository.go:214-216`; mixed root+path batches bind and execute), the sole-album-artist subtree builder drops `album.missing` (parity `album_repository.go:294-296`), and `CURSOR_CHUNK_SIZE` 300 → 600 (D-CURSOR(4)). NEW `tests/runtime_scanner_queries.rs` = **21 executed tests**. **Not done:** full cursor/REST completion (the `SEEDEDRAND` seeded full-set render is deferred to the REST/API lane), no production scanner caller, no `nd-scanner` consumption |
 | DB-15 runtime annotation transfers + avg-rating recalc | `96c495e7` | `sql_annotations.rs`: `AnnotationEntityKind` closed enum and `AnnotationWriteError`; `update_avg_rating_in_tx` and `reassign_annotation_in_tx` execute on the caller's tx (DB-00 seam). Go `ReassignAnnotation` parity (`sql_annotations.go:185-197`): the OR IGNORE move keeps the target's conflict, leaves the conflicting source row, and recalculates the target average in the same tx. NEW `tests/runtime_annotation_transfers.rs` = **5 executed tests** (pre-fix param-count control, conflict identity, type isolation, absent-source no-op recalc, FK-injection rollback with row and cache read-back). **The durable Go-harness oracle is deferred to the EVID lane** (PARENT DECIDED 2026-11-20, `decisions.md` H6; authorization gate in `subplans/README.md`); Go behavior is pinned by source citations plus `/tmp`-local Go driver evidence, labeled local and not committed. With the `ab466928` render-only repair this covers DB-15's plan scope **except that oracle** — DB-15 is not fully DONE |
 | DB-14 executed folder-delta persistence (DB-owned SC seam) | `de0f49ea` | **LANDED.** NEW `nd-db/src/scanner_writes.rs` (935 lines): `FolderWriteBatch` (immutable; SC pre-generated folder/artist/album IDs; caller stamps `FolderStamps`; `full_scan_mode`; `album_transitions`), `persist_folder_delta(store,&batch) -> Result<CommittedFolderOutcome,FolderRunError>` (DB-owned per-folder retrying tx per `D-BATCH`), `persist_folder_delta_in_tx` **pub(crate)**, `FolderWriteStage` (12 arms, `is_fatal`), `ScopeRejection` (11 arms, validated pre-checkout), `FolderWriteWarning{stage,item_id,related_id,source}`, `CommittedFolderOutcome` (publish-only-after-commit), `scan_artwork_item`. NEW `tests/runtime_folder_persistence.rs` = **17 executed tests**; `src/lib.rs` +1; `album_repo.rs` +102 additions-only delivering `copy_album_created_at_in_tx` (`album_repo.rs:1566`, Go `album_repository.go:331-357` incl. the `0001-`/empty skip). Go `persistFolder`/`persistAlbum` order (`phase_1_folders.go:348-506`); warn arms route through `warn_arm`, which detects transaction loss via `is_autocommit` and returns the original typed SQLite error as fatal (never a warning); ABORT-class statement failures still warn and commit; `MediaIdentity` per-record; Go `c == 0` missing-quirk preserved. Review REQUEST-CHANGES, both findings closed (P1 tx-loss atomicity, P2 consumed-transitions retry proof), parent re-ran all gates at `de0f49ea` (**2319 / 0 / 1 across 95 suites**, fmt + workspace clippy clean, `nd-db` rustdoc 22 = baseline). **Not done:** no production caller (SC-05 is the consumer, `nd-scanner` has no `nd-db` dependency), no walk/tag-mapping/album aggregation (SC-owned), no missing-folder finalize (SC-06) |
+| DB-21 **P1-DB exit contract** (DB-side-only) | `632271a9` | **LANDED (P1-DB half).** NEW `nd-db/tests/runtime_scanner_persistence_contract.rs` (4206 lines, **7 executed tests**): (a) composed regression through the **real pool** — 4 deltas / 2 libraries / 3 album-ID transitions, both `full_scan_mode` values, a second pass over 7 committed dirty-state arms with stored-effect assertions, plus a control pass; (b) frozen API surface — 51 compile-checked SigNN pins across the landed phase-1 primitives plus the DB-11/14/15 public surface, Go literal values 50/600/200/100 pinned, an executed unknown-album queue-exclusion sentinel; (c) CONSUMER_HANDOFF **U-ledger** pinning `SC.mapping-bridge`, `SC.phase1-fixture`, `BOOT.configured-library-caller` and `production_full_finalize_db_contract` as **Unmet** (asserted by test, cannot drift green), plus `db_internal_contract` recording the `pub(crate)` `persist_folder_delta_in_tx` compile-pin gap. It also carries the executed 5-class inventory behind the **deferred renderer-prepare gate** (`deferred_renderer_prepare_gate_classes_are_executed`). Parent decisions: `decisions.md` "DB-21 exit scope and prepared-statement gates" (PARENT DECIDED 2026-11-21). Review REQUEST-CHANGES (6 findings) → APPROVE-WITH-FIXES, 3 P3 comment fixes by the parent. Parent gates at `632271a9`: **2326 / 0 / 1 across 96 suites**, `-p nd-db` 1036/0/0 (47 suites), fmt/clippy/`diff --check` clean, `nd-db` rustdoc 22 = baseline. **Not done:** no production caller (SC-05 is the first consumer); no full-exit — collection/count API for later API-F* still belongs to **DB-21(FULL)**; not #27A progress; stable ID DB-21 incomplete until FULL-SCANNER-DB |
 | BOOT-02 native expiring login sessions | `c6e220eb` + merge `162fae1d` | `login.rs` mints via `Authenticator::create_native_session_token` (native audience + checked positive `exp`), replacing the audience-less `create_token` call that made the login token unusable at `AuthGate::Api`; `tests/login_http.rs` (14) and `tests/http_auth.rs` (14) executed, including a legacy audience-less **negative control** and an epoch-revoke round-trip. The remaining HTTP API-key extraction/issuance middleware is **not** part of this scope |
 
 Executed write primitives are **transaction-bound and caller-trusted** (`WHERE id = ?` and nothing else, exactly like
@@ -220,7 +245,7 @@ stale.
 | Artwork queue | Builders and plain mapper present | Reads/counts, `purge_queued`, transaction-bound enqueue variants and artwork delete-for-items execute (DB-12 `e5d0592d`) | No production scanner caller; worker lifecycle not implemented |
 | Transcoding module | Builders present | **Executed reads landed at `f8ceeb8f`** (`read_all`/`count_all`, `command` masked for a non-admin) | No route, no default-profile seed; profile **editing** out of scope |
 | Artwork/genre/playqueue/scrobble/plugin/smart_playlist | genre/playqueue/scrobble executed reads **landed at `272c9c66` (DB-22)**; artwork item-image lookup and invalidation execute; plugin/smart_playlist remain render-only | Artwork item-image lookup separately executes in `artwork_hydration.rs`; artwork `delete_for_items_in_tx` executes | Not full repository/service completion; `plugin` decided for deletion by D-PLUGIN (`decisions.md`, `89b72894`), not yet executed; `smart_playlist` not a separate Go repo |
-| DB store/pool | Sync/async lease and transaction/retry APIs exist | SQLite work runs on the blocking boundary | Effective per-connection configuration **landed** (DB-03); typed seam **landed** (`48e65806`/`ec84c176`, DB-00) and DB-04…DB-10/12/13 plus DB-15's runtime writes consume it; DB-11's cursors hold one lease for the whole iteration (D-CURSOR) |
+| DB store/pool | Sync/async lease and transaction/retry APIs exist | SQLite work runs on the blocking boundary | Effective per-connection configuration **landed** (DB-03); typed seam **landed** (`48e65806`/`ec84c176`, DB-00) and DB-04…DB-10/12/13 plus DB-15's runtime writes consume it; DB-11's cursors hold one lease for the whole iteration (D-CURSOR). **DB-21(P1-DB) `632271a9`** adds the executed **DB-side-only P1 exit**: composed phase-1 regression driven through the real pool (both `full_scan_mode` values, second pass over committed dirty-state arms) plus a compile-checked API freeze (51 SigNN pins) — an executed contract on the pooled path, **still no production caller** |
 | Schema | Fresh DDL, migrations/marker, extensions, indexes, backup/optimize | Executed schema tests (61 at `4ab63cd5`) | No default library row; repair deferred; no bootstrap caller |
 | Tagreader/mapping | Real lofty backend and metadata mapping | Crate-level implementation/tests | No storage→record→DB ingest caller |
 | Auth | Credential/JWT/login/refresh/middleware components | Crate-level mounted test routers (107 executed at `4ab63cd5`) | Login→native-audience round-trip **closed** at `c6e220eb`; HTTP API-key extraction/issuance middleware still absent; no production router |
@@ -285,7 +310,9 @@ DB-12's executed subset are merged into `f80b9704`; **the SC-02 partial (local w
 cancellation) is LANDED at `e3e0770a`** — a partial slice, not SC-02 completion. DB-22's former DB-12 ownership block is
 released. **DB-11 is LANDED at `52b04064`**, **DB-15's runtime half at `96c495e7`**, and **DB-14 at `de0f49ea`**, so
 `D-CURSOR`/`D-SCOPE` (`decisions.md`, corrected record `8b5b3925`) and `D-BATCH` are now consumed by executed code; the
-spine's next package is **DB-16 or DB-21(P1-DB)**, both launchable-parent-sequenced and neither picked here.
+spine's next package is **DB-16 or DB-17** (`DB-16 → 17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`). **DB-21(P1-DB) is LANDED at
+`632271a9`** as the DB-side-only P1 exit (executed composed contract + API freeze + executed U-ledger), so it adds **no
+production caller** and is not the full DB-21 exit.
 
 ## Remaining blockers and integration obligations (SOURCE-VERIFIED)
 

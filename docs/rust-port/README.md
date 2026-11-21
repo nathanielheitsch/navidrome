@@ -26,7 +26,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `de0f49ea`; earlier `96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `632271a9`; earlier `de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -76,5 +76,5 @@ its durable Go oracle is deferred to the EVID lane, `decisions.md` H6, so DB-15 
 (`decisions.md`, PARENT DECIDED 2026-11-20, corrected at `8b5b3925`) are now **consumed by executed code**, and
 **D-PLUGIN** decided the same day (delete `plugin_repo.rs` as out-of-scope dead code; deletion pending). **DB-14 LANDED
 `de0f49ea`** — `SC.folder-write-batch-contract` resolved as D-BATCH and consumed (`decisions.md` "Folder-write batch contract") —
-so the spine's next package is **DB-16 or DB-21(P1-DB)**, both launchable-parent-sequenced. See `current-status.md` and
+so the spine's next package is **DB-16 or DB-17** (forward spine `DB-16 → 17 → 18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`), since **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests; parent scope narrowing 2026-11-21, `decisions.md`). See `current-status.md` and
 `next-work.md` for the details.

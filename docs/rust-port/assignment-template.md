@@ -43,3 +43,11 @@ verdict; exact files changed; delivered API surface; per-pin compliance; actual
 command exits + test totals + tool versions; evidence labels
 (EXECUTED/SOURCE-VERIFIED/INFERRED); deviations closed or retained; blockers;
 exact next package.
+
+## Proof of delivery (mandatory before any verdict — parent treats claims without it as unverified)
+Paste literal outputs, copied not paraphrased: `wc -l` and `ls -la` for every new/changed
+artifact; `git status --porcelain --untracked-files=all`; literal `cargo --version` and
+`rustc --version` output; literal exit codes plus the literal test-total lines
+(`test result: …`) for each gate command. A verdict with no artifacts on disk, no tool
+versions, or paraphrased totals is treated as unverified: the parent re-checks the tree
+and a fresh reviewer's tree check overrides the report.

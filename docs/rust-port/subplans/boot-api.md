@@ -13,9 +13,15 @@
 > `API.visible-media-contract` are resolved on the DB side; API-02 still owns the route, revalidation and response) and
 > **DB-15's runtime half `96c495e7`** and **DB-14 `de0f49ea`** (`scanner_writes.rs` per-folder persistence seam, consumed D-BATCH);
 > still no production scanner caller or artwork worker/full scanner — `nd-scanner` declares no `nd-db` dependency — and collection/
-> count for later API-F* still belongs to DB-21. Latest parent gates at `de0f49ea` (cargo/rustc 1.99.1, EXECUTED): fmt, workspace
-> clippy and workspace tests pass — **2319/0/1 across 95 workspace suites** (the ignore is the pre-existing `dump_divergences`);
-> `nd-db` rustdoc is at **22 warnings = baseline** (zero for `scanner_writes.rs`). The `96c495e7` block (**2302/0/1 across 94 suites**),
+> count for later API-F* still belongs to DB-21(FULL) — **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract
+> (4206 lines, 7 executed tests), whose executed U-ledger asserts `BOOT.configured-library-caller` as **Unmet**: the gate is
+> **BOOT-01 implementing** with BOOT-00 a prerequisite, and approval is not delivered caller evidence. Latest parent gates at
+> `632271a9` (Homebrew cargo/rustc 1.99.1, EXECUTED): fmt, workspace
+> clippy and workspace tests pass — **2326/0/1 across 96 workspace suites** (the ignore is the pre-existing `dump_divergences`);
+> `-p nd-db` all-targets **1036/0/0 across 47 suites**; `nd-db` rustdoc is at **22 warnings = baseline** (zero for
+> `runtime_scanner_persistence_contract.rs`). The `de0f49ea` block (**2319/0/1 across 95 suites**), the `96c495e7` block (**2302/0/1 across 94 suites**),
+> the prior `e3e0770a` block (**2276/0/1 across 92 suites**, `nd-scanner` docs at 4 pre-existing warnings) and the intermediate
+> `52b04064` block (2297/0/1) are dated history.
 > the prior `e3e0770a` block (**2276/0/1 across 92 suites**, `nd-scanner` docs at 4 pre-existing warnings) and the intermediate
 > `52b04064` block (2297/0/1) are dated history.
 > Named logs and historical measurements are in
