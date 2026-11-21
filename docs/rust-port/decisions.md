@@ -453,6 +453,21 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   vs LocalSet actor — plus LocalSet vs dedicated `std::thread` for the non-Send owner, channel capacity/chunk bound
   (recommendation: capacity 2, 32 KiB chunks), and whether the transport module lives in `nd-stream`
   vs `nd-http` (the API-04 section is `subplans/boot-api.md:246`; this record pointed at `:239` when drafted — API-04 is at `:246`). This blocks API-05/BOOT-03 stream-lifecycle claims.
+- **B3 (cont.) — Stream Send-boundary strategy: Candidate B RATIFIED (PARENT DECIDED 2026-11-21, jointly BOOT-00 D4 / API-04).**
+  The Reasoner draft (`/tmp/b3-stream-strategies-8831f90b.md`, 2026-11-21) found the non-Send-ness is trait erasure, not
+  thread affinity: nd-stream has zero `Rc`/`RefCell`/`Cell` (EXECUTED grep), cache state is already `Arc`/`Mutex`/atomic/file,
+  cleanup futures already promise Send, and cache producers already run under `tokio::spawn`; the two named blockers are the
+  `SinkAdapter` Pending-drop defect (`handler.rs:1581-1593`) and the non-Send trait bounds themselves. **Decision:** ordinary
+  multi-thread Send-Axum (BOOT-00 D4 resolved with this record); a #15-owned per-request `tokio::spawn` Send owner in
+  `nd-stream` holds request/handler/lease/pump; Axum sees only `Start{status,headers}` / bounded `Data` (cap 2, chunks
+  <=32 KiB) / terminal `Completion` channels. Stream-specific Send trait bounds in `nd-stream` only — `archiver.rs:78` stays
+  unchanged; no `unsafe impl Send`; no local executor/dedicated thread (Candidate A rejected). The `serve_started` transport
+  contract + `SinkAdapter` deletion + supervised cancellation/registry are API-04 work. Go-parity corrections from the draft
+  stand: Go is NOT one-goroutine-owns-all (`core/ffmpeg/ffmpeg.go:339-397` separate wait goroutine;
+  `utils/cache/file_caches.go:175-272` copy/close goroutine; real stream sources `server/subsonic/stream.go:36-52` +
+  `core/stream/media_streamer.go:159-281`; `server/stream.go`/`range.go` and `core/stream/stream.go` do NOT exist). B1 remains
+  BOOT-00 manifest work; B2 remains #07-owned boot-config injection (owner confirmation still open). Citation correction:
+  API-04 is `boot-api.md:253` (the draft's `:246` was stale). This record ratifies Candidate B of the draft.
 ## Accepted deviations (not parity debt to undo, not bugs to fix silently)
 
 - **A1 — Offset-without-limit renders `LIMIT -1`**: squirrel's bare `OFFSET n` is a SQLite parse error and SQLite is
@@ -475,6 +490,16 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
 - **A7 — Cross-owner status parity is canonical**: 404 on cross-owner reads (ownership-restricted select matches no
   row), 403 on cross-owner writes (`classifyOwnedWriteMiss`, `sql_base_repository.go:554-563`); Rust
   `player_repo.rs:1063-1069`. Collapsing both to 404 would be a deliberate deviation API-00 must record — not parity.
+- **A8 — `share` empty-column update is a typed rejection, not Go update-all parity (PARENT DECIDED 2026-11-21, D-SHARE).** Go's
+  `shareRepository.Update` with `len(cols)==0` keeps every model column (`sql_base_repository.go:600/605/608/512/614`;
+  `share_repository.go:158-166`), but the only Go caller discards incoming cols and always sends 2-3 (`core/share.go:141` —
+  the subplan pre-flight's claim that ':148 forwards the API's `cols...`' is CORRECTED: the wrapper takes `_ ...string`), so
+  the empty path is unreachable in production Go (only `share_repository_test.go:465-479`) and in every planned Rust caller
+  (#19's visit bump passes 3 cols). Ruling: `ShareRepo::update`/`update_sql` reject empty cols with a typed
+  `ShareError::EmptyUpdateColumns` and a never-empty-SET invariant (C5-style, per A1/A4 precedent); caller rule recorded for
+  #19 (mirror Go's wrapper: always >=1 column). DB-16 implements the guard and updates the DB-21 deferred-gate class-2 pin
+  in the SAME lane (the pinned `near "WHERE": syntax error` behavior becomes the typed rejection) or a parent docs
+  follow-up immediately after.
 
 ## Harness and oracle recipes (cited by `schema_diff.rs` and oracle READMEs)
 
@@ -577,6 +602,12 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   Evidence basis: read-only audit `94589a34` (2026-11-20) plus parent re-verification of `plugin_cleanup.go`, `schema_ddl.rs`,
   `lib.rs:35`, and the caller census. `next-work.md` §"Decision ask" option (a) is the decision recorded here; the option-
   table's `delete_user_artifacts`/`delete_library_artifacts` names did not exist in the file — only the renderer functions do.
+  **Deletion assignment (2026-11-21, PARENT re-delegated to DB-16):** DB-16's launch memo found the mention census stale —
+  `runtime_scanner_persistence_contract.rs` (DB-21, `632271a9`) compile-references `nd_db::plugin_repo::get_sql` at :4047-4052
+  (deferred-gate class-3 pin) plus comments at :662-666; prose mentions survive in `library_repo.rs:36,969-970`,
+  `user_repo.rs:41,629,1054` and `time.rs:42`. DB-16 owns: the deletion, replacing the class-3 probe with a literal
+  `SELECT * FROM plugin WHERE id = ?` prepare (still asserting `no such table: plugin`), rewording the prose mentions to
+  'not ported, D-PLUGIN', and keeping the `schema_diff.rs`/`fresh_schema.rs` schema-golden assertions intact.
 ## DB-21 exit scope and prepared-statement gates (PARENT DECIDED 2026-11-21)
 
 - **DB-21 P1-DB scope narrowing (PARENT DECIDED 2026-11-21).** The launchable DB-21 exit is the **DB-side-only** P1 contract: composed regression through the real pool, the frozen API surface, and the CONSUMER_HANDOFF U-ledger pinning external acceptances as Unmet; `SC.mapping-bridge`, `SC.phase1-fixture` and `BOOT.configured-library-caller` stay U until their SC/BOOT lanes deliver caller evidence (`BOOT.configured-library-caller` gates on **BOOT-01 implementing**, with BOOT-00 a prerequisite — approval is not delivered caller evidence). Per `subplans/db-runtime.md:895` a narrowly-scoped exit may demonstrate only a strictly narrower scope, never the general one: the stable ID **DB-21 is not complete until FULL-SCANNER-DB**. Landed as `632271a9` (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests).
