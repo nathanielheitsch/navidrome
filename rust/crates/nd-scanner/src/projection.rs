@@ -503,3 +503,94 @@ fn fix_album_artist(
 fn track_is_missing(_track: &MediaFile) -> bool {
     false
 }
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    /// `ProjectionError::Bridge` — the draft's participant conversion refusing an invalid
+    /// role rather than writing a poisoned `participants` column. It cannot be produced from a
+    /// real tag read (`nd-mapping` only ever emits Go's `AllRoles` keys), and SC-05 always
+    /// imports every file, so there is no filesystem path to it. Executed here on the input
+    /// shape the draft actually consumes: a track whose credits carry Go's `RoleInvalid`,
+    /// which is what `Role::default()` and `role_from_string` return for an unknown key.
+    #[test]
+    fn a_draft_with_an_invalid_role_refuses_through_the_bridge_instead_of_writing_a_column() {
+        let ctx =
+            nd_mapping::config::MappingContext::new(nd_mapping::config::MappingOptions::default());
+        let mut credits = RoleCredits::default();
+        credits.add(
+            nd_id::ROLE_ALBUM_ARTIST,
+            [Credit {
+                id: "artist-1".to_string(),
+                name: "Valid".to_string(),
+                sort_artist_name: String::new(),
+                order_artist_name: String::new(),
+                mbz_artist_id: String::new(),
+                sub_role: String::new(),
+            }],
+        );
+        credits.add(
+            nd_id::ROLE_INVALID,
+            [Credit {
+                id: "artist-2".to_string(),
+                name: "Bogus".to_string(),
+                sort_artist_name: String::new(),
+                order_artist_name: String::new(),
+                mbz_artist_id: String::new(),
+                sub_role: String::new(),
+            }],
+        );
+
+        // Non-vacuity: the same conversion without the invalid role succeeds, so the refusal
+        // below is the role and not a broken fixture.
+        let valid_only = {
+            let mut only = RoleCredits::default();
+            only.add(
+                nd_id::ROLE_ALBUM_ARTIST,
+                [Credit {
+                    id: "artist-1".to_string(),
+                    name: "Valid".to_string(),
+                    sort_artist_name: String::new(),
+                    order_artist_name: String::new(),
+                    mbz_artist_id: String::new(),
+                    sub_role: String::new(),
+                }],
+            );
+            only
+        };
+        assert!(
+            participants_of(&valid_only).is_ok(),
+            "the valid credit converts, so the refusal below is the invalid role"
+        );
+
+        let error = participants_of(&credits)
+            .expect_err("an invalid role is a defect, not a droppable credit");
+        assert!(
+            matches!(error, BridgeError::InvalidRole { .. }),
+            "expected InvalidRole, got {error:?}"
+        );
+
+        // The draft path wraps that same failure in `ProjectionError::Bridge`, forwarding the
+        // bridge's typed error rather than rewording it: `album_draft_from_track` runs the
+        // participants conversion before it can build a record, so a folder carrying such a
+        // credit aborts with `Phase1Error::Projection` and writes nothing.
+        let wrapped = ProjectionError::Bridge(error);
+        assert!(
+            wrapped
+                .to_string()
+                .contains("participant role is not a valid Go role"),
+            "the forwarded message keeps the bridge's own wording: {wrapped}"
+        );
+        assert!(
+            matches!(
+                wrapped,
+                ProjectionError::Bridge(BridgeError::InvalidRole { .. })
+            ),
+            "the arm forwards, it does not reword: {wrapped}"
+        );
+        // `ctx.mappings()` is what the draft's signature needs; naming it here keeps the
+        // compile-time link between this arm and the draft builder explicit.
+        let _: &Mappings = ctx.mappings();
+    }
+}

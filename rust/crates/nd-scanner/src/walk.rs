@@ -52,7 +52,14 @@
 //!   marked `EntriesIncomplete`. Go stores byte names; lossy names would collide.
 //! * A directory that cannot be opened is treated as a plain entry (Go falls through to
 //!   the file branch and does not increment `numSubFolders`), with
-//!   [`ScanWarningKind::DirectoryUnreadable`].
+//!   [`ScanWarningKind::DirectoryUnreadable`], and a symlinked directory refused by policy
+//!   reports [`ScanWarningKind::SymlinkedTargetSkipped`]. **Go emits no `ScanWarning` for a
+//!   failed listing at all**: `loadDir` returns the listing error (`scanner/walk_dir_tree.go:111-115`
+//!   `Stat` failure, `:121-125` `Open` failure) and `walkFolder` logs it and `return nil`s
+//!   (`:81-85`), so the walk simply continues; `isDirReadable` (`:301-312`) only `log.Warn`s, and a
+//!   symlinked target skip is a `log.Debug` + `continue` (`:48-51`). Both kinds are therefore
+//!   additions on top of a silent Go skip, and the mapping's fatal class is a third deviation —
+//!   see the `listing_failure_warning` mapping below and the first bullet above.
 //! * `.ndignore` files are read as UTF-8 text; see the ignore module's deviation notes.
 //! * Name ignore policy mirrors Go exactly: `is_ignored_entry` tests the `ignoredDirs`
 //!   blocklist first and the dot rule second, in the same order as Go's `isIgnoredEntry`
@@ -91,8 +98,73 @@ pub const MAX_WALK_DEPTH: usize = 255;
 /// directory, so entering a directory while `active_len` identities are live makes the
 /// walk `active_len + 1` deep; `active_len + 1 > limit` is exactly `active_len >= limit`.
 #[must_use]
-fn depth_limit_exceeded(active_len: usize, limit: usize) -> bool {
+pub(crate) fn depth_limit_exceeded(active_len: usize, limit: usize) -> bool {
     active_len >= limit
+}
+
+/// Result of the walker's directory-enterability gate: the cycle and depth rules only,
+/// before anyone tries to list the directory.
+#[derive(Debug)]
+pub(crate) enum EnterCheck {
+    /// The directory may be entered; the caller still has to list it.
+    Enter,
+    /// It must not be descended into. `warning` is the walker's own typed warning, so a
+    /// caller that shares the gate reports the same thing the walker would.
+    Refused(ScanWarning),
+}
+
+/// The walker's enterability gate as ONE function, so the standalone selected-folder
+/// capture (`phase1`) shares it instead of growing a second, divergent guard
+/// (`decisions.md` D-SC05-SLICE item 2): the depth cap first, then the active-identity
+/// cycle check, with a walk root exempt from the cycle check exactly as Go starts a fresh
+/// recursion there (`scanner/walk_dir_tree.go:76-79`). `limit` is a parameter rather than
+/// `MAX_WALK_DEPTH` inline so the boundary stays testable at an arbitrary cap.
+#[must_use]
+pub(crate) fn enter_refusal(
+    dir: &LogicalPath,
+    identity: &PathBuf,
+    is_walk_root: bool,
+    active: &[PathBuf],
+    limit: usize,
+    library_id: i64,
+) -> EnterCheck {
+    if depth_limit_exceeded(active.len(), limit) {
+        return EnterCheck::Refused(ScanWarning {
+            kind: ScanWarningKind::DepthLimitReached,
+            library_id: Some(library_id),
+            path: Some(dir.clone()),
+            message: format!("active depth would exceed {limit}; not descended"),
+        });
+    }
+    if !is_walk_root && active.contains(identity) {
+        return EnterCheck::Refused(ScanWarning {
+            kind: ScanWarningKind::DirectoryCycleSkipped,
+            library_id: Some(library_id),
+            path: Some(dir.clone()),
+            message:
+                "directory resolves to an active ancestor; not descended (Go would recurse forever)"
+                    .to_string(),
+        });
+    }
+    EnterCheck::Enter
+}
+
+/// Active resolved-directory identities for a folder selected as its OWN walker root:
+/// the canonicalized configured library root plus the canonicalized target (`decisions.md`
+/// D-SC05-SLICE item 3). Logical ancestors are deliberately NOT seeded: they are not on any
+/// active DFS path of a walk that starts at the target, so seeding them would suppress
+/// sibling aliases Go indexes normally. A target whose canonical identity IS the root
+/// contributes no second identity, since the root is already live.
+#[must_use]
+pub(crate) fn selected_identity_context(store: &LocalDir, dir: &LogicalPath) -> Vec<PathBuf> {
+    let mut active = vec![canonical_identity(store.root())];
+    if !dir.is_root() {
+        let identity = canonical_identity(&store.os_path(dir));
+        if !active.contains(&identity) {
+            active.push(identity);
+        }
+    }
+    active
 }
 
 /// One folder emitted by the walk, with the fingerprint computed from the captured
@@ -845,6 +917,58 @@ struct WalkState<'a> {
     summary: &'a mut WalkSummary,
 }
 
+/// The walker's mapping of a **failed directory listing** onto its own typed warning, as ONE
+/// function so the standalone selected-folder capture (`phase1`) reports the same kind for the
+/// same failure instead of collapsing every listing error into one arm
+/// (`decisions.md` D-SC05-SLICE item 2, review finding (a)).
+///
+/// `Some(warning)` is the warn-and-skip class. Go reports **none** of these as a `ScanWarning`:
+/// `PermissionDenied` corresponds to `isDirReadable` failing on `Open`, which only `log.Warn`s
+/// and skips the child (`scanner/walk_dir_tree.go:301-312`); `NotFound`/`NotADirectory` is a path
+/// `loadDir` cannot `Stat`/`Open` (`:111-115`, `:121-125`), whose error `walkFolder` logs and
+/// swallows (`:81-85`); a symlink refusal matches Go's `log.Debug` + `continue` for a symlinked
+/// target (`:48-51`) and is `SymlinkedTargetSkipped` because nothing was traversed by policy,
+/// rather than because the directory was unreadable. Emitting a kind where Go is silent is the
+/// deviation declared in the module header.
+///
+/// `None` is the fatal class. It is **not Go behavior**: Go hands the listing error back to
+/// `walkFolder`, which logs it and returns `nil` (`scanner/walk_dir_tree.go:81-85`), so the walk
+/// continues to the next target and never fails. Here the walker converts it into
+/// [`ScanError::RootUnreadable`] and fails the walk (`EnterOutcome::Failed`, below), which is the
+/// conservative-incomplete-coverage divergence declared at the top of this module: a failed
+/// listing must never be reported as a successful empty folder. A caller that shares this
+/// mapping aborts too rather than warning about a failure the walker treats as fatal.
+#[must_use]
+pub(crate) fn listing_failure_warning(
+    dir: &LogicalPath,
+    error: &StorageError,
+    library_id: i64,
+) -> Option<ScanWarning> {
+    match error {
+        StorageError::PermissionDenied { .. } => Some(ScanWarning {
+            kind: ScanWarningKind::DirectoryUnreadable,
+            library_id: Some(library_id),
+            path: Some(dir.clone()),
+            message: format!("directory cannot be opened: {error}"),
+        }),
+        StorageError::EntryIsSymlink { .. } | StorageError::AncestorIsSymlink { .. } => {
+            Some(ScanWarning {
+                kind: ScanWarningKind::SymlinkedTargetSkipped,
+                library_id: Some(library_id),
+                path: Some(dir.clone()),
+                message: format!("symlinked directory refused: {error}"),
+            })
+        }
+        StorageError::NotFound { .. } | StorageError::NotADirectory { .. } => Some(ScanWarning {
+            kind: ScanWarningKind::DirectoryEnumerationFailed,
+            library_id: Some(library_id),
+            path: Some(dir.clone()),
+            message: format!("directory cannot be listed: {error}"),
+        }),
+        _ => None,
+    }
+}
+
 /// Enter one directory: push its `.ndignore` patterns, check cycle/depth, capture the
 /// listing. `is_walk_root` exempts the target itself from the cycle check (Go starts a
 /// fresh recursion there).
@@ -860,29 +984,17 @@ fn enter_directory(
     // them from `<folder>/.ndignore` exactly as `Push` does.
     push_ignore(store, dir, library_id, state.checker, state.summary);
 
-    if depth_limit_exceeded(state.active.len(), MAX_WALK_DEPTH) {
+    let identity = canonical_identity(&store.os_path(dir));
+    if let EnterCheck::Refused(warning) = enter_refusal(
+        dir,
+        &identity,
+        is_walk_root,
+        state.active,
+        MAX_WALK_DEPTH,
+        library_id,
+    ) {
         state.checker.pop();
-        state.summary.warnings.push(ScanWarning {
-            kind: ScanWarningKind::DepthLimitReached,
-            library_id: Some(library_id),
-            path: Some(dir.clone()),
-            message: format!("active depth would exceed {MAX_WALK_DEPTH}; not descended"),
-        });
-        return EnterOutcome::Skipped;
-    }
-
-    let os_path = store.os_path(dir);
-    let identity = canonical_identity(&os_path);
-    if !is_walk_root && state.active.contains(&identity) {
-        state.checker.pop();
-        state.summary.warnings.push(ScanWarning {
-            kind: ScanWarningKind::DirectoryCycleSkipped,
-            library_id: Some(library_id),
-            path: Some(dir.clone()),
-            message:
-                "directory resolves to an active ancestor; not descended (Go would recurse forever)"
-                    .to_string(),
-        });
+        state.summary.warnings.push(warning);
         return EnterOutcome::Skipped;
     }
 
@@ -911,37 +1023,14 @@ fn enter_directory(
             state.checker.pop();
             // A failed listing is never an empty successful folder.
             state.summary.folders_incomplete += 1;
-            match &error {
-                StorageError::PermissionDenied { .. } => {
-                    state.summary.warnings.push(ScanWarning {
-                        kind: ScanWarningKind::DirectoryUnreadable,
-                        library_id: Some(library_id),
-                        path: Some(dir.clone()),
-                        message: format!("directory cannot be opened: {error}"),
-                    });
+            match listing_failure_warning(dir, &error, library_id) {
+                Some(warning) => {
+                    state.summary.warnings.push(warning);
                     EnterOutcome::Skipped
                 }
-                StorageError::EntryIsSymlink { .. } | StorageError::AncestorIsSymlink { .. } => {
-                    state.summary.warnings.push(ScanWarning {
-                        kind: ScanWarningKind::SymlinkedTargetSkipped,
-                        library_id: Some(library_id),
-                        path: Some(dir.clone()),
-                        message: format!("symlinked directory refused: {error}"),
-                    });
-                    EnterOutcome::Skipped
-                }
-                StorageError::NotFound { .. } | StorageError::NotADirectory { .. } => {
-                    state.summary.warnings.push(ScanWarning {
-                        kind: ScanWarningKind::DirectoryEnumerationFailed,
-                        library_id: Some(library_id),
-                        path: Some(dir.clone()),
-                        message: format!("directory cannot be listed: {error}"),
-                    });
-                    EnterOutcome::Skipped
-                }
-                other => EnterOutcome::Failed(ScanError::RootUnreadable {
+                None => EnterOutcome::Failed(ScanError::RootUnreadable {
                     path: dir.to_string(),
-                    source: clone_storage_error(other),
+                    source: clone_storage_error(&error),
                 }),
             }
         }
@@ -1136,8 +1225,10 @@ fn canonical_identity(path: &Path) -> PathBuf {
 }
 
 /// `scanner/walk_dir_tree.go:237-245` (`isSymlinkedPath`): the path or any ancestor is a link. The
-/// configured root component is not examined (trusted configuration).
-fn is_symlinked_path(store: &LocalDir, path: &LogicalPath) -> bool {
+/// configured root component is not examined (trusted configuration). Crate-visible so the
+/// standalone selected-folder preflight (`phase1`) applies the walker's rule rather than
+/// restating it (`decisions.md` D-SC05-SLICE item 1).
+pub(crate) fn is_symlinked_path(store: &LocalDir, path: &LogicalPath) -> bool {
     let mut current = path.clone();
     while !current.is_root() {
         if let Ok(snapshot) = store.snapshot(&current, Follow::No) {
@@ -1560,6 +1651,283 @@ mod tests {
             MAX_WALK_DEPTH, 255,
             "the cap itself is unchanged by this seam"
         );
+
+        // The selected-folder capture seeds `[canonical root, canonical target]`, so its live
+        // active length at the target is 2 rather than the walker's 1 at the library root: its
+        // depth budget is one level shallower than a walk rooted at the root. Under the
+        // production cap that is unreachable for a real tree, so it changes no behavior; the
+        // assertion pins the offset so a future cap change cannot silently turn it into a
+        // divergence.
+        let selected_capture_active_len = 2;
+        assert!(
+            !depth_limit_exceeded(selected_capture_active_len, MAX_WALK_DEPTH),
+            "the selected capture still enters children under the production cap"
+        );
+        assert!(
+            depth_limit_exceeded(selected_capture_active_len, 2),
+            "and the offset is exactly one level shallower than a root walk at the same cap"
+        );
+    }
+
+    /// The listing-failure to warning mapping both paths share (`listing_failure_warning`,
+    /// review finding (a) on D-SC05-SLICE item 2): every storage-error class the walker's
+    /// `enter_directory` can hit maps to exactly one warning kind, and the fatal class maps
+    /// to `None` so a caller fails rather than warns. Executed here rather than only through a
+    /// real tree because the capture's non-`PermissionDenied` arms need a child that vanishes
+    /// or changes type between the parent's listing and its own listing — a race no
+    /// deterministic filesystem fixture can produce. A divergence in this function is a
+    /// divergence in both callers, since `enter_directory` and `phase1` call the same code.
+    #[test]
+    fn a_failed_listing_maps_to_one_warning_kind_per_class() {
+        let dir = LogicalPath::parse("album/one/child").expect("logical path");
+        let logical = dir.clone();
+        let cases: &[(&str, StorageError, ScanWarningKind)] = &[
+            (
+                "permission denied",
+                StorageError::PermissionDenied {
+                    path: logical.clone(),
+                    source: std::io::Error::from_raw_os_error(13),
+                },
+                ScanWarningKind::DirectoryUnreadable,
+            ),
+            (
+                "entry is a symlink",
+                StorageError::EntryIsSymlink {
+                    path: logical.clone(),
+                    target: PathBuf::from("elsewhere"),
+                },
+                ScanWarningKind::SymlinkedTargetSkipped,
+            ),
+            (
+                "ancestor is a symlink",
+                StorageError::AncestorIsSymlink {
+                    path: logical.clone(),
+                    target: PathBuf::from("elsewhere"),
+                },
+                ScanWarningKind::SymlinkedTargetSkipped,
+            ),
+            (
+                "not found",
+                StorageError::NotFound {
+                    path: logical.clone(),
+                    source: std::io::Error::from_raw_os_error(2),
+                },
+                ScanWarningKind::DirectoryEnumerationFailed,
+            ),
+            (
+                "not a directory",
+                StorageError::NotADirectory {
+                    path: logical.clone(),
+                    kind: crate::storage::EntryKind::File,
+                    source: std::io::Error::from_raw_os_error(20),
+                },
+                ScanWarningKind::DirectoryEnumerationFailed,
+            ),
+        ];
+        for (label, error, expected) in cases {
+            let warning = listing_failure_warning(&dir, error, 7)
+                .unwrap_or_else(|| panic!("{label} is the warn-and-skip class, got None"));
+            assert_eq!(warning.kind, *expected, "{label}: wrong warning kind");
+            assert_eq!(warning.path, Some(dir.clone()), "{label}: names the child");
+            assert_eq!(warning.library_id, Some(7), "{label}: carries the library");
+            assert!(
+                warning.message.contains(&error.to_string()),
+                "{label}: the message states the storage failure, got {:?}",
+                warning.message
+            );
+        }
+
+        // The fatal class: anything outside those buckets becomes `ScanError::RootUnreadable`
+        // in the walker (`EnterOutcome::Failed`), so a caller that shares the mapping must abort
+        // rather than emit a warning the walker never emits for the same failure.
+        let fatal: &[(&str, StorageError)] = &[
+            (
+                "generic I/O",
+                StorageError::Io {
+                    path: logical.clone(),
+                    source: std::io::Error::from_raw_os_error(5),
+                },
+            ),
+            (
+                "invalid logical path",
+                StorageError::InvalidLogicalPath {
+                    path: logical.to_string(),
+                },
+            ),
+            (
+                "ancestor is not a directory",
+                StorageError::AncestorNotDirectory {
+                    path: logical.clone(),
+                    kind: crate::storage::EntryKind::File,
+                },
+            ),
+        ];
+        for (label, error) in fatal {
+            assert_eq!(
+                listing_failure_warning(&dir, error, 7),
+                None,
+                "{label} must be the fatal class, not a warning"
+            );
+        }
+    }
+
+    /// The identity-accumulation invariant the selected-folder capture relies on
+    /// (`decisions.md` D-SC05-SLICE item 2): a flat sibling loop that never descends keeps the
+    /// live identity set at `[root, target]` for every child. Running the production cap worth
+    /// of distinct sibling identities through the shared gate with that seeded context enters
+    /// all of them. A caller that pushed each entered child without popping would report
+    /// `DepthLimitReached` from child `MAX_WALK_DEPTH - 2` onward and `DirectoryCycleSkipped`
+    /// on a second alias of the same sibling, which is exactly the artifact the capture must
+    /// not produce.
+    #[test]
+    fn a_flat_sibling_loop_never_grows_the_live_identity_set() {
+        let dir = LogicalPath::parse("album/one").expect("logical path");
+        let active = vec![PathBuf::from("/real/root"), PathBuf::from("/real/target")];
+        let live_len = active.len();
+
+        for index in 0..MAX_WALK_DEPTH {
+            let child = PathBuf::from(format!("/real/child-{index:04}"));
+            assert!(
+                matches!(
+                    enter_refusal(&dir, &child, false, &active, MAX_WALK_DEPTH, 1),
+                    EnterCheck::Enter
+                ),
+                "child {index} of a wide folder must be entered at live length {live_len}"
+            );
+            // A second alias to the SAME sibling: still entered, because nothing was pushed.
+            assert!(
+                matches!(
+                    enter_refusal(&dir, &child, false, &active, MAX_WALK_DEPTH, 1),
+                    EnterCheck::Enter
+                ),
+                "a second alias of child {index} is not an active ancestor"
+            );
+            // The loop pushes nothing: `active` is the capture's context, unchanged.
+            assert_eq!(
+                active.len(),
+                live_len,
+                "a sibling that is only listed, never descended, joins no live identity"
+            );
+        }
+
+        // Non-vacuity: pushing each entered child — the behavior this fix removes — hits the cap
+        // inside the same loop, so the invariant above really separates the two behaviors.
+        let mut accumulated: Vec<PathBuf> =
+            vec![PathBuf::from("/real/root"), PathBuf::from("/real/target")];
+        let refused_at = (0..MAX_WALK_DEPTH)
+            .find(|index| {
+                accumulated.push(PathBuf::from(format!("/real/child-{index:04}")));
+                matches!(
+                    enter_refusal(
+                        &dir,
+                        &PathBuf::from(format!("/real/child-{:04}-alias", index + 1)),
+                        false,
+                        &accumulated,
+                        MAX_WALK_DEPTH,
+                        1,
+                    ),
+                    EnterCheck::Refused(warning)
+                        if warning.kind == ScanWarningKind::DepthLimitReached
+                )
+            })
+            .expect("a push-without-pop loop must hit the cap within MAX_WALK_DEPTH children");
+        assert_eq!(
+            refused_at,
+            MAX_WALK_DEPTH - 3,
+            "the push-without-pop shape first refuses the sibling at index {} (loop index \
+             {refused_at}): its live length reaches `MAX_WALK_DEPTH` once the children up to \
+             {refused_at} are pushed, so that sibling gets `DepthLimitReached` — exactly the \
+             artifact the capture must not produce",
+            MAX_WALK_DEPTH - 2
+        );
+    }
+
+    /// The enterability gate the standalone selected-folder capture shares (`phase1`,
+    /// D-SC05-SLICE items 2 and 3): the cap and the active-identity cycle rule, asserted at
+    /// their boundaries without a real tree, plus the two exemptions that must NOT refuse —
+    /// the walk root itself and a sibling alias whose identity is not live. `enter_directory`
+    /// runs this same function, so a divergence here would be a divergence in the walker.
+    #[test]
+    fn the_shared_gate_refuses_the_cap_and_an_active_identity_and_exempts_the_rest() {
+        let dir = LogicalPath::parse("album/one").expect("logical path");
+        let target = PathBuf::from("/real/target");
+        let sibling = PathBuf::from("/real/other");
+        let active = vec![PathBuf::from("/real/root"), target.clone()];
+
+        // Cycle: a child that resolves to a live identity is refused with the walker's own
+        // warning kind and path.
+        let refused = enter_refusal(&dir, &target, false, &active, MAX_WALK_DEPTH, 7);
+        match refused {
+            EnterCheck::Refused(warning) => {
+                assert_eq!(warning.kind, ScanWarningKind::DirectoryCycleSkipped);
+                assert_eq!(warning.path, Some(dir.clone()));
+                assert_eq!(warning.library_id, Some(7));
+            }
+            EnterCheck::Enter => panic!("an active ancestor must be refused"),
+        }
+
+        // Walk-root exemption: the same identity is entered when the directory IS the root,
+        // because Go starts a fresh recursion at a target.
+        assert!(matches!(
+            enter_refusal(&dir, &target, true, &active, MAX_WALK_DEPTH, 7),
+            EnterCheck::Enter
+        ));
+
+        // A distinct alias outside the active path is entered, as Go indexes it separately.
+        assert!(matches!(
+            enter_refusal(&dir, &sibling, false, &active, MAX_WALK_DEPTH, 7),
+            EnterCheck::Enter
+        ));
+
+        // Cap boundary at an explicit limit: entering the directory that would exceed the cap
+        // is refused, the one that fills it is not, and the cap is checked BEFORE the cycle
+        // rule so a refused-at-cap directory reports depth rather than a cycle.
+        assert!(matches!(
+            enter_refusal(&dir, &sibling, false, &active, 2, 7),
+            EnterCheck::Refused(warning) if warning.kind == ScanWarningKind::DepthLimitReached
+        ));
+        assert!(matches!(
+            enter_refusal(&dir, &sibling, false, &active, 3, 7),
+            EnterCheck::Enter
+        ));
+        assert!(matches!(
+            enter_refusal(&dir, &target, false, &active, 2, 7),
+            EnterCheck::Refused(warning) if warning.kind == ScanWarningKind::DepthLimitReached
+        ));
+    }
+
+    /// The selected-folder identity context (`selected_identity_context`): exactly the
+    /// canonicalized configured root plus the canonicalized target, with no logical ancestors
+    /// seeded (seeding them would suppress sibling aliases Go indexes), and one identity when
+    /// the target IS the root.
+    #[test]
+    fn a_selected_folder_seeds_only_the_root_and_target_identities() {
+        let label = nd_utils::files::temp_file_name("nd-scanner-selected-", ".dir");
+        let root = PathBuf::from(&label);
+        std::fs::create_dir_all(root.join("album/one")).expect("create nested tree");
+        let store = LocalDir::from_path(root.as_os_str()).expect("temp dir as root");
+
+        let canonical_root = std::fs::canonicalize(&root).expect("canonicalize root");
+        let canonical_target =
+            std::fs::canonicalize(root.join("album/one")).expect("canonical target");
+
+        let active =
+            selected_identity_context(&store, &LogicalPath::parse("album/one").expect("path"));
+        assert_eq!(
+            active,
+            vec![canonical_root.clone(), canonical_target.clone()],
+            "the context is [canonical root, canonical target] in that order"
+        );
+        assert!(
+            !active.contains(&canonical_root.join("album")),
+            "a logical ancestor is not seeded: {active:?}"
+        );
+
+        // The library root selected as the target contributes no duplicate identity.
+        let at_root = selected_identity_context(&store, &LogicalPath::root());
+        assert_eq!(at_root, vec![canonical_root], "the root alone is live");
+
+        std::fs::remove_dir_all(&root).expect("clean up the temp tree");
     }
 
     #[test]

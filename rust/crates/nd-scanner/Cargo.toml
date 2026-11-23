@@ -36,6 +36,19 @@ nd-id = { path = "../nd-id" }
 # nd-tagreader: read_metadata over the real committed fixtures, so the bridge is
 # exercised on actual parses rather than a stubbed Info.
 nd-tagreader = { path = "../nd-tagreader" }
+# nd-utils (SC-05): the `context::Cancellation` flag DB-11's frozen visitors take as
+# their cancellation parameter (`scanner_queries.rs:344-350`). SC-01 ratification seam 4
+# makes the CancelToken -> Cancellation adaptation SC-05's own, so this edge is forced by
+# the frozen signature rather than chosen. Already pinned in rust/Cargo.lock (nd-db and
+# nd-mapping both depend on it), so the lock delta is a dependency edge only — no new
+# [[package]] entry.
+nd-utils = { path = "../nd-utils" }
+
+[dev-dependencies]
+# nd-dbschema (test-only): `apply_fresh_schema` for the phase-1 vertical's DB fixture,
+# the same seam nd-db's own runtime tests use (`tests/runtime_folder_writes.rs:126-135`).
+# Also already pinned in rust/Cargo.lock (nd-db depends on it): no new package entry.
+nd-dbschema = { path = "../nd-dbschema" }
 
 [lints]
 workspace = true

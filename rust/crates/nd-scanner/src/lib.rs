@@ -39,6 +39,10 @@ pub mod folder;
 pub mod ignore;
 // SC-03: the tag→record bridge and the singleton folder projection.
 pub mod mapping_bridge;
+// SC-05: the phase-1 ingest vertical for one folder (walk -> tag -> bridge -> batch ->
+// DB-14 persist). Consumes the SC-02 storage facts, SC-03's bridge/projection, and the
+// ratified DB-11/DB-14 seams; SC-06 owns the rest of phase 1.
+pub mod phase1;
 pub mod projection;
 pub mod storage;
 pub mod walk;
