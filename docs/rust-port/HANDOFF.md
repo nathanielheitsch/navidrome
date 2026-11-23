@@ -10,14 +10,19 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 - Repository: this navidrome fork checkout (Go sources at the root, Rust workspace `rust/`). Resolve paths from the
   working directory — never a developer's absolute path, and never a hardcoded worktree name.
-- Authoritative source baseline: this branch line at `6d6938b1` — **BOOT-00 LANDED `6d6938b1`** (gate/manifest/D1 boundary work only) on top of **DB-17 `b3dee0a6`**, **DB-16 `7d022a02`**, **DB-21(P1-DB) `632271a9`**, **DB-14 `de0f49ea`**, **DB-11 `52b04064`** and
+- Authoritative source baseline: this branch line at `cb59a973` — **SC-03 LANDED `cb59a973`** (the `nd-mapping` tag→record
+  bridge + the singleton folder projection, 19 executed tests) on top of **BOOT-00 LANDED `6d6938b1`** (gate/manifest/D1
+  boundary work only) on top of **DB-17 `b3dee0a6`**, **DB-16 `7d022a02`**, **DB-21(P1-DB) `632271a9`**, **DB-14 `de0f49ea`**, **DB-11 `52b04064`** and
   **DB-15's runtime half `96c495e7`**, which sit on integrated `master`'s code HEAD `e3e0770a` (**SC-02 partial** — local walker,
   `.ndignore`, folder hash, cancellation — fast-forwarded onto `2e7026b2`), which extends `272c9c66` (DB-22) and `f80b9704` (prior
   `4ab63cd5` plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`).
   That SC-02 slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness; DB-11 is the executed
   read/cursor contract only, DB-15 is its runtime half only (durable Go oracle deferred — `decisions.md` H6), and DB-14 is the
-  executed folder-delta persistence seam only (no production caller, no `nd-db` dependency in `nd-scanner`, no walk/mapping/
-  aggregation, no finalize). A docs
+  executed folder-delta persistence seam only (no **integrated** production caller, no `nd-db` dependency in `nd-scanner` on the
+  integrated tree, no walk/mapping/aggregation, no finalize). **SC-05 is IN FLIGHT and NOT ACCEPTED, with no owner**: a
+  phase-1 vertical (`nd-scanner/src/phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`, `tests/common/mod.rs`, plus the
+  `src/{lib.rs,walk.rs}` and manifest/lock delta) exists **only as uncommitted working-tree code** in this worktree. Its work is
+  preserved, not lost — but it has no branch, no commit and no accepted review, so never schedule from it or call it landed.
   lane may be cut from an earlier boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master`
   instead of measuring it in your own worktree. Earlier audited boundaries are listed in `current-status.md`'s
   landed-history table; older handoff baselines are history. Two docs-only boundaries sit above the code HEAD (`f3bb81b2`,
@@ -36,8 +41,10 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 ## Current reality (see `current-status.md` for numbers)
 
 The workspace passes its regression gates and is **not** a runnable server or scanner: `nd-scanner` holds the tested
-local-FS walker slice (SC-02 partial at `e3e0770a`) but **no scanner entrypoint, tag-to-DB pipeline or full-scan
-orchestration**; `nd-http` is BOOT-00's typed dependency-boundary module (`RouterInjection` plus the executed cycle test — **no router, no listener**), `nd-api` remains a scaffold, and the CLI `main` is still empty at `6d6938b1`. Shared codecs, record marshaling, the eight row
+local-FS walker slice (SC-02 partial at `e3e0770a`) and the **SC-03 mapping bridge + singleton projection** (`mapping_bridge.rs`,
+`projection.rs` at `cb59a973`), but on the integrated tree has **no scanner entrypoint, tag-to-DB pipeline or full-scan
+orchestration** — the first caller of the DB-11 read seam and DB-14 write seam exists only as the uncommitted SC-05 vertical
+(see `current-status.md`'s non-integrated block); `nd-http` is BOOT-00's typed dependency-boundary module (`RouterInjection` plus the executed cycle test — **no router, no listener**), `nd-api` remains a scaffold, and the CLI `main` is still empty at `6d6938b1`. Shared codecs, record marshaling, the eight row
 hooks, substantial
 executed reads **and thirty-six executed transaction-bound `*_in_tx` primitives** (33 `pub`, plus three `pub(crate)`:
 DB-14's `persist_folder_delta_in_tx` and DB-16's `move_matched_mediafile_in_tx`/`remap_missing_mediafile_in_tx`, which the
@@ -63,8 +70,9 @@ backwards-overwrite is faithful, **no monotonic guard added**), zero-arg stateme
 NULL-exclusion, statement-level `RowsAffected` vs entity counts, probe-then-update order, and **rollback stays the CALLER's
 obligation via the DB-00 typed seam** (all four helpers' docs say so). Typed
 specialized scanner reads are no longer "not landed" — count refresh landed at `b3dee0a6` and move/reference at `7d022a02`, while GC (DB-20) still is — and neither DB-11's
-reads nor any write has a production caller (DB-14's seam has no caller either: `nd-scanner` declares no `nd-db` dependency and
-SC-05 is its intended consumer). Tests that manually execute SQL bundles are not production repository methods,
+reads nor any write has a production caller **on the integrated tree** (DB-14's seam has no integrated caller either:
+`nd-scanner` declares no `nd-db` dependency at `cb59a973`; the first caller of both the DB-11 read and the DB-14 write seam
+exists only as the uncommitted SC-05 vertical, which is not delivery). Tests that manually execute SQL bundles are not production repository methods,
 production code, but its router is mounted only in crate tests). DB-01 (missing-state bind order), DB-03/D-OPEN
 (effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`),
 DB-02 (`6d9d984d`/`74ebd81c`), DB-15's **render-only** rating repair (`ab466928`) **and its runtime half (`96c495e7`)** are
@@ -103,6 +111,14 @@ native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middl
 prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and
 non-target/user-data preservation tests.
+for user cleanup; this docs lane did not archive, delete, or otherwise touch it, and no cleanup is authorized. **SC-05 lane note
+(2026-11-23):** the SC-05 implementer and its reviewer are both finished, the lane has **no branch and no commit**, and its
+uncommitted work is preserved in this worktree. The implementer session was probed and is still alive with its context intact
+(it re-ran fmt/clippy/`-p nd-scanner` tests read-only and confirmed nothing pending in `/tmp` beyond superseded scratch), so it
+can be resumed with `send_agent_prompt` rather than re-launched. Next scanner action: a fix round on that tree (`nd-scanner`
+rustdoc 12 warnings — 9 from the lane; plus the review findings in `current-status.md`), then a **fresh** review, then parent
+integration. **SC-04 is launchable independently** (prereq SC-03 met; placement decided by `decisions.md` D-SC04);
+**SC-06 remains unauthorized** and must not be launched on `decisions.md` D-SC05-SLICE.
 
 **Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state`), the
 isolated worktree `~/.paseo/worktrees/0xo97qr3/boot00` on branch `boot00-manifest-pins-scaffold` **still exists at the same commit

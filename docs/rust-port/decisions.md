@@ -320,6 +320,9 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   2. **DB read seam**: phase-1 children reads use DB-11's `scanner_queries::visit_media_in_folder`
      (`52b04064`) with `ScannerScope::for_library`; DB-21(P1-DB) `632271a9` freezes that surface — SC-05 must
      consume the frozen API, not re-derive it.
+     _(Scope wording CORRECTED 2026-11-23, see D-SEAM2 below; the frozen API itself is unchanged. The signature's
+     scope parameter is `Option<&UserScope>`, not `&ScannerScope`; a headless scan passes `None` and this read's
+     library scoping is inherent in `folder_id`. Historical wording left intact for the record.)_
   3. **DB write seam**: one folder delta per commit via DB-14's `persist_folder_delta`
      (`de0f49ea`, D-BATCH) — SC builds the immutable `FolderWriteBatch` (pre-generated folder/artist/album IDs,
      caller stamps, full_scan_mode boolean from the library row), consumes `CommittedFolderOutcome`
@@ -699,3 +702,154 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
 - **DB-21 P1-DB scope narrowing (PARENT DECIDED 2026-11-21).** The launchable DB-21 exit is the **DB-side-only** P1 contract: composed regression through the real pool, the frozen API surface, and the CONSUMER_HANDOFF U-ledger pinning external acceptances as Unmet; `SC.mapping-bridge`, `SC.phase1-fixture` and `BOOT.configured-library-caller` stay U until their SC/BOOT lanes deliver caller evidence (`BOOT.configured-library-caller` gates on **BOOT-01 implementing**, with BOOT-00 a prerequisite — approval is not delivered caller evidence). Per `subplans/db-runtime.md:895` a narrowly-scoped exit may demonstrate only a strictly narrower scope, never the general one: the stable ID **DB-21 is not complete until FULL-SCANNER-DB**. Landed as `632271a9` (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests).
 - **Renderer-prepare gate deferred (PARENT DECIDED 2026-11-21).** The `subplans/db-runtime.md:628-632` recommendation — one executed gate preparing every renderer's statement — is deferred until the DB-04..DB-17 mutation renderers stabilize. A naive all-statements gate false-fails on five documented classes: `refresh_counters_sql` partial shape; share empty-cols rendering `near "WHERE": syntax error` (a syntax error, NOT no such column); `plugin_repo` `no such table: plugin` by D-PLUGIN; `annotation_count_sql` `no such column: annotation.id` (pinned at DB-15); clause fragments not standalone-preparable. The 5-class inventory now lives **executed** in `runtime_scanner_persistence_contract.rs` (`deferred_renderer_prepare_gate_classes_are_executed` asserts the two executable failures), so a future gate cannot re-derive it wrong.
 - **Proof of delivery (parent process ruling, 2026-11-21).** After a false-completion incident on DB-21 — a child reported 2148 lines / 6 green tests / a fabricated Rust 1.95.1 toolchain while its own session log showed zero write calls and no artifact existed (caught by the fresh reviewer's tree check) — the assignment template (`assignment-template.md`) gained a mandatory **Proof of delivery** section: literal `wc -l`/`ls -la`, `git status --porcelain --untracked-files=all`, literal `cargo --version`/`rustc --version` output, and literal exits + test-total lines, copied not paraphrased. Completion claims without these outputs are treated as unverified by the parent.
+
+## SC-04 placement, SC-05 manifest delta, seam-2 correction, SC-05/SC-06 boundary (PARENT DECIDED 2026-11-23)
+
+- **D-SC04 — SC-04 pure aggregation and semantic comparison are scanner-local (PARENT DECIDED 2026-11-23).**
+  Ratifies the SC-01 step-5 recommendation and the SC-04 ownership item (`subplans/scanner.md` SC-01 step 5,
+  SC-04 item 3): `ToAlbum` aggregation and album/media comparison live in `nd-scanner`
+  (`nd-scanner/src/aggregate.rs`, `nd-scanner/src/compare.rs`, `projection.rs` delegating — those modules do not exist
+  yet and are SC-04's to create), NOT in `nd-model`. Source basis
+  (SOURCE-VERIFIED in this worktree): Rust `nd-model/src/album.rs:174-176` `equals` compares only IDs;
+  Go `model/mediafile.go:320` `func (mfs MediaFiles) ToAlbum() Album` has **no Rust equivalent** — a search for
+  `ToAlbum` under `rust/crates/` hits only doc/test references (`nd-scanner/src/projection.rs:6,72,165,341`,
+  `tests/projection_singleton.rs:174,604`, `tests/phase1_faults.rs:765`, `src/phase1.rs:41`). Consequence:
+  `nd-model/src/album.rs` is not edited by any SC lane; changing public DTO equality requires a separately
+  approved, serialized **model-owner** lane that transfers the behavior/tests rather than leaving two competing
+  `equals`. The ID-only equality stays recorded as an external `nd-model` defect (`subplans/scanner.md:29`), not
+  as scanner parity debt to fix in the scanner lane. No `nd-model` manifest or lock change is authorized here.
+
+- **D-SC05-MANIFEST — SC-05 manifest delta extended and explicitly authorized: `nd-utils` runtime +
+  `nd-dbschema` dev-only (PARENT DECIDED 2026-11-23), IN ADDITION TO the already-ratified `nd-db` edge**
+  (`decisions.md` "SC-01 seams ratification", manifest item). Authorized delta in `rust/crates/nd-scanner/Cargo.toml`:
+  (a) `nd-utils = { path = "../nd-utils" }` as a **runtime** dependency — required to name the frozen DB-11
+  parameter type directly, `&nd_utils::context::Cancellation` (`nd-db/src/scanner_queries.rs:344-350`); seam 4
+  assigns the `CancelToken`→`Cancellation` adaptation to SC-05 (`nd-scanner/src/phase1.rs::cancellation_adapter`); and
+  (b) `nd-dbschema = { path = "../nd-dbschema" }` under **`[dev-dependencies]` only**, for the fresh-schema test
+  harness `nd_dbschema::schema::apply_fresh_schema` — the same fixture seam `nd-db`'s own runtime tests use
+  (`nd-db/tests/runtime_folder_writes.rs:123-135`). **Zero new lock packages**: the `rust/Cargo.lock` delta is two
+  *dependency edges* on the existing `nd-scanner` entry (`nd-utils`, `nd-dbschema`), both already pinned because
+  `nd-db` depends on them. Nothing else in `nd-scanner/Cargo.toml`, `rust/Cargo.toml`, or `rust/Cargo.lock` is
+  authorized by this record. The DB-21 U-ledger consequence is unchanged: `SC.phase1-fixture` closes with SC-05
+  delivery, not with this authorization.
+
+- **D-SEAM2 — SC-01 seam 2 wording corrected (PARENT DECIDED 2026-11-23; a corrected contract, NOT a different
+  API).** The frozen signature is `visit_media_in_folder(conn: &Connection, folder_id: &str,`
+  `scope: Option<&UserScope>, cancel: &nd_utils::context::Cancellation, f: impl FnMut(MediaFileRecord) -> Control)`
+  `-> Result<VisitOutcome, CursorError>` (`nd-db/src/scanner_queries.rs:344-350`). `ScannerScope` (`:853`, a library id
+  only) belongs to the system-only readers that take `&ScannerScope` (`:411,:459,:631,:655`); the phase-1 per-folder
+  read carries `Option<&UserScope>`, and `None` is Go's clause-omitted headless/admin arm (`applyLibraryFilter` skip,
+  `persistence/sql_base_repository.go:264-270`; D-SCOPE item (1) above — `None` = headless/admin/all-grants, resolved
+  once by the caller). For this read Go's library scoping is **inherent in `folder_id`, not a scope parameter**:
+  `MediaPhaseFilter::InFolder` renders only `media_file.folder_id = ?` (`nd-db/src/scanner_queries.rs:175-199`),
+  matching Go's `GetCursor(Eq{"folder_id": …})` (`scanner/phase_1_folders.go:231-233`), which takes no library argument
+  at all. A headless call therefore passes `None`, and there is no `ScannerScope::for_library` argument on this seam.
+  Pin evidence at integrated `master`: `nd-db/tests/runtime_scanner_persistence_contract.rs:3141,:3172,:3188,:3897`
+  (headless `None`) and `:2863` (authenticated `Some(&scope)` arm); SC-05's consumer already matches
+  (`nd-scanner/src/phase1.rs:535-568`, call at `:568`; the `:470-495`/`:452-460` quoted in the 2026-11-23 launch brief are
+  stale line references — the consumer moved when the capture code landed). The DB-21(P1-DB) `632271a9` freeze stands —
+  SC consumes the frozen API exactly as written. This corrects the `ScannerScope::for_library` wording recorded on
+  2026-11-21 (amended in place above) and claims no API change.
+
+- **D-SC05-SLICE — SC-05 stays a singleton phase1 vertical slice; narrow cycle/follow design approved for
+  implementation (PARENT DECIDED 2026-11-23; NO SC-06 AUTHORIZATION).** SC-05 is **not complete** while its
+  outstanding acceptance and parity items are unresolved: multi-track album groups refuse rather than aggregate
+  (`nd-scanner/src/projection.rs:77,370` in the current working tree — `:72,341` was the pre-fix-round location, and this
+  doc set's line refs are as of the **working tree at `cb59a973`**, not a landed commit; `tests/phase1_faults.rs:765`), and
+  there is no outdated/empty-skip policy,
+  image-changes collector, or missing-folder finalizer (`nd-scanner/src/phase1.rs:16-46`). Those remain open for a
+  fresh review/fix pass and are **not** decided by this doc patch. Approved narrow design items, for the existing
+  SC-05 lane only: (1) standalone `scan_folder` (`nd-scanner/src/phase1.rs:1668`; the `:1265` quoted in the launch brief
+  is stale — the function moved when the cycle/capture code landed) honors `follow_symlinks=false` at
+  the target/ancestor preflight and rejects **without writes** — the SC-02 walker already ports Go's
+  `scanner/walk_dir_tree.go:47-51` rule through `is_symlinked_path` (`nd-scanner/src/walk.rs:1195-1207`, applied by the
+  target preflight at `:510-525`; the `:505-524,:1140-1151` pair in the launch brief is stale — `:1140-1146` is the
+  unrelated image-mtime fold), so
+  reusing that check is consistency rather than new behavior — and the SC-06 controller must treat such a target as a
+  **skipped target** (warning + `targets_skipped`), not a fatal library error; (2) cycle/depth handling of the
+  standalone snapshot shares SC-02's directory-enterability semantics (`walk.rs::enter_directory` `:916`, the shared
+  `enter_refusal` gate `:116-143`, `depth_limit_exceeded` `:94`, `MAX_WALK_DEPTH` `:86` — **not** `:863-873`, which is
+  `pop_frames`/`Frame`) instead of a second divergent guard; (3) the selection context is
+  defined as the target being a **fresh walker root** with active identities `[library root, target]`, without seeding
+  arbitrary logical parents; (4) the persistence core is split into a crate-private `ingest_folder_snapshot` that
+  consumes a validated, trusted walker-produced snapshot, so SC-06 can later persist the authoritative captured
+  snapshot without rescanning. **This authorizes no SC-06, controller, or full-traversal work**: SC-06's own gates
+  stand (`subplans/scanner.md` SC-06) and it must not be launched on this record. Explicitly deferred and NOT decided
+  here: SC-06's inaccessible-subtree vs confirmed-missing finalization rule (`subplans/scanner.md` SC-06 item 8)
+  and the global finalizer's transaction scoping (the only multi-folder tx, D-BATCH,
+  Go `scanner/phase_1_folders.go:520-547`).
+
+  **Evidence basis**: parent re-verification against `nd-db/src/scanner_queries.rs:175-199,344-350,847-882`
+  (ScannerScope `:853` / UserScope `:882` shapes), `nd-db/tests/runtime_scanner_persistence_contract.rs`,
+  `nd-db/tests/runtime_folder_writes.rs:123-135`, `nd-scanner/src/{phase1,walk,projection}.rs` (line refs re-checked
+  against the 2026-11-23 working tree — corrections inline above), and the uncommitted SC-05
+  `rust/crates/nd-scanner/Cargo.toml` + `rust/Cargo.lock` delta; Go `model/album.go:87-103`,
+  `model/mediafile.go:320`, `scanner/phase_1_folders.go:231-233,520-547`, `scanner/walk_dir_tree.go:47-51`,
+  `persistence/sql_base_repository.go:264-270`.
+
+## SC-03 birth-time ruling (durable) and SC-05 acceptance status (PARENT RECORDED 2026-11-23)
+
+- **SC-03 birth-time substitution ruling (PARENT, 2026-11-21; previously carried ONLY in the `cb59a973` commit body, so
+  it had no durable contract home).** At MAPPING time Go substitutes the wall clock for an unavailable birth time —
+  `scanner/local.go:116-128` (native → `statx` → `time.Now()`) and `scanner/map_mediafile.go:81` — and `Put` stamps
+  `CreatedAt`, never `BirthTime` (`persistence/mediafile_repository.go:184-186`). The port's contract therefore takes the
+  substitute as an **injected clock** (`bridge_media_file(…, now: Option<DateTime<Utc>>)`, D-TIME: no clock reads inside
+  the bridge), resolves `effective_birth_time` **once** (storage birth wins; unavailable → injected `now`; neither →
+  `MissingBirthSubstitute`), and the album draft consumes that same resolved value (Go `model/mediafile.go:390`,
+  `:466-480` — all-zero births stay zero/NULL). Malformed mapping timestamps parse **before** storage availability is
+  considered, and a modified/size cross-check is `StorageFactMismatch` (`local.go:90-109` has no mtime substitution).
+  This replaces an earlier mtime-then-imported-at policy that diverged from Go. Recorded here so the ruling survives the
+  commit body; landed-scope evidence lives in `current-status.md`.
+- **SC-05 acceptance status: IN FLIGHT, NOT ACCEPTED, ownership UNASSIGNED (2026-11-23).** The SC-05 vertical exists only
+  as uncommitted working-tree work (`nd-scanner/src/phase1.rs`, `tests/{phase1_slice,phase1_faults,phase1_fixture}.rs`,
+  `tests/common/mod.rs`, `src/{lib.rs,walk.rs}`, the D-SC05-MANIFEST manifest/lock delta). Its lane writer
+  (`4a8567e4-1ab8-417d-8758-0dc444b0971f`, "Fix SC-05 false sibling-cycle refusal and root facts") is **alive, idle, and
+  resumable** — its Pi session is persisted and it verified it holds the fix-round context and made no edits after its last
+  edit at 06:49 — but it finished without committing, so no ownership is currently assigned to it.
+  It is the first caller of `scanner_queries::visit_media_in_folder` and `scanner_writes::persist_folder_delta`, but per
+  the standing rule it is **not landed** and no message or green working tree makes it done. Outstanding before
+  integration: the `nd-scanner` rustdoc fix (12 warnings, 9 introduced by this lane), the review findings recorded in
+  `current-status.md`'s non-integrated block, and SC-05's own acceptance items (multi-track aggregation,
+  outdated/empty-skip policy, image-changes collector, missing-folder finalizer — D-SC05-SLICE). The DB-21 U-ledger
+  entries `SC.mapping-bridge` and `SC.phase1-fixture` stay **U**: `SC.mapping-bridge`'s text also pins the distinct
+  MediaFile DTO storage-field gate, and `SC.phase1-fixture` closes only with an accepted SC-05, not with this record.
+  Executed ledger of record: `nd-db/tests/runtime_scanner_persistence_contract.rs:583-601` (asserted Unmet by test).
+
+- **D-SC05-PATH — the raw path identity is what must reach the DB; UTF-8 name text is an SC-02 encoding boundary, not a
+  semantic precondition of this ingest (PARENT DECIDED 2026-11-23).** What must survive to the database is the folder's
+  **raw path identity**: `LogicalPath::from_components` keeps every component byte-for-byte and the persisted `path` is
+  derived from the dir path (`nd-scanner/src/folder.rs:199`), so folder identity does not depend on the name decoding as
+  UTF-8. Go's selected folder carries only the `string` path (`scanner/scanner.go`) and `dirToFolder` derives `Name` from
+  that path (`scanner/folder_entry.go:94-104` → `model.NewFolder(name, ...)`); only the **last** component becomes
+  `FolderEntry.Name`, so a non-UTF-8 name in an ancestor cannot reach the folder row through the name at all.
+  **Correcting an earlier draft of this record: today a non-UTF-8 name does NOT persist.** `LogicalPath::parse` takes
+  `&str`, and `walk.rs::preflight_component` (`:1306-1324`) refuses any non-decodable target **component** — ancestors
+  included, because the loop iterates `target.path.components()` (`walk.rs:513-525`) — with `ScanError::NonUtf8Name` plus
+  a `NameNotUtf8` warning whose text is explicit lossy `{:?}` diagnostics (`walk.rs:1317`) and, on the walker path, an
+  explicit `WalkOutcome::EntriesIncomplete`/`ScanSummary::NonUtf8Target` (`walk.rs:763-773`, `:534`). That is **not** a
+  `to_string_lossy` substitution of the name, which is exactly why `build_batch`'s lossy `to_string_lossy()` render of
+  `folder.name` (`phase1.rs:1356-1362`, plus `display_path` for `path`) is **latent, not wrong**: no target path reaching
+  it carries non-UTF-8 bytes. Decided: (i) the library root's raw identity must stay usable as the selection base, so the
+  ancestor check is a representability check and never a name requirement — a non-UTF-8 **ancestor** with a valid target
+  name must persist the target folder, which is what the current ancestor refusal gets wrong; (ii) the walker's
+  documented entry-level policy (`walk.rs:51-54`) excludes a non-UTF-8 *entry* name with a raw-path warning because that
+  media row's path derives from the entry, and excluding a non-UTF-8 entry inside the selected folder stays correct;
+  (iii) every `Message`/warning render stays lossy `{:?}` diagnostics and is never a persisted identity;
+  (iv) closing the UTF-8 boundary so a non-UTF-8-named folder can be named and ingested is an **explicit open item**, not
+  a claim that it already works, and the SC-02 walker's declared non-UTF-8 divergence (`walk.rs:52-54`) is the honest
+  home for that boundary. Basis: `contract.rs:545-563` (`NameText`, whose doc states the UTF-8 boundary is an explicit
+  outcome so a non-UTF-8 name cannot collide through `to_string_lossy`), `walk.rs:841-847`, `:1306-1324`, `:513-525`,
+  `:534`, `:763-773`; `storage.rs:254`; `folder.rs:199`; Go `scanner/scanner.go`, `scanner/folder_entry.go:94-104`.
+
+- **D-SC05-INT — SC-05 integration procedure: branchless uncommitted work is not delivered, and a green working tree
+  is not a landed package (PARENT DECIDED 2026-11-23).** The SC-05 vertical currently exists **only as uncommitted
+  working-tree code** with no owner, so its status stays **IN FLIGHT / NOT ACCEPTED** and no lane may schedule from it.
+  The only durable copy of that work is this worktree's diff — there is no commit and no branch — so it must be
+  transferred to a live SC-05 owner with explicit file ownership before it is touched again. Procedure: (1) assign an
+  owner for the SC-05 files (`nd-scanner/src/phase1.rs`, `src/{lib.rs,walk.rs}`, `tests/phase1_{slice,faults,fixture}.rs`,
+  `tests/common/mod.rs`, the manifest/lock delta); (2) fix this round's findings — `nd-scanner` rustdoc **12 warnings vs the
+  4-warning baseline**, the mount-count/depth-cap test weakness, and the `tests/phase1_fixture.rs` `item_artwork` freshness
+  gap (`tests/common/mod.rs:613`), and make the no-write checks **per helper** against the writable-table snapshot, since a
+  global equality check passes even when a single helper writes rows; (3) run a **fresh review** covering every changed
+  file; (4) parent integration with a signed commit plus a durable receipt here. SC-05 is **not** complete phase 1 and never
+  closes #17 (D-SC05-SLICE; `subplans/scanner.md` SC-05 item 10). Nothing beyond SC-05's own ownership is authorized here.

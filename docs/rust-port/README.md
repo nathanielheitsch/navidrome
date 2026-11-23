@@ -26,7 +26,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest parent integration gates at `6d6938b1` (2363/0/1 across 98 suites); earlier `7d022a02`/`632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest **integrated** parent gates at `cb59a973` (SC-03: 2383/0/1 across 100 suites, `nd-scanner` 169/0), and a clearly-labeled **non-integrated** block for the in-flight uncommitted SC-05 lane; `6d6938b1`/`7d022a02`/`632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -83,11 +83,24 @@ tests; gates 2343/0/1 across 97 suites), **DB-17 LANDED `b3dee0a6`** (four calle
 `update_counts_in_tx`, library 8-probe + 10-bind `refresh_library_totals_in_tx`; 20 executed tests in NEW `tests/runtime_count_refresh.rs`; no
 production caller — SC's phase-3 triggers are the consumers) and **BOOT-00 LANDED `6d6938b1`** (D3 manifest pin repair with zero new lock entries
 + the D1 `nd-http` dependency boundary with the executed `dependency_graph_has_no_http_api_cycle`; **gate work only, no production behavior**).
-Latest merged-tree gates at `6d6938b1`: **2363 / 0 / 1 across 98 suites**, `-p nd-db` **1073 / 0 / 0 across 49 suites**, `nd-http` 1/1, `nd-db`
-rustdoc 21 = post-DB-16 baseline (arithmetic: `2343` at `7d022a02` `+ 20` DB-17 `+ 0` BOOT-00, suites `97 → 98`).
-The spine's next package is therefore **DB-18** (forward spine `DB-18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; DB-18 is gated on `D-STATS`, still without a
+**SC-03 LANDED `cb59a973`** — the `nd-mapping` tag→record bridge (`mapping_bridge.rs`) plus the singleton folder projection
+(`projection.rs`), 4 files +2 executed suites, **19 executed tests** against the committed `go_oracle.json` and real tagreader
+fixtures; birth-time substituted by an **injected clock** (durable record now in `decisions.md`). Latest **integrated** gates at
+`cb59a973`: **2383 / 0 / 1 across 100 suites**, `nd-scanner` **169 / 0**. **SC-05 is IN FLIGHT, NOT ACCEPTED, ownership
+UNASSIGNED**: a phase-1 vertical (`phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`) sitting **uncommitted** in this
+worktree at `cb59a973`, and the first caller of DB-11's `visit_media_in_folder` + DB-14's `persist_folder_delta`; its
+working-tree gates are 2431/0/1 across 103 suites with `nd-scanner` rustdoc **12** (9 from this lane) — **not** landed, and
+a fix round + fresh review must precede integration. Nothing else is in flight.
+Merged-tree gates at `6d6938b1` (dated history): **2363 / 0 / 1 across 98 suites**, `-p nd-db` **1073 / 0 / 0 across 49 suites**,
+`nd-http` 1/1, `nd-db` rustdoc 21 = post-DB-16 baseline.
+The DB spine's next package is **DB-18** (forward spine `DB-18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; DB-18 is gated on `D-STATS`, still without a
 canonical record), since **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract (NEW `nd-db/tests/runtime_scanner_persistence_contract.rs`, 4206 lines, 7 executed tests; parent scope narrowing 2026-11-21, `decisions.md`). See `current-status.md` and
-`next-work.md` for the details. Two parent decision records landed the same day (`decisions.md`): **SC-01 ratified NARROW**
-(the five SC-05 seams plus the authorized `nd-scanner` `nd-db` manifest delta; progress sink, watcher, remote storage and
-`MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified) and **EXECUTED at `6d6938b1`**, so BOOT-01 is the
-next launchable boot package.
+`next-work.md` for the details. Parent decision records 2026-11-23 (`decisions.md`): **D-SC04** (SC-04 aggregation/comparison is
+scanner-local, `nd-model` untouched), **D-SC05-MANIFEST** (`nd-utils` runtime + `nd-dbschema` dev-only, two lock edges only),
+**D-SEAM2** (seam-2 scope parameter is `Option<&UserScope>`, headless passes `None`), **D-SC05-SLICE** (narrow cycle/follow design,
+**no SC-06 authorization**), **D-SC05-PATH** (raw path identity is the contract; UTF-8 name text is an SC-02 encoding boundary,
+an explicit open item), plus the durable **SC-03 birth-time ruling** and **SC-05 acceptance status**. Earlier: **SC-01 ratified
+NARROW** (the five SC-05 seams plus the authorized `nd-scanner` `nd-db` manifest delta; progress sink, watcher, remote storage and
+`MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified) and **EXECUTED at `6d6938b1`**, so
+**SC-04** is the next launchable scanner package (prereq SC-03 is met) and **BOOT-01** the next launchable boot package; SC-06
+remains unauthorized.
