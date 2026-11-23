@@ -18,8 +18,9 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
   `4ab63cd5` plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`).
   That SC-02 slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness; DB-11 is the executed
   read/cursor contract only, DB-15 is its runtime half only (durable Go oracle deferred — `decisions.md` H6), and DB-14 is the
-  executed folder-delta persistence seam only (no **integrated** production caller, no `nd-db` dependency in `nd-scanner` on the
-  integrated tree, no walk/mapping/aggregation, no finalize). **SC-05 is IN FLIGHT and NOT ACCEPTED, with no owner**: a
+  executed folder-delta persistence seam only (no **integrated** production caller — `nd-scanner` declares `nd-db` on the
+  integrated tree since SC-03 `cb59a973`, but nothing integrated calls the seam; no walk/mapping/aggregation, no finalize).
+  **SC-05 is IN FLIGHT and NOT ACCEPTED, ownership not yet recorded** (its writer was resumed by the parent twice): a
   phase-1 vertical (`nd-scanner/src/phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`, `tests/common/mod.rs`, plus the
   `src/{lib.rs,walk.rs}` and manifest/lock delta) exists **only as uncommitted working-tree code** in this worktree. Its work is
   preserved, not lost — but it has no branch, no commit and no accepted review, so never schedule from it or call it landed.
@@ -71,7 +72,7 @@ NULL-exclusion, statement-level `RowsAffected` vs entity counts, probe-then-upda
 obligation via the DB-00 typed seam** (all four helpers' docs say so). Typed
 specialized scanner reads are no longer "not landed" — count refresh landed at `b3dee0a6` and move/reference at `7d022a02`, while GC (DB-20) still is — and neither DB-11's
 reads nor any write has a production caller **on the integrated tree** (DB-14's seam has no integrated caller either:
-`nd-scanner` declares no `nd-db` dependency at `cb59a973`; the first caller of both the DB-11 read and the DB-14 write seam
+`nd-scanner` declares `nd-db` at `cb59a973` but has no integrated caller of it; the first caller of both the DB-11 read and the DB-14 write seam
 exists only as the uncommitted SC-05 vertical, which is not delivery). Tests that manually execute SQL bundles are not production repository methods,
 production code, but its router is mounted only in crate tests). DB-01 (missing-state bind order), DB-03/D-OPEN
 (effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`),
@@ -112,12 +113,23 @@ prepare/header/`Send`/body ownership each still need their own bounded package. 
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and
 non-target/user-data preservation tests.
 for user cleanup; this docs lane did not archive, delete, or otherwise touch it, and no cleanup is authorized. **SC-05 lane note
-(2026-11-23):** the SC-05 implementer and its reviewer are both finished, the lane has **no branch and no commit**, and its
-uncommitted work is preserved in this worktree. The implementer session was probed and is still alive with its context intact
-(it re-ran fmt/clippy/`-p nd-scanner` tests read-only and confirmed nothing pending in `/tmp` beyond superseded scratch), so it
-can be resumed with `send_agent_prompt` rather than re-launched. Next scanner action: a fix round on that tree (`nd-scanner`
-rustdoc 12 warnings — 9 from the lane; plus the review findings in `current-status.md`), then a **fresh** review, then parent
-integration. **SC-04 is launchable independently** (prereq SC-03 met; placement decided by `decisions.md` D-SC04);
+(2026-11-23, after the resuscitation and two review rounds):** the lane has **no branch and no commit**; its uncommitted work
+is preserved in this worktree and in three parent out-of-band captures outside the repo (`~/backups/sc-05-capture-*`, newest
+`sc-05-capture-20261123-133629/`, re-verified to apply cleanly onto `cb59a973`). The implementer session
+`4a8567e4-1ab8-417d-8758-0dc444b0971f` is **alive and idle with its Pi session persisted**, so it was **resumed twice** via
+`send_agent_prompt` (fix round, then the review fix pass) rather than re-launched. A fresh read-only reviewer
+(`c5ead1e6-92fa-4b18-b271-14d7bfce283a`) returned **APPROVE-WITH-FIXES with no High findings**, and its four selected findings
+are applied: wrong Go line citations in `listing_failure_warning` (doc-only; `walk_dir_tree.go` is 352 lines, so the cited
+`:995-998` did not exist and `:301-312` is `isDirReadable`, which emits no Go `ScanWarning`), the `annotation` /
+`album.average_rating` snapshot blind spot, duplicate writable-table lists plus an overstated injection-matrix doc, and the
+unreachable `unwrap_or_else` fallback. `nd-scanner` is now **224/0 across 12 targets**, the workspace is **2444/0/1 across 129
+targets (exit 0)**, and the lane's own rustdoc warnings are **zero**. Two review suggestions were **declined** with reasons in
+`decisions.md` D-SC05-REVIEW: the 4 pre-existing rustdoc `-D warnings` failures (they fail identically at integrated
+`cb59a973`, so they are a baseline gate, not SC-05 scope) and the latent `to_string_lossy` ancestor split (it lives in
+`ignore.rs:435`, which this lane never touched). **Next action is the parent's integration decision only** — a signed commit
+plus a durable receipt per `decisions.md` D-SC05-INT step 4. **SC-04 is launchable independently** (prereq SC-03 met;
+placement decided by `decisions.md` D-SC04); **SC-06 remains unauthorized** and must not be launched on
+`decisions.md` D-SC05-SLICE.
 **SC-06 remains unauthorized** and must not be launched on `decisions.md` D-SC05-SLICE.
 
 **Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state`), the

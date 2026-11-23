@@ -440,7 +440,8 @@ result on identical fixtures).
    warn arms route through `warn_arm`, which detects transaction loss via `is_autocommit` and returns the original typed SQLite error as
    FATAL (never a warning — the `RAISE(ROLLBACK)` autocommit-leak class); ABORT-class statement failures still warn+commit;
    `MediaIdentity` per-record (non-empty ID short-circuit, Match only empty); Go `c == 0` missing-quirk preserved. **NOT done:** no
-   production caller (SC-05 is the consumer; `nd-scanner` still has no `nd-db` dependency), no walk/tag-mapping/aggregation (SC-owned),
+   production caller (SC-05 is the consumer; `nd-scanner` had no `nd-db` dependency at `de0f49ea` — SC-03 added the edge later
+   at `cb59a973`, still with no caller), no walk/tag-mapping/aggregation (SC-owned),
    no finalize (SC-06). `SC.folder-write-batch-contract` was resolved as `D-BATCH` (PARENT DECIDED 2026-11-20, `../decisions.md`
    "Folder-write batch contract"). Parent gates at `de0f49ea` (EXECUTED): **2319 / 0 / 1 across 95 suites**, fmt/clippy clean, `nd-db`
    rustdoc 22 warnings = baseline (zero for `scanner_writes.rs`). The V/Own/Proposal/Steps lines below are pre-implementation scope

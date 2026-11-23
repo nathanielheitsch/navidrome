@@ -804,12 +804,14 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   as uncommitted working-tree work (`nd-scanner/src/phase1.rs`, `tests/{phase1_slice,phase1_faults,phase1_fixture}.rs`,
   `tests/common/mod.rs`, `src/{lib.rs,walk.rs}`, the D-SC05-MANIFEST manifest/lock delta). Its lane writer
   (`4a8567e4-1ab8-417d-8758-0dc444b0971f`, "Fix SC-05 false sibling-cycle refusal and root facts") is **alive, idle, and
-  resumable** — its Pi session is persisted and it verified it holds the fix-round context and made no edits after its last
-  edit at 06:49 — but it finished without committing, so no ownership is currently assigned to it.
+  resumable** — its Pi session is persisted and it verified it holds the fix-round context. It was **resumed twice** by the
+  parent (`send_agent_prompt`) for the fix round and then the review fix pass, so the lane has a live writer even though it
+  finished without committing and no ownership is recorded as assigned.
   It is the first caller of `scanner_queries::visit_media_in_folder` and `scanner_writes::persist_folder_delta`, but per
-  the standing rule it is **not landed** and no message or green working tree makes it done. Outstanding before
-  integration: the `nd-scanner` rustdoc fix (12 warnings, 9 introduced by this lane), the review findings recorded in
-  `current-status.md`'s non-integrated block, and SC-05's own acceptance items (multi-track aggregation,
+  the standing rule it is **not landed** and no message or green working tree makes it done. Two review rounds have now run
+  (2026-11-23): the first left open findings recorded in `current-status.md`; the second came back **APPROVE-WITH-FIXES with
+  no High findings**, its four selected fixes are applied in the tree, and `nd-scanner`'s own rustdoc warnings are now **zero**.
+  Still outstanding before integration: SC-05's own acceptance items (multi-track aggregation,
   outdated/empty-skip policy, image-changes collector, missing-folder finalizer — D-SC05-SLICE). The DB-21 U-ledger
   entries `SC.mapping-bridge` and `SC.phase1-fixture` stay **U**: `SC.mapping-bridge`'s text also pins the distinct
   MediaFile DTO storage-field gate, and `SC.phase1-fixture` closes only with an accepted SC-05, not with this record.
@@ -847,9 +849,34 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   The only durable copy of that work is this worktree's diff — there is no commit and no branch — so it must be
   transferred to a live SC-05 owner with explicit file ownership before it is touched again. Procedure: (1) assign an
   owner for the SC-05 files (`nd-scanner/src/phase1.rs`, `src/{lib.rs,walk.rs}`, `tests/phase1_{slice,faults,fixture}.rs`,
-  `tests/common/mod.rs`, the manifest/lock delta); (2) fix this round's findings — `nd-scanner` rustdoc **12 warnings vs the
-  4-warning baseline**, the mount-count/depth-cap test weakness, and the `tests/phase1_fixture.rs` `item_artwork` freshness
-  gap (`tests/common/mod.rs:613`), and make the no-write checks **per helper** against the writable-table snapshot, since a
+  `tests/common/mod.rs`, the manifest/lock delta); (2) fix this round's findings — `nd-scanner` rustdoc warnings attributable
+  to the lane, the mount-count/depth-cap test weakness, and the `tests/phase1_fixture.rs` `item_artwork` freshness
+  gap, and make the no-write checks **per helper** against the writable-table snapshot, since a
   global equality check passes even when a single helper writes rows; (3) run a **fresh review** covering every changed
   file; (4) parent integration with a signed commit plus a durable receipt here. SC-05 is **not** complete phase 1 and never
   closes #17 (D-SC05-SLICE; `subplans/scanner.md` SC-05 item 10). Nothing beyond SC-05's own ownership is authorized here.
+
+- **D-SC05-REVIEW — dispositions of the second SC-05 review, incl. the rustdoc baseline ruling (PARENT DECIDED 2026-11-23).
+  Reviewer `c5ead1e6-92fa-4b18-b271-14d7bfce283a`, read-only, same issue workspace; verdict APPROVE-WITH-FIXES, no High
+  findings.** Accepted and fixed in the tree: (a) the `listing_failure_warning` doc cited Go ranges that do not support the
+  claim — parent-verified `scanner/walk_dir_tree.go` is **352 lines**, so `:995-998` does not exist, and `:301-312` is
+  `isDirReadable`, which emits **no `ScanWarning` in Go** (Go swallows a listing failure in `walkFolder` and continues).
+  Re-cited and the fatal class is now labeled a **declared port divergence** — the mapping's behavior is unchanged, so the
+  divergence itself is not newly introduced by this lane; (b) the `annotation` / `album.average_rating` snapshot blind spot
+  (warn-only `reassign_annotation_in_tx` at `scanner_writes.rs:707`) closed by adding `annotation` to the single shared
+  `WRITABLE_TABLES` and pinning value state, not just counts; (c) duplicate writable-table lists consolidated and the
+  injection-matrix doc made honest about which legs the `update_legs` pass actually exercises; (d) the unreachable
+  `unwrap_or_else(DirectoryUnreadable)` fallback replaced with an `expect` naming the invariant.
+  **Declined, with reasons — do not re-litigate:** (i) the reviewer's claim that the **rustdoc `-D warnings` gate must be
+  closed by this lane before integration** is rejected. `RUSTDOCFLAGS="-D warnings" cargo doc -p nd-scanner` fails **identically
+  at integrated `cb59a973`** (parent-verified on a clean clone: exit 101, the same four locations `contract.rs:299`,
+  `contract.rs:420`, `storage.rs:31`, `walk.rs:27`), plain `cargo doc` exits **0**, and this spine's convention is a rustdoc
+  **warning-count** baseline (`nd-db` at 21) rather than `-D warnings`. Cleaning baseline doc links inside SC-05 would widen the
+  commit past its authorized ownership; it is recorded as an open baseline item owned by a future docs/gate micro-lane.
+  (ii) The latent `to_string_lossy` ancestor split is in `ignore.rs:435` (`push_all_parents`), which `git diff` shows
+  **untouched by this lane** and which already documents the choice at `:432-434` — not SC-05 scope. (iii) `canonical_identity`
+  on the gate path (`walk.rs:956`) is behavior-identical to the prior code; no change authorized.
+  Recorded as open (no blocker): annotation parity is snapshot-visible but not driven end-to-end through a real album-id
+  transition; the non-UTF-8 capture arm is executable only on Linux (macOS pins `EILSEQ`); `Phase1Error::Hash`/`Bridge` are
+  pinned at the arm, not end-to-end; captured-fact folder-hash parity against a **Go-computed** hash is unpinned; the fatal
+  listing class has no end-to-end test (`ENOTDIR` is deterministically reachable but maps to the warn class).

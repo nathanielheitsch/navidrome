@@ -87,10 +87,13 @@ production caller — SC's phase-3 triggers are the consumers) and **BOOT-00 LAN
 (`projection.rs`), 4 files +2 executed suites, **19 executed tests** against the committed `go_oracle.json` and real tagreader
 fixtures; birth-time substituted by an **injected clock** (durable record now in `decisions.md`). Latest **integrated** gates at
 `cb59a973`: **2383 / 0 / 1 across 100 suites**, `nd-scanner` **169 / 0**. **SC-05 is IN FLIGHT, NOT ACCEPTED, ownership
-UNASSIGNED**: a phase-1 vertical (`phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`) sitting **uncommitted** in this
+UNASSIGNED (writer resumed by the parent)**: a phase-1 vertical (`phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`) sitting **uncommitted** in this
 worktree at `cb59a973`, and the first caller of DB-11's `visit_media_in_folder` + DB-14's `persist_folder_delta`; its
-working-tree gates are 2431/0/1 across 103 suites with `nd-scanner` rustdoc **12** (9 from this lane) — **not** landed, and
-a fix round + fresh review must precede integration. Nothing else is in flight.
+working-tree gates after the review fix pass are `cargo test --workspace --locked` **exit 0** = 2444/0/1 across 129 targets,
+`nd-scanner` **224/0 across 12 targets**, `cargo doc --no-deps -p nd-scanner` **exit 0 with 4 warnings, all pre-existing** —
+**not** landed. A fresh read-only review returned **APPROVE-WITH-FIXES (no High findings)** and its four selected findings are
+applied; dispositions are in `decisions.md` D-SC05-REVIEW. The next action is the parent's integration decision
+(`decisions.md` D-SC05-INT step 4). Nothing else is in flight.
 Merged-tree gates at `6d6938b1` (dated history): **2363 / 0 / 1 across 98 suites**, `-p nd-db` **1073 / 0 / 0 across 49 suites**,
 `nd-http` 1/1, `nd-db` rustdoc 21 = post-DB-16 baseline.
 The DB spine's next package is **DB-18** (forward spine `DB-18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; DB-18 is gated on `D-STATS`, still without a

@@ -56,9 +56,10 @@ holds the tested local-FS walker slice (`storage.rs` + `.ndignore`/folder-hash/c
 the **SC-03 mapping bridge and singleton projection** (`mapping_bridge.rs`, `projection.rs` at `cb59a973`), and — **in the
 working tree only, uncommitted and unaccepted** — an SC-05 phase-1 vertical (`phase1.rs` + `tests/phase1_*.rs`) that is the
 **first caller** of `nd_db::scanner_queries::visit_media_in_folder` and `nd_db::scanner_writes::persist_folder_delta`
-(SOURCE-VERIFIED in the working tree at `cb59a973`: `phase1.rs:568` call, and `nd-scanner/Cargo.toml` now declares `nd-db`,
-`nd-id`, `nd-tagreader`, `nd-utils` + dev `nd-dbschema`). On the **integrated** tree `nd-scanner` declares no `nd-db`
-dependency and DB-14's seam stays uncalled, so no integrated write primitive has a production caller. There is
+(SOURCE-VERIFIED in the working tree at `cb59a973`: `phase1.rs:568` call; the working-tree manifest adds `nd-utils` runtime +
+`nd-dbschema` dev on top of the `nd-db`/`nd-id`/`nd-tagreader` edges SC-03 already landed). On the **integrated** tree
+`nd-scanner` declares `nd-db` since SC-03 but has **no caller of any write seam**, so no integrated write primitive has a
+production caller. There is
 **no end-to-end/server readiness**, no mounted router, no production scan, and no integrated stream HTTP adapter. DB-12 is only the executed artwork
 invalidation/enqueue subset, not a worker or full scanner, and DB-11 is only the executed read/cursor contract, not the
 full cursor or REST surface. That is narrower than "no repository method is ever called":
@@ -87,65 +88,87 @@ aggregation/semantic comparison, scanner-local (`decisions.md` D-SC04). The `6d6
 
 ## Non-integrated: in-flight SC-05 lane (working tree at `cb59a973`, 2026-11-23) — NOT accepted, NOT landed
 
-**Ownership is currently unassigned**: the lane's writer is gone and its work is uncommitted. Nothing below is integrated.
+**Ownership**: the lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` is **alive and idle** with its Pi session persisted, so
+it was **resumed** (not relaunched) for both the fix round and this fix pass; nothing is committed, so no ownership is
+recorded as assigned. Nothing below is integrated.
 Working-tree delta (SOURCE-VERIFIED via `git status --porcelain --untracked-files=all`): NEW `nd-scanner/src/phase1.rs`,
 NEW `nd-scanner/tests/{phase1_slice,phase1_faults,phase1_fixture}.rs` and `tests/common/mod.rs`, modified
-`nd-scanner/src/{lib.rs,walk.rs}` (+188/−25), `nd-scanner/Cargo.toml`, `rust/Cargo.lock` (two dependency edges only —
-`nd-utils`, `nd-dbschema` — matching `decisions.md` D-SC05-MANIFEST), plus the uncommitted 2026-11-23 parent decision
-records in `docs/rust-port/decisions.md` and `docs/rust-port/subplans/scanner.md`. This is the **first caller** of the
-DB-11 read seam and the DB-14 write seam: `capture_selected_folder` → `ingest_folder_snapshot` →
-`nd_db::scanner_writes::persist_folder_delta`, with `visit_media_in_folder(conn, folder_id, None, …)` at `phase1.rs:568`.
-Executed test inventory **in this tree**: `nd-scanner` **217 passed / 0 failed across 11 suites** (`--list` counts:
-`phase1_slice` 11, `phase1_faults` 14, `phase1_fixture` 19, lib 24, plus the five SC-02/mapping suites).
-Parent gates re-measured on this working tree (EXECUTED again by the parent at 15:3x local, cargo/rustc 1.99.1 Homebrew):
-workspace **2436 / 0 / 1 across 129 targets** = 103 test binaries (**2430** passed, flake skipped) + 26 doctest suites
-(**6** passed); the single ignore is the pre-existing `dump_divergences`. The earlier **2431 / 0 / 1 across 103 suites**
-figure is the same tree counted as binaries-only **with the `nd-stream` flake passing** (2430 + 1), so the two figures agree.
-`-p nd-db` **1079 / 0 / 0 across 50 targets** (1073 across 49 binaries + 6 doctests — same convention as the earlier
-**1073 / 0 / 0 across 49**). fmt clean, workspace clippy `--all-targets --all-features -D warnings` clean, `git diff --check` clean.
-**One pre-existing failure is not this lane's**: `nd-stream`
-`transcode_body::tests::early_release_defeats_the_cap_and_accumulates_processes` failed once in a full `cargo test --workspace`
-run (which then aborted early at 2078 passed / 91 targets) and passed on two solo reruns; `nd-stream` is untouched by this
-lane (`git status --porcelain -- rust/crates/nd-stream` = 0 entries) and the flake is already tracked in `next-work.md`. With it skipped,
-the workspace is 2436 / 0 / 1 across 129 targets.
-**Rustdoc is NOT clean at this boundary** and is a fix before integration: `nd-scanner` now reports **12 warnings**, up
-from the **4** recorded at `e3e0770a`. **Eight** are new intra-module links to `pub(crate)` items from the SC-05 module docs
-(`phase1.rs:20,:50,:52,:60,:61,:261,:1652,:1653` → `ingest_folder_snapshot`, `capture_selected_folder`,
-`crate::walk::selected_identity_context`, `crate::walk::enter_refusal`); the remaining **four** are **pre-existing** and untouched by
-this lane (`contract.rs:299` `QUEUE_SPACE_RETRY_INTERVAL`, `contract.rs:420` `MAX_IGNORE_LINE_BYTES`, `storage.rs:31`
-`decode_path`, `walk.rs:27` redundant explicit link). `nd-db` stays at **21 = post-DB-16 baseline** (untouched).
-**Open review findings** (fresh read-only review of the last fix round, 2026-11-23; no High findings):
-(a) Low-Medium — the capture's child-listing gate collapses every listing error to `is_ok()` (`phase1.rs:801`), so a
-`NotFound`/`EntryIsSymlink`/other child failure yields a different warning **kind** than the walker's `enter_directory`
-mapping (`walk.rs:971-997`); the fall-through itself is Go-accurate (`walk_dir_tree.go:156-176,:286-303`), the divergence
-is the warning kind only, and there is no hash impact. (b) Low (latent, unreachable today) — `build_batch` renders
-`folder.name`/`path` through lossy text (`phase1.rs:1356-1362`, `display_path`), which `preflight_component`
-(`walk.rs:1306-1324`) makes unreachable; see `decisions.md` D-SC05-PATH. (c) untested parity — no non-UTF-8-name test
-anywhere in `tests/phase1_*.rs`, and no test exercises `Phase1Error::Hash` or the `Projection`/`Bridge` arms beyond
-multi-track; `tests/folder_hash.rs` goldens pin preimage→digest only, so captured-fact parity against a Go-computed
-folder hash is unpinned. (d) that reviewer did NOT re-run the suites after the last edit at 06:49, so the totals above are
-the parent's own re-measurement, not the reviewer's.
-**Not done / not claimed**: SC-05 acceptance (multi-track aggregation, outdated/empty-skip policy, image-changes
-collector, missing-folder finalizer are all still open — `decisions.md` D-SC05-SLICE), no SC-06/controller authorization,
-and no integration merge. A branch or a green working tree is not a landed package.
+`nd-scanner/src/{lib.rs,walk.rs,projection.rs}` (+532/−54 tracked), `nd-scanner/Cargo.toml`, `rust/Cargo.lock` (two
+dependency edges only — `nd-utils` runtime, `nd-dbschema` dev-only — with **zero** new `[[package]]` entries, matching
+`decisions.md` D-SC05-MANIFEST; verified `git diff -- rust/Cargo.lock | grep -c '^+\[\[package\]\]'` = 0). This is the **first
+caller** of the DB-11 read seam and the DB-14 write seam: `capture_selected_folder` → `ingest_folder_snapshot` →
+`nd_db::scanner_writes::persist_folder_delta`, with `visit_media_in_folder(conn, folder_id, None, …)`.
+Executed test inventory **in this tree**: `nd-scanner` **224 passed / 0 failed across 12 targets** (lib 29, `phase1_slice` 12,
+`phase1_faults` 15, `phase1_fixture` 19, `mapping_bridge` 16, `walk_policy` 45, `folder_hash` 17, `local_storage` 34,
+`ignore_policy` 24, `storage_seam` 9, `projection_singleton` 4, doctests 0).
+Parent gates re-measured on this working tree after the fix pass (EXECUTED by the parent, cargo/rustc 1.99.1 Homebrew):
+`cargo test --workspace --locked` **exit 0** = **2444 / 0 / 1 across 129 targets** (103 test binaries **2438** + 26 doctest
+suites **6**); the single ignore is the pre-existing `dump_divergences`. `-p nd-db` **1079 / 0 / 0 across 50 targets**
+(1073 across 49 binaries + 6 doctests). fmt clean, workspace clippy `--all-targets --all-features -D warnings` clean,
+`git diff --check` clean, `docs/` and `rust/crates/nd-stream/` porcelain = 0 entries.
+Earlier figures on this branch are the same tree at earlier states, under a binaries-only convention: **2431 / 0 / 1 across
+103 suites** and **2436 / 0 / 1 across 129 targets**; both agree with the current count once the fix-round tests are added.
+**Rustdoc: the lane's own warnings are now ZERO.** `cargo doc --no-deps -p nd-scanner` exits **0** and reports **4 warnings**,
+all **pre-existing** (`contract.rs:299` `QUEUE_SPACE_RETRY_INTERVAL`, `contract.rs:420` `MAX_IGNORE_LINE_BYTES`,
+`storage.rs:31` `decode_path`, `walk.rs:27` redundant explicit link). The 8 SC-05 links to `pub(crate)` items are fixed.
+**Parent ruling on the rustdoc gate (2026-11-23):** `RUSTDOCFLAGS="-D warnings" cargo doc -p nd-scanner` fails **identically at
+integrated `cb59a973`** (verified on a clean clone: exit 101, the same 4 locations), so those 4 are a baseline gate this lane
+did not introduce. This spine's convention is a rustdoc **warning-count** baseline (like `nd-db` at 21), not `-D warnings`;
+cleaning them is **not** SC-05 scope and is recorded here as an open baseline item rather than silently folded into the
+SC-05 commit. `nd-db` stays at **21 = post-DB-16 baseline** (untouched).
+**Review verdict: APPROVE-WITH-FIXES** (fresh read-only reviewer `c5ead1e6-92fa-4b18-b271-14d7bfce283a`, 2026-11-23; **no
+High findings**; read-only respected — its run left 0 porcelain entries). No High/Medium finding blocks integration.
+Claims 1-6 of the implementer's report: warning-kind extraction **confirmed behavior-identical** (fatal/warn arms and order
+unchanged; shared function makes kind drift impossible); `active` stays `[root, target]` with **no push-without-pop**
+**confirmed**; root `name = "."`, `path = ""`, `parent_id = ""` **confirmed**; arm tests **confirmed non-vacuous**; manifest/lock
+**confirmed** exactly as D-SC05-MANIFEST authorizes and BOOT-00 D1 intact (`cargo metadata` closure of `nd-scanner` contains no
+`nd-http`/`nd-api`; the BOOT-00 cycle test passes). Scope/safety clean: no SQL copied out of `nd-db`, no clock read in the
+bridge (D-TIME), rollback left to the DB-00 executor, no SC-04/SC-06 creep, no DB-21 U-ledger claim in `nd-scanner`.
+**Four findings selected and FIXED in the tree** (`decisions.md` D-SC05-INT item 2):
+(a) **Medium, doc-only** — `listing_failure_warning` cited Go lines that do not say what was claimed (parent-verified:
+`scanner/walk_dir_tree.go` is 352 lines, so `:995-998` does not exist, and `:301-312` is `isDirReadable`, which emits **no
+`ScanWarning` in Go at all** — Go swallows a listing failure at `walkFolder` and continues). Re-cited to real ranges and the
+fatal class is now stated as a **declared port divergence**, cross-referenced to the header's existing declaration; the
+deviation list also now covers the symlink → `SymlinkedTargetSkipped` class. Mapping behavior unchanged.
+(b) **Medium** — snapshot blind spot: the warn-only `reassign_annotation_in_tx` leg (`scanner_writes.rs:707` →
+`sql_annotations.rs:393`) writes `annotation` and `UPDATE … SET average_rating`, neither of which a `COUNT(*)` snapshot can
+see. `annotation` added to `WRITABLE_TABLES` (`tests/common/mod.rs:704`) and `state_snapshot` now pins `album.average_rating`
+per row plus the `annotation` identity tuple; the new `state_snapshot_detects_update_only_annotation_leaks` proves an
+UPDATE-only leak is detected **by value state, not by count** (removing the value pins makes it fail; removing only
+`"annotation"` from the list does not — so both halves are load-bearing).
+(c) **Low** — two divergent copies of the writable-table list consolidated to one shared list, and the injection-matrix doc
+now states that `insert_legs` covers only INSERT legs while `MarkMissing`/`Album Touch` run on the separate `update_legs`
+pass, whose evidence is `folder.hash` / `media_file.missing` / `album.updated_at`.
+(d) **Low** — dead `unwrap_or_else(DirectoryUnreadable)` fallback at `phase1.rs:954` replaced with `expect(...)` naming the
+invariant, so an unreachable default cannot silently invent a warning; mutation of the warn arm makes
+`unreadable_subdirectory_contributes_its_mtime_and_matches_the_walker_hash` fail at `phase1.rs:957` on a real EACCES child.
+**Deliberately NOT done** (parent ruling): the 4 pre-existing rustdoc failures (baseline, not lane scope); the latent
+`to_string_lossy` ancestor split, which lives in the **untouched** `ignore.rs:435` (`push_all_parents`) and is already
+documented at `ignore.rs:432-434`; `canonical_identity` at `walk.rs:956` (behavior-identical, no change).
+**Still open after this round**: annotation coverage is snapshot-level, not end-to-end (no scan drives a real album-id
+transition with a pre-existing rating row); non-UTF-8 capture arm executable only on Linux (macOS pins `EILSEQ` and prints a
+`COVERAGE:` line); `Phase1Error::Hash`/`Bridge` pinned at the arm, not end-to-end; captured-fact folder hash unpinned against a
+**Go-computed** hash; a latent asymmetry that the capture lists children with `Follow::Yes` while the walker passes config
+follow (reviewer: unreachable, since a link-reached target is refused in preflight); and a residual Low that `walk_policy.rs`
+shows `ENOTDIR` is deterministically reachable but maps to the warn class, so the fatal class has no end-to-end test.
+SC-05 acceptance items remain open by design (multi-track aggregation = SC-04, outdated/empty-skip policy, image-changes
+collector, missing-folder finalizer — `decisions.md` D-SC05-SLICE), there is **no SC-06/controller authorization**, and no
+integration merge.
+**Not done / not claimed**: SC-05 remains a **singleton phase-1 vertical slice**, not complete phase 1 and not #17; it has no
+integration merge, and a green working tree is not a landed package.
 
-**Resuscitation / capture receipt (2026-11-23, parent).** The SC-05 fix-round agent `4a8567e4-1ab8-417d-8758-0dc444b0971f`
+**Resuscitation / capture receipts (2026-11-23, parent).** The SC-05 writer `4a8567e4-1ab8-417d-8758-0dc444b0971f`
 ("Fix SC-05 false sibling-cycle refusal and root facts") is **alive and idle** in workspace `wks_f8d2b72072a890ce` with its
-persisted Pi session (`01a20827-4562-70a5-a237-27b05db0b8db`), so it is resumable via `send_agent_prompt` — nothing of it
-was lost. Its last edits (06:49 local) are exactly the tree above: `src/phase1.rs` (false sibling-cycle accumulation removed,
-root `name = "."` per Go `model/folder_test.go:115`, in-crate identity-mismatch abort test at `phase1.rs:1747`),
-`tests/phase1_slice.rs` (`entered_siblings_are_not_active_ancestors_for_later_aliases` L499,
-`a_wide_folder_is_never_accumulated_into_the_depth_cap` L680,
-`scanning_the_library_root_stores_go_s_dot_name_and_root_identity` L764), `tests/common/mod.rs:613` and
-`tests/phase1_faults.rs:940` + `:1044-1072` (non-vacuous `item_artwork` row/rollback assertions). No agent in this issue is
-dead-with-lost-work; the worktrees that were removed belong to **older closed/archived lanes** (`rust-sc02-local-walker`,
-`rust-db22-executed-reads`, `rust-db10-mediafile-writes`, `rust-db12-artwork`, `rust-db13-epoch-revoke`,
-`rust-db07/08/09`, `rust-boot02-native-session`, `rust-docs-cleanup`, `rust-wave1-*`, `rust-wave2-status-refresh`), and that
-work is landed as commits on this branch line. Durability note: because the SC-05 tree has **no commit and no branch**, the
-parent took an out-of-band capture — a full `git diff --cached --binary` patch plus verbatim file copies — in a
-user-local backup directory outside the repo (`~/backups/sc-05-capture-20261123-103223/`, 924 KB; `sc05-full.patch`
-8918 lines covering `src/phase1.rs`, `src/lib.rs`, `src/walk.rs`, `Cargo.toml`, `Cargo.lock`,
-`tests/phase1_{slice,faults,fixture}.rs`, `tests/common/mod.rs`). The worktree diff is still the only in-repo copy.
+persisted Pi session (`01a20827-4562-70a5-a237-27b05db0b8db`), so it was **resumed via `send_agent_prompt` twice** rather than
+relaunched — nothing of it was lost. No agent in this issue is dead-with-lost-work; the worktrees that were removed belong to
+**older closed/archived lanes** (`rust-sc02-local-walker`, `rust-db22-executed-reads`, `rust-db10-mediafile-writes`,
+`rust-db12-artwork`, `rust-db13-epoch-revoke`, `rust-db07/08/09`, `rust-boot02-native-session`, `rust-docs-cleanup`,
+`rust-wave1-*`, `rust-wave2-status-refresh`), and that work is landed as commits on this branch line.
+Durability: because the SC-05 tree has **no commit and no branch**, the parent took out-of-band captures — a full
+`git diff --cached --binary` patch plus verbatim file copies — in user-local backup directories outside the repo. Three exist,
+one per tree state: `sc-05-capture-20261123-103223/` (fix round), `-115245/` (post-rustdoc), and the current
+**`sc-05-capture-20261123-133629/`** (932 KB, `sc05-full.patch` 9291 lines, 10 file copies incl. `projection.rs`), re-verified
+to apply cleanly onto a fresh clone at `cb59a973`. The worktree diff remains the only in-repo copy.
 
 
 ## Latest integrated gates (parent, HEAD `6d6938b1` / BOOT-00 on the merged tree, 2026-11-21)
@@ -228,8 +251,9 @@ tests **95 suites, 2319 passed / 0 failed / 1 ignored** (the single ignore is th
 warnings = the recorded baseline** (zero warnings in `scanner_writes.rs`). Review came back REQUEST-CHANGES and both
 findings were fixed before landing (P1 tx-loss atomicity — `warn_arm` detects a lost transaction via `is_autocommit` and
 returns the original typed SQLite error as fatal; P2 consumed-transitions retry proof), with the parent re-running every
-gate. DB-14 is not a full scanner package: no production caller, no `nd-db` dependency in `nd-scanner`, no walk/tag-mapping/
-album aggregation (SC-owned) and no missing-folder finalize (SC-06). That block is dated history, not proof for a later diff.
+gate. DB-14 is not a full scanner package: no production caller, no `nd-db` dependency in `nd-scanner` **at that commit**
+(`nd-db` was added to `nd-scanner` later, by SC-03 at `cb59a973`), no walk/tag-mapping/album aggregation (SC-owned) and no
+missing-folder finalize (SC-06). That block is dated history, not proof for a later diff.
 
 ## Previous integrated gates (parent, HEAD `96c495e7` / DB-11 + DB-15 runtime, 2026-11-20)
 
@@ -383,7 +407,8 @@ rather than claimed permanently fixed. `nd-stream`'s
 Executed write primitives are **transaction-bound and caller-trusted** (`WHERE id = ?` and nothing else, exactly like
 Go): they own no scope filter, no auth check, and no commit. None has a production caller at `de0f49ea` either
 (SOURCE-VERIFIED: `*_in_tx`, `scanner_queries` and `scanner_writes` references outside their definitions are tests/doctests or internal
-helpers; `nd-scanner` declares no `nd-db` dependency).
+helpers; `nd-scanner` declared no `nd-db` dependency **at that commit** — SC-03 later added the edge at `cb59a973`, still with
+no caller).
 
 The old scout's S-D3b meant folder/playlist and its S-D3c meant album/media-file; `hydrate-scan-contract.md` numbers
 the same lanes differently (see the numbering-drift note in `next-work.md`'s historical index). All rows above are in
