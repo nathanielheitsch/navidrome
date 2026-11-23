@@ -800,21 +800,24 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   considered, and a modified/size cross-check is `StorageFactMismatch` (`local.go:90-109` has no mtime substitution).
   This replaces an earlier mtime-then-imported-at policy that diverged from Go. Recorded here so the ruling survives the
   commit body; landed-scope evidence lives in `current-status.md`.
-- **SC-05 acceptance status: IN FLIGHT, NOT ACCEPTED, ownership UNASSIGNED (2026-11-23).** The SC-05 vertical exists only
-  as uncommitted working-tree work (`nd-scanner/src/phase1.rs`, `tests/{phase1_slice,phase1_faults,phase1_fixture}.rs`,
-  `tests/common/mod.rs`, `src/{lib.rs,walk.rs}`, the D-SC05-MANIFEST manifest/lock delta). Its lane writer
-  (`4a8567e4-1ab8-417d-8758-0dc444b0971f`, "Fix SC-05 false sibling-cycle refusal and root facts") is **alive, idle, and
-  resumable** — its Pi session is persisted and it verified it holds the fix-round context. It was **resumed twice** by the
-  parent (`send_agent_prompt`) for the fix round and then the review fix pass, so the lane has a live writer even though it
-  finished without committing and no ownership is recorded as assigned.
-  It is the first caller of `scanner_queries::visit_media_in_folder` and `scanner_writes::persist_folder_delta`, but per
-  the standing rule it is **not landed** and no message or green working tree makes it done. Two review rounds have now run
-  (2026-11-23): the first left open findings recorded in `current-status.md`; the second came back **APPROVE-WITH-FIXES with
-  no High findings**, its four selected fixes are applied in the tree, and `nd-scanner`'s own rustdoc warnings are now **zero**.
-  Still outstanding before integration: SC-05's own acceptance items (multi-track aggregation,
+- **SC-05 acceptance status: LANDED ON BRANCH `5c463aa1`, NOT merged to `master` (2026-11-23).** The SC-05 vertical is
+  committed (`nd-scanner/src/phase1.rs`, `tests/{phase1_slice,phase1_faults,phase1_fixture}.rs`,
+  `tests/common/mod.rs`, `src/{lib.rs,walk.rs,projection.rs}`, the D-SC05-MANIFEST manifest/lock delta; 10 files,
+  +9103/−54), signed, and pushed on `origin/resuscitate-dead-agent-capture-worktree-state`. Its lane writer
+  (`4a8567e4-1ab8-417d-8758-0dc444b0971f`, "Fix SC-05 false sibling-cycle refusal and root facts") was **resumed twice** by the
+  parent (`send_agent_prompt`) — fix round, then review fix pass — rather than relaunched, and is now archived with the
+  issue's other finished children.
+  It is the first caller of `scanner_queries::visit_media_in_folder` and `scanner_writes::persist_folder_delta`. A commit is
+  delivery **on a branch**, not integration: `master` is untouched, so mainline still has no scanner caller. Two review rounds
+  ran (2026-11-23): the first left open findings recorded in `current-status.md`; the second came back **APPROVE-WITH-FIXES with
+  no High findings**, its four selected fixes are in `5c463aa1`, and `nd-scanner`'s own rustdoc warnings are **zero**.
+  Still outstanding: merging this branch to `master`, and SC-05's own acceptance items (multi-track aggregation,
   outdated/empty-skip policy, image-changes collector, missing-folder finalizer — D-SC05-SLICE). The DB-21 U-ledger
   entries `SC.mapping-bridge` and `SC.phase1-fixture` stay **U**: `SC.mapping-bridge`'s text also pins the distinct
-  MediaFile DTO storage-field gate, and `SC.phase1-fixture` closes only with an accepted SC-05, not with this record.
+  MediaFile DTO storage-field gate, and `SC.phase1-fixture` closes only with an accepted, **merged** SC-05, not with a
+  branch commit. Its gate **wording** is now stale — it still claims `nd-scanner` declares no `nd-db` dependency and that the
+  manifest delta is missing, both false since SC-03 `cb59a973` and `5c463aa1` — and rewording that DB-21-owned test is a
+  separate DB micro-lane, not SC-05 scope.
   Executed ledger of record: `nd-db/tests/runtime_scanner_persistence_contract.rs:583-601` (asserted Unmet by test).
 
 - **D-SC05-PATH — the raw path identity is what must reach the DB; UTF-8 name text is an SC-02 encoding boundary, not a
@@ -844,17 +847,23 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `:534`, `:763-773`; `storage.rs:254`; `folder.rs:199`; Go `scanner/scanner.go`, `scanner/folder_entry.go:94-104`.
 
 - **D-SC05-INT — SC-05 integration procedure: branchless uncommitted work is not delivered, and a green working tree
-  is not a landed package (PARENT DECIDED 2026-11-23).** The SC-05 vertical currently exists **only as uncommitted
-  working-tree code** with no owner, so its status stays **IN FLIGHT / NOT ACCEPTED** and no lane may schedule from it.
-  The only durable copy of that work is this worktree's diff — there is no commit and no branch — so it must be
-  transferred to a live SC-05 owner with explicit file ownership before it is touched again. Procedure: (1) assign an
-  owner for the SC-05 files (`nd-scanner/src/phase1.rs`, `src/{lib.rs,walk.rs}`, `tests/phase1_{slice,faults,fixture}.rs`,
+  is not a landed package (PARENT DECIDED 2026-11-23).** At the time of this decision the SC-05 vertical existed **only as
+  uncommitted working-tree code** with no owner, so its status was **IN FLIGHT / NOT ACCEPTED** and no lane could schedule
+  from it.
+  The only durable copy of that work was this worktree's diff — there was no commit and no branch — so it had to be
+  transferred to a live SC-05 owner with explicit file ownership before it was touched again. Procedure: (1) assign an
+  owner for the SC-05 files (`nd-scanner/src/phase1.rs`, `src/{lib.rs,walk.rs,projection.rs}`, `tests/phase1_{slice,faults,fixture}.rs`,
   `tests/common/mod.rs`, the manifest/lock delta); (2) fix this round's findings — `nd-scanner` rustdoc warnings attributable
   to the lane, the mount-count/depth-cap test weakness, and the `tests/phase1_fixture.rs` `item_artwork` freshness
   gap, and make the no-write checks **per helper** against the writable-table snapshot, since a
   global equality check passes even when a single helper writes rows; (3) run a **fresh review** covering every changed
   file; (4) parent integration with a signed commit plus a durable receipt here. SC-05 is **not** complete phase 1 and never
   closes #17 (D-SC05-SLICE; `subplans/scanner.md` SC-05 item 10). Nothing beyond SC-05's own ownership is authorized here.
+  **Completed 2026-11-23 (parent):** steps (1)-(4) are done — the lane's writer was resumed for the fix round and the review
+  fix pass, the fresh review ran, and the work is committed as the signed **`5c463aa1`** on
+  `resuscitate-dead-agent-capture-worktree-state` (pushed to `origin`) with this record plus `current-status.md` as the durable
+  receipt. The rule stands: a branch commit is delivery on a branch, **not** mainline integration, and `master` has not been
+  fast-forwarded.
 
 - **D-SC05-REVIEW — dispositions of the second SC-05 review, incl. the rustdoc baseline ruling (PARENT DECIDED 2026-11-23).
   Reviewer `c5ead1e6-92fa-4b18-b271-14d7bfce283a`, read-only, same issue workspace; verdict APPROVE-WITH-FIXES, no High

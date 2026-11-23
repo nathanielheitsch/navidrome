@@ -17,11 +17,12 @@ the **renderer-prepare gate deferral**, the **proof-of-delivery** process ruling
 placement is scanner-local), **D-SC05-MANIFEST** (`nd-utils` runtime + `nd-dbschema` dev-only, in addition to the ratified
 `nd-db` edge), **D-SEAM2** (seam-2 wording corrected to `Option<&UserScope>`), **D-SC05-SLICE** (SC-05 narrow cycle/follow
 design, **no SC-06 authorization**) and **D-SC05-PATH** (raw path identity is the contract; UTF-8 name text is an SC-02
-encoding boundary, not a semantic precondition). **SC-05 is IN FLIGHT and NOT ACCEPTED** — see the in-flight block below.
+encoding boundary, not a semantic precondition). **SC-05 is LANDED ON BRANCH at `5c463aa1`** (signed, pushed; **not merged
+into `master`**) — see the SC-05 block below.
 **SC-03, DB-11, DB-15's runtime half, DB-14, DB-21(P1-DB), DB-16, DB-17 and BOOT-00 are LANDED** with executed tests, and
 each remains partial: on the integrated tree no write primitive has a production scanner caller and there is no
-`nd-scanner` consumption (DB-14's seam is landed but uncalled at `cb59a973` — its first caller is the **uncommitted** SC-05
-lane below), SC-03 is the bridge + singleton projection only (multi-track groups refuse), there is no full
+`nd-scanner` consumption (DB-14's seam is landed but uncalled at `cb59a973` — its first caller is the SC-05 commit
+`5c463aa1`, which lives on a branch only), SC-03 is the bridge + singleton projection only (multi-track groups refuse), there is no full
 cursor/REST surface, and DB-15 keeps its durable Go oracle deferred. The **SC-02 partial** remains a scoped slice — **not**
 SC-01 ratification, SC-02 completion, or MusicFS readiness. **DB-21(P1-DB) is the DB-side-only exit**: an executed composed
 contract plus an API freeze and an executed U-ledger — it adds **no production caller** and is not the full DB-21 exit.
@@ -86,27 +87,29 @@ reviewer-verified. Parent gates EXECUTED at `cb59a973` (commit body): workspace 
 (`ProjectionError::MultiTrackGroup`) rather than aggregate; no equality, no DB writes, no scanner entrypoint. SC-04 owns
 aggregation/semantic comparison, scanner-local (`decisions.md` D-SC04). The `6d6938b1` block below is dated history.
 
-## Non-integrated: in-flight SC-05 lane (working tree at `cb59a973`, 2026-11-23) — NOT accepted, NOT landed
+## SC-05 LANDED ON BRANCH at `5c463aa1` (2026-11-23) — accepted by the parent, NOT merged to `master`
 
-**Ownership**: the lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` is **alive and idle** with its Pi session persisted, so
-it was **resumed** (not relaunched) for both the fix round and this fix pass; nothing is committed, so no ownership is
-recorded as assigned. Nothing below is integrated.
-Working-tree delta (SOURCE-VERIFIED via `git status --porcelain --untracked-files=all`): NEW `nd-scanner/src/phase1.rs`,
+**Ownership**: the lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` was **resumed** (not relaunched) for the fix round and
+the review fix pass, both landed in `5c463aa1`, then archived with the rest of the lane's finished children. SC-05 is now
+**committed and pushed** on `origin/resuscitate-dead-agent-capture-worktree-state`; the parent owns integration and
+re-verified every gate below **after** the commit. Merging this branch into `master` is a separate, still-open decision.
+Committed delta (SOURCE-VERIFIED via `git show --stat 5c463aa1`): NEW `nd-scanner/src/phase1.rs`,
 NEW `nd-scanner/tests/{phase1_slice,phase1_faults,phase1_fixture}.rs` and `tests/common/mod.rs`, modified
-`nd-scanner/src/{lib.rs,walk.rs,projection.rs}` (+532/−54 tracked), `nd-scanner/Cargo.toml`, `rust/Cargo.lock` (two
+`nd-scanner/src/{lib.rs,walk.rs,projection.rs}`, `nd-scanner/Cargo.toml`, `rust/Cargo.lock` (two
 dependency edges only — `nd-utils` runtime, `nd-dbschema` dev-only — with **zero** new `[[package]]` entries, matching
-`decisions.md` D-SC05-MANIFEST; verified `git diff -- rust/Cargo.lock | grep -c '^+\[\[package\]\]'` = 0). This is the **first
+`decisions.md` D-SC05-MANIFEST; verified `git show 5c463aa1 -- rust/Cargo.lock | grep -c '^+\[\[package\]\]'` = 0). Total
++9103/−54 across 10 files. This is the **first
 caller** of the DB-11 read seam and the DB-14 write seam: `capture_selected_folder` → `ingest_folder_snapshot` →
 `nd_db::scanner_writes::persist_folder_delta`, with `visit_media_in_folder(conn, folder_id, None, …)`.
 Executed test inventory **in this tree**: `nd-scanner` **224 passed / 0 failed across 12 targets** (lib 29, `phase1_slice` 12,
 `phase1_faults` 15, `phase1_fixture` 19, `mapping_bridge` 16, `walk_policy` 45, `folder_hash` 17, `local_storage` 34,
 `ignore_policy` 24, `storage_seam` 9, `projection_singleton` 4, doctests 0).
-Parent gates re-measured on this working tree after the fix pass (EXECUTED by the parent, cargo/rustc 1.99.1 Homebrew):
+Parent gates re-measured by the parent **after committing** (working tree at `5c463aa1`, cargo/rustc 1.99.1 Homebrew):
 `cargo test --workspace --locked` **exit 0** = **2444 / 0 / 1 across 129 targets** (103 test binaries **2438** + 26 doctest
 suites **6**); the single ignore is the pre-existing `dump_divergences`. `-p nd-db` **1079 / 0 / 0 across 50 targets**
 (1073 across 49 binaries + 6 doctests). fmt clean, workspace clippy `--all-targets --all-features -D warnings` clean,
-`git diff --check` clean, `docs/` and `rust/crates/nd-stream/` porcelain = 0 entries.
-Earlier figures on this branch are the same tree at earlier states, under a binaries-only convention: **2431 / 0 / 1 across
+`git diff --check` and `git diff --cached --check` clean, and porcelain empty for `rust/crates/nd-stream/`.
+Earlier figures on this branch line are the same lane at earlier states, under a binaries-only convention: **2431 / 0 / 1 across
 103 suites** and **2436 / 0 / 1 across 129 targets**; both agree with the current count once the fix-round tests are added.
 **Rustdoc: the lane's own warnings are now ZERO.** `cargo doc --no-deps -p nd-scanner` exits **0** and reports **4 warnings**,
 all **pre-existing** (`contract.rs:299` `QUEUE_SPACE_RETRY_INTERVAL`, `contract.rs:420` `MAX_IGNORE_LINE_BYTES`,
@@ -117,7 +120,8 @@ did not introduce. This spine's convention is a rustdoc **warning-count** baseli
 cleaning them is **not** SC-05 scope and is recorded here as an open baseline item rather than silently folded into the
 SC-05 commit. `nd-db` stays at **21 = post-DB-16 baseline** (untouched).
 **Review verdict: APPROVE-WITH-FIXES** (fresh read-only reviewer `c5ead1e6-92fa-4b18-b271-14d7bfce283a`, 2026-11-23; **no
-High findings**; read-only respected — its run left 0 porcelain entries). No High/Medium finding blocks integration.
+High findings**; read-only respected — its run left 0 porcelain entries). No High/Medium finding blocks integration, and its
+four selected findings are the four fixes contained in `5c463aa1`.
 Claims 1-6 of the implementer's report: warning-kind extraction **confirmed behavior-identical** (fatal/warn arms and order
 unchanged; shared function makes kind drift impossible); `active` stays `[root, target]` with **no push-without-pop**
 **confirmed**; root `name = "."`, `path = ""`, `parent_id = ""` **confirmed**; arm tests **confirmed non-vacuous**; manifest/lock
@@ -153,22 +157,33 @@ follow (reviewer: unreachable, since a link-reached target is refused in preflig
 shows `ENOTDIR` is deterministically reachable but maps to the warn class, so the fatal class has no end-to-end test.
 SC-05 acceptance items remain open by design (multi-track aggregation = SC-04, outdated/empty-skip policy, image-changes
 collector, missing-folder finalizer — `decisions.md` D-SC05-SLICE), there is **no SC-06/controller authorization**, and no
-integration merge.
-**Not done / not claimed**: SC-05 remains a **singleton phase-1 vertical slice**, not complete phase 1 and not #17; it has no
-integration merge, and a green working tree is not a landed package.
+merge into `master`.
+**Not done / not claimed**: SC-05 remains a **singleton phase-1 vertical slice**, not complete phase 1 and not #17. It is
+committed and pushed on this branch only — **`master` is untouched**, so nothing is integrated into the mainline, and the
+DB-21 U-ledger entry `SC.phase1-fixture` stays **U** until an accepted merge (see the stale-wording note below).
+**Stale-wording follow-up the parent did NOT fix (out of lane ownership, recorded not silently edited):**
+`nd-db/tests/runtime_scanner_persistence_contract.rs:593-600` still describes `SC.phase1-fixture` as gated on "an `nd-scanner`
+manifest delta adding an `nd-db` dependency … `nd-scanner` declares no `nd-db` dependency". Both clauses are now false —
+`nd-db` has been declared since SC-03 `cb59a973` and `5c463aa1` adds the first caller — while the **U status itself remains
+correct** because the gate this entry owes is an accepted, integrated SC-05, which a branch-only commit is not. That file is
+DB-21-owned test code (4218 lines, with `consumer_handoff_ledger_is_all_unmet` asserting 5 U entries and the exact gate
+substring at `:4196-4206`), so rewording it belongs to a DB-owned micro-lane, not to SC-05.
 
 **Resuscitation / capture receipts (2026-11-23, parent).** The SC-05 writer `4a8567e4-1ab8-417d-8758-0dc444b0971f`
-("Fix SC-05 false sibling-cycle refusal and root facts") is **alive and idle** in workspace `wks_f8d2b72072a890ce` with its
+("Fix SC-05 false sibling-cycle refusal and root facts") was **alive and idle** in workspace `wks_f8d2b72072a890ce` with its
 persisted Pi session (`01a20827-4562-70a5-a237-27b05db0b8db`), so it was **resumed via `send_agent_prompt` twice** rather than
-relaunched — nothing of it was lost. No agent in this issue is dead-with-lost-work; the worktrees that were removed belong to
+relaunched — nothing of it was lost, and it is now archived (soft-deleted; its Pi session file remains on disk and can be
+re-imported). No agent in this issue is dead-with-lost-work; the worktrees that were removed belong to
 **older closed/archived lanes** (`rust-sc02-local-walker`, `rust-db22-executed-reads`, `rust-db10-mediafile-writes`,
 `rust-db12-artwork`, `rust-db13-epoch-revoke`, `rust-db07/08/09`, `rust-boot02-native-session`, `rust-docs-cleanup`,
 `rust-wave1-*`, `rust-wave2-status-refresh`), and that work is landed as commits on this branch line.
-Durability: because the SC-05 tree has **no commit and no branch**, the parent took out-of-band captures — a full
+Durability: while SC-05 had **no commit and no branch**, the parent took out-of-band captures — a full
 `git diff --cached --binary` patch plus verbatim file copies — in user-local backup directories outside the repo. Three exist,
-one per tree state: `sc-05-capture-20261123-103223/` (fix round), `-115245/` (post-rustdoc), and the current
-**`sc-05-capture-20261123-133629/`** (932 KB, `sc05-full.patch` 9291 lines, 10 file copies incl. `projection.rs`), re-verified
-to apply cleanly onto a fresh clone at `cb59a973`. The worktree diff remains the only in-repo copy.
+one per tree state: `sc-05-capture-20261123-103223/` (fix round), `-115245/` (post-rustdoc), and
+**`sc-05-capture-20261123-133629/`** (932 KB, `sc05-full.patch` 9291 lines, 10 file copies; `tests/common/mod.rs` is stored as
+`common_mod.rs`). The newest capture was **verified by applying it to a fresh clone at `cb59a973` and byte-comparing all 10
+files against the live worktree — all identical**, and it is now redundancy only, since the same content is committed as
+`5c463aa1` and pushed to `origin`. The earlier captures are superseded snapshots of intermediate tree states.
 
 
 ## Latest integrated gates (parent, HEAD `6d6938b1` / BOOT-00 on the merged tree, 2026-11-21)

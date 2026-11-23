@@ -19,7 +19,8 @@ Prepared READ-ONLY. Source inspection only; **no builds, tests, probes, formatti
 
 **BLOCKED for executed scanner implementation; READY for contract/oracle preparation.** _(Superseded on two items:
 **SC-03 LANDED `cb59a973`** — `nd-scanner` is no longer a bare scaffold and now declares `nd-db`/`nd-id`/`nd-tagreader` on
-that commit — and **SC-05 is IN FLIGHT, uncommitted and unaccepted**, so this verdict applies to the **integrated** tree
+that commit — and **SC-05 is LANDED ON BRANCH `5c463aa1`, not merged to `master`**, so this verdict applies to the
+**integrated** tree
 only. On the integrated tree `nd-scanner` **does** declare `nd-db` (SC-03 added it at `cb59a973`) but has no scanner entrypoint
 and no integrated caller of any `nd-db` seam, and the
 manifest below is the pre-SC-03 planner snapshot.)_ `nd-scanner` is a scaffold (`rust/crates/nd-scanner/src/lib.rs:1-25`, `nd_scanner_instantiates`); its manifest has no dependencies. Start with one in-process fixture folder, real metadata, executing repository writes, reopen/readback, junction and FTS assertions (SC-05). This is an honest vertical slice, **not complete phase 1 and not #17 completion**. SC-06 closes all phase-1 semantics, SC-07/08/09 add phases 2/3/4, SC-10/11 close finalization/controller lifecycle. Watcher and external-process modes have separate decision gates, not prerequisites of SC-05.
@@ -251,23 +252,28 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** `cargo test --locked -p nd-scanner --test aggregate --test semantic_compare --test projection_singleton`; V. Model-owner implementation adds `cargo test --locked -p nd-model --all-targets --all-features`.
 10. **Review/done/report:** R; reviewers explicitly check ignored-field inventory and f32 floors; no phase3 release with ID-only equality.
 
-## SC-05 — FIRST VERTICAL: singleton folder phase1 with actual commit/reopen/readback — **IN FLIGHT, NOT ACCEPTED (review passed, fixes applied, awaiting parent integration)**
+## SC-05 — FIRST VERTICAL: singleton folder phase1 with actual commit/reopen/readback — **LANDED ON BRANCH `5c463aa1`, NOT merged to `master`**
 
-> **IN FLIGHT 2026-11-23, and NOT landed.** `nd-scanner/src/phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`,
-> `tests/common/mod.rs` and the `src/{lib.rs,walk.rs,projection.rs}` + manifest/lock delta exist **only as uncommitted
-> working-tree code** in the issue worktree; no branch and no commit exist, so ownership is not recorded as assigned — but the
-> lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` is alive and idle and was **resumed twice** by the parent (fix round,
-> then review fix pass) rather than re-launched, and the parent holds out-of-band captures outside the repo
-> (`~/backups/sc-05-capture-*`, newest `sc-05-capture-20261123-133629/`, verified to apply onto `cb59a973`). It is the first
+> **LANDED ON BRANCH 2026-11-23; mainline integration still open.** `nd-scanner/src/phase1.rs`,
+> `tests/phase1_{slice,faults,fixture}.rs`,
+> `tests/common/mod.rs` and the `src/{lib.rs,walk.rs,projection.rs}` + manifest/lock delta are committed as the signed
+> **`5c463aa1`** (10 files, +9103/−54) on `resuscitate-dead-agent-capture-worktree-state`, **pushed to `origin`**; `master` is
+> untouched, so mainline still has no scanner caller. The lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` was **resumed
+> twice** by the parent (fix round, then review fix pass) rather than re-launched, and is now archived with the issue's other
+> finished children; the parent also kept out-of-band captures outside the repo
+> (`~/backups/sc-05-capture-*`, newest `sc-05-capture-20261123-133629/`, verified by applying it to a fresh clone at
+> `cb59a973` and byte-comparing all 10 files — redundancy only now). It is the first
 > caller of DB-11's `visit_media_in_folder` (`phase1.rs:568`) and DB-14's `persist_folder_delta` (`scan_folder` `:1740`).
-> Working-tree measurement after the fix pass (EXECUTED by the parent, not integrated): `nd-scanner` **224/0 across 12 targets**,
+> Parent gates re-measured **after** the commit: `nd-scanner` **224/0 across 12 targets**,
 > workspace **`cargo test --workspace --locked` exit 0 = 2444/0/1 across 129 targets**, `-p nd-db` 1079/0/0 across 50 targets,
 > fmt/clippy/`diff --check` clean, and **`cargo doc --no-deps -p nd-scanner` exit 0 with 4 warnings, all pre-existing** — the
 > lane's own rustdoc warnings are zero. A fresh read-only review returned **APPROVE-WITH-FIXES with no High findings** and its
-> four selected findings are applied (`../decisions.md` D-SC05-REVIEW). Declined as out of lane scope: the 4 pre-existing
+> four selected findings are in `5c463aa1` (`../decisions.md` D-SC05-REVIEW). Declined as out of lane scope: the 4 pre-existing
 > `rustdoc -D warnings` failures (identical at integrated `cb59a973`) and the latent `to_string_lossy` ancestor split in
-> `ignore.rs:435`, which this lane never touched. **Next action is the parent's integration decision only**
-> (`../decisions.md` D-SC05-INT step 4). **A green working tree is not a landed package.**
+> `ignore.rs:435`, which this lane never touched. **Still open:** fast-forwarding `master` to this branch; SC-05's own
+> acceptance items (item 10 below), which keep `SC.phase1-fixture` at **U**; and a DB micro-lane to reword that entry's stale
+> gate text in `nd-db/tests/runtime_scanner_persistence_contract.rs:596-598`. **A branch commit is delivery on a branch, not
+> mainline integration.**
 
 1. **Goal/non-goals/prereqs (dated correction 2026-11-20):** prereqs SC-00/01/02/03. On the DB side the planner-time list is now largely satisfied: DB-02 timestamp lifecycle LANDED `6d9d984d`/`74ebd81c`, DB-00 callback/error seam LANDED `48e65806`/`ec84c176`, DB-01 bind repair LANDED `f57ae050`, the executed phase1 writes DB-04…DB-13 LANDED, typed folder/scanner children queries LANDED via **DB-11 `52b04064`** (`visit_media_in_folder` `scanner_queries.rs:344`; **scope-parameter wording corrected 2026-11-23 — that seam's parameter is `Option<&UserScope>`, a headless call passes `None`, and the library scoping is inherent in `folder_id`; `ScannerScope` `:853` is the authority on the system-only readers, not on this seam** — `../decisions.md` D-SEAM2), and **DB-14 `de0f49ea` LANDED** supplies the executed per-folder transaction (`persist_folder_delta`). SC-05's remaining gates are therefore **SC-01 ratification + an `nd-scanner` manifest delta (an `nd-db` dependency was not yet declared at `de0f49ea`)** and parent sequencing — not missing DB primitives. **(Corrected 2026-11-23:** `nd-db` has been declared in `nd-scanner` since SC-03 landed at `cb59a973`; the SC-05 manifest delta only adds `nd-utils` and the dev-only `nd-dbschema` edge, and what SC-05 supplies is the missing **caller**, not the dependency edge.)_ **Amended 2026-11-21:** SC-01 is **RATIFIED NARROW** and that `nd-db` manifest delta is **authorized by the ratification record** (`../decisions.md` "SC-01 seams ratification"), so SC-05's remaining gates are parent sequencing plus SC-00/02/03 delivery. **Amended 2026-11-23 (`../decisions.md` D-SC05-MANIFEST / D-SC05-SLICE):** the manifest delta is extended and **authorized** with `nd-utils` (runtime — directly names the frozen `Cancellation` parameter; seam 4 assigns the adapter to SC-05) and `nd-dbschema` (**dev-dependencies only**, fresh-schema harness), still **zero new lock packages** (two dependency edges on the existing `nd-scanner` entry); SC-05's remaining gates are parent sequencing, SC-00/02/03 delivery, and review/fix of its outstanding acceptance and parity items. No missing mutation performed in initial empty-folder slice. **No phase2/3/4/final GC/controller/watcher/IPC, no false full-scan completion**; the 2026-11-23 decision record authorizes **no SC-06, no scan controller, and no full traversal**. Fixture library7 explicitly set up; real bootstrap remains BOOT owner.
 2. **Starting evidence (re-synced at `de0f49ea`):** Go processFolder `phase_1_folders.go:224-285`, tags `:292-325`, persistence `:374-475`; `MediaFileRepo::put_sql` (`nd-db/mediafile_repo.rs:1437`, planner cite `:1427` was baseline-relative) only renders, as do sibling builders — but the combined executed folder-delta seam now exists in `nd-db/src/scanner_writes.rs` (LANDED `de0f49ea`): `FolderWriteBatch` + `persist_folder_delta(store,&batch)`, which SC-05 consumes rather than driving `put_sql` itself. Existing `nd-db/tests/runtime_marshal.rs` `mediafile_write_read_and_update_keeps_created_at` (now at `:845`) manually executes builders; it is not proof of a callable executing Repo Put. Existing Go `scanner_test.go:140,150,163,177` imports folders/tracks/albums and queues artwork.
