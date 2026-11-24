@@ -11,6 +11,11 @@
 //! `src/compare.rs`'s deviation 2.
 //!
 //! The comparator is a pure boolean over the record DTOs: no DB, no clock, no hash crate.
+//! One test below is the deliberate exception: `` supplies a real pooled SQLite
+//! so SC-04-unknown-7 can drive the comparator with **hydrated DB-read rows**, which is the
+//! input shape its own rustdoc declares. Zero new dependency edges — `nd-db` and the
+//! dev-only `nd-dbschema` are already in `Cargo.toml`, and `common` is compiled by every
+//! `tests/*.rs` that declares it.
 
 use chrono::{DateTime, TimeZone, Utc};
 use nd_db::album_repo::{AlbumRecord, NamedParticipant};
@@ -20,6 +25,8 @@ use nd_db::sql_participations::{Participant, Participants, Role};
 use nd_db::sql_tags::{DbTags, Genre};
 use nd_scanner::aggregate::zero_album;
 use nd_scanner::compare::{album_equals, is_equivalent, media_equals};
+
+mod common;
 
 const STAMP: DateTime<Utc> = DateTime::from_timestamp(1_800_000_000, 0).expect("valid stamp");
 
@@ -1231,4 +1238,134 @@ fn media_duration_is_quantized_not_floored() {
         "M19: no floor for media"
     );
     assert!(!media_equals(&with(100.0), &with(99.9)), "M20");
+}
+
+/// SC-04-unknown-7 — the comparator's **declared input contract** executed against the
+/// database, not against hand-built DTOs.
+///
+/// `media_equals` documents that both sides must be DB-read rows because `genre`/`genres`
+/// are PostScan-derived (`persistence/mediafile_repository.go:49-66`, ported at
+/// `nd-db/src/hydrate.rs:2826-2834`). Before this test that claim was unexercised: every
+/// other test in this file builds records by hand, so a refactor that dropped the genre
+/// assignment in `mediafile_post_scan` — or a phase-2/3 caller that fed a freshly mapped
+/// bridge DTO (`mapping_bridge.rs:415` leaves `genre` empty and `genres` empty, exactly as
+/// Go's `map_mediafile.go:15-117` does) into the comparator — would pass the whole suite.
+///
+/// Two rows written through the **production write seam** (`put_mediafile_in_tx`) with the
+/// bridge-faithful `genre = ""`/`genres = []`, then read back through the **frozen two-phase
+/// visitor** `scanner_queries::visit_media_in_folder` → `row_to_mediafile` → `into_record`
+/// (`mediafile_repo.rs:1336`), must reproduce Go's verdict on a genre-only tag change.
+#[test]
+fn hydrated_db_rows_drive_media_equals_for_a_genre_only_tag_change() {
+    use nd_db::mediafile_repo::MediaIdentity;
+    use nd_id::new_tag_id;
+    use std::path::Path;
+
+    let (store, db) = common::fresh_store("genre-read", 1);
+    common::seed_library(&store, 1, "genre-read", Path::new("/music/genre-read"));
+
+    let folder_id = nd_db::folder_repo::folder_id(1, "", "album");
+    common::execute(
+        &store,
+        "INSERT INTO folder (id, library_id, path, name, parent_id, missing, hash, num_audio_files, num_playlists, images_updated_at, updated_at, created_at, image_files) \
+         VALUES (?1, 1, 'album', 'album', '', 0, 'h', 0, 0, ?2, ?3, ?3, '[]')",
+        &[
+            nd_db::sqlrepo::Value::Text(folder_id.clone()),
+            nd_db::sqlrepo::Value::Text(nd_db::time::to_text(&at(1_000))),
+            nd_db::sqlrepo::Value::Text(nd_db::time::to_text(&at(1_000))),
+        ],
+    );
+
+    // Two members of one album whose only hashed difference is the genre tag. Written
+    // genre-agnostically, the way the scan side writes: `genre` empty and `genres` empty.
+    let mut rock = media();
+    rock.id = "mf-rock".to_string();
+    rock.pid = "pid-rock".to_string();
+    rock.path = "album/one.flac".to_string();
+    rock.folder_id = folder_id.clone();
+    rock.genre = String::new();
+    rock.genres = Vec::new();
+    rock.tags = DbTags::from([("genre".to_string(), vec!["Rock".to_string()])]);
+
+    let mut punk = media();
+    punk.id = "mf-punk".to_string();
+    punk.pid = "pid-punk".to_string();
+    punk.path = "album/two.flac".to_string();
+    punk.folder_id = folder_id.clone();
+    punk.genre = String::new();
+    punk.genres = Vec::new();
+    punk.tags = DbTags::from([("genre".to_string(), vec!["Punk".to_string()])]);
+
+    for rec in [&rock, &punk] {
+        store
+            .try_with_tx_sync(|tx| {
+                nd_db::mediafile_repo::put_mediafile_in_tx(
+                    tx,
+                    &MediaIdentity::Id(rec.id.clone()),
+                    rec,
+                    &at(1_000),
+                    false,
+                )
+            })
+            .unwrap_or_else(|e| panic!("put {}: {e}", rec.id));
+    }
+
+    // Phase 1 wrote no genre; the stored column must say so, or the test would prove
+    // nothing about the derivation.
+    assert_eq!(
+        common::scalar(&store, "SELECT genre FROM media_file WHERE id = 'mf-rock'"),
+        Some(String::new()),
+        "the write seam persists the scan DTO's empty genre verbatim"
+    );
+
+    // Read back through the production two-phase visitor — this is what phase 2/3 consumes.
+    let read = common::children(&store, &folder_id);
+    assert_eq!(read.len(), 2, "both members come back through the visitor");
+    let got = |id: &str| {
+        read.iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("no hydrated row for {id}"))
+            .clone()
+    };
+    let rock_row = got("mf-rock");
+    let punk_row = got("mf-punk");
+
+    // The read side derived genre/genres from the tags shim.
+    assert_eq!(
+        rock_row.genre, "Rock",
+        "PostScan derived the genre from tags"
+    );
+    assert_eq!(
+        punk_row.genre, "Punk",
+        "PostScan derived the genre from tags"
+    );
+    assert_eq!(
+        rock_row.genres,
+        vec![Genre {
+            id: new_tag_id("genre", "Rock"),
+            name: "Rock".to_string()
+        }],
+        "derived Genre carries Go's NewTag id, not a hand-written one"
+    );
+
+    // Go's verdict: a genre-only tag edit changes a media row's hash, so the media row IS
+    // refreshed (executed `M3` above). Driven from hydrated rows this time.
+    assert!(
+        !media_equals(&rock_row, &punk_row),
+        "hydrated rows with different genre tags are unequal, per Go"
+    );
+
+    // Same tags twice = equal, so the assertion above is about the tags and not about
+    // hydration noise (join-only fields, artwork, annotations all come back zero).
+    let rock_again = common::children(&store, &folder_id);
+    let rock_row_again = rock_again
+        .iter()
+        .find(|r| r.id == "mf-rock")
+        .expect("second hydrated read of mf-rock");
+    assert!(
+        media_equals(&rock_row, rock_row_again),
+        "two hydrated reads of the same row are equal — the inequality above is the genre"
+    );
+
+    common::remove_db(&db);
 }
