@@ -1224,3 +1224,62 @@ claims the parent re-verified in source (`persist_folder_delta_in_tx` is `pub(cr
   SC-05's outstanding items reviewed-and-fixed; that is code-satisfied since `eaff4c11`/`12b25637`,
   but `runtime_scanner_persistence_contract.rs:612-618` still lists them as owed and asserts the
   strings at `:4225-4243`. Rewording must stay paired with those assertions (D-SC05-GATEWORD).
+
+## SC-06 narrow-slice review and dispositions (PARENT 2026-11-25)
+
+Fresh read-only reviewer `6029cc6e` audited commit `661007fb` against Go and returned
+**APPROVE-WITH-FINDINGS: no Critical, 1 High, 5 Medium, 5 Low.** Its answers to the four
+fidelity questions I set were A(i) PASS, A(iii) PASS, A(iv) PASS, B PASS, C PASS-with-M2, E PASS —
+and it ran mutation probes (in `/tmp` with an isolated `CARGO_TARGET_DIR`, repo untouched), which
+is the most useful part of the review: four behaviors are **unpinned by tests** (removing them
+leaves the whole suite green). Parent re-verified the load-bearing claims in source.
+
+- **H1 (High) ACCEPTED — the quick-scan `Info()`-failure arm is unreachable and unproven.**
+  Confirmed independently: `walk.rs:1158-1169` drops any entry with `stat.modified.is_err()` and
+  returns before the `entries_classified.push` at `:1185`, and `capture_selected_folder` aborts
+  such an entry with `Phase1Error::EntryInfo` (`phase1.rs:996`). So no walk path can produce the
+  arm, and no test drives it — deleting `missing_suppressed` (`:1749`) passes everything. The
+  *behavior* is faithful (Go's `return entry, nil` at `phase_1_folders.go:260` precedes
+  `missingTracks` at `:270`); it just needs an executed assertion. It is also reachable from
+  neither current caller, so it is genuinely defensive for the SC-07+ split.
+- **M1 (Medium) ACCEPTED — cancel-vs-continue is untested.** Forcing every ingest error to stop
+  the walk leaves all 9 tests green. Go's distinction is real (`:356-361` stopWalk only in
+  `persistChanges` vs stage errors dropping one item, `go-pipeline/pipeline.go:524-534`).
+- **M3 (Medium) REJECTED — parent-refuted with evidence.** The claim was that a `folder.updated_at
+  = NULL` row makes Rust treat the folder as new where Go fails the whole library. It cannot
+  happen: the DDL declares `updated_at datetime default '0001-01-01 00:00:00' not null`
+  (`nd-dbschema/src/schema_ddl.rs:61`) — inserting NULL is a constraint failure (verified with
+  sqlite3) — and a foreign DB that somehow held NULL would hit `get_dt` -> `null_required`
+  (`nd-db/src/hydrate.rs:582-590`), propagating an error out of `get_folder_update_info`
+  (`folder_repo.rs:1431`) exactly as Go's `ScanStruct` into a non-pointer `time.Time` does.
+  `is_new`'s `zero()` fallback applies only when `info` is `None`, i.e. an absent row — which is
+  Go's zero-value `FolderUpdateInfo`. Faithful, no change.
+- **M2 (Medium) NOTED, NOT APPLIED.** `ScanStop` carries no cause, so a caller cannot distinguish
+  "stopped by persist failure" from "walk ended failed" or a genuine cancel. Adding a
+  cause-carrying variant is an API change to a public type introduced in this same slice and
+  belongs with the deferred `Scanner` entrypoint (progress sink / `ScanBegin`-`ScanEnd), where
+  consumers actually need it. Recorded so it is not lost.
+- **M4 (Medium) ACCEPTED as a doc correction.** The failing folder is popped from the residue set
+  at emit time (`phase1.rs:2413`) in both ports; since `unvisited_folder_ids` is the exact input
+  the deferred finalizer will consume, the header must say so.
+- **L1 (Low) ACCEPTED — stop hard-coding scanner storage policy.** `follow_symlinks`/
+  `ignore_dot_folders` are injected like `last_scan_started_at` instead of being pinned `true`,
+  removing silent drift from `conf.Server.Scanner.*`.
+- **L2 (Low) ACCEPTED as a doc note, behavior unchanged.** `ScanScope::Targets(vec![""])` is
+  rejected in Rust where Go treats `""` as the whole library; Go's own caller rewrites `""` to
+  `"."` (`scanner.go:85-88`) so it is unreachable, but the seam is inconsistent with
+  `get_folder_update_info` (`folder_repo.rs:1404-1410`), which does treat `""` as all-folders.
+- **L3 (Low) ACCEPTED as a doc correction** — `folders_visited` is a Rust-only diagnostic, not a
+  Go parity quantity (Go sums `total` after the walk and never compares it to `totalChanged`).
+- **L5 (Low) ACCEPTED as a deviations-list note** — the missing leg and the filter both key on the
+  library-relative `media_file.path`, matching Go's `dbTracks[mf.Path]`; if a Go-written DB ever
+  stored absolute paths every row would flag missing.
+- **E over-claim ACCEPTED as a doc correction** — `ScanStop::Walk`'s rustdoc cited
+  `phase_1_folders.go:167-169` (walk *creation* error) for per-target walk failures; Go's actual
+  per-target path is `log.Error` + continue (`walk_dir_tree.go:61-63`), while Rust aborts the
+  remaining targets (a pre-existing SC-02 conservative-coverage divergence, `walk.rs:920-935`).
+- **Scope check E PASS.** No finalize/`MarkMissingByFolder`/`TouchByMissingFolder`, no
+  `image_changes`, no `markFailed`/overlap, no PID-rescan promotion, no progress sink, no
+  `ScanBegin`/`ScanEnd`, no multi-library loop, no GC; `persist_folder_delta_in_tx` still
+  `pub(crate)`; no `nd-db`/`nd-mapping` file in the diff. D-SC06-TX, D-SC06-FINALIZE and
+  D-SC06-GC were honored.
