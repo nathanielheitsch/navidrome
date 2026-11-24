@@ -909,8 +909,17 @@ pub struct MediaFileRecord {
     pub explicit_status: String,
     /// `folder_id` (Go `FolderID`).
     pub folder_id: String,
-    /// `genre` (Go `Genre` — the most common genre; a plain column distinct
-    /// from the `Genres` tag set).
+    /// `genre` (Go `Genre`; a plain column distinct from the `Genres` tag set).
+    /// Go's inline comment at `model/mediafile.go:71` calls it "the most common
+    /// genre", but nothing computes that for a media file: the value comes from
+    /// `Tags.ToGenres()` (`model/tag.go:138-148`), whose scalar is `genres[0].Name`
+    /// — the FIRST value of the stored `genre` tag, with no frequency ranking
+    /// (frequency ranking lives in `TagList.GroupByFrequency`, `model/tag.go:25-57`,
+    /// which is album tag aggregation). Read hydration overwrites whatever the
+    /// column held (`hydrate.rs:2725` then `:2833`); the write seam persists the
+    /// record's value verbatim (`mediafile_repo.rs:1165`), and the scan side writes
+    /// `""` (`nd-scanner/src/mapping_bridge.rs:415`). Album has no such column
+    /// semantics — see [`crate::album_repo::AlbumRecord::genre`].
     pub genre: String,
     /// `has_cover_art` (Go `HasCoverArt`).
     pub has_cover_art: bool,

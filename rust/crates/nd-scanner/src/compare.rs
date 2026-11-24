@@ -198,7 +198,13 @@ pub fn album_equals(a: &AlbumRecord, b: &AlbumRecord) -> bool {
 /// participants ARE, through the tag-ID and participant-ID sequences below rather
 /// than as structures. Both sides must be DB-read rows: `genre`/`genres` are PostScan-derived
 /// (`mediafile_repository.go:49-66`), so a freshly mapped DTO and a stored row are not the
-/// same kind of value.
+/// same kind of value. Executed against the database by
+/// `tests/compare.rs::hydrated_db_rows_drive_media_equals_for_a_genre_only_tag_change`,
+/// which writes through `put_mediafile_in_tx` with the scan DTO's empty genre and reads back
+/// through `scanner_queries::visit_media_in_folder`; feeding a bridge DTO in here would give
+/// Go a verdict it never produces, because every Go `Equals` call site compares hydrated rows
+/// with hydrated rows (`GetMissingAndMatching` `phase_2_missing_tracks.go:74-100`,
+/// `GetAll`→`ToAlbum` `phase_3_refresh_albums.go:79-92`).
 #[must_use]
 pub fn media_equals(a: &MediaFileRecord, b: &MediaFileRecord) -> bool {
     a.title == b.title

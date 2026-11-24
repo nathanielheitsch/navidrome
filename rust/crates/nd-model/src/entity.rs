@@ -106,7 +106,13 @@ pub struct Album {
     /// External metadata description.
     pub description: String,
     #[serde(rename = "genre")]
-    /// The most common genre.
+    /// Go `Genre`. Go's inline comment says "the most common genre", but no code
+    /// computes that for this DTO: the value is `Tags.ToGenres()`'s scalar
+    /// (`model/tag.go:138-148`), i.e. `genres[0].Name` — the FIRST value of the
+    /// stored `genre` tag, not a frequency winner. Frequency ranking belongs to
+    /// `TagList.GroupByFrequency` (`model/tag.go:25-57`), used by album tag
+    /// aggregation (`model/album.go:115-122`), which runs before `ToGenres` and so
+    /// only indirectly selects which value is first.
     pub genre: String,
     #[serde(rename = "missing")]
     /// Whether every media file of the entity is missing.

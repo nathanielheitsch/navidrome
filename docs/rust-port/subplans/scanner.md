@@ -242,7 +242,7 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 > `TrackFacts`, Go `ToAlbum` arms one-for-one) and `nd-scanner/src/compare.rs`
 > (`album_equals`, `media_equals`, `is_equivalent`), wired through `projection::album_drafts`;
 > `ProjectionError::MultiTrackGroup` retired with `phase1.rs`/`phase1_faults.rs` updated
-> accordingly. Parent-verified gates: `nd-scanner` 263/0 across 13 targets, workspace 2483/0,
+> accordingly. Parent-verified gates: `nd-scanner` 264/0 across 13 targets, workspace 2484/0,
 > clippy/fmt clean, rustdoc baselines unchanged. Executed Go-truth contract:
 > `subplans/SC-04-go-truth-brief.md` (`d22ad820`). Unknowns 2/3/5/6 closed by parent-side
 > audits; unknown 4 (f32 vs f64) closed by executed Go evidence — accumulate in f32 then

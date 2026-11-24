@@ -604,8 +604,15 @@ pub struct AlbumRecord {
     /// `external_info_updated_at` (Go `ExternalInfoUpdatedAt *time.Time`).
     /// `None` binds NULL.
     pub external_info_updated_at: Option<DateTime<Utc>>,
-    /// `genre` (Go `Genre` — the most common genre; a plain column distinct
-    /// from the `Genres` tag set).
+    /// `genre` (Go `Genre` — "the most common genre", `model/album.go:64`). For an
+    /// album that label is *indirectly* true: `ToAlbum` builds tags through
+    /// `Album.SetTags` → `TagList.GroupByFrequency` (`model/album.go:115-122`,
+    /// `model/tag.go:25-57`), which orders each name's values by frequency, so the
+    /// stored `genre` tag's first entry is the most frequent one. The column itself
+    /// is NOT computed from that ranking — read hydration derives it from the stored
+    /// tags shim via `Tags.ToGenres()` (`hydrate.rs:2619-2621`), i.e. `genres[0].Name`.
+    /// `hash:"ignore"` (`model/album.go:64`) keeps it out of `Album.Equals`, so a
+    /// genre-only change never refreshes an album row, unlike a media row.
     pub genre: String,
     /// `tags` (Go `Tags`) — all imported tags; PostMapArgs marshals them to
     /// the `tags` JSON column and indexes them into `album_tags`.

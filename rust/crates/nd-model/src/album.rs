@@ -110,7 +110,13 @@ pub struct Album {
     /// External metadata description.
     #[serde(rename = "description", skip_serializing_if = "String::is_empty")]
     pub description: String,
-    /// The most common genre.
+    /// Go `Genre` — "the most common genre" (`model/album.go:64`). Indirectly true
+    /// for an album: `ToAlbum` builds tags via `Album.SetTags` →
+    /// `TagList.GroupByFrequency` (`model/album.go:115-122`, `model/tag.go:25-57`),
+    /// which sorts each name's values by frequency, so the stored `genre` tag's first
+    /// entry is the most frequent value. The column is nevertheless derived by
+    /// `Tags.ToGenres()` as `genres[0].Name` (`model/tag.go:147`), not by a separate
+    /// frequency pass. `hash:"ignore"` keeps it out of `Album.Equals`.
     #[serde(rename = "genre")]
     pub genre: String,
     /// Whether every media file of the entity is missing.

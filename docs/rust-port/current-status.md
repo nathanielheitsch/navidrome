@@ -138,10 +138,10 @@ report):
 **Parent gates EXECUTED in this worktree** (branch
 `resuscitate-dead-agent-capture-worktree-state`): `cargo fmt --all -- --check` clean ·
 `cargo clippy --locked -p nd-scanner --all-targets --all-features -- -D warnings` clean ·
-`cargo test --locked -p nd-scanner` **263 / 0 across 13 targets** (lib 35, `aggregate` 20,
-`compare` 13, `mapping_bridge` 16 **unchanged**, `projection_singleton` 4, `phase1_faults` 15,
+`cargo test --locked -p nd-scanner` **264 / 0 across 13 targets** (lib 35, `aggregate` 20,
+`compare` 14, `mapping_bridge` 16 **unchanged**, `projection_singleton` 4, `phase1_faults` 15,
 `phase1_fixture` 19, `phase1_slice` 12, `walk_policy` 45, `folder_hash` 17, `local_storage` 34,
-`ignore_policy` 24, `storage_seam` 9) · `cargo test --locked --workspace` **2483 / 0** ·
+`ignore_policy` 24, `storage_seam` 9) · `cargo test --locked --workspace` **2484 / 0** ·
 `cargo doc --locked --no-deps` baselines unchanged (`nd-db` 21, `nd-scanner` 4).
 
 **Brief erratum, corrected (`6a0ad575`):** the brief's §D line "tags value reordering within a
@@ -158,6 +158,17 @@ duration, floor-divergence and tag-order harnesses plus their captured output li
 `~/.paseo/docs/evidence/sc04/` with re-run instructions; they are deliberately NOT repo
 testdata, since a tracked Go oracle needs the EVID-02 authorization. The behaviors they proved
 are pinned by Rust tests instead.
+
+**SC-04-unknown-7 closed** (`decisions.md` D-SC04-GENRE): `tests/compare.rs` gained
+`hydrated_db_rows_drive_media_equals_for_a_genre_only_tag_change`, which writes through the
+production write seam with the scan DTO's empty genre and reads back through the frozen
+two-phase visitor, so the comparator's "both sides must be DB-read rows" contract is now
+executed rather than merely documented (nd-scanner 264/0, workspace 2484/0, zero new dependency
+edges). The audit's claimed fresh-DTO-vs-hydrated-row divergence was checked against every Go
+`Equals` call site and **withdrawn** — no Go path compares a mapped DTO with a DB row. The
+"most common genre" wording was corrected where it is wrong (media: first value of the stored
+genre tag, per `Tags.ToGenres`) and **retained** where it is true (album: `GroupByFrequency`
+really sorts by frequency).
 
 **Still open**: integration into `master` (parent-owned, needs a fresh reviewer); SC-05's
 remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does

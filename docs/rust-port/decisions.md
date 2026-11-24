@@ -991,3 +991,34 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   `widening_a_float32_sum_is_exact`, `compare.rs::tags_ids_are_sorted_so_within_name_order_is_irrelevant`)
   with the Go citation inline, and remain **boolean** equivalence claims, not Go hash-byte
   parity.
+
+- **D-SC04-GENRE — "most common genre" is wrong for a media file, and the unknown-7 gap is closed
+  by an executed DB-backed test (PARENT DECIDED 2026-11-25).** Read-side audit `3a540032` found
+  `compare.rs`'s declared input contract unexercised and a wording defect. Both are fixed, with
+  the wording fixed **more precisely than the audit proposed**:
+  * Go `model/mediafile.go:71` carries the inline comment "the most common genre", but no Go code
+    computes a frequency winner for a media file. The value is `Tags.ToGenres()`'s scalar
+    (`model/tag.go:138-148`) = `genres[0].Name`, the FIRST value of the stored `genre` tag.
+    Frequency ranking is a different function, `TagList.GroupByFrequency` (`model/tag.go:25-57`),
+    used by album tag aggregation (`model/album.go:115-122`) — which runs *before* `ToGenres`, so
+    it only indirectly selects the winner.
+  * **Album keeps "most common"** (`model/album.go:64`): `ToAlbum` -> `Album.SetTags` ->
+    `GroupByFrequency` genuinely sorts by frequency, so for an album the label is indirectly
+    correct. The four Rust doc sites were therefore fixed **individually**, not uniformly:
+    `mediafile_repo.rs::genre` and `nd-model`'s `entity.rs`/`album.rs` say first-value;
+    `album_repo.rs::genre` retains "most common" with the derivation spelled out.
+    `nd-db/src/sql_tags.rs:170-171` already stated the rule correctly and is unchanged.
+  * **The audit's §4 divergence scenario is withdrawn.** It claimed a fresh scan DTO vs a
+    hydrated row makes `media_equals` return false where Go returns true. Checked against every
+    Go call site: `Equals`/`IsEquivalent` run only on hydrated rows —
+    `GetMissingAndMatching` (`phase_2_missing_tracks.go:74-100`, both sides from one cursor),
+    `GetAll`->`ToAlbum` (`phase_3_refresh_albums.go:79-92`). No Go path compares a
+    metadata-mapped DTO with a DB row, so feeding a bridge DTO here is a **caller bug**, not a
+    Go divergence — which is exactly why the rustdoc now says so and cites the call sites.
+- **D-SC04-MODELDOCS — the two `nd-model` doc fixes are parent-authorized, doc-only
+  (PARENT DECIDED 2026-11-25).** D-SC04 forbids SC lanes from editing `nd-model`. These two
+  comment-only edits (`entity.rs`, `album.rs`) are parent integration work in the same family as
+  the DB-21 gate-text reword: no struct, field, type, serde attribute, or `equals` behavior
+  changed, so the separately-approved model-owner lane for DTO *equality* is still required and
+  still unopened. Verification: `nd-model` 57/0, rustdoc warnings unchanged at 3 (all pre-existing,
+  in `criteria`/`fields`, none in the edited lines).
