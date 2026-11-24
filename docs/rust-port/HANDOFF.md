@@ -137,11 +137,17 @@ targets (exit 0)**, and the lane's own rustdoc warnings are **zero**. Two review
 `ignore.rs:435`, which this lane never touched). **Done: the signed commit and durable receipt** (`decisions.md` D-SC05-INT step 4), the **fast-forward of `master` to this branch
 line** (D-SC05-MERGE), and the reword of the stale
 `SC.phase1-fixture` / `SC.mapping-bridge` / `BOOT.configured-library-caller` gate text in
-`nd-db/tests/runtime_scanner_persistence_contract.rs:584-658` with statuses left at U (D-SC05-GATEWORD). **SC-04 is LANDED ON THIS BRANCH** at `c0b2952e`+`7c92e4cf`
+`nd-db/tests/runtime_scanner_persistence_contract.rs:584-658` with statuses left at U (D-SC05-GATEWORD). **SC-04 is INTEGRATED into `master`** at `c0b2952e`+`7c92e4cf`
 (prereq SC-03 met; placement per `decisions.md` D-SC04, landing decisions D-SC04-RETIRE/-DTO/-TIMEFACTS/-ERRATUM/-EVIDENCE/-MBZ;
 **fast-forwarded into `master` at `eaff4c11`** per `decisions.md` D-SC04-MERGE, recovery point `f5aa4cca`; the fresh
-reviewer errored on a provider 429 before reporting and a scoped re-review is open); **SC-06 remains unauthorized** and must not be launched on
-`decisions.md` D-SC05-SLICE.
+reviewer errored on a provider 429 before reporting; the scoped follow-up reviewer `f9788a02`
+returned APPROVE on all four areas it was given (`decisions.md` "SC-04 follow-up review verdict"));
+**SC-06 is LAUNCHED AND LANDED as a NARROW non-destructive slice** — `scan_library` multi-folder
+import, change detection, Go's import-selection arms, per-folder missing marking — integrated by
+fast-forward to `50a0c30b` (recovery point `1da8ca9d`), per `decisions.md` D-SC06-SLICE/-FINALIZE/
+-TX/-GC/-TIEORDER plus fix round `d611b004`. The SC-06 **exit** stays unauthorized: global finalize,
+artwork/image-changes, `markFailed`/overlap, PID-rescan promotion, progress sink, `ScanBegin`/
+`ScanEnd`, multi-library orchestration and phases 2-4 remain deferred.
 
 **Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state`, now at the
 same tip as `master` — docs-only commits above the integrated code boundary `342afd12`), the

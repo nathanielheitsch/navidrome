@@ -189,9 +189,21 @@ finding, and the areas the reviewer never reached are named there as the follow-
 gates re-measured on the integrated main checkout (workspace 2484/0, nd-scanner 264/0, nd-db 1079/0,
 nd-model 57/0, fmt/clippy/doc clean). Recovery point `f5aa4cca`.
 
-**Still open**: a fresh scoped review of the areas the aborted reviewer never reached; SC-05's
-remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does
-not close #17 or #14.**
+**SC-06 NARROW SLICE INTEGRATED**: `master` fast-forwarded `1da8ca9d -> 50a0c30b`, recovery point
+`1da8ca9d`. Code `661007fb` + fix round `d611b004`: `scan_library` multi-folder traversal, change
+detection via the public `get_folder_update_info`, Go's import-selection arms
+(`phase_1_folders.go:247-262`), `albumIDMap` re-import, per-folder persist unchanged, per-folder
+missing marking + `Touch`. Gates re-measured on the integrated main checkout (workspace 2500/0,
+nd-scanner 280/0, nd-db 1079/0, nd-model 57/0, fmt/clippy/doc clean). Fresh reviewer returned
+APPROVE-WITH-FINDINGS with no Critical (`decisions.md` "SC-06 narrow-slice review and
+dispositions"); H1/M1/L1 fixed and mutation-verified by the parent, M3 rejected with evidence,
+M2 deferred.
+
+**Still open**: SC-05's remaining acceptance items; a production scanner entrypoint (`main` is
+still empty — `scan_library` has no caller outside tests); and SC-06's own exit (global finalize
+under the still-open `D-SC06-FINALIZE`, artwork/image-changes, `markFailed`/overlap, PID-rescan
+promotion, progress sink, `ScanBegin`/`ScanEnd`, multi-library orchestration, phases 2-4).
+**SC-04 and the SC-06 slice do not close #17 or #14.**
 
 ## SC-03 integrated gates (parent, HEAD `cb59a973`, 2026-11-23) — latest INTEGRATED boundary
 

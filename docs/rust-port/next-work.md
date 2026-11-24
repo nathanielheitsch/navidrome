@@ -203,7 +203,7 @@ at `e3e0770a`.
    `decisions.md` D-SC04; multi-track groups now **aggregate** and `MultiTrackGroup` is retired; **integrated into `master`
    by fast-forward to `eaff4c11`** per `decisions.md` D-SC04-MERGE), the fixture-tree ingest over the DB APIs (SC-05 — **integrated at `342afd12`**, its slice landed with its own
    acceptance items open), and SC-06's phase-1 completion. Call it phase 1, not complete #17: on the integrated tree there is still
-   no scanner entrypoint (only a test harness calls `phase1::scan_folder`) and no production tag-to-DB pipeline.
+   no scanner entrypoint (only test helpers call `phase1::scan_folder`/`scan_library`) and no production tag-to-DB pipeline. Multi-folder traversal, change detection, Go's import-selection arms and per-folder missing marking ARE landed (`scan_library`, `661007fb`+`d611b004`, integrated `50a0c30b`); the global finalize, artwork, `markFailed`/overlap, progress sink and `ScanBegin`/`ScanEnd` are not.
 
    library/folder IDs, pure album aggregation/change detection, and one fixture-tree ingest over those DB APIs
    (`decisions.md` S1-S4). Call it phase 1, not complete #17: there is still no scanner entrypoint or tag-to-DB pipeline.
