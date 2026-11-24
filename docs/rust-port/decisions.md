@@ -1283,3 +1283,37 @@ leaves the whole suite green). Parent re-verified the load-bearing claims in sou
   `ScanBegin`/`ScanEnd`, no multi-library loop, no GC; `persist_folder_delta_in_tx` still
   `pub(crate)`; no `nd-db`/`nd-mapping` file in the diff. D-SC06-TX, D-SC06-FINALIZE and
   D-SC06-GC were honored.
+
+## SC-06 fix round closed (PARENT VERIFIED 2026-11-25)
+
+Implementer `21b60f80` landed the selected findings as signed commit `d611b004` (3 files,
++1050/-42, ownership respected, tree clean). Parent re-ran every gate itself rather than
+accepting the report: fmt clean · clippy `--workspace --all-targets --all-features -D warnings`
+clean · **workspace 2500/0** (1 ignore, the pre-existing `dump_divergences`) · nd-scanner **280/0**
+· nd-db 1079/0 · `phase1_complete` **12/0** · nd-scanner rustdoc **4 warnings**, unchanged baseline.
+
+Parent's own mutation checks (not the child's table):
+- Removing the `missing_suppressed` early return in `missing_leg_for_pass` **fails 2 lib tests**
+  (`the_quick_scan_filter_arm_is_the_only_arm_with_an_empty_missing_leg`,
+  `a_quick_scan_stat_failure_persists_the_folder_row_but_marks_nothing_missing`). Mutation
+  reverted and re-verified green. H1 is genuinely pinned.
+- **One correction, applied by the parent**: `missing_leg_for_pass`'s rustdoc claimed the arm is
+  pinned by "the end-to-end test in `tests/phase1_complete.rs`". That is false — `StatUnavailable`
+  appears zero times in that file, and every entry there comes from a real walk, which drops
+  stat-failed entries (`walk.rs:1158-1169`). The real coverage is the two in-crate unit tests; the
+  second is DB-backed (`temp_store`, real `SELECT hash/updated_at`, `COUNT(*) FROM media_file`,
+  `missing = 1`) with a sibling folder whose entry does carry an mtime as the non-vacuity control.
+  Coverage was adequate; only the citation was wrong, so the parent corrected the doc rather than
+  demanding a new test. Lesson recorded: a test-location claim is a claim like any other.
+- **L2 REVERSED — the reviewer was wrong and the implementer proved it.** `LogicalPath::parse("")`
+  maps `""` and `"."` to the root (`storage.rs:198-200`), and the implementer's probe showed
+  `Targets(vec![""])` visits and persists all folders. So Rust already agrees with Go
+  (`folder_repository.go:111-115` treats `""` as all-folders; `scanner.go:85-88` rewrites `""` to
+  `"."`), and the pre-existing rustdoc claim that an empty target is REFUSED was the actual bug.
+  Corrected to "empty means the whole library"; `InvalidTarget` narrowed to targets escaping the
+  root. No behavior change.
+
+**SC-06 narrow slice is APPROVED and ready to integrate.** Deferred and still open: `D-SC06-FINALIZE`
+(inaccessible-vs-deleted), M2 (cause-carrying `ScanStop`), artwork/image-changes, `markFailed` +
+selective-target overlap, PID-rescan promotion, progress sink, `ScanBegin`/`ScanEnd`, multi-library
+orchestration, phases 2-4, GC. `SC.phase1-fixture` stays Unmet by design.

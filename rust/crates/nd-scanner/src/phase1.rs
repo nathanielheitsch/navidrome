@@ -1485,9 +1485,12 @@ fn canonical_identity(path: &Path) -> PathBuf {
 /// Both current callers make the suppressed arm unreachable — the SC-02 walker drops an
 /// entry whose mtime is absent (`walk.rs:1158-1169`) and the standalone capture aborts such
 /// an entry with [`Phase1Error::EntryInfo`] (`phase1.rs`, the `entry.stat.modified` arm) —
-/// so it is defensive for the SC-07+ split. It is asserted directly here (in-crate unit
-/// test plus the end-to-end test in `tests/phase1_complete.rs`) so the behavior stays
-/// pinned rather than looking live.
+/// so it is defensive for the SC-07+ split. It is pinned by two in-crate unit tests —
+/// `the_quick_scan_filter_arm_is_the_only_arm_with_an_empty_missing_leg` and
+/// `a_quick_scan_stat_failure_persists_the_folder_row_but_marks_nothing_missing`, the latter
+/// against a real store with `SELECT`-read effects and a sibling folder whose entry DOES carry
+/// an mtime as the non-vacuity control — rather than by `tests/phase1_complete.rs`, whose
+/// entries all come from real walks and so cannot reach this arm.
 fn missing_leg_for_pass(
     pass: &TagReadPass,
     children: &BTreeMap<String, MediaFileRecord>,
