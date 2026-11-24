@@ -199,10 +199,12 @@ files against the live worktree — all identical**, and it is now redundancy on
 `5c463aa1` and pushed to `origin`. The earlier captures are superseded snapshots of intermediate tree states.
 
 
-## Integrated gates on `master` at `342afd12` (parent, main checkout, 2026-11-23) — CURRENT
+## Integrated gates on `master` at `342afd12` (parent, main checkout, 2026-11-23/24) — CURRENT
 
 SC-03 (`cb59a973`), SC-05 (`5c463aa1`) and the SC-05 docs/receipt commits fast-forwarded `master` from `2b3fa921` to
-`342afd12`; `origin/master` pushed and in sync (0 ahead / 0 behind). Measured **on the main checkout**
+`342afd12`; `origin/master` pushed and in sync (0 ahead / 0 behind). A later **docs-only** commit (`bb2b7955`, recording the merge
+and the `boot00` workspace archive) moved `master` and this worktree to the same tip — its diff touches only `docs/rust-port/`, so
+the `rust/` tree and every figure below still describe the integrated code exactly. Measured **on the main checkout**
 (`/Users/nathanielheitsch/projects/barnstorm/navidrome`, cargo/rustc 1.99.1 Homebrew, `--locked`):
 `cargo test --workspace --locked` **exit 0** = **2444 / 0 / 1 across 129 targets** (103 test binaries **2438**, 26 doctest
 suites **6**; the one ignore is the pre-existing `dump_divergences`); `-p nd-db` **1079 / 0 / 0 across 50 targets**;
