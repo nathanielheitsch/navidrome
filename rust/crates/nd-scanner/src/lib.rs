@@ -51,9 +51,14 @@ pub mod folder;
 pub mod ignore;
 // SC-03: the tag→record bridge and the singleton folder projection.
 pub mod mapping_bridge;
-// SC-05: the phase-1 ingest vertical for one folder (walk -> tag -> bridge -> batch ->
-// DB-14 persist). Consumes the SC-02 storage facts, SC-03's bridge/projection, and the
-// ratified DB-11/DB-14 seams; SC-06 owns the rest of phase 1.
+// SC-05 + SC-06's narrow import slice: the phase-1 ingest vertical for one folder
+// (capture -> children read -> tag -> bridge -> batch -> DB-14 persist) and the
+// multi-folder controller `scan_library` that drives the SC-02 postorder walker with
+// Go's change detection and import-selection arms. Consumes the SC-02 storage facts,
+// SC-03's bridge/projection, and the ratified DB-11/DB-14 seams. The global unvisited->
+// missing finalizer, artwork/image changes, progress, `ScanBegin`/`ScanEnd`, multi-library
+// orchestration and phases 2-4 are NOT here (see the `phase1` module docs and
+// `docs/rust-port/decisions.md` D-SC06-SLICE).
 pub mod phase1;
 pub mod projection;
 pub mod storage;

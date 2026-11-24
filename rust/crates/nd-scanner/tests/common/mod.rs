@@ -19,12 +19,17 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, TimeZone, Utc};
+use std::collections::BTreeMap;
+
+use nd_db::folder_repo::{FolderRepo, FolderUpdateInfo};
 use nd_db::library_repo::{self, LibraryRecord, LibraryWriteError};
 use nd_db::pool::{Pool, PoolConfig};
 use nd_db::scanner_queries::{self, Control, VisitOutcome};
 use nd_db::store::SQLStore;
 use nd_mapping::config::{MappingContext, PidOptions};
-use nd_scanner::phase1::{self, FolderJob, Phase1FolderOutcome};
+use nd_scanner::phase1::{
+    self, FolderJob, LibraryScan, LibraryScanOutcome, Phase1FolderOutcome, ScanScope,
+};
 use nd_scanner::storage::LogicalPath;
 
 /// The committed fixture files, resolved relative to this crate's manifest so the
@@ -532,6 +537,125 @@ pub fn scan_ok(store: &SQLStore, job: &FolderJob<'_>) -> Phase1FolderOutcome {
     let token = nd_scanner::contract::CancelToken::new();
     phase1::scan_folder(store, job, &token).unwrap_or_else(|e| panic!("scan_folder failed: {e}"))
 }
+
+/// A whole-library `LibraryScan` — the multi-folder entry the SC-06 controller takes.
+///
+/// `full` is Go's `lib.FullScanInProgress` after job creation (`scanner.go:97`), and
+/// `last_scan_started_at` is the instant `isOutdated`'s full-scan arm compares the stored
+/// `folder.updated_at` against (`folder_entry.go:73`). Pass a stamp strictly later than the
+/// previous scan's stored `updated_at` when a full pass must re-import through that arm
+/// rather than through an accidental hash change.
+#[must_use]
+pub fn library_scan<'a>(
+    library_id: i64,
+    root: &'a Path,
+    mapping: &'a MappingContext,
+    scan_stamp: DateTime<Utc>,
+    last_scan_started_at: DateTime<Utc>,
+    full: bool,
+) -> LibraryScan<'a> {
+    let mut scan = LibraryScan::quick(
+        library_id,
+        root.as_os_str().to_os_string(),
+        scan_stamp,
+        last_scan_started_at,
+        mapping,
+    );
+    scan.full_scan_in_progress = full;
+    scan
+}
+
+/// Seed the library row with EXPLICIT scan fields — `full_scan_in_progress` and
+/// `last_scan_started_at` — so a test driving the scan through
+/// [`nd_scanner::phase1::LibraryScan::from_library_row`] exercises the real repository read
+/// rather than an injected guess. [`seed_library`] pins both to [`stamp`] and `true`, which
+/// is what the single-folder verticals need but not what a change-detection test does.
+pub fn seed_library_scan_row(
+    store: &SQLStore,
+    id: i64,
+    name: &str,
+    path: &Path,
+    last_scan_started_at: DateTime<Utc>,
+    full_scan_in_progress: bool,
+) {
+    let record = LibraryRecord {
+        id,
+        name: name.to_string(),
+        path: path.display().to_string(),
+        remote_path: String::new(),
+        last_scan_at: last_scan_started_at,
+        last_scan_started_at,
+        full_scan_in_progress,
+        updated_at: stamp(),
+        created_at: stamp(),
+        total_songs: 0,
+        total_albums: 0,
+        total_artists: 0,
+        total_folders: 0,
+        total_files: 0,
+        total_missing_files: 0,
+        total_size: 0,
+        total_duration: 0.0,
+        default_new_users: false,
+        pid_album: String::new(),
+        pid_track: String::new(),
+        scanned_pid_album: String::new(),
+        scanned_pid_track: String::new(),
+    };
+    store
+        .try_with_tx_sync::<library_repo::LibraryWriteResult, LibraryWriteError>(|tx| {
+            library_repo::put_in_tx(tx, &record, &stamp(), &[])
+        })
+        .unwrap_or_else(|e| panic!("seed_library_scan_row({id}) failed: {e}"));
+}
+
+/// Run a whole-library scan through the public controller and assert it started and
+/// finished without a pre-walk error. A [`LibraryScanOutcome::stopped`] or a non-empty
+/// [`LibraryScanOutcome::failures`] is NOT an error here — those are the per-folder signals
+/// a test asserts on directly, the way Go's `phaseFolders` returns them.
+pub async fn scan_all_ok(
+    store: &SQLStore,
+    scan: &LibraryScan<'_>,
+    scope: &ScanScope,
+) -> LibraryScanOutcome {
+    let token = nd_scanner::contract::CancelToken::new();
+    phase1::scan_library(store, scan, scope, &token)
+        .await
+        .unwrap_or_else(|e| panic!("scan_library failed: {e}"))
+}
+
+/// The stored update-info map the controller would have read, via the same public
+/// [`nd_db::folder_repo::FolderRepo::get_folder_update_info`] over the whole library.
+/// Reading it back is what turns "the folder row carried Go's hash" into an executed claim
+/// instead of a trust in an outcome field.
+#[must_use]
+pub fn update_info(store: &SQLStore, library_id: i64) -> BTreeMap<String, FolderUpdateInfo> {
+    store
+        .with_connection_sync(|conn| {
+            Ok(
+                match FolderRepo::new(conn).get_folder_update_info(library_id, &[]) {
+                    Ok(map) => map,
+                    Err(e) => panic!("update-info read failed: {e}"),
+                },
+            )
+        })
+        .unwrap_or_else(|e| panic!("cannot lease a connection for the update-info read: {e}"))
+}
+
+/// Flag one stored media row missing by PATH — the state Go's `missing` re-import arm
+/// (`phase_1_folders.go:262`) starts from, when the test needs it without a preceding scan
+/// that produced it.
+pub fn set_media_missing(store: &SQLStore, path: &str, missing: bool) {
+    execute(
+        store,
+        "UPDATE media_file SET missing = ?1 WHERE path = ?2",
+        &[
+            nd_db::sqlrepo::Value::Bool(missing),
+            nd_db::sqlrepo::Value::Text(path.to_string()),
+        ],
+    );
+}
+
 /// Portable guard against collapsed test timestamps: the scan stamps and the file times
 /// every fixture pins must stay **strictly** ordered. If two of them ever became equal —
 /// by an edit, or by a helper accidentally returning the same instant — the assertions
