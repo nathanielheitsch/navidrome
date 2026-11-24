@@ -236,7 +236,7 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** `cargo test --locked -p nd-scanner --test mapping_bridge --test projection_singleton`; `cargo test --locked -p nd-mapping --test go_oracle`; `cargo test --locked -p nd-tagreader --all-targets --all-features`; V. Existing fixtures require no ffmpeg; regeneration separately approved.
 10. **Review/done/report:** R; field inventory audited in both directions, no mapper/backend gaps hidden as scanner success. Release SC-05 without requiring SC-04 many-track aggregation.
 
-## SC-04 — Pure multi-track album aggregation and semantic equality — **LANDED on this branch `c0b2952e`+`7c92e4cf` (2026-11-25); NOT yet integrated into `master`**
+## SC-04 — Pure multi-track album aggregation and semantic equality — **INTEGRATED into `master` (fast-forward to `eaff4c11`, 2026-11-25; code `c0b2952e`+`7c92e4cf`)**
 
 > **Landed** (2026-11-25): `nd-scanner/src/aggregate.rs` (`album_draft`, per-member
 > `TrackFacts`, Go `ToAlbum` arms one-for-one) and `nd-scanner/src/compare.rs`

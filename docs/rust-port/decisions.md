@@ -1097,3 +1097,31 @@ Consequence: **SC-04 integration proceeds without a clean review verdict.** The 
 gates and the independently-re-checked findings above are the basis; the un-reviewed areas are
 listed as the scope of the follow-up review below, and none of them is a blocker discovered after
 the fact.
+
+## SC-04 integration (PARENT EXECUTED 2026-11-25)
+
+- **D-SC04-MERGE — fast-forward of `master` from `f5aa4cca` to `eaff4c11` (PARENT EXECUTED
+  2026-11-25, user-approved).** `master` was a strict ancestor of
+  `resuscitate-dead-agent-capture-worktree-state` (`git merge-base --is-ancestor` exit 0), so the
+  integration is a fast-forward with no merge commit and no divergence; recovery point **`f5aa4cca`**.
+  Executed on the main checkout (`/Users/nathanielheitsch/projects/barnstorm/navidrome`), which was
+  clean (0 porcelain entries, 0 stashes) before and after. All **12** integrated commits verified
+  GPG-signed by grepping each raw commit object for `gpgsig`.
+  * Content: SC-04's two code increments (`c0b2952e` aggregation, `7c92e4cf` semantic equality),
+    the SC-05 fault-test update that retired `ProjectionError::MultiTrackGroup`, the Go-truth brief
+    (`d22ad820`), the parent integration rounds (`bd0dc994`, `2b360d38`, `6a0ad575`, `bab2d9c4`,
+    `6c4f9488`), the unknown-7 hydrated-row test (`25146f2b`), the genre-wording correction
+    (`0e55b5a5`… i.e. `ee55b5a5` mbz scoping), and the aborted-review dispositions (`eaff4c11`).
+    23 files, +4876/-252.
+  * **Gates re-measured on the integrated main checkout**, not in the worktree:
+    `cargo fmt --all -- --check` exit 0 · `cargo clippy --locked --workspace --all-targets
+    --all-features -- -D warnings` exit 0 · `cargo test --locked --workspace` **exit 0 = 2484 / 0**
+    across 131 test-result lines (105 binaries + 26 doctest suites) · `-p nd-db` **1079 / 0** ·
+    `-p nd-scanner` **264 / 0** · `-p nd-model` **57 / 0** · `cargo doc --locked --no-deps -p
+    nd-scanner` exit 0 with **4 warnings, all pre-existing**. The single `ignored` test remains the
+    pre-existing `dump_divergences`.
+  * **Basis for integrating without a clean review verdict:** the reviewer errored on a provider
+    429 before reporting (see the dispositions section above). Every finding it had reached was
+    re-verified against Go by the parent and dispositioned; the areas it never reached are
+    re-queued as a fresh scoped review rather than treated as approved. Integration is therefore
+    reversible from `f5aa4cca` if that review finds a blocker.

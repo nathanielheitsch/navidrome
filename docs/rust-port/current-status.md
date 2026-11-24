@@ -73,7 +73,7 @@ full cursor or REST surface. That is narrower than "no repository method is ever
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
-## SC-04 LANDED ON THIS BRANCH — `c0b2952e` + `7c92e4cf` (+ parent integration commit, 2026-11-25) — **NOT yet integrated into `master`**
+## SC-04 INTEGRATED — `c0b2952e` + `7c92e4cf` (+ parent integration rounds), fast-forwarded into `master` at `eaff4c11` (2026-11-25)
 
 **Ownership**: the SC-04 Go-truth scout (`860a0de3-…`) archived itself before landing its
 report; its full brief was recovered from the session transcript and committed as
@@ -180,7 +180,11 @@ NULL and `get_f64` errors on NULL), one vacuous test assertion, plus performance
 action. Integration proceeded on parent-verified gates plus independent re-verification of every
 finding, and the areas the reviewer never reached are named there as the follow-up review scope.
 
-**Still open**: integration into `master` (parent-owned, needs a fresh reviewer); SC-05's
+**SC-04 INTEGRATED**: `master` fast-forwarded `f5aa4cca -> eaff4c11` (`decisions.md` D-SC04-MERGE),
+gates re-measured on the integrated main checkout (workspace 2484/0, nd-scanner 264/0, nd-db 1079/0,
+nd-model 57/0, fmt/clippy/doc clean). Recovery point `f5aa4cca`.
+
+**Still open**: a fresh scoped review of the areas the aborted reviewer never reached; SC-05's
 remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does
 not close #17 or #14.**
 

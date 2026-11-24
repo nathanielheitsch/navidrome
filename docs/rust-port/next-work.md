@@ -199,9 +199,9 @@ at `e3e0770a`.
 3. **Honest scanner phase-1 vertical slice** — storage/stat/symlink/ignore landed (`e9dd8230`/`ff5b9c92`, then the
    SC-02 partial walker/ignore/hash/cancellation slice at `e3e0770a`, then the **SC-03 metadata→record bridge and
    singleton projection at `cb59a973`** (19 executed tests). The **metadata→record adapter is landed**; what remains is
-   pure album aggregation/change detection (SC-04 — **LANDED on this branch at `c0b2952e`+`7c92e4cf`**, scanner-local per
-   `decisions.md` D-SC04; multi-track groups now **aggregate** and `MultiTrackGroup` is retired, but SC-04 is not yet
-   integrated into `master`), the fixture-tree ingest over the DB APIs (SC-05 — **integrated at `342afd12`**, its slice landed with its own
+   pure album aggregation/change detection (SC-04 — **INTEGRATED into `master` at `eaff4c11`**, code `c0b2952e`+`7c92e4cf`, scanner-local per
+   `decisions.md` D-SC04; multi-track groups now **aggregate** and `MultiTrackGroup` is retired; **integrated into `master`
+   by fast-forward to `eaff4c11`** per `decisions.md` D-SC04-MERGE), the fixture-tree ingest over the DB APIs (SC-05 — **integrated at `342afd12`**, its slice landed with its own
    acceptance items open), and SC-06's phase-1 completion. Call it phase 1, not complete #17: on the integrated tree there is still
    no scanner entrypoint (only a test harness calls `phase1::scan_folder`) and no production tag-to-DB pipeline.
 
