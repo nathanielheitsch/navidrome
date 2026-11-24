@@ -1317,3 +1317,26 @@ Parent's own mutation checks (not the child's table):
 (inaccessible-vs-deleted), M2 (cause-carrying `ScanStop`), artwork/image-changes, `markFailed` +
 selective-target overlap, PID-rescan promotion, progress sink, `ScanBegin`/`ScanEnd`, multi-library
 orchestration, phases 2-4, GC. `SC.phase1-fixture` stays Unmet by design.
+
+## SC-06 integration (PARENT EXECUTED 2026-11-25)
+
+- **D-SC06-MERGE — fast-forward of `master` from `1da8ca9d` to `543ebdf6` (PARENT EXECUTED
+  2026-11-25, user-authorized launch).** `merge-base --is-ancestor` confirmed `master` was a strict
+  ancestor, so this is a fast-forward with no merge commit; recovery point **`1da8ca9d`**. Executed
+  on the main checkout (clean before and after, 0 stashes). Integrated commits: `661007fb` (the
+  narrow slice), `b8118f37` (review dispositions), `d611b004` (fix round), `50a0c30b` (fix-round
+  close), `543ebdf6` (status pass) — all verified GPG-signed by grepping the raw commit objects.
+  Gates re-measured **on the integrated main checkout** per D-SC05-MERGE: fmt clean · clippy
+  `--workspace --all-targets --all-features -D warnings` clean · `cargo test --locked --workspace`
+  **exit 0 = 2500 / 0** across 132 test-result lines, sole ignore the pre-existing
+  `dump_divergences` (`go_oracle.rs`) · `-p nd-scanner` **280/0** · `-p nd-db` **1079/0** ·
+  `-p nd-model` **57/0** · rustdoc baselines unchanged (nd-db 21, nd-model 3, nd-scanner 4).
+  `origin/master` pushed and in sync.
+- **What this delivery is and is not.** It is `scan_library` multi-folder phase-1 import:
+  traversal, change detection, Go's import-selection arms, `albumIDMap` re-import, per-folder
+  persist, per-folder missing marking + `Touch`. It is **not** the SC-06 exit and does **not**
+  close #17 or #14: `nd-cli/src/main.rs` is still an empty `fn main()`, so `scan_library` has no
+  production caller, and `SC.phase1-fixture` stays **Unmet**. Open gates carried forward:
+  `D-SC06-FINALIZE` (inaccessible-vs-deleted), M2 (cause-carrying `ScanStop`), artwork/
+  image-changes, `markFailed` + selective-target overlap, PID-rescan promotion, progress sink,
+  `ScanBegin`/`ScanEnd`, multi-library orchestration, phases 2-4, `D-GC`.
