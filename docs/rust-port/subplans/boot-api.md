@@ -14,7 +14,9 @@
 > **DB-15's runtime half `96c495e7`** and **DB-14 `de0f49ea`** (`scanner_writes.rs` per-folder persistence seam, consumed D-BATCH), and
 > **DB-16 LANDED `7d022a02`** (executed move/reference-remap/delete primitives, A8 share typed rejection, D-PLUGIN deletion; 18 executed tests —
 > consumed by SC-06/BOOT maintenance, not by BOOT-01); still no production scanner caller or artwork worker/full scanner —
-> `nd-scanner` declares `nd-db` on the integrated tree since SC-03 `cb59a973` but nothing integrated calls these seams — and collection/
+> `nd-scanner` declares `nd-db` on the integrated tree since SC-03 `cb59a973`, and since SC-05 `5c463aa1` (integrated at `342afd12`)
+> `nd-scanner/src/phase1.rs` calls the DB-11 read and DB-14 write seams — but `phase1::scan_folder` has **no production caller**
+> (test harness only), so there is still no bootstrap or route that scans and DB-16/DB-17 seams remain uncalled in production — and collection/
 > count for later API-F* still belongs to DB-21(FULL) — **DB-21(P1-DB) LANDED `632271a9`** as the DB-side-only P1 exit contract
 > (4206 lines, 7 executed tests), whose executed U-ledger asserts `BOOT.configured-library-caller` as **Unmet**: the gate is
 > **BOOT-01 implementing** with BOOT-00 a prerequisite (now **LANDED `6d6938b1`** — see its status amendment), and approval is not delivered caller evidence. Latest parent gates at

@@ -19,10 +19,12 @@ Prepared READ-ONLY. Source inspection only; **no builds, tests, probes, formatti
 
 **BLOCKED for executed scanner implementation; READY for contract/oracle preparation.** _(Superseded on two items:
 **SC-03 LANDED `cb59a973`** — `nd-scanner` is no longer a bare scaffold and now declares `nd-db`/`nd-id`/`nd-tagreader` on
-that commit — and **SC-05 is LANDED ON BRANCH `5c463aa1`, not merged to `master`**, so this verdict applies to the
+that commit — and **SC-05 is LANDED AND INTEGRATED at `5c463aa1`, fast-forwarded into `master` at `342afd12`**, so the
+verdict below applies to the
 **integrated** tree
-only. On the integrated tree `nd-scanner` **does** declare `nd-db` (SC-03 added it at `cb59a973`) but has no scanner entrypoint
-and no integrated caller of any `nd-db` seam, and the
+only. On the integrated tree `nd-scanner` **does** declare `nd-db` (SC-03 added it at `cb59a973`) and, since `5c463aa1`, has
+integrated callers of the DB-11 read and DB-14 write seams, but still **no scanner entrypoint** (`phase1::scan_folder` is called
+only from its test harness), and the
 manifest below is the pre-SC-03 planner snapshot.)_ `nd-scanner` is a scaffold (`rust/crates/nd-scanner/src/lib.rs:1-25`, `nd_scanner_instantiates`); its manifest has no dependencies. Start with one in-process fixture folder, real metadata, executing repository writes, reopen/readback, junction and FTS assertions (SC-05). This is an honest vertical slice, **not complete phase 1 and not #17 completion**. SC-06 closes all phase-1 semantics, SC-07/08/09 add phases 2/3/4, SC-10/11 close finalization/controller lifecycle. Watcher and external-process modes have separate decision gates, not prerequisites of SC-05.
 
 The scanner must **consume**, not recreate, missing DB execution/transaction/query/GC machinery. Bootstrap library initialization remains BOOT-* ownership. HTTP/auth/listener/stream wiring remains API-*/BOOT-* ownership. Playlist import service persistence remains #23/nd-playlists ownership, with its own bounded prerequisite; it cannot be replaced with parser success or a permanently successful fake.
@@ -252,19 +254,20 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** `cargo test --locked -p nd-scanner --test aggregate --test semantic_compare --test projection_singleton`; V. Model-owner implementation adds `cargo test --locked -p nd-model --all-targets --all-features`.
 10. **Review/done/report:** R; reviewers explicitly check ignored-field inventory and f32 floors; no phase3 release with ID-only equality.
 
-## SC-05 — FIRST VERTICAL: singleton folder phase1 with actual commit/reopen/readback — **LANDED ON BRANCH `5c463aa1`, NOT merged to `master`**
+## SC-05 — FIRST VERTICAL: singleton folder phase1 with actual commit/reopen/readback — **LANDED AND INTEGRATED (`5c463aa1`, on `master` at `342afd12`)**
 
-> **LANDED ON BRANCH 2026-11-23; mainline integration still open.** `nd-scanner/src/phase1.rs`,
+> **LANDED AND INTEGRATED 2026-11-23/24; SC-05 itself is not complete.** `nd-scanner/src/phase1.rs`,
 > `tests/phase1_{slice,faults,fixture}.rs`,
 > `tests/common/mod.rs` and the `src/{lib.rs,walk.rs,projection.rs}` + manifest/lock delta are committed as the signed
-> **`5c463aa1`** (10 files, +9103/−54) on `resuscitate-dead-agent-capture-worktree-state`, **pushed to `origin`**; `master` is
-> untouched, so mainline still has no scanner caller. The lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` was **resumed
+> **`5c463aa1`** (10 files, +9103/−54) on `resuscitate-dead-agent-capture-worktree-state`, **pushed to `origin`, and
+> fast-forwarded into `master` at `342afd12`** (old tip `2b3fa921`; `../decisions.md` D-SC05-MERGE). `phase1::scan_folder` still
+> has **no production caller** — only `tests/common/mod.rs` — so mainline performs no scan; that is SC-06 scope. The lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` was **resumed
 > twice** by the parent (fix round, then review fix pass) rather than re-launched, and is now archived with the issue's other
 > finished children; the parent also kept out-of-band captures outside the repo
 > (`~/backups/sc-05-capture-*`, newest `sc-05-capture-20261123-133629/`, verified by applying it to a fresh clone at
 > `cb59a973` and byte-comparing all 10 files — redundancy only now). It is the first
 > caller of DB-11's `visit_media_in_folder` (`phase1.rs:568`) and DB-14's `persist_folder_delta` (`scan_folder` `:1740`).
-> Parent gates re-measured **after** the commit: `nd-scanner` **224/0 across 12 targets**,
+> Parent gates re-measured **after** the commit and again **on the integrated main checkout at `342afd12`**: `nd-scanner` **224/0 across 12 targets**,
 > workspace **`cargo test --workspace --locked` exit 0 = 2444/0/1 across 129 targets**, `-p nd-db` 1079/0/0 across 50 targets,
 > fmt/clippy/`diff --check` clean, and **`cargo doc --no-deps -p nd-scanner` exit 0 with 4 warnings, all pre-existing** — the
 > lane's own rustdoc warnings are zero. A fresh read-only review returned **APPROVE-WITH-FIXES with no High findings** and its

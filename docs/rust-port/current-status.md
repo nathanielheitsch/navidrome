@@ -17,20 +17,21 @@ the **renderer-prepare gate deferral**, the **proof-of-delivery** process ruling
 placement is scanner-local), **D-SC05-MANIFEST** (`nd-utils` runtime + `nd-dbschema` dev-only, in addition to the ratified
 `nd-db` edge), **D-SEAM2** (seam-2 wording corrected to `Option<&UserScope>`), **D-SC05-SLICE** (SC-05 narrow cycle/follow
 design, **no SC-06 authorization**) and **D-SC05-PATH** (raw path identity is the contract; UTF-8 name text is an SC-02
-encoding boundary, not a semantic precondition). **SC-05 is LANDED ON BRANCH at `5c463aa1`** (signed, pushed; **not merged
-into `master`**) — see the SC-05 block below.
+encoding boundary, not a semantic precondition). **SC-05 is LANDED AND INTEGRATED** — `5c463aa1` fast-forwarded into `master`
+at `342afd12` and pushed — see the SC-05 block below.
 **SC-03, DB-11, DB-15's runtime half, DB-14, DB-21(P1-DB), DB-16, DB-17 and BOOT-00 are LANDED** with executed tests, and
-each remains partial: on the integrated tree no write primitive has a production scanner caller and there is no
-`nd-scanner` consumption (DB-14's seam is landed but uncalled at `cb59a973` — its first caller is the SC-05 commit
-`5c463aa1`, which lives on a branch only), SC-03 is the bridge + singleton projection only (multi-track groups refuse), there is no full
+each remains partial: DB-11's read seam and DB-14's write seam now have an **integrated caller inside `nd-scanner`
+(`phase1.rs:568`, `:1681`)** but **no production entrypoint** calls `scan_folder` (test harness only), so there is still no
+production scan; SC-03 is the bridge + singleton projection only (multi-track groups refuse), there is no full
 cursor/REST surface, and DB-15 keeps its durable Go oracle deferred. The **SC-02 partial** remains a scoped slice — **not**
 SC-01 ratification, SC-02 completion, or MusicFS readiness. **DB-21(P1-DB) is the DB-side-only exit**: an executed composed
 contract plus an API freeze and an executed U-ledger — it adds **no production caller** and is not the full DB-21 exit.
 **DB-17 `b3dee0a6`** adds four caller-tx count-refresh helpers with **no production caller** (SC's phase-3 triggers are the
 consumers) and **BOOT-00 `6d6938b1`** is **gate work only** — the CLI `main` is still empty and nothing listens or boots.
-Latest integrated gates below are **parent integration evidence EXECUTED at
-`6d6938b1`** on the merged tree; the SC-03 gate set is the commit-body evidence at `cb59a973` (parent-measured on the
-merged tree), and the block directly under it is **non-integrated** in-flight evidence for the uncommitted SC-05 lane.
+Latest integrated gates are **parent integration evidence EXECUTED on the main checkout at `342afd12`** (`master`,
+fast-forwarded from `2b3fa921`): workspace **2444 / 0 / 1 across 129 targets**, `-p nd-db` **1079 / 0 / 0 across 50 targets**,
+`nd-scanner` **224 / 0 across 12 targets**, fmt + clippy `-D warnings` clean. The older blocks below (`cb59a973`, `6d6938b1`)
+are dated history for earlier merged states.
 This document records **evidence**, not implementation authorization. Execution order lives in [`next-work.md`](next-work.md); binding decisions in
 [`decisions.md`](decisions.md); bounded assignments in `subplans/`. Older dated blocks are history, not current
 readiness. Resolve contradictions against the pinned source and the current contract amendments, never against a larger
@@ -54,13 +55,15 @@ primitives** (`move_matched_mediafile`, `remap_missing_mediafile`, `reassign_ref
 CLI/API remain scaffolds**: `nd-http` carries `RouterInjection` plus the executed cycle test but **no router and no listener**,
 `nd-api` is a scaffold (`nd-cli/src/main.rs` is an empty `main`); `nd-scanner` now
 holds the tested local-FS walker slice (`storage.rs` + `.ndignore`/folder-hash/cancellation, SC-02 partial at `e3e0770a`),
-the **SC-03 mapping bridge and singleton projection** (`mapping_bridge.rs`, `projection.rs` at `cb59a973`), and — **in the
-working tree only, uncommitted and unaccepted** — an SC-05 phase-1 vertical (`phase1.rs` + `tests/phase1_*.rs`) that is the
+the **SC-03 mapping bridge and singleton projection** (`mapping_bridge.rs`, `projection.rs` at `cb59a973`), and the
+**SC-05 phase-1 vertical** (`phase1.rs` + `tests/phase1_*.rs`, `5c463aa1`, fast-forwarded into `master` at `342afd12`) that is the
 **first caller** of `nd_db::scanner_queries::visit_media_in_folder` and `nd_db::scanner_writes::persist_folder_delta`
-(SOURCE-VERIFIED in the working tree at `cb59a973`: `phase1.rs:568` call; the working-tree manifest adds `nd-utils` runtime +
-`nd-dbschema` dev on top of the `nd-db`/`nd-id`/`nd-tagreader` edges SC-03 already landed). On the **integrated** tree
-`nd-scanner` declares `nd-db` since SC-03 but has **no caller of any write seam**, so no integrated write primitive has a
-production caller. There is
+(SOURCE-VERIFIED on integrated `master`: `phase1.rs:568` and `phase1.rs:1681`; the manifest adds `nd-utils` runtime +
+`nd-dbschema` dev on top of the `nd-db`/`nd-id`/`nd-tagreader` edges SC-03 already landed). Both DB seams therefore now have
+**integrated callers inside `nd-scanner`**. What is still absent is a **production entrypoint**: `phase1::scan_folder` is `pub`
+but its only callers are the test harness (`tests/common/mod.rs:533`) and its own module tests — `rg` over `rust/crates`
+excluding `phase1*` finds no `nd-cli`/`nd-api`/`nd-http` caller, and `nd-cli/src/main.rs` references no scanner at all. So no
+write primitive has a **production** caller yet, and phase-1 orchestration belongs to SC-06. There is
 **no end-to-end/server readiness**, no mounted router, no production scan, and no integrated stream HTTP adapter. DB-12 is only the executed artwork
 invalidation/enqueue subset, not a worker or full scanner, and DB-11 is only the executed read/cursor contract, not the
 full cursor or REST surface. That is narrower than "no repository method is ever called":
@@ -87,35 +90,39 @@ reviewer-verified. Parent gates EXECUTED at `cb59a973` (commit body): workspace 
 (`ProjectionError::MultiTrackGroup`) rather than aggregate; no equality, no DB writes, no scanner entrypoint. SC-04 owns
 aggregation/semantic comparison, scanner-local (`decisions.md` D-SC04). The `6d6938b1` block below is dated history.
 
-## SC-05 LANDED ON BRANCH at `5c463aa1` (2026-11-23) — accepted by the parent, NOT merged to `master`
+## SC-05 LANDED AND INTEGRATED — `5c463aa1`, fast-forwarded into `master` at `342afd12` (2026-11-23)
 
 **Ownership**: the lane's writer `4a8567e4-1ab8-417d-8758-0dc444b0971f` was **resumed** (not relaunched) for the fix round and
-the review fix pass, both landed in `5c463aa1`, then archived with the rest of the lane's finished children. SC-05 is now
-**committed and pushed** on `origin/resuscitate-dead-agent-capture-worktree-state`; the parent owns integration and
-re-verified every gate below **after** the commit. Merging this branch into `master` is a separate, still-open decision.
+the review fix pass, both landed in `5c463aa1`, then archived with the rest of the lane's finished children. SC-05 is
+**committed (signed), pushed, and integrated**: `master` was **fast-forwarded** `2b3fa921 → 342afd12` on the main checkout and
+pushed (`origin/master` in sync, 0/0). Recovery point for the previous `master` tip: `2b3fa921`. Every gate below was
+re-measured **on the integrated main checkout**, not in a worktree.
 Committed delta (SOURCE-VERIFIED via `git show --stat 5c463aa1`): NEW `nd-scanner/src/phase1.rs`,
 NEW `nd-scanner/tests/{phase1_slice,phase1_faults,phase1_fixture}.rs` and `tests/common/mod.rs`, modified
 `nd-scanner/src/{lib.rs,walk.rs,projection.rs}`, `nd-scanner/Cargo.toml`, `rust/Cargo.lock` (two
 dependency edges only — `nd-utils` runtime, `nd-dbschema` dev-only — with **zero** new `[[package]]` entries, matching
-`decisions.md` D-SC05-MANIFEST; verified `git show 5c463aa1 -- rust/Cargo.lock | grep -c '^+\[\[package\]\]'` = 0). Total
+`decisions.md` D-SC05-MANIFEST; the commit's lock diff adds no `[[package]]` line). Total
 +9103/−54 across 10 files. This is the **first
 caller** of the DB-11 read seam and the DB-14 write seam: `capture_selected_folder` → `ingest_folder_snapshot` →
-`nd_db::scanner_writes::persist_folder_delta`, with `visit_media_in_folder(conn, folder_id, None, …)`.
-Executed test inventory **in this tree**: `nd-scanner` **224 passed / 0 failed across 12 targets** (lib 29, `phase1_slice` 12,
+`nd_db::scanner_writes::persist_folder_delta` (`phase1.rs:1681`), with `visit_media_in_folder(conn, folder_id, None, …)`
+(`phase1.rs:568`). **Both seams now have integrated callers**, verified on `master` by `rg` over `rust/crates`.
+Executed test inventory **on integrated `master`**: `nd-scanner` **224 passed / 0 failed across 12 targets** (lib 29, `phase1_slice` 12,
 `phase1_faults` 15, `phase1_fixture` 19, `mapping_bridge` 16, `walk_policy` 45, `folder_hash` 17, `local_storage` 34,
 `ignore_policy` 24, `storage_seam` 9, `projection_singleton` 4, doctests 0).
-Parent gates re-measured by the parent **after committing** (working tree at `5c463aa1`, cargo/rustc 1.99.1 Homebrew):
+Parent gates re-measured **on the integrated tree** (`/Users/nathanielheitsch/projects/barnstorm/navidrome` at `342afd12`,
+cargo/rustc 1.99.1 Homebrew):
 `cargo test --workspace --locked` **exit 0** = **2444 / 0 / 1 across 129 targets** (103 test binaries **2438** + 26 doctest
 suites **6**); the single ignore is the pre-existing `dump_divergences`. `-p nd-db` **1079 / 0 / 0 across 50 targets**
 (1073 across 49 binaries + 6 doctests). fmt clean, workspace clippy `--all-targets --all-features -D warnings` clean,
-`git diff --check` and `git diff --cached --check` clean, and porcelain empty for `rust/crates/nd-stream/`.
+`git diff --check` clean.
 Earlier figures on this branch line are the same lane at earlier states, under a binaries-only convention: **2431 / 0 / 1 across
 103 suites** and **2436 / 0 / 1 across 129 targets**; both agree with the current count once the fix-round tests are added.
 **Rustdoc: the lane's own warnings are now ZERO.** `cargo doc --no-deps -p nd-scanner` exits **0** and reports **4 warnings**,
 all **pre-existing** (`contract.rs:299` `QUEUE_SPACE_RETRY_INTERVAL`, `contract.rs:420` `MAX_IGNORE_LINE_BYTES`,
 `storage.rs:31` `decode_path`, `walk.rs:27` redundant explicit link). The 8 SC-05 links to `pub(crate)` items are fixed.
-**Parent ruling on the rustdoc gate (2026-11-23):** `RUSTDOCFLAGS="-D warnings" cargo doc -p nd-scanner` fails **identically at
-integrated `cb59a973`** (verified on a clean clone: exit 101, the same 4 locations), so those 4 are a baseline gate this lane
+**Parent ruling on the rustdoc gate (2026-11-23, re-confirmed on integrated `master`):**
+`RUSTDOCFLAGS="-D warnings" cargo doc -p nd-scanner` fails **identically at the pre-SC-05 commit `cb59a973`** (verified on a
+clean clone: exit 101, the same 4 locations), so those 4 are a baseline gate this lane
 did not introduce. This spine's convention is a rustdoc **warning-count** baseline (like `nd-db` at 21), not `-D warnings`;
 cleaning them is **not** SC-05 scope and is recorded here as an open baseline item rather than silently folded into the
 SC-05 commit. `nd-db` stays at **21 = post-DB-16 baseline** (untouched).
@@ -156,18 +163,24 @@ transition with a pre-existing rating row); non-UTF-8 capture arm executable onl
 follow (reviewer: unreachable, since a link-reached target is refused in preflight); and a residual Low that `walk_policy.rs`
 shows `ENOTDIR` is deterministically reachable but maps to the warn class, so the fatal class has no end-to-end test.
 SC-05 acceptance items remain open by design (multi-track aggregation = SC-04, outdated/empty-skip policy, image-changes
-collector, missing-folder finalizer — `decisions.md` D-SC05-SLICE), there is **no SC-06/controller authorization**, and no
-merge into `master`.
-**Not done / not claimed**: SC-05 remains a **singleton phase-1 vertical slice**, not complete phase 1 and not #17. It is
-committed and pushed on this branch only — **`master` is untouched**, so nothing is integrated into the mainline, and the
-DB-21 U-ledger entry `SC.phase1-fixture` stays **U** until an accepted merge (see the stale-wording note below).
+collector, missing-folder finalizer — `decisions.md` D-SC05-SLICE), and there is **no SC-06/controller authorization**.
+**Not done / not claimed**: SC-05 is a **singleton phase-1 vertical slice**, not complete phase 1 and not #17. It is integrated
+into `master`, but the gate it owed is broader than a manifest delta: `phase1::scan_folder` is `pub` and its **only callers are
+tests** (`tests/common/mod.rs:533`), so mainline still has **no production scanner entrypoint** and no production scan — that is
+SC-06, which is unauthorized. Accordingly the DB-21 U-ledger entry `SC.phase1-fixture` **stays U** after the merge (see the
+stale-wording note below), and `SC.mapping-bridge` likewise stays U because its text also pins the distinct MediaFile DTO
+storage-field gate.
 **Stale-wording follow-up the parent did NOT fix (out of lane ownership, recorded not silently edited):**
 `nd-db/tests/runtime_scanner_persistence_contract.rs:593-600` still describes `SC.phase1-fixture` as gated on "an `nd-scanner`
 manifest delta adding an `nd-db` dependency … `nd-scanner` declares no `nd-db` dependency". Both clauses are now false —
-`nd-db` has been declared since SC-03 `cb59a973` and `5c463aa1` adds the first caller — while the **U status itself remains
-correct** because the gate this entry owes is an accepted, integrated SC-05, which a branch-only commit is not. That file is
+`nd-db` has been declared since SC-03 `cb59a973`, and `5c463aa1` adds the first caller — while the **U status itself remains
+correct even after the merge**, on its remaining true clause: the entry also gates on "has no scanner entrypoint", and
+`phase1::scan_folder` still has no production caller (test harness only). Of the entry's clauses, SC-01 ratification and the
+manifest delta are now satisfied and "no tag-to-DB ingest" is superseded by `5c463aa1`; only the missing production
+entrypoint keeps it U, which is SC-06 scope. That file is
 DB-21-owned test code (4218 lines, with `consumer_handoff_ledger_is_all_unmet` asserting 5 U entries and the exact gate
-substring at `:4196-4206`), so rewording it belongs to a DB-owned micro-lane, not to SC-05.
+substring at `:4196-4206`; `ConsumerAcceptance` exposes only the `Unmet` variant), so rewording it belongs to a DB-owned
+micro-lane, not to SC-05.
 
 **Resuscitation / capture receipts (2026-11-23, parent).** The SC-05 writer `4a8567e4-1ab8-417d-8758-0dc444b0971f`
 ("Fix SC-05 false sibling-cycle refusal and root facts") was **alive and idle** in workspace `wks_f8d2b72072a890ce` with its
@@ -186,7 +199,21 @@ files against the live worktree — all identical**, and it is now redundancy on
 `5c463aa1` and pushed to `origin`. The earlier captures are superseded snapshots of intermediate tree states.
 
 
-## Latest integrated gates (parent, HEAD `6d6938b1` / BOOT-00 on the merged tree, 2026-11-21)
+## Integrated gates on `master` at `342afd12` (parent, main checkout, 2026-11-23) — CURRENT
+
+SC-03 (`cb59a973`), SC-05 (`5c463aa1`) and the SC-05 docs/receipt commits fast-forwarded `master` from `2b3fa921` to
+`342afd12`; `origin/master` pushed and in sync (0 ahead / 0 behind). Measured **on the main checkout**
+(`/Users/nathanielheitsch/projects/barnstorm/navidrome`, cargo/rustc 1.99.1 Homebrew, `--locked`):
+`cargo test --workspace --locked` **exit 0** = **2444 / 0 / 1 across 129 targets** (103 test binaries **2438**, 26 doctest
+suites **6**; the one ignore is the pre-existing `dump_divergences`); `-p nd-db` **1079 / 0 / 0 across 50 targets**;
+`-p nd-scanner` **224 / 0 across 12 targets**; `cargo fmt --all -- --check` exit 0;
+`cargo clippy --workspace --all-targets --all-features -- -D warnings` exit 0;
+`cargo doc --no-deps -p nd-scanner` **exit 0 with 4 warnings, all pre-existing** (baseline item, see D-SC05-REVIEW).
+Production-caller state on `master`: `visit_media_in_folder` (`phase1.rs:568`) and `persist_folder_delta` (`phase1.rs:1681`)
+have integrated callers inside `nd-scanner`; `phase1::scan_folder` has **no production caller** (`tests/common/mod.rs:533`
+only) and `nd-cli/src/main.rs` references no scanner — so mainline still has no production scan. That gap is SC-06 (unauthorized).
+
+## Dated integrated gates (parent, HEAD `6d6938b1` / BOOT-00 on the merged tree, 2026-11-21)
 
 DB-17 (`b3dee0a6`, 5 files in `nd-db`, +2817 additions-only) and BOOT-00 (`6d6938b1`, 6 files, +177/−19 — `rust/Cargo.toml`,
 `rust/Cargo.lock`, `nd-http/{Cargo.toml,src/lib.rs}`, `nd-api/src/lib.rs`, `nd-cli/src/main.rs`) landed on this branch line.

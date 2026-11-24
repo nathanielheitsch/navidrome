@@ -800,22 +800,25 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   considered, and a modified/size cross-check is `StorageFactMismatch` (`local.go:90-109` has no mtime substitution).
   This replaces an earlier mtime-then-imported-at policy that diverged from Go. Recorded here so the ruling survives the
   commit body; landed-scope evidence lives in `current-status.md`.
-- **SC-05 acceptance status: LANDED ON BRANCH `5c463aa1`, NOT merged to `master` (2026-11-23).** The SC-05 vertical is
+- **SC-05 acceptance status: LANDED AND INTEGRATED — `5c463aa1` fast-forwarded into `master` at `342afd12` (2026-11-23/24).** The SC-05 vertical is
   committed (`nd-scanner/src/phase1.rs`, `tests/{phase1_slice,phase1_faults,phase1_fixture}.rs`,
   `tests/common/mod.rs`, `src/{lib.rs,walk.rs,projection.rs}`, the D-SC05-MANIFEST manifest/lock delta; 10 files,
-  +9103/−54), signed, and pushed on `origin/resuscitate-dead-agent-capture-worktree-state`. Its lane writer
+  +9103/−54), signed, and **integrated**: `master` fast-forwarded `2b3fa921 → 342afd12` on the main checkout and pushed, so
+  `master` and this worktree now sit at the same commit (old tip recoverable at `2b3fa921`). Its lane writer
   (`4a8567e4-1ab8-417d-8758-0dc444b0971f`, "Fix SC-05 false sibling-cycle refusal and root facts") was **resumed twice** by the
   parent (`send_agent_prompt`) — fix round, then review fix pass — rather than relaunched, and is now archived with the
   issue's other finished children.
-  It is the first caller of `scanner_queries::visit_media_in_folder` and `scanner_writes::persist_folder_delta`. A commit is
-  delivery **on a branch**, not integration: `master` is untouched, so mainline still has no scanner caller. Two review rounds
+  It is the first caller of `scanner_queries::visit_media_in_folder` and `scanner_writes::persist_folder_delta`, and **both calls
+  now live on `master`** — the first time an executed DB write seam has an integrated caller. Two review rounds
   ran (2026-11-23): the first left open findings recorded in `current-status.md`; the second came back **APPROVE-WITH-FIXES with
   no High findings**, its four selected fixes are in `5c463aa1`, and `nd-scanner`'s own rustdoc warnings are **zero**.
-  Still outstanding: merging this branch to `master`, and SC-05's own acceptance items (multi-track aggregation,
-  outdated/empty-skip policy, image-changes collector, missing-folder finalizer — D-SC05-SLICE). The DB-21 U-ledger
-  entries `SC.mapping-bridge` and `SC.phase1-fixture` stay **U**: `SC.mapping-bridge`'s text also pins the distinct
-  MediaFile DTO storage-field gate, and `SC.phase1-fixture` closes only with an accepted, **merged** SC-05, not with a
-  branch commit. Its gate **wording** is now stale — it still claims `nd-scanner` declares no `nd-db` dependency and that the
+  **Integrated, not complete:** SC-05's own acceptance items stay open (multi-track aggregation,
+  outdated/empty-skip policy, image-changes collector, missing-folder finalizer — D-SC05-SLICE), and `phase1::scan_folder` has
+  **no production caller** (only the test harness `tests/common/mod.rs:533`; `nd-cli/src/main.rs:36` is an empty `fn main()`), so
+  mainline still performs no production scan — that is SC-06 scope and stays unauthorized. The DB-21 U-ledger
+  entries `SC.mapping-bridge` and `SC.phase1-fixture` therefore stay **U even after the merge**: `SC.mapping-bridge`'s text also pins the distinct
+  MediaFile DTO storage-field gate, and `SC.phase1-fixture` keeps one true clause — "has no scanner entrypoint" — even though its
+  SC-01-ratification and manifest-delta clauses are now satisfied. Its gate **wording** is now stale — it still claims `nd-scanner` declares no `nd-db` dependency and that the
   manifest delta is missing, both false since SC-03 `cb59a973` and `5c463aa1` — and rewording that DB-21-owned test is a
   separate DB micro-lane, not SC-05 scope.
   Executed ledger of record: `nd-db/tests/runtime_scanner_persistence_contract.rs:583-601` (asserted Unmet by test).
@@ -859,12 +862,28 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   global equality check passes even when a single helper writes rows; (3) run a **fresh review** covering every changed
   file; (4) parent integration with a signed commit plus a durable receipt here. SC-05 is **not** complete phase 1 and never
   closes #17 (D-SC05-SLICE; `subplans/scanner.md` SC-05 item 10). Nothing beyond SC-05's own ownership is authorized here.
-  **Completed 2026-11-23 (parent):** steps (1)-(4) are done — the lane's writer was resumed for the fix round and the review
-  fix pass, the fresh review ran, and the work is committed as the signed **`5c463aa1`** on
-  `resuscitate-dead-agent-capture-worktree-state` (pushed to `origin`) with this record plus `current-status.md` as the durable
-  receipt. The rule stands: a branch commit is delivery on a branch, **not** mainline integration, and `master` has not been
-  fast-forwarded.
+  **Completed 2026-11-23/24 (parent):** steps (1)-(4) are done — the lane's writer was resumed for the fix round and the review
+  fix pass, the fresh review ran, the work was committed as the signed **`5c463aa1`**, and the parent then re-verified every gate
+  and **fast-forwarded `master` from `2b3fa921` to `342afd12`** and pushed (see D-SC05-MERGE), so step (4) is mainline, not
+  branch-only. The rule still stands for future lanes: a green working tree is not a package, and a branch commit is delivery on a
+  branch — integration is the parent's explicit act, which here was a verified fast-forward.
 
+- **D-SC05-MERGE — fast-forward of `master` to `342afd12` plus workspace/agent cleanup (PARENT EXECUTED 2026-11-24,
+  user-approved).** `master` fast-forwarded `2b3fa921 → 342afd12` on the main checkout
+  (`/Users/nathanielheitsch/projects/barnstorm/navidrome`, clean tree, 0 porcelain entries): `master` was a strict ancestor of the
+  branch, so no merge commit and no divergence, and `origin/master` is pushed and in sync. Old-tip recovery point `2b3fa921`. Both
+  SC-05 commits verified GPG-signed by grepping the raw commit object for `gpgsig`. Gates re-measured **on the integrated main
+  checkout**, not in a worktree: `cargo test --workspace --locked` **exit 0** = **2444 / 0 / 1 across 129 targets** (103 binaries
+  2438 + 26 doctest suites 6; the one ignore is the pre-existing `dump_divergences`), `-p nd-db` **1079 / 0 / 0 across 50 targets**,
+  `-p nd-scanner` **224 / 0 across 12 targets**, `cargo fmt --all -- --check` exit 0,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings` exit 0, and `cargo doc --no-deps -p nd-scanner` **exit 0
+  with 4 warnings, all pre-existing**. Cleanup with the user's approval: `paseo workspace archive wks_929b07163c95a811` archived the
+  BOOT-00 workspace and Paseo removed its owned worktree `~/.paseo/worktrees/0xo97qr3/boot00` — verified beforehand to have 0
+  porcelain entries, 0 stashes, and a branch that is an ancestor of `master`; the branch `boot00-manifest-pins-scaffold`
+  (`6d6938b1`) is **kept** locally and on origin, and `git worktree prune -n` reports nothing stale. The 19 finished children of
+  this issue were archived (soft-deleted; Pi session JSONL retained and re-importable via `paseo agent import`); detachment was
+  left to the user. Not removed: any branch, any session data, or the `1h64owvv` worktree roots belonging to other projects'
+  live workspaces.
 - **D-SC05-REVIEW — dispositions of the second SC-05 review, incl. the rustdoc baseline ruling (PARENT DECIDED 2026-11-23).
   Reviewer `c5ead1e6-92fa-4b18-b271-14d7bfce283a`, read-only, same issue workspace; verdict APPROVE-WITH-FIXES, no High
   findings.** Accepted and fixed in the tree: (a) the `listing_failure_warning` doc cited Go ranges that do not support the

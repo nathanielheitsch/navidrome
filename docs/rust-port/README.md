@@ -26,7 +26,7 @@ both. Nothing in this directory authorizes implementation, commits, new workspac
 
 | Question | Authority |
 |---|---|
-| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest **integrated** parent gates at `cb59a973` (SC-03: 2383/0/1 across 100 suites, `nd-scanner` 169/0), and a clearly-labeled **non-integrated** block for the in-flight uncommitted SC-05 lane; `6d6938b1`/`7d022a02`/`632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
+| What is measured/landed right now | `current-status.md` (dated measurements at the pinned baseline; latest **integrated** parent gates on `master` at `342afd12` — workspace 2444/0/1 across 129 targets, `-p nd-db` 1079/0/0 across 50, `nd-scanner` 224/0 across 12 — with SC-05 integrated; earlier integrated gates at `cb59a973` (SC-03: 2383/0/1 across 100 suites, `nd-scanner` 169/0) and `6d6938b1`/`7d022a02`/`632271a9`/`de0f49ea`/`96c495e7`/`e3e0770a`/`272c9c66`/`f80b9704` runs retained as history) |
 | Order of work, live wave, what is next | `next-work.md` current section |
 | A settled contract or decision (time, JSON, errors, pool, scope) | `decisions.md`, then the named subplan decision |
 | Task IDs, prerequisites, ownership, READY/BLOCKED | `subplans/README.md` + the assigned subplan |
@@ -85,15 +85,18 @@ production caller — SC's phase-3 triggers are the consumers) and **BOOT-00 LAN
 + the D1 `nd-http` dependency boundary with the executed `dependency_graph_has_no_http_api_cycle`; **gate work only, no production behavior**).
 **SC-03 LANDED `cb59a973`** — the `nd-mapping` tag→record bridge (`mapping_bridge.rs`) plus the singleton folder projection
 (`projection.rs`), 4 files +2 executed suites, **19 executed tests** against the committed `go_oracle.json` and real tagreader
-fixtures; birth-time substituted by an **injected clock** (durable record now in `decisions.md`). Latest **integrated** gates at
-`cb59a973`: **2383 / 0 / 1 across 100 suites**, `nd-scanner` **169 / 0**. **SC-05 is LANDED ON BRANCH at `5c463aa1`**
-(signed, pushed to `origin/resuscitate-dead-agent-capture-worktree-state`; **not merged into `master`**): the phase-1 vertical
-(`phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`) is the first caller of DB-11's `visit_media_in_folder` + DB-14's
-`persist_folder_delta`; its gates re-measured by the parent after the commit are `cargo test --workspace --locked` **exit 0** =
-2444/0/1 across 129 targets, `nd-scanner` **224/0 across 12 targets**, `cargo doc --no-deps -p nd-scanner` **exit 0 with 4
-warnings, all pre-existing**. A fresh read-only review returned **APPROVE-WITH-FIXES (no High findings)** and its four selected
-findings are in `5c463aa1`; dispositions are in `decisions.md` D-SC05-REVIEW. Still open: merging this branch to `master`, and
-SC-05's own acceptance items (D-SC05-SLICE). Nothing else is in flight.
+fixtures; birth-time substituted by an **injected clock** (durable record now in `decisions.md`). **SC-05 is LANDED AND
+INTEGRATED**: `5c463aa1` (signed) fast-forwarded `master` from `2b3fa921` to `342afd12` and pushed to `origin/master`. Latest
+**integrated** gates, measured by the parent on the main checkout at `342afd12`: `cargo test --workspace --locked` **exit 0** =
+**2444/0/1 across 129 targets**, `-p nd-db` **1079/0/0 across 50 targets**, `nd-scanner` **224/0 across 12 targets**, fmt +
+clippy `-D warnings` clean, `cargo doc --no-deps -p nd-scanner` **exit 0 with 4 warnings, all pre-existing**. The phase-1
+vertical (`phase1.rs`, `tests/phase1_*.rs`) is the first caller of DB-11's `visit_media_in_folder` (`phase1.rs:568`) + DB-14's
+`persist_folder_delta` (`phase1.rs:1681`), so both seams now have integrated callers; `scan_folder` still has **no production
+caller** (test harness only) and `nd-cli` references no scanner, which is SC-06 scope and stays unauthorized. A fresh read-only
+review returned **APPROVE-WITH-FIXES (no High findings)** and its four selected findings are in `5c463aa1`; dispositions are in
+`decisions.md` D-SC05-REVIEW. SC-05's own acceptance items stay open (D-SC05-SLICE) and `SC.phase1-fixture` stays **U**.
+Nothing else is in flight.
+Dated integrated gates at `cb59a973` (SC-03): **2383 / 0 / 1 across 100 suites**, `nd-scanner` **169 / 0**.
 Merged-tree gates at `6d6938b1` (dated history): **2363 / 0 / 1 across 98 suites**, `-p nd-db` **1073 / 0 / 0 across 49 suites**,
 `nd-http` 1/1, `nd-db` rustdoc 21 = post-DB-16 baseline.
 The DB spine's next package is **DB-18** (forward spine `DB-18 → 19 → 20 → DB-21(FULL-SCANNER-DB)`; DB-18 is gated on `D-STATS`, still without a

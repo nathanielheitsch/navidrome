@@ -18,13 +18,13 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
   `4ab63cd5` plus DB-12 signed `e5d0592d`, DB-10 signed `65072b89` / signed merge `6e5ca97d`, DB-12 rustdoc fix `f80b9704`).
   That SC-02 slice is partial and claims neither SC-01/SC-02 completion nor MusicFS readiness; DB-11 is the executed
   read/cursor contract only, DB-15 is its runtime half only (durable Go oracle deferred — `decisions.md` H6), and DB-14 is the
-  executed folder-delta persistence seam only (no **integrated** production caller — `nd-scanner` declares `nd-db` on the
-  integrated tree since SC-03 `cb59a973`, but nothing integrated calls the seam; no walk/mapping/aggregation, no finalize).
-  **SC-05 is LANDED ON BRANCH at `5c463aa1`** (signed, pushed to `origin/resuscitate-dead-agent-capture-worktree-state`,
-  **not merged into `master`**): the
+  executed folder-delta persistence seam only. **SC-05 is LANDED AND INTEGRATED at `5c463aa1`** (signed, pushed to
+  `origin/resuscitate-dead-agent-capture-worktree-state`, and **fast-forwarded into `master` at `342afd12`**):
+  the
   phase-1 vertical (`nd-scanner/src/phase1.rs`, `tests/phase1_{slice,faults,fixture}.rs`, `tests/common/mod.rs`, plus the
-  `src/{lib.rs,walk.rs,projection.rs}` and manifest/lock delta) is committed in 10 files, +9103/−54. Until it is merged it is
-  **not mainline delivery** — `master` still has no scanner caller and the DB-21 U-ledger entry stays U. A docs
+  `src/{lib.rs,walk.rs,projection.rs}` and manifest/lock delta) is committed in 10 files, +9103/−54 and is now mainline, so
+  `master` has an in-crate caller of the DB-11 read and DB-14 write seams — but `phase1::scan_folder` still has **no production
+  entrypoint** (test harness only) and the DB-21 U-ledger entries stay U. A docs
   lane may be cut from an earlier boundary (`ff900d3e`, `74ebd81c`) — say so, and cite integrated behavior from `master`
   instead of measuring it in your own worktree. Earlier audited boundaries are listed in `current-status.md`'s
   landed-history table; older handoff baselines are history. Two docs-only boundaries sit above the code HEAD (`f3bb81b2`,
@@ -44,9 +44,10 @@ nothing — no implementation, no commits, no new workspaces, no completion clai
 
 The workspace passes its regression gates and is **not** a runnable server or scanner: `nd-scanner` holds the tested
 local-FS walker slice (SC-02 partial at `e3e0770a`) and the **SC-03 mapping bridge + singleton projection** (`mapping_bridge.rs`,
-`projection.rs` at `cb59a973`), but on the integrated tree has **no scanner entrypoint, tag-to-DB pipeline or full-scan
-orchestration** — the first caller of the DB-11 read seam and DB-14 write seam is committed on a branch only
-(`5c463aa1`, see `current-status.md`'s SC-05 block) and is **not merged into `master`**; `nd-http` is BOOT-00's typed
+`projection.rs` at `cb59a973`), but on the integrated tree has **no scanner entrypoint, production tag-to-DB pipeline or full-scan
+orchestration** — the first caller of the DB-11 read seam and DB-14 write seam is **integrated on `master`**
+(`5c463aa1`, fast-forwarded at `342afd12`; see `current-status.md`'s SC-05 block), yet `phase1::scan_folder` is invoked only from
+`nd-scanner/tests/common/mod.rs`, so no bootstrap or route performs a scan; `nd-http` is BOOT-00's typed
 dependency-boundary module (`RouterInjection` plus the executed cycle test — **no router, no listener**), `nd-api` remains a scaffold, and the CLI `main` is still empty at `6d6938b1`. Shared codecs, record marshaling, the eight row
 hooks, substantial
 executed reads **and thirty-six executed transaction-bound `*_in_tx` primitives** (33 `pub`, plus three `pub(crate)`:
@@ -73,9 +74,9 @@ backwards-overwrite is faithful, **no monotonic guard added**), zero-arg stateme
 NULL-exclusion, statement-level `RowsAffected` vs entity counts, probe-then-update order, and **rollback stays the CALLER's
 obligation via the DB-00 typed seam** (all four helpers' docs say so). Typed
 specialized scanner reads are no longer "not landed" — count refresh landed at `b3dee0a6` and move/reference at `7d022a02`, while GC (DB-20) still is — and neither DB-11's
-reads nor any write has a production caller **on the integrated tree** (DB-14's seam has no integrated caller either:
-`nd-scanner` declares `nd-db` at `cb59a973` but has no integrated caller of it; the first caller of both the DB-11 read and the DB-14 write seam
-exists only as the uncommitted SC-05 vertical, which is not delivery). Tests that manually execute SQL bundles are not production repository methods,
+reads nor any write has a **production** caller: `nd-scanner/src/phase1.rs` calls both the DB-11 read and the DB-14 write seam and
+is integrated on `master` since `5c463aa1`/`342afd12`, but `scan_folder` is reachable only from the crate's test harness, so no
+bootstrap, route or scanner entrypoint drives them. Tests that manually execute SQL bundles are not production repository methods,
 production code, but its router is mounted only in crate tests). DB-01 (missing-state bind order), DB-03/D-OPEN
 (effective per-connection configuration), the sort gate, DB-00 (typed transaction/error seam, `48e65806`/`ec84c176`),
 DB-02 (`6d9d984d`/`74ebd81c`), DB-15's **render-only** rating repair (`ab466928`) **and its runtime half (`96c495e7`)** are
@@ -114,10 +115,11 @@ native-audience correction **landed** (`c6e220eb`/`162fae1d`) — HTTP key middl
 prepare/header/`Send`/body ownership each still need their own bounded package. Do not connect existing renderers
 unchanged; missing-state, move, annotation and cleanup operations require executed read-back, rollback/retry and
 non-target/user-data preservation tests.
-for user cleanup. **SC-05 lane note
-(2026-11-23, after the resuscitation, two review rounds, and parent integration onto this branch):** the SC-05 vertical is
-**committed as `5c463aa1`** (signed, +9103/−54 across 10 files) on `resuscitate-dead-agent-capture-worktree-state` and
-**pushed to origin**; `master` is untouched, so it is branch-only delivery. Before the commit the parent held three out-of-band
+**SC-05 lane note
+(2026-11-23/24, after the resuscitation, two review rounds, parent integration onto this branch, and the fast-forward into
+`master`):** the SC-05 vertical is
+**committed as `5c463aa1`** (signed, +9103/−54 across 10 files) and **integrated**: `master` fast-forwarded from `2b3fa921` to
+`342afd12` on the main checkout and pushed, so `master` and this worktree are now at the same commit. Before the commit the parent held three out-of-band
 captures outside the repo (`~/backups/sc-05-capture-*`, newest `sc-05-capture-20261123-133629/`), verified by applying the patch
 to a fresh clone at `cb59a973` and byte-comparing all 10 files — now redundancy only. The implementer session
 `4a8567e4-1ab8-417d-8758-0dc444b0971f` was **alive and idle with its Pi session persisted**, so it was **resumed twice** via
@@ -139,12 +141,13 @@ placement decided by `decisions.md` D-SC04); **SC-06 remains unauthorized** and 
 `decisions.md` D-SC05-SLICE.
 
 **Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state` at
-`5c463aa1`), the
-isolated worktree `~/.paseo/worktrees/0xo97qr3/boot00` on branch `boot00-manifest-pins-scaffold` **still exists at the same commit
-`6d6938b1`** with its BOOT-00 work already parent-integrated into this branch line. It is recorded here as integrated and eligible
-for user cleanup, and it is **still an active Paseo workspace** (`wks_929b07163c95a811`) rather than a dangling worktree, so
-nothing was removed: `git worktree list` matches the on-disk directories exactly, `git worktree prune -n` reports nothing stale
-for navidrome and for every other registered repo, and the only truly dangling artifact found — an empty
+`342afd12`), the
+isolated worktree `~/.paseo/worktrees/0xo97qr3/boot00` on branch `boot00-manifest-pins-scaffold` (commit `6d6938b1`, BOOT-00 work
+already integrated) was **archived at the user's request on 2026-11-24** — `paseo workspace archive wks_929b07163c95a811`, which
+removed the worktree and archived its agent. Verified beforehand: 0 porcelain entries, 0 stashes, and the branch an ancestor of
+`master`; the branch is **kept** locally and on origin, so nothing was lost. After that removal `git worktree list` matches the
+on-disk directories exactly and `git worktree prune -n` reports nothing stale
+for navidrome and for every other registered repo; the only truly dangling artifact found earlier — an empty
 `~/.paseo/worktrees/29g9rl3m/` directory whose three `pi_agent_rust` workspaces were archived on 2026-11-11 — was removed after
 verifying it held 0 entries and that its branches (`diag/main-p0a-baseline` `fd341e588`, `issue/main-12j9w` `c11032705`) survive
 locally and on origin.
