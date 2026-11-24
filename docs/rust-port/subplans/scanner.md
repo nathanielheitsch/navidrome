@@ -245,7 +245,8 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 > accordingly. Parent-verified gates: `nd-scanner` 261/0 across 13 targets, workspace 2481/0,
 > clippy/fmt clean, rustdoc baselines unchanged. Executed Go-truth contract:
 > `subplans/SC-04-go-truth-brief.md` (`d22ad820`). Unknowns 2/3/5/6 closed by parent-side
-> audits; unknown 4 (f32 vs f64) resolved by accumulating in f32 then widening; unknown 7
+> audits; unknown 4 (f32 vs f64) closed by executed Go evidence — accumulate in f32 then
+> widen, which protects the stored cell (see the SC-04 block in `../current-status.md`); unknown 7
 > (read-side genre for media comparison) still needs SC-05/SC-06 to feed hydrated rows.
 
 > **READY to launch** (2026-11-23): prerequisite SC-03 is **LANDED `cb59a973`** and placement is decided **scanner-local**

@@ -112,10 +112,18 @@ report):
   (`aggregate.rs:357,386,481`), reproducing Go's float32 rounding; `album_equals` narrows
   and floors both sides (`compare.rs:129-130,168`), media equality narrows **without**
   flooring (`:223`). Parent re-executed Go's real `ToAlbum` against `navidrome` at
-  `f5aa4cca`: ten `0.1` values give f32 `1.0000001` vs f64 `1.0000000149011612` (raw
-  divergence; floors agree at 1), `{1e7,0.1}` gives f32 `1e7` vs f64 `1.00000001e7`, and
-  `Equals(100.9,100.1)=true` / `Equals(100.0,99.9)=false`. SQLite REAL round-trips a float32
-  bit-exactly (all probe values), so the f64 column is a faithful carrier.
+  `f5aa4cca` (harness `/tmp/sc04dur`): ten `0.1` values give f32 `1.0000001` vs f64
+  `1.0000000149011612`; `{1e7,0.1}` gives f32 `1e7` vs f64 `1.00000001e7`;
+  `Equals(100.9,100.1)=true` / `Equals(100.0,99.9)=false`; a float32 cell round-trips
+  SQLite `real` bit-exactly (every probe value), so the f64 column is a faithful carrier.
+  **Executed divergence (unknown-4 closed with evidence):** `{300.9999999, 300.9999999,
+  143.99999}` sums to exactly `746` in f32 but `745.9999898` in f64 — floor `746` vs `745`.
+  A randomized sweep found **848 floor divergences in 2,000,000** adversarial vectors.
+  Because `album_equals` narrows to f32 before flooring, equality survives either
+  accumulation (`745.9999898 as f32 == 746`); what the f32 arm actually protects is the
+  **stored cell** — Go writes `746`, so an f64 accumulation would persist a value no other
+  consumer ever sees. Pinned by `aggregate.rs` tests `duration_accumulates_float32_not_f64`
+  and `widening_a_float32_sum_is_exact`.
 - nil-vs-empty is preserved by the DB round-trip (`marshal.rs:486-493` binds TEXT `"null"`
   vs `"{}"`/`"[]"`; `hydrate.rs:2595-2628` + `sql_json.rs` decode back to `None` vs
   `Some(empty)`), so `album_equals` compares `discs`/`folder_ids`/`rg_*` as `Option` with **no**

@@ -1156,3 +1156,60 @@ fn album_level_names_match_the_mappings() {
         assert!(!album.tags.contains_key(name), "{name} is not album-level");
     }
 }
+
+/// Executed float32-vs-f64 divergence (SC-04-unknown-4). Probe against the real Go
+/// `model` package (`/tmp/sc04dur`, navidrome at `f5aa4cca`): accumulating
+/// `{300.9999999, 300.9999999, 143.99999}` in Go's `float32` gives exactly `746`,
+/// while an `f64` accumulation gives `745.9999898` — whose floor is `745`. Go's
+/// `Album.Equals` therefore reports such an album **unchanged**, and an f64-running-total
+/// port would report a spurious change on every scan of that album. A randomized sweep
+/// found 848 such floor divergences in 2,000,000 adversarial vectors, so this is not a
+/// one-in-a-million edge: it is the ordinary consequence of Go's `float32` field. See
+/// `widening_a_float32_sum_is_exact` for why the stored value is what this protects.
+/// `album_draft` accumulates a `f32` running total (`aggregate.rs:357,386`) and widens
+/// once (`:481`), which is what reproduces Go here.
+#[test]
+fn duration_accumulates_float32_not_f64() {
+    let mut a = track("a.mp3");
+    let mut b = track("b.mp3");
+    let mut c = track("c.mp3");
+    a.duration = 300.9999999;
+    b.duration = 300.9999999;
+    c.duration = 143.99999;
+
+    let entries: &[(&str, TrackFacts)] = &[
+        ("a.mp3", facts(1000, None, None)),
+        ("b.mp3", facts(1000, None, None)),
+        ("c.mp3", facts(1000, None, None)),
+    ];
+    let album = aggregate(&[&a, &b, &c], entries);
+    assert_eq!(
+        album.duration, 746.0,
+        "Go's float32 accumulation is exactly 746"
+    );
+    let naive: f64 = 300.9999999 + 300.9999999 + 143.99999;
+    assert_ne!(
+        album.duration, naive,
+        "the f64 accumulation ({naive}) must NOT be what is stored — its floor is 745"
+    );
+    assert_eq!(naive.floor(), 745.0, "the divergence the f32 arm avoids");
+    assert_eq!(album.duration.floor(), 746.0);
+}
+
+/// Where the `f32` arm actually matters. `album_equals` narrows to `f32` before flooring
+/// (`compare.rs:129-130`), and `745.9999898` narrows **up** to `746`, so equality survives
+/// either accumulation. What the `f32` arm protects is the **stored cell**: Go writes `746`
+/// (`album.Duration` is `float32`, and SQLite `real` round-trips a float32 bit-exactly —
+/// probe: every vector read back with identical float32 bits), so an f64 accumulation would
+/// persist `745.9999898` into a column Go fills with `746`. That is a data-parity difference
+/// every other consumer sees, even though the phase-3 comparator would still call it equal.
+#[test]
+fn widening_a_float32_sum_is_exact() {
+    let sum: f32 = 300.9999999 + 300.9999999 + 143.99999;
+    assert_eq!(f64::from(sum), 746.0, "widening is exact");
+    assert_eq!(
+        (745.9999898f64 as f32).floor(),
+        746.0,
+        "narrowing rescues equality, but not the stored value"
+    );
+}
