@@ -73,6 +73,71 @@ full cursor or REST surface. That is narrower than "no repository method is ever
 `SQLStore::with_connection`/`with_tx_retry`), but that router is mounted only in crate tests, not in a server. A scaffold
 test asserting an issue number is not runtime coverage, and executed test helpers are not production repository methods.
 
+## SC-04 LANDED ON THIS BRANCH — `c0b2952e` + `7c92e4cf` (+ parent integration commit, 2026-11-25) — **NOT yet integrated into `master`**
+
+**Ownership**: the SC-04 Go-truth scout (`860a0de3-…`) archived itself before landing its
+report; its full brief was recovered from the session transcript and committed as
+`d22ad820` (`docs/rust-port/subplans/SC-04-go-truth-brief.md`) and is the contract this
+implementation was written against. Two launches died on provider budgets
+(`openai-codex/gpt-6.2-sol` usage cap; OpenRouter `$19` budget 402) with **zero** files
+touched; the implementation ran on the local route (`bifrost/vllm/strata-coder`,
+writer `f0932a77-…`) in two commits. It stopped after increment 2; the parent wrote the
+docs increment and integration fixes.
+
+**Committed delta** (`git diff --stat d22ad820..HEAD`): NEW `nd-scanner/src/aggregate.rs`
+(973), NEW `nd-scanner/src/compare.rs` (327), NEW `tests/aggregate.rs` (1158, 18 tests),
+NEW `tests/compare.rs` (1225 + parent additions, 13 tests); modified `lib.rs`
+(`pub mod aggregate; pub mod compare;`), `projection.rs` (−199 net: `album_drafts`
+delegates to `aggregate::album_draft`, `MultiTrackGroup` retired), `phase1.rs` (facts
+lookup), `tests/projection_singleton.rs`, `tests/phase1_faults.rs`.
+
+**Two parent decisions** (recorded before implementation, not re-litigated by the lane):
+(a) `ProjectionError::MultiTrackGroup` is **retired** — deleting it required edits into
+SC-05's files, which is an approved consequence; `phase1_faults.rs` now asserts a 2-track
+folder **projects** one album row with summed size/duration instead of refusing.
+(b) output DTO is `nd_db::album_repo::AlbumRecord`, **not** `nd_model::Album` (a scaffolded
+skeleton with zero callers and an empty `equals`).
+
+**Contract points carried from the audits** (all re-verified by the parent, not accepted on
+report):
+- Per-member time reduction — `created_at` is the oldest non-zero birth across the group
+  and `updated_at` the newest mtime (`mediafile.go:389-390`); a per-album single birth
+  cannot express this, so `album_drafts` now takes one
+  `facts_for: Fn(&MediaFile) -> Result<TrackFacts, AggregateError>` per **member**. Pinned
+  host-independently by `album_drafts_resolves_times_per_member` (incl. the all-zero-birth
+  case staying `None`). This closes the brief's **SC-04-unknown-5**; the prior stat-keyed
+  `birth_for` and its `unwrap_or_default()` miss-arm are gone (a member without facts is an
+  explicit refusal, `a_member_without_facts_is_refused`).
+- `Duration` accumulates in **f32** in path order then widens to `f64`
+  (`aggregate.rs:357,386,481`), reproducing Go's float32 rounding; `album_equals` narrows
+  and floors both sides (`compare.rs:129-130,168`), media equality narrows **without**
+  flooring (`:223`). Parent re-executed Go's real `ToAlbum` against `navidrome` at
+  `f5aa4cca`: ten `0.1` values give f32 `1.0000001` vs f64 `1.0000000149011612` (raw
+  divergence; floors agree at 1), `{1e7,0.1}` gives f32 `1e7` vs f64 `1.00000001e7`, and
+  `Equals(100.9,100.1)=true` / `Equals(100.0,99.9)=false`. SQLite REAL round-trips a float32
+  bit-exactly (all probe values), so the f64 column is a faithful carrier.
+- nil-vs-empty is preserved by the DB round-trip (`marshal.rs:486-493` binds TEXT `"null"`
+  vs `"{}"`/`"[]"`; `hydrate.rs:2595-2628` + `sql_json.rs` decode back to `None` vs
+  `Some(empty)`), so `album_equals` compares `discs`/`folder_ids`/`rg_*` as `Option` with **no**
+  `unwrap_or_default()` — that normalization is the exact unsound step. `folder_ids` compares
+  as a deduplicated set with `None != Some(empty)`. Closes **SC-04-unknown-2/-6**.
+- No `Tags::hash` port exists (`nd_id::Participants::hash` is the only one), so media
+  equality compares tag-ID and participant-ID **sequences**, not Go hash bytes — documented
+  as boolean equivalence on the used field domain. Closes **SC-04-unknown-3**.
+
+**Parent gates EXECUTED in this worktree** (branch
+`resuscitate-dead-agent-capture-worktree-state`): `cargo fmt --all -- --check` clean ·
+`cargo clippy --locked -p nd-scanner --all-targets --all-features -- -D warnings` clean ·
+`cargo test --locked -p nd-scanner` **261 / 0 across 13 targets** (lib 35, `aggregate` 18,
+`compare` 13, `mapping_bridge` 16 **unchanged**, `projection_singleton` 4, `phase1_faults` 15,
+`phase1_fixture` 19, `phase1_slice` 12, `walk_policy` 45, `folder_hash` 17, `local_storage` 34,
+`ignore_policy` 24, `storage_seam` 9) · `cargo test --locked --workspace` **2481 / 0** ·
+`cargo doc --locked --no-deps` baselines unchanged (`nd-db` 21, `nd-scanner` 4).
+
+**Still open**: integration into `master` (parent-owned, needs a fresh reviewer); SC-05's
+remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does
+not close #17 or #14.**
+
 ## SC-03 integrated gates (parent, HEAD `cb59a973`, 2026-11-23) — latest INTEGRATED boundary
 
 SC-03 landed as one signed commit, 7 files, **+4312 additions-only**: NEW `nd-scanner/src/mapping_bridge.rs` (682), NEW
@@ -88,7 +153,8 @@ Review REQUEST-CHANGES (P1 birth-time + 2 P2) → fixed; oracle integrity, self-
 reviewer-verified. Parent gates EXECUTED at `cb59a973` (commit body): workspace **2383 / 0 / 1 across 100 suites**,
 `nd-scanner` **169 / 0**. **Scope**: the bridge and the singleton projection only. Multi-track album groups **refuse**
 (`ProjectionError::MultiTrackGroup`) rather than aggregate; no equality, no DB writes, no scanner entrypoint. SC-04 owns
-aggregation/semantic comparison, scanner-local (`decisions.md` D-SC04). The `6d6938b1` block below is dated history.
+aggregation/semantic comparison, scanner-local (`decisions.md` D-SC04). **Superseded on this branch by SC-04 above** — the
+refusal and that variant are now retired and aggregation/equality exist; the `6d6938b1` block below is dated history.
 
 ## SC-05 LANDED AND INTEGRATED — `5c463aa1`, fast-forwarded into `master` at `342afd12` (2026-11-23)
 
@@ -162,7 +228,7 @@ transition with a pre-existing rating row); non-UTF-8 capture arm executable onl
 **Go-computed** hash; a latent asymmetry that the capture lists children with `Follow::Yes` while the walker passes config
 follow (reviewer: unreachable, since a link-reached target is refused in preflight); and a residual Low that `walk_policy.rs`
 shows `ENOTDIR` is deterministically reachable but maps to the warn class, so the fatal class has no end-to-end test.
-SC-05 acceptance items remain open by design (multi-track aggregation = SC-04, outdated/empty-skip policy, image-changes
+SC-05 acceptance items remain open by design (outdated/empty-skip policy, image-changes
 collector, missing-folder finalizer — `decisions.md` D-SC05-SLICE), and there is **no SC-06/controller authorization**.
 **Not done / not claimed**: SC-05 is a **singleton phase-1 vertical slice**, not complete phase 1 and not #17. It is integrated
 into `master`, but the gate it owed is broader than a manifest delta: `phase1::scan_folder` is `pub` and its **only callers are

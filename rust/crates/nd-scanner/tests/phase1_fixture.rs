@@ -308,10 +308,10 @@ fn single_folder_single_mp3_end_to_end() {
     remove_db(&db);
 }
 
-/// `four_formats_per_folder`: all four committed fixtures, one per folder. SC-04 is not
-/// implemented, and mp3/flac/ogg all hash to the SAME default-spec album id, so four
-/// files in one folder would be a multi-track group (asserted separately as
-/// [`ProjectionError::MultiTrackGroup`] in `phase1_faults.rs`). One file per folder still
+/// `four_formats_per_folder`: all four committed fixtures, one per folder. mp3/flac/ogg all
+/// hash to the SAME default-spec album id, so four files in one folder would be a
+/// multi-track group — SC-04 now AGGREGATES such a group (`aggregate::album_draft`) rather
+/// than refusing it. One file per folder still
 /// exercises the whole ingest for every format, and the two distinct album ids (the m4a
 /// carries `releasedate`) prove the album leg is not writing one blanket row.
 #[test]

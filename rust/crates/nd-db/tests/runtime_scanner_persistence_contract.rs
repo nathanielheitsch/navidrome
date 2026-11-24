@@ -594,10 +594,11 @@ pub const CONSUMER_HANDOFF: [ConsumerHandoff; 5] = [
                        cross-checked by checked_storage_size, so the earlier 'storage fields \
                        absent until SC supplies them' clause no longer describes this lane; \
                        the nd-mapping DTO keeps those fields Option by design \
-                       (nd-mapping/src/mdfile.rs:134-139). Still owed here: Go ToAlbum \
-                       multi-track aggregation (projection.rs:77 refuses any group > 1 track \
-                       with ProjectionError::MultiTrackGroup, SC-04, decisions.md D-SC04) \
-                       plus production-caller evidence, which this DB-side file is not.",
+                       (nd-mapping/src/mdfile.rs:134-139). Go ToAlbum multi-track \
+                       aggregation LANDED with SC-04 (nd-scanner/src/aggregate.rs \
+                       album_draft, wired at projection.rs album_drafts; the former \
+                       ProjectionError::MultiTrackGroup refusal is retired). Still owed \
+                       here: production-caller evidence, which this DB-side file is not.",
         owner: "SC (mapping bridge)",
     },
     ConsumerHandoff {

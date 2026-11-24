@@ -236,7 +236,17 @@ Every meaningful implementation package: stop writing; fresh independent read-on
 9. **Validation:** `cargo test --locked -p nd-scanner --test mapping_bridge --test projection_singleton`; `cargo test --locked -p nd-mapping --test go_oracle`; `cargo test --locked -p nd-tagreader --all-targets --all-features`; V. Existing fixtures require no ffmpeg; regeneration separately approved.
 10. **Review/done/report:** R; field inventory audited in both directions, no mapper/backend gaps hidden as scanner success. Release SC-05 without requiring SC-04 many-track aggregation.
 
-## SC-04 — Pure multi-track album aggregation and semantic equality — **READY (placement decided; unimplemented)**
+## SC-04 — Pure multi-track album aggregation and semantic equality — **LANDED on this branch `c0b2952e`+`7c92e4cf` (2026-11-25); NOT yet integrated into `master`**
+
+> **Landed** (2026-11-25): `nd-scanner/src/aggregate.rs` (`album_draft`, per-member
+> `TrackFacts`, Go `ToAlbum` arms one-for-one) and `nd-scanner/src/compare.rs`
+> (`album_equals`, `media_equals`, `is_equivalent`), wired through `projection::album_drafts`;
+> `ProjectionError::MultiTrackGroup` retired with `phase1.rs`/`phase1_faults.rs` updated
+> accordingly. Parent-verified gates: `nd-scanner` 261/0 across 13 targets, workspace 2481/0,
+> clippy/fmt clean, rustdoc baselines unchanged. Executed Go-truth contract:
+> `subplans/SC-04-go-truth-brief.md` (`d22ad820`). Unknowns 2/3/5/6 closed by parent-side
+> audits; unknown 4 (f32 vs f64) resolved by accumulating in f32 then widening; unknown 7
+> (read-side genre for media comparison) still needs SC-05/SC-06 to feed hydrated rows.
 
 > **READY to launch** (2026-11-23): prerequisite SC-03 is **LANDED `cb59a973`** and placement is decided **scanner-local**
 > (`../decisions.md` D-SC04 — `nd-scanner/src/aggregate.rs` + `src/compare.rs`, `projection.rs` delegating; `nd-model` is

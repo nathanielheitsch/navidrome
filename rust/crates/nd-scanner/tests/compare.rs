@@ -548,6 +548,12 @@ fn rg_gain_none_vs_zero_not_equal() {
 fn zero_album_equals_a_blank_record() {
     let zero = zero_album(at(1_234));
     let mut other = zero_album(at(5_678));
+    // Go's CreatedAt/UpdatedAt are non-pointer time.Time whose ZERO value the read path
+    // spells None (hydrate.rs:2528-2531), and hashstructure's IgnoreZeroValue skips a zero
+    // time — so None on BOTH sides must be equal, while None vs a real timestamp is not
+    // (that case is pinned in album_equals_included_fields).
+    assert_eq!(zero.created_at, None, "zero-time spelling is None");
+    assert_eq!(zero.updated_at, None);
     // imported_at is ignored, so a different stamp stays equal (executed C14).
     assert!(album_equals(&zero, &other), "zero == zero");
     other.discs = Some(Default::default());
