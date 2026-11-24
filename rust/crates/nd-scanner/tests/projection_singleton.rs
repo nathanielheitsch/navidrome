@@ -22,10 +22,10 @@ use nd_mapping::mappings::Mappings;
 use nd_mapping::mdfile::MediaFile;
 use nd_mapping::metadata::Metadata;
 use nd_mapping::participants::{Credit, RoleCredits};
+use nd_scanner::aggregate::{AggregateError, TrackFacts};
 use nd_scanner::mapping_bridge::{effective_birth_time, TrackStat};
 use nd_scanner::projection::{
     album_draft_from_track, album_drafts, all_artists, all_names, artist_drafts, merge_credits,
-    ProjectionError,
 };
 
 /// Repo root, derived from this crate's manifest dir (never an absolute path).
@@ -627,10 +627,11 @@ fn singleton_album_draft_one_track() {
     );
 }
 
-/// A folder with more than one track per album needs SC-04's real loop; the singleton
-/// lane must refuse rather than emit a wrong `SongCount`/`Duration`/date consensus.
+/// A folder with more than one track per album now runs SC-04's real `ToAlbum` loop.
+/// SC-04 retired `ProjectionError::MultiTrackGroup`, so a two-track group projects
+/// successfully — with an aggregated `SongCount`, not a singleton's.
 #[test]
-fn multi_track_group_is_refused() {
+fn multi_track_group_aggregates() {
     let ctx = MappingContext::new(MappingOptions::default());
     let info = synthetic_info(
         &[("ALBUM", &["Same"]), ("ARTIST", &["A"]), ("TITLE", &["T1"])],
@@ -644,20 +645,51 @@ fn multi_track_group_is_refused() {
         "both tracks share one album id"
     );
 
-    let err = album_drafts(
+    let drafts = album_drafts(
         &[&mf_a, &mf_b],
-        |_| draft_stat(10, Some(at(1)), Some(at(0))),
-        resolve,
+        facts_at(10, Some(at(1)), Some(at(0))),
         ctx.mappings(),
         IMPORTED,
     )
-    .expect_err("two tracks in one album is SC-04's aggregation");
-    match err {
-        ProjectionError::MultiTrackGroup { album_id, tracks } => {
-            assert_eq!(album_id, mf_a.album_id, "the error names the album");
-            assert_eq!(tracks, 2);
-        }
-        other => panic!("expected MultiTrackGroup, got {other:?}"),
+    .expect("SC-04 aggregates a two-track group");
+    assert_eq!(drafts.len(), 1, "one draft for the group");
+    assert_eq!(
+        drafts[0].id, mf_a.album_id,
+        "the draft is the grouped album"
+    );
+    assert_eq!(drafts[0].song_count, 2, "SongCount: len(mfs), not 1");
+    assert_eq!(drafts[0].size, 20, "a.Size += m.Size across both members");
+    assert_eq!(drafts[0].duration, 20.0, "duration is the group sum");
+    assert_eq!(
+        drafts[0].folder_ids,
+        Some(vec![mf_a.folder_id.clone()]),
+        "both members share one folder id, so Unique yields one entry"
+    );
+    assert_eq!(
+        drafts[0].created_at,
+        Some(at(0)),
+        "oldest birth across the group (the injected substitute here)"
+    );
+    assert_eq!(
+        drafts[0].updated_at,
+        Some(at(1)),
+        "newest mtime across the group"
+    );
+}
+
+/// The facts lookup SC-05 now hands `album_drafts`: one bundle per group **member**,
+/// with the birth resolved the same way the track record resolves it.
+fn facts_at(
+    size: i64,
+    modified: Option<DateTime<Utc>>,
+    birth_time: Option<DateTime<Utc>>,
+) -> impl Fn(&MediaFile) -> Result<TrackFacts, AggregateError> {
+    move |_track: &MediaFile| {
+        let stat = draft_stat(size, modified, birth_time);
+        Ok(TrackFacts {
+            stat: stat.clone(),
+            birth: effective_birth_time(&stat, Some(now())),
+        })
     }
 }
 
@@ -952,8 +984,7 @@ fn album_drafts_groups_by_album_id() {
 
     let drafts = album_drafts(
         &[&mf_a, &mf_b],
-        |_| draft_stat(10, Some(at(1_700_000_000)), Some(at(1_600_000_000))),
-        resolve,
+        facts_at(10, Some(at(1_700_000_000)), Some(at(1_600_000_000))),
         ctx.mappings(),
         IMPORTED,
     )
@@ -1002,13 +1033,9 @@ fn album_drafts_groups_by_album_id() {
     );
 
     // An empty folder projects nothing (Go's loop over a zero-length group never runs).
-    assert!(album_drafts(
-        &[],
-        |_| draft_stat(0, None, None),
-        resolve,
-        ctx.mappings(),
-        IMPORTED
-    )
-    .expect("empty folder")
-    .is_empty());
+    assert!(
+        album_drafts(&[], facts_at(0, None, None), ctx.mappings(), IMPORTED)
+            .expect("empty folder")
+            .is_empty()
+    );
 }

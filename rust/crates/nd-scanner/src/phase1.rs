@@ -36,11 +36,14 @@
 //! [`FolderJob::no_birth_time`] is Go's per-device `localFS.noBirthTime`
 //! (`core/storage/local/local.go:129-145`), which SC-06's storage layer will set from its
 //! own device memory rather than from a per-folder flag.
-//! * **Multi-track album aggregation**: [`projection::album_drafts`] refuses a group
-//!   with more than one track ([`ProjectionError::MultiTrackGroup`]). SC-04 owns the
-//!   real `MediaFiles.ToAlbum` loop, so a folder whose tracks share an album id fails
-//!   with [`Phase1Error::Projection`] instead of writing a wrong `SongCount`,
-//!   `Duration`, date consensus, or tag frequency.
+//! * **Multi-track album aggregation**: SC-04 landed, so
+//!   [`projection::album_drafts`] now runs Go's real `MediaFiles.ToAlbum` loop
+//!   (`crate::aggregate`) over each album group — `SongCount`, the duration/size sums,
+//!   date consensus, `minMax` years, tag frequency and the lowest-disc artwork pick are
+//!   aggregated per group instead of refused. A group that cannot be aggregated (mixed
+//!   album/library, an overflowing sum, or a member whose storage facts are missing) is
+//!   still refused through [`Phase1Error::Projection`], so nothing half-computed is
+//!   written.
 //! * **Post-commit work**: `imageChanges.record` (`:363-369`), progress events, the
 //!   unvisited-folder missing finalizer (`:520-547`), and phase-3 `refresh_*`
 //!   triggers are all absent. Nothing runs after the commit but the returned outcome.
@@ -125,6 +128,7 @@ use nd_mapping::mdfile::MediaFile;
 use nd_mapping::metadata::Metadata;
 use nd_utils::context::Cancellation;
 
+use crate::aggregate::{AggregateError, TrackFacts};
 use crate::contract::{name_text, CancelToken, ScanWarning, ScanWarningKind};
 use crate::folder::{newest, FolderCoverage, FolderEntry, FolderSnapshot, FolderSnapshotError};
 use crate::ignore::{ignore_file_name, IgnoreFileOutcome, IgnoreStack};
@@ -330,9 +334,11 @@ pub enum Phase1Error {
         #[source]
         source: BridgeError,
     },
-    /// A projection refusal, including [`ProjectionError::MultiTrackGroup`]: SC-04's
-    /// aggregation is not implemented here, so a folder whose tracks share an album
-    /// id fails rather than being mis-aggregated into a singleton draft.
+    /// A projection refusal (`crate::aggregate::AggregateError` or the bridge): a mixed
+    /// album/library group, a sum that does not fit the record's column, a member with no
+    /// supplied storage facts, or an invalid participant role. Go aggregates whatever its
+    /// grouping produced, so this arm is a declared refusal of a defective input, not a
+    /// parity translation — nothing is written for the folder.
     #[error("cannot project folder '{folder}' into album/artist drafts: {source}")]
     Projection {
         /// Logical folder path.
@@ -1624,22 +1630,24 @@ pub(crate) fn ingest_folder_snapshot(
         let refs: Vec<&MediaFile> = pass.tracks.iter().map(|track| &track.mapped).collect();
         albums = projection::album_drafts(
             &refs,
+            // One facts bundle per group MEMBER, keyed by logical path. Go reads
+            // `Info.FileInfo` per track and loops the whole group for both time arms
+            // (`model/mediafile.go:389-390`), so `created_at` is the oldest birth and
+            // `updated_at` the newest mtime across the group — a single per-album
+            // resolution cannot express that. A path with no entry means the ingest
+            // lost a track it had mapped: refuse (SC-04) rather than fabricate a
+            // zero-size `TrackStat` whose lookup could land on another track's facts.
             |track| {
                 pass.tracks
                     .iter()
                     .find(|candidate| candidate.path == track.path)
-                    .map(|candidate| candidate.stat.clone())
-                    .unwrap_or_default()
-            },
-            // Match on the WHOLE stat, not just its size: two fixtures of equal size but
-            // different mtimes must not resolve to each other's birth time. A stat that
-            // matches more than one track is the same file's facts anyway, so the first
-            // hit is the same instant.
-            |stat| {
-                pass.tracks
-                    .iter()
-                    .find(|candidate| candidate.stat == *stat)
-                    .and_then(|candidate| candidate.birth)
+                    .map(|candidate| TrackFacts {
+                        stat: candidate.stat.clone(),
+                        birth: candidate.birth,
+                    })
+                    .ok_or_else(|| AggregateError::MissingTrackFacts {
+                        path: track.path.clone(),
+                    })
             },
             job.mapping.mappings(),
             job.scan_stamp,

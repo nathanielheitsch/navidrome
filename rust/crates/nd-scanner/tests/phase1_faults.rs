@@ -809,8 +809,9 @@ fn cancellation_during_walk_stops_cleanly() {
 }
 
 /// `multi_track_folder_is_sc04`: two tracks that hash to the same album id are a
-/// multi-track group. SC-04 owns `MediaFiles.ToAlbum`, so the projection refuses rather
-/// than writing a singleton draft with `SongCount = 1` and one track's duration.
+/// multi-track group. SC-04 landed (`crate::aggregate::album_draft`), so the folder now
+/// projects successfully — one album row with an aggregated `SongCount` and the summed
+/// duration/size, instead of the retired `ProjectionError::MultiTrackGroup` refusal.
 #[test]
 fn multi_track_folder_is_sc04() {
     let tree = Tree::new("multi-track");
@@ -822,40 +823,99 @@ fn multi_track_folder_is_sc04() {
     seed_library(&store, 1, "multi-track", &tree.root);
     let mapping = mapping();
 
-    let token = CancelToken::new();
-    let before = common::writable_rows(&store);
-    let error = phase1::scan_folder(
-        &store,
-        &job(1, &tree.root, "album/one", stamp(), &mapping),
-        &token,
-    )
-    .expect_err("SC-04 aggregation is not implemented here");
-    match error {
-        Phase1Error::Projection { folder, source } => {
-            assert_eq!(folder, "album/one");
-            assert!(
-                matches!(
-                    source,
-                    nd_scanner::projection::ProjectionError::MultiTrackGroup { tracks: 2, .. }
-                ),
-                "expected MultiTrackGroup with 2 tracks, got {source}"
-            );
-            assert!(
-                source.to_string().contains("SC-04"),
-                "the message names the owning package, got {source}"
-            );
-        }
-        other => panic!("expected Projection, got {other}"),
-    }
+    let outcome = scan_ok(&store, &job(1, &tree.root, "album/one", stamp(), &mapping));
+    assert_eq!(outcome.audio_count, 2, "both files were walked");
+    assert_eq!(
+        outcome.new_media_count, 2,
+        "both tracks were imported into one folder"
+    );
+    assert_eq!(children(&store, &outcome.folder_id).len(), 2);
 
-    // Refused, not half-written: no folder row, no tracks, no album draft — per writable table,
-    // so a projection refusal that wrote some legs and refused later cannot pass.
-    common::assert_no_writes(&store, &before, "projection refusal (multi-track)");
-    assert_eq!(count(&store, "SELECT COUNT(*) FROM folder"), 0);
-    assert_eq!(count(&store, "SELECT COUNT(*) FROM media_file"), 0);
-    assert_eq!(count(&store, "SELECT COUNT(*) FROM album"), 0);
-    assert_eq!(count(&store, "SELECT COUNT(*) FROM artist"), 0);
-    assert_eq!(count(&store, "SELECT COUNT(*) FROM artwork_queue"), 0);
+    // One album row, aggregated over both members: `SongCount: len(mfs)`.
+    assert_eq!(count(&store, "SELECT COUNT(*) FROM album"), 1);
+    assert_eq!(
+        count(&store, "SELECT COUNT(*) FROM artist"),
+        2,
+        "albumartist + artist"
+    );
+    let album_id = scalar(&store, "SELECT id FROM album").expect("the aggregated album row exists");
+    assert_eq!(
+        count(
+            &store,
+            &format!("SELECT song_count FROM album WHERE id = '{album_id}'")
+        ),
+        2,
+        "song_count is the group size, not 1 (the retired refusal's whole point)"
+    );
+
+    // Duration and size are the sums of the two member rows, read back independently.
+    let rows: Vec<(i64, f64)> = store
+        .with_connection_sync(|conn| {
+            nd_db::execution::query_all(
+                conn,
+                &(
+                    "SELECT size, duration FROM media_file ORDER BY path".to_string(),
+                    Vec::new(),
+                ),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            )
+        })
+        .expect("read the two track rows");
+    assert_eq!(rows.len(), 2, "two track rows in one folder");
+    // Go accumulates Duration as float32 in PATH order (`model/mediafile.go:362`), so the
+    // album's stored value is the float32 sum of the members, not their f64 sum.
+    let duration_f32_sum: f64 = f64::from(
+        rows.iter()
+            .fold(0.0_f32, |acc, (_size, dur)| acc + *dur as f32),
+    );
+    let size_sum: i64 = rows.iter().map(|(size, _dur)| *size).sum();
+    let (album_size, album_duration): (i64, f64) = store
+        .with_connection_sync(|conn| {
+            nd_db::execution::query_optional(
+                conn,
+                &(
+                    format!("SELECT size, duration FROM album WHERE id = '{album_id}'"),
+                    Vec::new(),
+                ),
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
+            )
+        })
+        .expect("read the album row")
+        .expect("the album exists");
+    assert_eq!(album_size, size_sum, "a.Size += m.Size across the group");
+    assert_eq!(
+        album_duration, duration_f32_sum,
+        "duration is the float32 sum of both members in path order"
+    );
+    assert!(
+        rows[0].1 > 0.0 && album_duration > rows[0].1,
+        "non-vacuity: a singleton draft would have carried one member's duration, not \
+         the sum ({album_duration} vs {})",
+        rows[0].1
+    );
+    assert!(
+        album_duration > rows[1].1,
+        "and greater than the other member's own duration too"
+    );
+
+    // folder_ids is one entry (both members live in the same folder), and both media rows
+    // point at the aggregated album.
+    assert_eq!(
+        scalar(
+            &store,
+            &format!("SELECT folder_ids FROM album WHERE id = '{album_id}'")
+        ),
+        Some(format!("[\"{}\"]", outcome.folder_id)),
+        "Unique over the group's folder ids yields one entry"
+    );
+    assert_eq!(
+        count(
+            &store,
+            &format!("SELECT COUNT(*) FROM media_file WHERE album_id = '{album_id}'")
+        ),
+        2,
+        "both tracks belong to the aggregated album"
+    );
     assert!(pool_healthy(&store));
     remove_db(&db);
 }

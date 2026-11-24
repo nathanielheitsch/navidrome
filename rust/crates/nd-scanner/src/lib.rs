@@ -18,6 +18,9 @@
 //!   cancellation and a separately awaited terminal outcome ([`walk::WalkHandle`]).
 //! - [`contract`] — request/target validation, typed errors and warnings, and
 //!   [`contract::CancelToken`].
+//! - [`aggregate`] — SC-04's pure `MediaFiles.ToAlbum` loop over an album group: path-
+//!   sorted aggregation of duration/size/discs/tags/participants/artwork/times, with no
+//!   I/O and no database access.
 //!
 //! ## Explicitly not here
 //!
@@ -35,6 +38,9 @@
 //! rendered into an identity.
 
 pub mod contract;
+// SC-04: pure multi-track album aggregation (Go `MediaFiles.ToAlbum`) and the semantic
+// equality the refresh phases need. No I/O, no DB writes.
+pub mod aggregate;
 pub mod folder;
 pub mod ignore;
 // SC-03: the tag→record bridge and the singleton folder projection.

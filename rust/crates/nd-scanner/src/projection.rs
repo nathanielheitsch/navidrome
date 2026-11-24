@@ -9,17 +9,18 @@
 //!   `Participants` (`model/participants.go:129-133`) and emits
 //!   `Participants.AllArtists()` (`:150-163`): stable sort by id, then compact by id.
 //!
-//! ## Scope: one track per folder, deliberately a subset
+//! ## Two arms of the same aggregation
 //!
-//! This lane is the **singleton** projection SC-05's first vertical needs: one track per
-//! album group, so the multi-track aggregation rules (`Duration`/`Size` sums,
-//! `allOrNothing` date consensus, `minMax` years, `MostFrequent` MBIDs, tag-frequency
-//! ordering, lowest-disc artwork pick) collapse to their one-element results. Each arm
-//! below cites the Go line it reduces, so SC-04 generalizes these functions in place
-//! instead of replacing an incompatible DTO (`docs/rust-port/subplans/scanner.md`
-//! SC-03 §3). A group with more than one track is refused with
-//! [`ProjectionError::MultiTrackGroup`] rather than projected with a singleton's
-//! `SongCount`.
+//! [`album_draft_from_track`] is the **singleton** arm SC-05's first vertical was built
+//! on: one track per album group, so each aggregation rule collapses to its one-element
+//! result, and every arm below cites the Go line it reduces. [`album_drafts`] now hands
+//! **every** group to [`crate::aggregate::album_draft`] — SC-04's real
+//! `MediaFiles.ToAlbum` loop (`model/mediafile.go:320-409`) — and the singleton is the
+//! `len == 1` specialization of it rather than a separate DTO
+//! (`docs/rust-port/subplans/scanner.md` SC-03 §3, SC-04 §4). A multi-track group is no
+//! longer refused; its `SongCount`, `Duration`/`Size` sums, date consensus, `minMax`
+//! years, `MostFrequent` MBIDs, tag frequency and lowest-disc artwork pick are
+//! aggregated per [`crate::aggregate`]'s Go-truth module docs.
 //!
 //! ## What these drafts are not
 //!
@@ -52,11 +53,11 @@ use nd_db::album_repo::{AlbumRecord, NamedParticipant};
 use nd_db::artist_repo::ArtistRecord;
 use nd_db::sql_participations::Participants;
 use nd_db::sql_tags::DbTags;
-use nd_id::{ROLE_ALBUM_ARTIST, ROLE_ARTIST, VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID};
 use nd_mapping::mappings::Mappings;
 use nd_mapping::mdfile::MediaFile;
 use nd_mapping::participants::{Credit, RoleCredits};
 
+use crate::aggregate::{self, AggregateError, TrackFacts};
 use crate::mapping_bridge::{
     named_participants, participants_from_credits, BridgeError, TrackStat,
 };
@@ -69,17 +70,12 @@ const DEFAULT_DISC: i64 = 1;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum ProjectionError {
-    /// A group with more than one track needs Go's real `ToAlbum` aggregation loop,
-    /// which is SC-04's deliverable (`subplans/scanner.md` SC-04 §4). This lane refuses
-    /// to emit a singleton draft for it rather than write a wrong `SongCount`,
-    /// `Duration`, date consensus or tag frequency.
-    #[error("album {album_id} has {tracks} tracks: multi-track aggregation is SC-04, not this singleton lane")]
-    MultiTrackGroup {
-        /// The grouped album id.
-        album_id: String,
-        /// How many tracks the group holds.
-        tracks: usize,
-    },
+    /// A group could not be aggregated (`crate::aggregate::AggregateError`): a mixed
+    /// album/library group, a sum that does not fit the record's column, a member with
+    /// no supplied storage facts, or the participant conversion's own refusal. Carried
+    /// as the aggregate's typed error rather than reworded, so the cause stays theirs.
+    #[error("album aggregation: {0}")]
+    Aggregate(#[from] crate::aggregate::AggregateError),
     /// The record-side failure a draft's participants hit through the checked role
     /// bridge (`BridgeError::InvalidRole`). Forwarded rather than reworded, so the
     /// cause stays the bridge's own typed error.
@@ -229,13 +225,14 @@ pub fn album_draft_from_track(
     // `a.Date, _ = allOrNothing(dates)` (`:396-398`): one element is always the single
     // distinct value, so the date passes through verbatim — empty included, because
     // Go's `allOrNothing([""])` returns `"", 1` (`:361-370`).
-    let (min_year, max_year) = min_max_year([track.year]);
-    let (min_original_year, max_original_year) = min_max_year([track.original_year]);
+    let (min_year, max_year) = aggregate::min_max_year(&[track.year]);
+    let (min_original_year, max_original_year) = aggregate::min_max_year(&[track.original_year]);
 
     // `a.MbzAlbumID = slice.MostFrequent(mbzAlbumIds)` (`:403-404`): `MostFrequent`
     // skips the zero value (`utils/slice/slice.go:83-105`), so an empty MBID stays empty.
-    let mbz_album_id = most_frequent([track.mbz_album_id.clone()]);
-    let mbz_release_group_id = most_frequent([track.mbz_release_group_id.clone()]);
+    let mbz_album_id = aggregate::most_frequent(std::slice::from_ref(&track.mbz_album_id));
+    let mbz_release_group_id =
+        aggregate::most_frequent(std::slice::from_ref(&track.mbz_release_group_id));
 
     // `a.RGAlbumGain = mostFrequentPtr(rgAlbumGains)` (`:405-406`, `:462-484`): one
     // non-nil value wins, nil yields nil, and a genuine 0.0 is a real candidate.
@@ -255,7 +252,7 @@ pub fn album_draft_from_track(
 
     // `fixAlbumArtist(&a)` (`:407`, `:486-500`).
     (album_artist, album_artist_id) =
-        fix_album_artist(compilation, album_artist, album_artist_id, &merged);
+        aggregate::fix_album_artist(compilation, album_artist, album_artist_id, &merged);
 
     Ok(AlbumRecord {
         id: track.album_id.clone(),              // `a.ID = m.AlbumID` (`:344`)
@@ -338,21 +335,32 @@ pub fn album_draft_from_track(
 
 /// Albums for a folder: Go groups tracks by album id
 /// (`slice.Group(entry.tracks, func(mf) { return mf.AlbumID })`,
-/// `phase_1_folders.go:329-333`) and calls `ToAlbum` per group. The grouping is kept
-/// explicit so SC-04's multi-track path reuses this entry point; a multi-track group is
-/// refused (see [`ProjectionError::MultiTrackGroup`]).
+/// `phase_1_folders.go:329-333`) and calls `ToAlbum` per group — SC-04's
+/// [`crate::aggregate::album_draft`] for every group size, so a multi-track group is
+/// aggregated rather than refused.
 ///
-/// `stat_for` supplies each track's storage snapshot; Go reads it from
-/// `Info.FileInfo` (`core/storage/local/local.go:90-109`).
+/// `facts_for` supplies each **member's** storage snapshot and resolved birth
+/// ([`TrackFacts`]); Go reads those off each `MediaFile`'s `Info.FileInfo`
+/// (`core/storage/local/local.go:90-109`), so `CreatedAt`/`UpdatedAt` are the
+/// oldest-newest across the whole group, not the first track's. A member with no
+/// facts is a caller defect and is refused
+/// ([`crate::aggregate::AggregateError::MissingTrackFacts`]) rather than projected
+/// with a fabricated zero-size snapshot.
+///
+/// **Emission order is album-id order** (the grouping is a `BTreeMap`). Go emits
+/// first-occurrence order from a nondeterministic map iteration; the port pins a
+/// stable order instead — a deliberate, documented deviation, the same rule
+/// `nd-mapping/tests/go_oracle.rs:442-455` applies to map-iteration order.
 ///
 /// # Errors
 ///
-/// [`ProjectionError::MultiTrackGroup`] for a group with more than one track, or the
-/// underlying [`BridgeError`] the singleton draft can surface.
+/// Any [`crate::aggregate::AggregateError`] the aggregation can surface (mixed group,
+/// overflowing sums, missing facts, invalid role), forwarded as
+/// [`ProjectionError::Aggregate`], or the [`BridgeError`] the singleton arm surfaces.
+#[allow(clippy::missing_panics_doc)] // no panicking path: grouping only indexes a Vec
 pub fn album_drafts(
     tracks: &[&MediaFile],
-    stat_for: impl Fn(&MediaFile) -> TrackStat,
-    birth_for: impl Fn(&TrackStat) -> Option<DateTime<Utc>>,
+    facts_for: impl Fn(&MediaFile) -> Result<TrackFacts, AggregateError>,
     mappings: &Mappings,
     imported_at: DateTime<Utc>,
 ) -> Result<Vec<AlbumRecord>, ProjectionError> {
@@ -366,20 +374,8 @@ pub fn album_drafts(
     by_album
         .values()
         .map(|group| {
-            if group.len() > 1 {
-                return Err(ProjectionError::MultiTrackGroup {
-                    album_id: group[0].album_id.clone(),
-                    tracks: group.len(),
-                });
-            }
-            let stat = stat_for(group[0]);
-            Ok(album_draft_from_track(
-                group[0],
-                &stat,
-                birth_for(&stat),
-                mappings,
-                imported_at,
-            )?)
+            crate::aggregate::album_draft(group, &facts_for, mappings, imported_at)
+                .map_err(ProjectionError::Aggregate)
         })
         .collect()
 }
@@ -394,104 +390,17 @@ pub fn participants_of(merged: &RoleCredits) -> Result<Participants, BridgeError
     participants_from_credits(merged)
 }
 
-/// `Album.SetTags` (`model/album.go:115-122`): `TagList.GroupByFrequency()`
-/// (`model/tag.go:26-56`) then keep only album-level names.
+/// `Album.SetTags` (`model/album.go:115-122`), the singleton degeneration of
+/// [`crate::aggregate::album_tags`]: flatten the track's own tags, group by frequency,
+/// then keep only album-level names.
 ///
-/// For one track every `(name, value)` has frequency 1, so Go's frequency-then-first-seen
-/// sort degenerates to first-seen order — the track's own value order within a name.
-/// Names iterate the port's `BTreeMap`, which pins a deterministic order Go's map
-/// iteration does not (`nd-mapping/tests/go_oracle.rs:442-455`).
+/// For one track every tag ID has frequency 1, so Go's frequency-then-first-seen sort
+/// degenerates to first-seen order — the track's own value order within a name — and no
+/// case-folded frequency can combine. Delegating rather than keeping a separate singleton
+/// rule means the two arms cannot disagree about which names survive.
 #[must_use]
 pub fn album_tags(tags: &nd_mapping::mdfile::Tags, mappings: &Mappings) -> DbTags {
-    let mut out: DbTags = BTreeMap::new();
-    for (name, values) in tags {
-        // `AlbumLevelTags()` is built over all mappings (`model/album.go:104-111`).
-        let Some(conf) = mappings.all().get(name) else {
-            continue;
-        };
-        if !conf.album {
-            continue;
-        }
-        // Equal frequencies keep first-seen order, and the mapping already dropped
-        // duplicate/empty values (`metadata.go:329-343`), so values pass through.
-        out.insert(name.clone(), values.clone());
-    }
-    out
-}
-
-/// `minMax` (`model/mediafile.go:368-378`): the max is the plain maximum; the min
-/// ignores zeros unless every value is zero.
-#[must_use]
-fn min_max_year(years: impl IntoIterator<Item = i32>) -> (i32, i32) {
-    let mut mn = 0;
-    let mut mx = 0;
-    for value in years {
-        mx = mx.max(value);
-        if mn == 0 {
-            mn = value;
-        } else if value > 0 {
-            mn = mn.min(value);
-        }
-    }
-    (mn, mx)
-}
-
-/// `slice.MostFrequent` (`utils/slice/slice.go:83-105`): skips the zero value, so an
-/// empty id never wins. Ties go to the value that first reaches the running maximum.
-#[must_use]
-fn most_frequent(values: impl IntoIterator<Item = String>) -> String {
-    let values: Vec<String> = values.into_iter().collect();
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    let mut best: Option<&str> = None;
-    let mut best_count = 0usize;
-    for value in &values {
-        if value.is_empty() {
-            continue;
-        }
-        let n = counts.entry(value.as_str()).or_insert(0);
-        *n += 1;
-        if *n > best_count {
-            best_count = *n;
-            best = Some(value.as_str());
-        }
-    }
-    best.unwrap_or_default().to_string()
-}
-
-/// `fixAlbumArtist` (`model/mediafile.go:486-500`): a non-compilation album with no
-/// album-artist id falls back to the first artist credit; a compilation whose album
-/// artists have more than one distinct id becomes `Various Artists`.
-fn fix_album_artist(
-    compilation: bool,
-    album_artist: String,
-    album_artist_id: String,
-    merged: &RoleCredits,
-) -> (String, String) {
-    if !compilation {
-        if album_artist_id.is_empty() {
-            // `artist := a.Participants.First(RoleArtist)` — the zero artist when the
-            // role is absent, matching Go's empty `Artist{}`.
-            let artist = merged.first(ROLE_ARTIST).cloned().unwrap_or_default();
-            return (artist.name, artist.id);
-        }
-        return (album_artist, album_artist_id);
-    }
-    // `slice.Unique(slice.Map(a.Participants[RoleAlbumArtist], …ID))` (`:494-496`).
-    let mut ids: Vec<&str> = Vec::new();
-    for credit in merged
-        .get(ROLE_ALBUM_ARTIST)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-    {
-        if !ids.contains(&credit.id.as_str()) {
-            ids.push(credit.id.as_str());
-        }
-    }
-    if ids.len() > 1 {
-        (VARIOUS_ARTISTS.to_string(), VARIOUS_ARTISTS_ID.to_string())
-    } else {
-        (album_artist, album_artist_id)
-    }
+    aggregate::album_tags(&aggregate::flatten_all(tags), mappings)
 }
 
 /// Go's `MediaFile.Missing` for a freshly mapped import.
