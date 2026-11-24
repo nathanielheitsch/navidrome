@@ -545,6 +545,12 @@ pub fn scan_ok(store: &SQLStore, job: &FolderJob<'_>) -> Phase1FolderOutcome {
 /// `folder.updated_at` against (`folder_entry.go:73`). Pass a stamp strictly later than the
 /// previous scan's stored `updated_at` when a full pass must re-import through that arm
 /// rather than through an accidental hash change.
+///
+/// Storage policy is Go's configured defaults (`FollowSymlinks`/`IgnoreDotFolders` both
+/// `true`, `conf/configuration.go:1071-1072`). A test that needs a different policy uses
+/// [`library_scan_with_policy`], which is the only way to exercise L1's injection: the
+/// defaults here are the constants `LibraryScan::quick` itself starts from, so nothing in
+/// the suite hard-codes a policy a scan then silently overrides.
 #[must_use]
 pub fn library_scan<'a>(
     library_id: i64,
@@ -554,6 +560,72 @@ pub fn library_scan<'a>(
     last_scan_started_at: DateTime<Utc>,
     full: bool,
 ) -> LibraryScan<'a> {
+    library_scan_with_policy(
+        library_id,
+        root,
+        mapping,
+        scan_stamp,
+        last_scan_started_at,
+        full,
+        ScannerPolicy::go_defaults(),
+    )
+}
+
+/// `conf.Server.Scanner.*` storage policy as a test injects it, so a scan takes ONE policy
+/// value rather than a growing argument list. Go reads both from global config
+/// (`conf/configuration.go:1071-1072`); the port injects them onto `LibraryScan` (L1
+/// disposition in `docs/rust-port/decisions.md`), which is what this exercises.
+#[derive(Debug, Clone, Copy)]
+pub struct ScannerPolicy {
+    /// `conf.Server.Scanner.FollowSymlinks`.
+    pub follow_symlinks: bool,
+    /// `conf.Server.Scanner.IgnoreDotFolders`.
+    pub ignore_dot_folders: bool,
+}
+
+impl ScannerPolicy {
+    /// Go's configured defaults, which is also what `LibraryScan::quick` starts from.
+    #[must_use]
+    pub fn go_defaults() -> ScannerPolicy {
+        ScannerPolicy {
+            follow_symlinks: nd_scanner::phase1::DEFAULT_FOLLOW_SYMLINKS,
+            ignore_dot_folders: nd_scanner::phase1::DEFAULT_IGNORE_DOT_FOLDERS,
+        }
+    }
+
+    /// Following disabled — the `FollowSymlinks: false` config arm.
+    #[must_use]
+    pub fn without_symlinks() -> ScannerPolicy {
+        ScannerPolicy {
+            follow_symlinks: false,
+            ignore_dot_folders: nd_scanner::phase1::DEFAULT_IGNORE_DOT_FOLDERS,
+        }
+    }
+
+    /// Dot folders NOT ignored — the `IgnoreDotFolders: false` config arm.
+    #[must_use]
+    pub fn without_dot_folder_ignoring() -> ScannerPolicy {
+        ScannerPolicy {
+            follow_symlinks: nd_scanner::phase1::DEFAULT_FOLLOW_SYMLINKS,
+            ignore_dot_folders: false,
+        }
+    }
+}
+
+/// The same scan with the caller's storage policy. Both values are INJECTED into
+/// `LibraryScan`, so this is what proves a scan configured with following disabled does not
+/// silently get links followed: the value reaches the `WalkRequest` and every `FolderJob`
+/// derived from the scan through `folder_job`.
+#[must_use]
+pub fn library_scan_with_policy<'a>(
+    library_id: i64,
+    root: &'a Path,
+    mapping: &'a MappingContext,
+    scan_stamp: DateTime<Utc>,
+    last_scan_started_at: DateTime<Utc>,
+    full: bool,
+    policy: ScannerPolicy,
+) -> LibraryScan<'a> {
     let mut scan = LibraryScan::quick(
         library_id,
         root.as_os_str().to_os_string(),
@@ -562,6 +634,8 @@ pub fn library_scan<'a>(
         mapping,
     );
     scan.full_scan_in_progress = full;
+    scan.follow_symlinks = policy.follow_symlinks;
+    scan.ignore_dot_folders = policy.ignore_dot_folders;
     scan
 }
 

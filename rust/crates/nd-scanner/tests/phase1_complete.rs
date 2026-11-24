@@ -25,6 +25,14 @@
 //! * `per_folder_missing_marking_touches_only_that_folders_rows` — `entry.missingTracks` is
 //!   folder-scoped (`:266-270`), so `MarkMissing` (`:446`) and `Album Touch` (`:456`) move
 //!   exactly the vanished folder's rows.
+//! * `ingest_error_continues_the_walk_and_only_persist_stops_it` — Go's abort SPLIT: a stage
+//!   error drops one folder (`:234-243`, `go-pipeline/pipeline.go:524-537`) while the walk
+//!   continues, and only `persistChanges`' failure calls `stopWalk` (`:358`).
+//! * `injected_follow_symlinks_off_skips_a_symlinked_target_and_writes_nothing` and
+//!   `injected_ignore_dot_folders_off_scans_a_dot_folder_the_default_would_hide` — the scanner's
+//!   storage policy is INJECTED on `LibraryScan`, so `conf.Server.Scanner.FollowSymlinks` and
+//!   `IgnoreDotFolders` (`conf/configuration.go:1071-1072`) reach the walk AND every folder the
+//!   controller ingests, instead of being pinned `true` inside `folder_job`.
 //!
 //! No persistence is mocked and no batch is hand-built. Every claim is checked with a
 //! repository read (`folder.hash`, `media_file.updated_at`, `media_file.missing`,
@@ -39,9 +47,9 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use common::{
     assert_no_writes, assert_stamp_ordering, assert_wrote, children, copy_pinned, count, execute,
-    file_stamp, fresh_store, later_file_time, later_stamp, laterest_stamp, library_scan, mapping,
-    remove_db, scalar, scan_all_ok, seed_library_scan_row, set_file_time, set_media_missing, stamp,
-    update_info, writable_rows, Tree,
+    file_stamp, fresh_store, later_file_time, later_stamp, laterest_stamp, library_scan,
+    library_scan_with_policy, mapping, remove_db, scalar, scan_all_ok, seed_library_scan_row,
+    set_file_time, set_media_missing, stamp, update_info, writable_rows, ScannerPolicy, Tree,
 };
 use nd_db::store::SQLStore;
 use nd_scanner::contract::CancelToken;
@@ -1151,6 +1159,353 @@ async fn cancellation_before_the_walk_writes_nothing_and_reports_residue() {
     assert_eq!(
         outcome.folders_unvisited, 0,
         "nothing had been stored yet, so there is no residue — and none was mutated"
+    );
+    drop(store);
+    remove_db(&db);
+}
+
+/// `ingest_error_continues_the_walk_and_only_persist_stops_it`: Go's abort policy is a SPLIT,
+/// not one rule. `persistChanges`' failure calls `stopWalk(err)` (`phase_1_folders.go:358`), but a
+/// stage error drops only that folder — `out, err = s.fn(in)`; `if err == nil && s.emitToOutCh`
+/// (`go-pipeline/pkg/pipeline/pipeline.go:524-537`) — so `persistChanges` never sees it, it writes
+/// nothing, and the walk keeps emitting the rest.
+///
+/// Injected on the FIRST emitted folder by poisoning its stored child's `participants` cell:
+/// Go's `dbMediaFile.PostScan` decodes that shim UNGUARDED (`persistence/mediafile_repository.go:55`),
+/// so the children read — the very first DB step of `processFolder` (`:231-243`) — fails for that
+/// folder alone. That is Go's `log.Error` + `return entry, err`, i.e. the stage-error class.
+///
+/// Mutating every ingest error into a walk-stop keeps the other eight tests green, which is exactly
+/// why this assertion exists: folder #2 must still be persisted while `failures` is non-empty, and
+/// the failing folder must still be popped from the residue (it was popped at emit time, before its
+/// ingest ran).
+#[tokio::test]
+async fn ingest_error_continues_the_walk_and_only_persist_stops_it() {
+    assert_stamp_ordering();
+    let tree = Tree::new("sc06-ingest-error");
+    // Two folders whose names decide the postorder emission order deterministically: children are
+    // emitted before parents and siblings are sorted by name, so `album/aaa` is the first folder
+    // the controller ingests.
+    tree.put("album/aaa", "known.mp3");
+    tree.put("album/zzz", "known.flac");
+    let (store, db) = fresh_store("sc06-ingest-error", 2);
+    seed_library_scan_row(&store, 1, "sc06-ingest-error", &tree.root, stamp(), false);
+
+    // Seed one row per leaf folder with a hash that cannot match the walker's, so both are
+    // outdated in quick mode and both reach the ingest. `aaa`'s child carries a malformed
+    // `participants` cell, which is the injected stage failure.
+    let text = |value: &str| nd_db::sqlrepo::Value::Text(value.to_string());
+    // One row per leaf folder, each with its own fixture: mp3 and flac derive DIFFERENT album
+    // ids, so "the sibling's rows only" stays a real distinction.
+    let ids: Vec<(String, String)> = [("album/aaa", "mp3"), ("album/zzz", "flac")]
+        .into_iter()
+        .map(|(folder, suffix)| {
+            let id = nd_db::folder_repo::folder_id(1, "", folder);
+            execute(
+                &store,
+                "INSERT INTO folder (id, library_id, path, name, parent_id, missing, hash, \
+                 num_audio_files, num_playlists, images_updated_at, updated_at, created_at, image_files) \
+                 VALUES (?1, 1, ?2, 'seeded', '', 0, 'pre-existing-hash', 1, 0, ?3, ?4, ?4, '[]')",
+                &[
+                    text(&id),
+                    text(folder),
+                    text(&nd_db::time::to_text(&file_stamp())),
+                    text(&nd_db::time::to_text(&stamp())),
+                ],
+            );
+            execute(
+                &store,
+                "INSERT INTO media_file (id, path, folder_id, library_id, album_id, missing, \
+                 updated_at, created_at, birth_time, participants) \
+                 VALUES (?1, ?2, ?3, 1, ?4, 0, ?5, ?6, ?6, ?7)",
+                &[
+                    text(format!("m-{folder}").as_str()),
+                    text(format!("{folder}/known.{suffix}").as_str()),
+                    text(&id),
+                    text(format!("a-{folder}").as_str()),
+                    text(&nd_db::time::to_text(&file_stamp())),
+                    text(&nd_db::time::to_text(&stamp())),
+                    // The injection: `{` is not decodable JSON, so Go's unguarded
+                    // `unmarshalParticipants` fails the row scan for THIS folder's cursor read.
+                    text(if folder == "album/aaa" { "{" } else { "{}" }),
+                ],
+            );
+            (folder.to_string(), id)
+        })
+        .collect();
+    let (poisoned_folder, poisoned_id) = ids.first().cloned().expect("two seeded folders");
+    assert_eq!(poisoned_folder, "album/aaa");
+
+    let before = writable_rows(&store);
+    let outcome = quick_all(&store, &tree.root, later_stamp()).await;
+
+    // The failure is reported and marks the library failed — Go's `eg.Wait` surfaces the first
+    // stage error as a failed phase — but it is NOT the stop-the-walk arm.
+    assert!(outcome.is_failed(), "a folder abort must fail the library");
+    assert_eq!(
+        outcome.failures.len(),
+        1,
+        "exactly one folder abort: {:?} (a persist failure would have stopped the walk)",
+        outcome.failures
+    );
+    let failure = outcome.failures.first().expect("one failure");
+    match failure {
+        nd_scanner::phase1::Phase1Error::ChildrenRead { folder, source } => {
+            assert_eq!(folder, "album/aaa", "the abort names the poisoned folder");
+            assert!(
+                source.to_string().contains("parsing participants"),
+                "the cause is Go's PostScan decode failure, not a fabricated one: {source}"
+            );
+        }
+        other => panic!("expected ChildrenRead (Go's `:234-243`), got {other:?}"),
+    }
+    assert!(
+        outcome.stopped.is_none(),
+        "ONLY a persist failure stops the walk (Go's `:358`); a stage error does not call \
+         stopWalk: {:?}",
+        outcome.stopped
+    );
+
+    // The walk kept going: folder #2 and both ancestors were reached, each committed through its
+    // own transaction. Only the aborted folder is absent from the reports — Go's pipeline never
+    // emits a stage-error item, so persistChanges never saw it.
+    assert!(
+        outcome.report_of("album/aaa").is_none(),
+        "the aborted folder produced no report, so nothing of it was published"
+    );
+    assert_eq!(
+        outcome.folders_persisted, 3,
+        "the sibling plus the two ancestors: every emitted folder except the aborted one"
+    );
+    let zzz = outcome
+        .report_of("album/zzz")
+        .expect("the sibling folder was ingested");
+    assert_stored_hash(&store, &zzz.folder_id, &zzz.hash, "album/zzz");
+    assert!(
+        !zzz.committed.folder_inserted,
+        "its row already existed, so the sibling took the Put's UPDATE leg"
+    );
+    assert_eq!(
+        scalar(
+            &store,
+            &format!(
+                "SELECT updated_at FROM folder WHERE id = '{}'",
+                zzz.folder_id
+            )
+        ),
+        Some(nd_db::time::to_text(&later_stamp())),
+        "the sibling's folder.updated_at is THIS scan's stamp, so its transaction committed"
+    );
+    // Its one child is NOT re-imported: the stored row's `updated_at` equals the file's mtime, so
+    // Go's `mtime > updated_at` arm is false (`:261`). The persist is folder-row-only, which is
+    // precisely what makes the aborted folder's untouched row a contrast rather than a tautology.
+    assert_eq!(zzz.new_media_count, 0, "nothing new was imported");
+    assert!(
+        zzz.reimported_paths.is_empty(),
+        "its child was not re-imported"
+    );
+
+    // The aborted folder wrote nothing of its own: its stored row is untouched.
+    assert_eq!(
+        scalar(
+            &store,
+            &format!("SELECT hash FROM folder WHERE id = '{poisoned_id}'")
+        ),
+        Some("pre-existing-hash".to_string()),
+        "the aborted folder's hash is unchanged — Go's stage error never reaches persistChanges"
+    );
+    assert_eq!(
+        count(
+            &store,
+            &format!(
+                "SELECT COUNT(*) FROM media_file WHERE folder_id = '{poisoned_id}' AND updated_at \
+                 > '{}'",
+                nd_db::time::to_text(&stamp())
+            )
+        ),
+        0,
+        "no row of the aborted folder was re-stamped"
+    );
+
+    // Every folder the walk emitted left the residue set — including the aborted one, popped at
+    // emit time. The ancestors are ingested too (they are not new-empty), so nothing is left.
+    assert_eq!(
+        outcome.unvisited_folder_ids,
+        Vec::<String>::new(),
+        "the aborted folder was popped at emit time, so the deferred finalizer would not see it"
+    );
+    assert_eq!(outcome.folders_unvisited, 0);
+    assert_eq!(
+        outcome.folders_visited, 4,
+        "album/aaa, album/zzz, album and the library root — all emitted despite the abort"
+    );
+    assert_eq!(
+        outcome.folders_changed, 4,
+        "every seeded folder is outdated"
+    );
+
+    // Non-vacuity of the "wrote nothing" claims above: the scan definitely wrote.
+    assert_wrote(
+        &store,
+        &before,
+        "scan whose first folder aborted mid-ingest",
+    );
+    drop(store);
+    remove_db(&db);
+}
+
+/// L1: `follow_symlinks` is INJECTED on `LibraryScan`, so a scan configured with following
+/// disabled does not silently get links followed. Go reads it from `conf.Server.Scanner.FollowSymlinks`
+/// (`conf/configuration.go:1071`), consumed at `scanner/walk_dir_tree.go:47-51`; the port must apply
+/// the caller's value to both the [`WalkRequest`] and every folder it ingests.
+///
+/// The observable consequence is a selective target that IS a symlinked directory: with following
+/// enabled the walker enters it and the folder is persisted (`tests/phase1_slice.rs` pins the
+/// single-folder half of the same rule), with it disabled the target is skipped and nothing is
+/// written. The enabled scan in the same database is the non-vacuity half.
+#[cfg(unix)]
+#[tokio::test]
+async fn injected_follow_symlinks_off_skips_a_symlinked_target_and_writes_nothing() {
+    assert_stamp_ordering();
+    let tree = Tree::new("sc06-policy-symlink");
+    tree.put("album/real", "known.mp3");
+    std::os::unix::fs::symlink(tree.root.join("album/real"), tree.root.join("album/alias"))
+        .expect("symlink the folder");
+    let (store, db) = fresh_store("sc06-policy-symlink", 2);
+    seed_library_scan_row(&store, 1, "sc06-policy-symlink", &tree.root, stamp(), true);
+    let mapping = mapping();
+    let before = writable_rows(&store);
+
+    let disabled = scan_all_ok(
+        &store,
+        &library_scan_with_policy(
+            1,
+            &tree.root,
+            &mapping,
+            stamp(),
+            stamp(),
+            true,
+            ScannerPolicy::without_symlinks(),
+        ),
+        &ScanScope::Targets(vec!["album/alias".to_string()]),
+    )
+    .await;
+    assert_eq!(
+        disabled.targets_skipped, 1,
+        "the symlinked target is skipped"
+    );
+    assert_eq!(disabled.targets_walked, 0, "nothing was traversed");
+    assert_eq!(disabled.folders_visited, 0, "no folder was emitted");
+    assert_eq!(disabled.folders_persisted, 0);
+    assert_no_writes(&store, &before, "symlinked target with following disabled");
+
+    // Non-vacuity: the same target with Go's default policy is walked and persisted, so the skip
+    // above is the injected flag's doing rather than a constant refusal.
+    let enabled = scan_all_ok(
+        &store,
+        &library_scan(1, &tree.root, &mapping, later_stamp(), later_stamp(), true),
+        &ScanScope::Targets(vec!["album/alias".to_string()]),
+    )
+    .await;
+    assert_eq!(
+        enabled.targets_skipped, 0,
+        "following enabled walks the link"
+    );
+    assert_eq!(enabled.targets_walked, 1);
+    assert_eq!(
+        enabled.folders_persisted, 1,
+        "the folder under the link is persisted"
+    );
+    let alias = enabled
+        .report_of("album/alias")
+        .expect("the folder under the link was ingested");
+    assert_eq!(alias.audio_count, 1, "its audio file is classified");
+    assert_eq!(alias.new_media_count, 1, "and imported");
+    assert_wrote(&store, &before, "symlinked target with following enabled");
+
+    drop(store);
+    remove_db(&db);
+}
+
+/// L1's other injected value: `ignore_dot_folders`. Go's `isIgnoredEntry`
+/// (`scanner/walk_dir_tree.go:332-337`) hides a dot-named CHILD folder only while
+/// `conf.Server.Scanner.IgnoreDotFolders` is set (`conf/configuration.go:1072`), so a caller that
+/// opts out must get that folder scanned — and a scan that hard-codes `true` cannot.
+///
+/// The target here is the library root, so the dot folder is reached as a CHILD (Go does not apply
+/// the name policy to a walk target itself, and neither does the walker). Quick mode makes the two
+/// outcomes maximally distinct: with the folder ignored, the root is a new empty folder and is
+/// skipped (`:187-194`) and nothing is stored; with the opt-out, the dot folder is emitted, holds a
+/// file, and the root gains a subfolder, so both are persisted.
+#[tokio::test]
+async fn injected_ignore_dot_folders_off_scans_a_dot_folder_the_default_would_hide() {
+    assert_stamp_ordering();
+    let tree = Tree::new("sc06-policy-dotfolder");
+    tree.put(".hidden", "known.m4a");
+    let (store, db) = fresh_store("sc06-policy-dotfolder", 2);
+    seed_library_scan_row(
+        &store,
+        1,
+        "sc06-policy-dotfolder",
+        &tree.root,
+        stamp(),
+        false,
+    );
+    let mapping = mapping();
+
+    let ignored = quick_all(&store, &tree.root, stamp()).await;
+    assert!(!ignored.is_failed(), "{:?}", ignored.failures);
+    assert_eq!(
+        ignored.folders_visited, 1,
+        "only the library root is emitted: the dot folder is hidden by the default policy"
+    );
+    assert_eq!(
+        ignored.folders_skipped_new_empty, 1,
+        "with no visible child the root is new and empty, so Go skips it (`:187-194`)"
+    );
+    assert_eq!(ignored.folders_persisted, 0, "nothing is written");
+    assert_eq!(count(&store, "SELECT COUNT(*) FROM folder"), 0);
+    assert_eq!(count(&store, "SELECT COUNT(*) FROM media_file"), 0);
+
+    // Same tree, same stamp, one flag changed: the dot folder is entered.
+    let scanned = scan_all_ok(
+        &store,
+        &library_scan_with_policy(
+            1,
+            &tree.root,
+            &mapping,
+            stamp(),
+            stamp(),
+            false,
+            ScannerPolicy::without_dot_folder_ignoring(),
+        ),
+        &ScanScope::WholeLibrary,
+    )
+    .await;
+    assert!(!scanned.is_failed(), "{:?}", scanned.failures);
+    assert_eq!(
+        scanned.folders_visited, 2,
+        "the dot folder plus the root (which now has a subfolder)"
+    );
+    assert_eq!(scanned.folders_skipped_new_empty, 0);
+    assert_eq!(scanned.folders_persisted, 2, "both folders get rows");
+    let hidden = scanned
+        .report_of(".hidden")
+        .expect("the dot folder was ingested");
+    assert_eq!(hidden.audio_count, 1, "its audio file is classified");
+    assert_eq!(hidden.new_media_count, 1, "and imported");
+    assert_eq!(
+        count(
+            &store,
+            "SELECT COUNT(*) FROM media_file WHERE path = '.hidden/known.m4a'"
+        ),
+        1,
+        "the row is in the database, keyed by the library-relative path"
+    );
+    assert_eq!(
+        count(&store, "SELECT COUNT(*) FROM folder"),
+        2,
+        "the root and the dot folder, so the default scan really wrote nothing"
     );
     drop(store);
     remove_db(&db);

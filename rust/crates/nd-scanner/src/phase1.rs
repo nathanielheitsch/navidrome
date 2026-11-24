@@ -66,7 +66,11 @@
 //! `persist_folder_delta` (DB-14, `scanner_writes.rs:627`) with missing-marking and `Touch`
 //! inside that same folder tx (`:446-456`). A persist failure stops the walk through
 //! [`crate::walk::WalkHandle::cancel`] exactly as Go's `stopWalk(err)` (`:358`) does, so
-//! folders the walk never reached keep their stored rows and are reported unvisited.
+//! folders the walk never reached keep their stored rows and are reported unvisited. The
+//! folder whose persist FAILED is not among them: it was already popped from the residue
+//! set when the walk emitted it (Go's `popLastUpdate`, `:113-120`, ported at the `remove`
+//! call in [`scan_library`]), which matters because `unvisited_folder_ids` is exactly the
+//! input the deferred finalizer will consume.
 //!
 //! ## Deliberate deviations from Go in this slice
 //!
@@ -76,12 +80,17 @@
 //!   behavior — the persist order is the walk order either way, and Go's own pipeline drops
 //!   a stage error without emitting the item, so a folder-level abort cannot interleave with
 //!   a persist.
-//! * **The quick-scan filter's `Info()` failure trigger.** Go's arm fires when
-//!   `af.Info()` — the `DirEntry`'s cached lstat facts — cannot be read. The port captures
-//!   those facts once into [`FolderEntry::stat`], so the faithful trigger is a captured
-//!   entry whose mtime is absent (`Err(BirthTimeUnavailable)`-shaped absence), never a
-//!   re-stat. Both arms' warning texts are pinned by the in-crate tests so a future edit
-//!   cannot route one arm's wording through the other formatter.
+//! * **The quick-scan filter's `Info()` failure trigger, and its reachability.** Go's arm
+//!   fires when `af.Info()` — the `DirEntry`'s cached lstat facts — cannot be read. The port
+//!   captures those facts once into [`FolderEntry::stat`], so the faithful trigger is a captured
+//!   entry whose mtime is absent (`Err(StatUnavailable)`-shaped absence), never a re-stat. That
+//!   shape is produced by NEITHER current caller: the SC-02 walker drops an entry with no mtime
+//!   before adding it to the snapshot (`walk.rs:1158-1169`) and the standalone capture aborts it
+//!   with [`Phase1Error::EntryInfo`], so the arm is defensive for the SC-07+ split rather than
+//!   live. It is still executed — `missing_leg_for_pass`'s unit tests plus the in-crate
+//!   end-to-end test hand `ingest_folder_snapshot` exactly that snapshot — because deleting the
+//!   suppression otherwise leaves the whole suite green. Both arms' warning texts are pinned so a
+//!   future edit cannot route one arm's wording through the other formatter.
 //! * **A NULL `media_file.updated_at` reads as Go's zero time.** Go's `MediaFile.UpdatedAt`
 //!   is a non-pointer `time.Time`, so a NULL cell fails its row scan before the filter ever
 //!   runs; the port's record types it as `Option<DateTime<Utc>>`, and the filter treats
@@ -96,6 +105,26 @@
 //!   `GetFolderUpdateInfo(ctx, lib, targetFolders...)` shape and the walker's target list,
 //!   a rejected target is reported as a skipped target with the walker's warning, and no
 //!   library is marked failed. Deferred per D-SC06-SLICE.
+//! * **`ScanScope::Targets(vec![""])` means the whole library, matching Go.** Go's
+//!   `getFolderUpdateInfo` treats `""` exactly like `"."` and the empty list
+//!   (`folder_repo.rs:1404-1410`), and its own caller rewrites `""` to `"."` before the job is
+//!   built (`scanner.go:85-88`). The port's `LogicalPath::parse` does the same mapping, so an
+//!   empty target scans the library rather than being refused — consistent with
+//!   `get_folder_update_info`, no behavior change (parent's L2 disposition,
+//!   `docs/rust-port/decisions.md`). `InvalidTarget` is only for a target that escapes the root.
+//! * **The import filter and the missing leg both key on the library-relative
+//!   `media_file.path`**, exactly like Go's `dbTracks[mf.Path]` and
+//!   `path.Join(entry.path, afPath)` (`:244`, `:252`). If a database written by Go ever
+//!   stored ABSOLUTE paths in that column, no child would match its entry and the missing
+//!   leg would flag every row of the folder. The mismatch would live in the stored data, not
+//!   here, and nothing compensates for it — a reader that suspects absolute paths should
+//!   inspect `media_file.path` before trusting `missing`.
+//! * **A per-target walk failure aborts the remaining targets.** Go logs
+//!   `Scanner: Error walking target folder` and `continue`s to the next target
+//!   (`scanner/walk_dir_tree.go:61-63`); Rust's walker treats a failed listing as fatal
+//!   coverage and stops the walk, so later targets get nothing. That is the pre-existing
+//!   SC-02 conservative-coverage divergence declared in `crate::walk`'s module header and in
+//!   `walk.rs`'s `listing_failure_warning` mapping, reported as [`ScanStop::Walk`].
 //!
 //! ## Capture and ingest are two halves (D-SC05-SLICE item 4)
 //!
@@ -194,6 +223,17 @@ use crate::storage::{
     EndpointKind, EntryKind, FileStat, Follow, LocalDir, LogicalPath, ResolvedTarget, StorageError,
 };
 use crate::walk::{WalkHandle, WalkOutcome};
+
+/// `conf.Server.Scanner.FollowSymlinks` as it reaches the walker and the selected-folder
+/// preflight (`scanner/walk_dir_tree.go:47-51`, `:332-337`). Go reads it from global config;
+/// this workspace injects configuration, so [`LibraryScan`] carries it rather than pinning
+/// it. The Go default is `true` (`conf/configuration.go:1071`).
+pub const DEFAULT_FOLLOW_SYMLINKS: bool = true;
+
+/// `conf.Server.Scanner.IgnoreDotFolders`, the dot-folder half of the walker's name policy
+/// (`scanner/walk_dir_tree.go:332-337`, ported by `crate::contract::is_ignored_entry`).
+/// Injected like [`DEFAULT_FOLLOW_SYMLINKS`]; Go default `true` (`conf/configuration.go:1072`).
+pub const DEFAULT_IGNORE_DOT_FOLDERS: bool = true;
 
 /// `conf.Server.Subsonic.AppendSubtitle` as it reaches `media_file.full_text`
 /// (`model/mediafile.go:110` → `sql_feeders.full_title`). Go reads it from global
@@ -1432,6 +1472,38 @@ fn canonical_identity(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Whether the folder's missing leg runs at all, and if so which children it names.
+///
+/// Go's ordering is the whole rule: `entry.missingTracks` is computed at `:269-270`, AFTER
+/// the import-selection loop — and the quick-scan filter's `Info()`-failure arm returns
+/// `entry, nil` at `:260`, i.e. BEFORE that statement is ever reached. So a folder whose
+/// selection loop aborted on a stat failure commits a folder row with NO missing-marking,
+/// while every other arm (including the folder-level tag abort at `:274-279`, which happens
+/// after `:270`) keeps its missing leg. [`TagReadPass::missing_suppressed`] carries exactly
+/// that positional fact; nothing else may set it.
+///
+/// Both current callers make the suppressed arm unreachable — the SC-02 walker drops an
+/// entry whose mtime is absent (`walk.rs:1158-1169`) and the standalone capture aborts such
+/// an entry with [`Phase1Error::EntryInfo`] (`phase1.rs`, the `entry.stat.modified` arm) —
+/// so it is defensive for the SC-07+ split. It is asserted directly here (in-crate unit
+/// test plus the end-to-end test in `tests/phase1_complete.rs`) so the behavior stays
+/// pinned rather than looking live.
+fn missing_leg_for_pass(
+    pass: &TagReadPass,
+    children: &BTreeMap<String, MediaFileRecord>,
+    snapshot: &FolderSnapshot,
+) -> Vec<MissingMedia> {
+    if pass.missing_suppressed {
+        return Vec::new();
+    }
+    let on_disk: BTreeMap<String, ()> = snapshot
+        .category(crate::folder::EntryCategory::Audio)
+        .into_iter()
+        .map(|entry| (entry.path.to_string(), ()))
+        .collect();
+    missing_leg(children, &on_disk)
+}
+
 /// `entry.missingTracks` (`:269-270`): children whose path is absent from disk. Go
 /// deletes every observed path from the DB map first (`:266`), whether or not it was
 /// imported, so a file present on disk is never missing even when its tag read was
@@ -1745,17 +1817,11 @@ pub(crate) fn ingest_folder_snapshot(
     // 3. Missing children (`:266-270`): every path observed on disk is removed from
     //    the DB map regardless of whether it was imported. The quick-scan filter's own
     //    abort arm (`:257-261`) returns BEFORE `:270`, so that folder's missing leg is
-    //    empty by Go's ordering, not by a policy choice.
-    let missing = if pass.missing_suppressed {
-        Vec::new()
-    } else {
-        let on_disk: BTreeMap<String, ()> = snapshot
-            .category(crate::folder::EntryCategory::Audio)
-            .into_iter()
-            .map(|entry| (entry.path.to_string(), ()))
-            .collect();
-        missing_leg(&children, &on_disk)
-    };
+    //    empty by Go's ordering, not by a policy choice. Extracted into
+    //    [`missing_leg_for_pass`] so that dependency has ONE callable site a unit test can
+    //    drive with a hand-built [`TagReadPass`] instead of being asserted only through the
+    //    ingest's own (currently unreachable) filter arm.
+    let missing = missing_leg_for_pass(&pass, &children, snapshot);
 
     // 4. Album/artist drafts (`:281-282`), guarded exactly as Go guards it
     //    (`if len(filesToImport) > 0`). A folder-level tag abort leaves `tracks` empty,
@@ -1919,6 +1985,16 @@ pub enum ScanScope {
     /// Selected library-relative logical paths plus their descendants. Go's selective
     /// scan (`scanner.go:78-105`); paths are the slash form Go stores, so `"."` means the
     /// library root just as it does in Go's `getFolderUpdateInfoBatch`.
+    ///
+    /// An EMPTY-string target is NOT rejected: `crate::storage::LogicalPath::parse` maps `""`
+    /// to the library root (as it does `"."`), so `Targets(vec![""])` scans the WHOLE library —
+    /// the same reading Go's `getFolderUpdateInfo` gives `""` (`folder_repo.rs:1404-1410`).
+    /// Go reaches that reading through its own rewrite of `""` to `"."` (`scanner.go:85-88`), so
+    /// the two agree here rather than diverging. [`LibraryScanError::InvalidTarget`] is reserved
+    /// for targets that escape the root (`"../x"`, a backslash, an empty component); a caller
+    /// that means the whole library can also pass [`ScanScope::WholeLibrary`], which skips the
+    /// target list entirely. Recorded as the parent's L2 disposition in
+    /// `docs/rust-port/decisions.md`: Go treats `""` as all-folders and so does this port.
     Targets(Vec<String>),
 }
 
@@ -1969,9 +2045,16 @@ pub struct LibraryScan<'a> {
     pub last_scan_started_at: DateTime<Utc>,
     /// See [`DEFAULT_APPEND_SUBTITLE`].
     pub append_subtitle: bool,
-    /// `conf.Server.Scanner.FollowSymlinks`.
+    /// `conf.Server.Scanner.FollowSymlinks` — INJECTED, not pinned. A caller running with
+    /// following disabled must not silently get links followed: the value reaches the
+    /// [`WalkRequest`] AND every [`FolderJob`] through [`LibraryScan::folder_job`], so the
+    /// preflight, the traversal and the ingest apply one policy. Go default `true`
+    /// ([`DEFAULT_FOLLOW_SYMLINKS`], `conf/configuration.go:1071`).
     pub follow_symlinks: bool,
-    /// `conf.Server.Scanner.IgnoreDotFolders`.
+    /// `conf.Server.Scanner.IgnoreDotFolders`, same injection rule as
+    /// [`LibraryScan::follow_symlinks`]: it decides whether a dot-named child folder is
+    /// entered, so it must be the caller's value rather than a constant. Go default `true`
+    /// ([`DEFAULT_IGNORE_DOT_FOLDERS`], `conf/configuration.go:1072`).
     pub ignore_dot_folders: bool,
     /// Mapping context, built once per scan run like Go's `sync.OnceValues` load.
     pub mapping: &'a MappingContext,
@@ -2003,8 +2086,8 @@ impl<'a> LibraryScan<'a> {
             full_scan_in_progress: false,
             last_scan_started_at,
             append_subtitle: DEFAULT_APPEND_SUBTITLE,
-            follow_symlinks: true,
-            ignore_dot_folders: true,
+            follow_symlinks: DEFAULT_FOLLOW_SYMLINKS,
+            ignore_dot_folders: DEFAULT_IGNORE_DOT_FOLDERS,
             mapping,
             pid: PidOptions::default(),
             prev_album_pid: None,
@@ -2085,8 +2168,11 @@ impl<'a> LibraryScan<'a> {
             full_scan_in_progress: record.full_scan_in_progress || full_scan_requested,
             last_scan_started_at: record.last_scan_started_at,
             append_subtitle: DEFAULT_APPEND_SUBTITLE,
-            follow_symlinks: true,
-            ignore_dot_folders: true,
+            // Go reads these two from global config at walk time; the library row carries
+            // no such column, so the Go defaults are the faithful starting point and a
+            // caller overrides them explicitly (L1 disposition in decisions.md).
+            follow_symlinks: DEFAULT_FOLLOW_SYMLINKS,
+            ignore_dot_folders: DEFAULT_IGNORE_DOT_FOLDERS,
             mapping,
             pid: PidOptions {
                 album: record.pid_album,
@@ -2176,9 +2262,18 @@ pub enum ScanStop {
     /// for the folder that observed it.
     #[error("scan cancelled")]
     Cancelled,
-    /// The walk itself ended with a fatal error. Go logs
-    /// `Scanner: Error scanning library` and keeps the phase running (`:167-169`), so this
-    /// is reported, not returned as a failure of the whole scan.
+    /// The walk itself ended fatally. Go has TWO log-and-continue arms here: it logs
+    /// `Scanner: Error scanning library` when the walk cannot be CREATED
+    /// (`phase_1_folders.go:167-169`) and logs `Scanner: Error walking target folder` then
+    /// `continue`s to the NEXT target when a walk fails mid-run
+    /// (`scanner/walk_dir_tree.go:61-63`). Either way the phase keeps running, so this is
+    /// reported rather than returned as a failure of the whole scan.
+    ///
+    /// Divergence, not Go behavior: Rust ABORTS the remaining targets, because its walker
+    /// turns a failed directory listing into a fatal [`ScanError`] instead of logging and
+    /// continuing. That is the pre-existing SC-02 conservative-coverage decision declared in
+    /// `crate::walk`'s module header and in `walk.rs`'s `listing_failure_warning` mapping
+    /// (`walk.rs:920-935`), NOT anything this slice introduced.
     #[error("walk ended fatally: {source}")]
     Walk {
         /// The walker's typed failure.
@@ -2189,15 +2284,22 @@ pub enum ScanStop {
 
 /// What one library scan did, folder by folder.
 ///
-/// The counters mirror Go's `producer()` bookkeeping (`:159-205`): `folders_visited` is
-/// `job.numFolders` (every folder the walk emitted, changed or not), `folders_changed` is
-/// `totalChanged`, and `folders_persisted` counts folders that reached `persistChanges`.
+/// The counters follow Go's `producer()` bookkeeping (`:159-205`) with one addition:
+/// `folders_changed` is `totalChanged`, `folders_persisted` counts folders that reached
+/// `persistChanges`, and `folders_skipped_up_to_date`/`folders_skipped_new_empty` are the
+/// two `continue` arms. [`LibraryScanOutcome::folders_visited`] has NO Go counterpart as a
+/// reported quantity: Go's `job.numFolders` is only summed into a local `total` for one
+/// `log.Debug` line (`:204-206`) and is never compared against `totalChanged`, so it is a
+/// Rust-only diagnostic, not a parity claim.
 /// Nothing here claims the phase completed: [`LibraryScanOutcome::folders_unvisited`] is
 /// exactly the input Go's finalizer would use, and no finalizer runs
 /// (`decisions.md` D-SC06-FINALIZE).
 #[derive(Debug)]
 pub struct LibraryScanOutcome {
-    /// Folders the walk emitted (`job.numFolders.Add(1)`, `:171`).
+    /// Folders the walk emitted (`job.numFolders.Add(1)`, `:171`). Rust-only diagnostic:
+    /// Go sums this into a `log.Debug` line and never compares it to `totalChanged`
+    /// (`:204-206`), so no parity claim rides on it. Kept because the skip tests use it as
+    /// the divisor of "every visited folder was skipped as up-to-date".
     pub folders_visited: usize,
     /// Folders `isOutdated` reported as changed (`totalChanged`, `:196`).
     pub folders_changed: usize,
@@ -2289,8 +2391,10 @@ pub enum LibraryScanError {
         source: ScanReadSource,
     },
     /// A selective target is not a library-relative logical path. Go accepts any string
-    /// here because its paths come from the caller's `ScanTarget`; the port refuses a
-    /// malformed one rather than walking something the caller did not name.
+    /// here because its paths come from the caller's `ScanTarget`; the port refuses one that
+    /// escapes the root (`"../x"`, a backslash, an empty component) rather than walking
+    /// something the caller did not name. An EMPTY string is NOT this arm: it parses to the
+    /// library root, as in Go (see [`ScanScope::Targets`]).
     #[error("selective scan target '{path}' is not a library-relative logical path: {source}")]
     InvalidTarget {
         /// Target as given.
@@ -2321,15 +2425,25 @@ pub enum LibraryScanError {
 ///    `Touch` included in that same transaction (`:444-460`).
 ///
 /// A persist failure cancels the walk ([`crate::walk::WalkHandle::cancel`], Go's
-/// `stopWalk(err)` at `:358`) and is reported as [`ScanStop::Persist`]. Folders the walk
-/// never reached keep their stored rows: no finalizer runs in this slice.
+/// `stopWalk(err)` at `:358`) and is reported as [`ScanStop::Persist`] — and ONLY a persist
+/// failure does: a folder-level ingest abort is Go's stage error, which drops that one
+/// folder while the walk continues (`:234-243`, `go-pipeline/pipeline.go:524-534`), so it
+/// lands on [`LibraryScanOutcome::failures`] instead. Folders the walk never reached keep
+/// their stored rows: no finalizer runs in this slice. The folder whose persist FAILED is
+/// not among that residue: step 1 above already popped it from `last_updates` when the walk
+/// emitted it, before its persist was attempted, and `unvisited_folder_ids` is exactly the
+/// input the deferred finalizer will consume — so a folder that failed to persist must never
+/// be handed to it as "unvisited".
 ///
 /// # Errors
 /// [`LibraryScanError::LastUpdates`] when the update-info read fails (Go: the library gets
-/// no job), and [`LibraryScanError::InvalidTarget`] for a malformed selective target. Both
-/// happen before any folder is walked, so neither writes anything. A fatal walk outcome is
-/// reported as [`ScanStop::Walk`] rather than an error, because Go logs it as a warning and
-/// keeps the phase running (`:167-169`).
+/// no job), and [`LibraryScanError::InvalidTarget`] for a selective target that escapes the
+/// library root (`"../x"`, a backslash, or a `..` component). Both happen before any folder is
+/// walked, so neither writes anything. A fatal walk outcome is
+/// reported as [`ScanStop::Walk`] rather than an error, because Go logs it and keeps the
+/// phase running — `phase_1_folders.go:167-169` when the walk cannot be created,
+/// `scanner/walk_dir_tree.go:61-63` (`log.Error` + `continue` to the next target) when a
+/// walk fails mid-run. Rust aborts the remaining targets; see [`ScanStop::Walk`].
 ///
 /// # Panics
 /// Only through `ingest_folder_snapshot` on a `library_id` too large for the mapping
@@ -2861,5 +2975,470 @@ mod unit_tests {
             }
             other => panic!("expected Bridge, got {other:?}"),
         }
+    }
+
+    /// A fresh migrated, pooled DB at its own `$TMPDIR` path, plus the path for cleanup. The
+    /// in-crate arms that need real repository reads (the missing leg, the quick-scan filter's
+    /// persist) share this shape so their writes are checked against a real schema.
+    fn temp_store(label: &str) -> (SQLStore, std::path::PathBuf) {
+        use nd_db::pool::{Pool, PoolConfig};
+
+        let db_path = std::path::PathBuf::from(nd_utils::files::temp_file_name(
+            &format!("nd-sc06-{label}-"),
+            ".db",
+        ));
+        let (pool, first) = Pool::new(&PoolConfig::with_size(
+            format!("file:{}?mode=rwc&_foreign_keys=on", db_path.display()),
+            1,
+        ))
+        .unwrap_or_else(|e| panic!("open pooled DB for {label}: {e}"));
+        nd_dbschema::schema::apply_fresh_schema(&first).expect("fresh schema");
+        pool.put_back(first).expect("return the initializer handle");
+        (nd_db::store::SQLStore::new(pool), db_path)
+    }
+
+    /// Run one statement with bound values against the test store.
+    fn execute(store: &SQLStore, sql: &str, values: &[nd_db::sqlrepo::Value]) {
+        store
+            .with_connection_sync(|conn| {
+                nd_db::execution::execute(conn, &(sql.to_string(), values.to_vec()))
+            })
+            .map(|_| ())
+            .unwrap_or_else(|e| panic!("execute {sql}: {e}"));
+    }
+
+    /// An INTEGER cell — a row count or a `boolean` column's stored value. Read as `i64`
+    /// rather than through [`scalar`], which asks for TEXT and fails on these cells.
+    #[must_use]
+    fn count(store: &SQLStore, sql: &str) -> i64 {
+        store
+            .with_connection_sync(|conn| {
+                nd_db::execution::query_optional(conn, &(sql.to_string(), Vec::new()), |row| {
+                    row.get::<_, i64>(0)
+                })
+            })
+            .unwrap_or_else(|e| panic!("count {sql}: {e}"))
+            .unwrap_or_else(|| panic!("count {sql} returned no row"))
+    }
+
+    /// One scalar read as TEXT; panics when the statement returns no row.
+    #[must_use]
+    fn scalar(store: &SQLStore, sql: &str) -> String {
+        store
+            .with_connection_sync(|conn| {
+                nd_db::execution::query_optional(conn, &(sql.to_string(), Vec::new()), |row| {
+                    row.get::<_, String>(0)
+                })
+            })
+            .unwrap_or_else(|e| panic!("read {sql}: {e}"))
+            .unwrap_or_else(|| panic!("read {sql} returned no row"))
+    }
+
+    /// The library row every seeded folder references: `folder.library_id` and
+    /// `media_file.library_id` are foreign keys, so with FKs on (the pool's DSN) nothing can be
+    /// inserted without it. Quick mode is the stored state, which is what
+    /// [`LibraryScan::from_library_row`] would read.
+    fn seed_library_row(store: &SQLStore) {
+        execute(
+            store,
+            "INSERT INTO library (id, name, path, last_scan_at, last_scan_started_at, \
+             full_scan_in_progress, updated_at, created_at) \
+             VALUES (1, 'sc06-seed', '/tmp/sc06-seed', ?1, ?1, 0, ?1, ?1)",
+            &[nd_db::sqlrepo::Value::Text(
+                "2025-06-01 00:00:00".to_string(),
+            )],
+        );
+    }
+
+    /// One folder row plus two stored children — `known.mp3` (which a snapshot will list) and
+    /// `gone.mp3` (which it will not): the layout every missing-leg assertion below uses.
+    /// `slug` keeps the ids unique across folders while staying readable in an assertion;
+    /// `participants` is `{}` so the reader's `PostScan` decode succeeds and the record the ingest
+    /// sees is the repository's own hydration rather than a hand-built one. `created_at` is
+    /// explicit because Go's `MediaFile.CreatedAt` is a non-pointer `time.Time` and the reader's
+    /// `get_dt` rejects SQL NULL (`hydrate.rs:582-590`) — the same reason a NULL `updated_at`
+    /// cannot reach the filter at all. Both children start NOT missing, so a `missing = 1` read
+    /// afterwards is a fact about this scan.
+    fn seed_folder_with_children(store: &SQLStore, folder: &str, slug: &str) -> String {
+        let text = |value: &str| nd_db::sqlrepo::Value::Text(value.to_string());
+        let stored = nd_db::time::to_text(&nd_db::time::zero());
+        let folder_id = nd_db::folder_repo::folder_id(1, "", folder);
+        execute(
+            store,
+            "INSERT INTO folder (id, library_id, path, name, parent_id, missing, hash, \
+             num_audio_files, num_playlists, images_updated_at, updated_at, created_at, image_files) \
+             VALUES (?1, 1, ?2, 'seeded', '', 0, 'pre-existing-hash', 1, 0, ?3, ?3, ?3, '[]')",
+            &[text(&folder_id), text(folder), text(&stored)],
+        );
+        for name in ["known.mp3", "gone.mp3"] {
+            execute(
+                store,
+                "INSERT INTO media_file (id, path, folder_id, library_id, album_id, missing, \
+                 updated_at, created_at, birth_time, participants) \
+                 VALUES (?1, ?2, ?3, 1, ?4, 0, ?5, ?6, ?6, ?7)",
+                &[
+                    text(format!("m-{slug}-{name}").as_str()),
+                    text(format!("{folder}/{name}").as_str()),
+                    text(&folder_id),
+                    text(format!("a-{slug}-{name}").as_str()),
+                    text("2025-07-01 00:00:00"),
+                    text("2025-06-01 00:00:00"),
+                    text("{}"),
+                ],
+            );
+        }
+        folder_id
+    }
+
+    /// The storage facts of one audio entry, with the mtime a walk would have captured.
+    #[must_use]
+    fn audio_entry(folder: &str, name: &str, modified: SystemTime) -> FolderEntry {
+        FolderEntry {
+            name: name.to_string(),
+            path: LogicalPath::parse(folder)
+                .expect("folder")
+                .join(std::ffi::OsStr::new(name))
+                .expect("entry path"),
+            classification_name: name.to_string(),
+            stat: FileStat {
+                size: 1_024,
+                modified: Ok(modified),
+                created: Err(crate::storage::BirthTimeUnavailable),
+            },
+            endpoint: None,
+            outside_root: false,
+            category: crate::folder::EntryCategory::Audio,
+        }
+    }
+
+    #[must_use]
+    fn dir_stat(modified: SystemTime) -> FileStat {
+        FileStat {
+            size: 4_096,
+            modified: Ok(modified),
+            created: Err(crate::storage::BirthTimeUnavailable),
+        }
+    }
+
+    /// 2025-06-27: strictly older than the `updated_at` (2025-07-01) the seeded children carry,
+    /// so a quick pass takes Go's `mtime > updated_at` = false arm and imports nothing — no file
+    /// I/O is needed on either folder for the filter to decide.
+    #[must_use]
+    fn entry_mtime() -> SystemTime {
+        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_750_996_400)
+    }
+
+    /// `missing_leg_for_pass` is the only place Go's `entry.missingTracks` ORDERING is expressed,
+    /// so it is driven directly with hand-built passes over one layout: a child the snapshot lists
+    /// and a child it does not.
+    ///
+    /// The unsuppressed pass must name exactly the vanished child — that non-vacuity is what makes
+    /// the suppressed assertion a contrast rather than empty-versus-empty. The children come from
+    /// the real [`read_children`] visitor, so their ids and album ids are the repository's own
+    /// values rather than a hand-built record.
+    #[test]
+    fn the_quick_scan_filter_arm_is_the_only_arm_with_an_empty_missing_leg() {
+        let (store, db) = temp_store("missing-leg");
+        seed_library_row(&store);
+        let folder = "album/one";
+        let folder_id = seed_folder_with_children(&store, folder, "one");
+        let token = CancelToken::new();
+        let children = read_children(&store, &folder_id, &token, folder)
+            .expect("the seeded children are readable");
+        assert_eq!(children.len(), 2, "both seeded children are read");
+
+        let mtime = entry_mtime();
+        let snapshot = FolderSnapshot {
+            library_id: 1,
+            path: LogicalPath::parse(folder).expect("folder"),
+            dir_stat: dir_stat(mtime),
+            mod_time: mtime,
+            images_updated_at: None,
+            num_sub_folders: 0,
+            // ONLY the surviving file is listed: Go deletes every observed path from `dbTracks`
+            // at `:266`, so the unlisted child is the missing one.
+            entries: vec![audio_entry(folder, "known.mp3", mtime)],
+            coverage: FolderCoverage::Complete,
+            warnings: Vec::new(),
+        };
+        let pass = |missing_suppressed: bool| TagReadPass {
+            tracks: Vec::new(),
+            failures: Vec::new(),
+            import_aborted: false,
+            missing_suppressed,
+        };
+
+        let named = missing_leg_for_pass(&pass(false), &children, &snapshot);
+        assert_eq!(
+            named.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["m-one-gone.mp3"],
+            "the leg names the vanished child and nothing else"
+        );
+        assert_eq!(
+            named
+                .iter()
+                .map(|m| m.album_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a-one-gone.mp3"],
+            "whose album_id is what Go's Touch set is built from (`:450-453`)"
+        );
+        assert_eq!(
+            missing_leg_for_pass(&pass(true), &children, &snapshot),
+            Vec::new(),
+            "Go's `:260` return precedes `:270`, so a quick-scan `Info()` failure marks nothing"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// Go's quick-scan filter failure arm (`:257-261`) executed end to end through the ingest: the
+    /// folder row IS persisted (Go returns `entry, nil`, so `persistChanges` still runs) with Go's
+    /// PER-FILE warning text, and its missing leg stays empty.
+    ///
+    /// **Why this is not driven through `scan_library`.** The arm is unreachable from either public
+    /// entry today: the SC-02 walker drops an entry whose `stat.modified` is absent before pushing
+    /// it into the snapshot (`walk.rs:1158-1169`), and the standalone capture aborts such an entry
+    /// with [`Phase1Error::EntryInfo`]. Deleting the `missing_suppressed` handling therefore leaves
+    /// every walk-driven test green — the arm is DEFENSIVE for the SC-07+ split, and the only
+    /// honest way to execute it is to hand `ingest_folder_snapshot` the snapshot shape the walker
+    /// refuses to produce, which is exactly its documented trusted-input contract (D-SC05-SLICE
+    /// item 4). This test pins the behavior; it does not claim the arm is live.
+    ///
+    /// Non-vacuity is the sibling folder in the same database: an identical layout whose entry DOES
+    /// carry an mtime skips the import as up-to-date but still reaches `:270`, so its vanished
+    /// child IS marked missing with a nonzero affected-row count.
+    #[test]
+    fn a_quick_scan_stat_failure_persists_the_folder_row_but_marks_nothing_missing() {
+        let (store, db) = temp_store("quick-scan-stat");
+        seed_library_row(&store);
+
+        // Two folders with the SAME layout; only the captured entry's lstat differs.
+        let folders = [
+            ("album/stat-failed", "failed"),
+            ("album/stat-available", "avail"),
+        ];
+        let folder_ids: Vec<String> = folders
+            .iter()
+            .map(|(folder, slug)| seed_folder_with_children(&store, folder, slug))
+            .collect();
+
+        let mapping =
+            nd_mapping::config::MappingContext::new(nd_mapping::config::MappingOptions::default());
+        let root = std::env::temp_dir();
+        let scan_stamp = chrono::DateTime::from_timestamp(1_751_000_000, 0).expect("scan stamp");
+        let job_for = |folder: &str| FolderJob {
+            library_id: 1,
+            library_root: root.as_os_str(),
+            folder_path: LogicalPath::parse(folder).expect("logical path"),
+            scan_stamp,
+            // Quick mode: the import-selection filter (`:252-262`) is consulted only when no full
+            // scan is in progress (`:253`), so a full-scan job can never take this arm.
+            full_scan_mode: false,
+            append_subtitle: DEFAULT_APPEND_SUBTITLE,
+            follow_symlinks: DEFAULT_FOLLOW_SYMLINKS,
+            ignore_dot_folders: DEFAULT_IGNORE_DOT_FOLDERS,
+            mapping: &mapping,
+            pid: PidOptions::default(),
+            prev_album_pid: None,
+            no_birth_time: false,
+        };
+
+        let mtime = entry_mtime();
+        let captured_for = |folder: &str, stat_failed: bool| {
+            let mut snapshot = FolderSnapshot {
+                library_id: 1,
+                path: LogicalPath::parse(folder).expect("folder"),
+                dir_stat: dir_stat(mtime),
+                mod_time: mtime,
+                images_updated_at: None,
+                num_sub_folders: 0,
+                entries: vec![audio_entry(folder, "known.mp3", mtime)],
+                coverage: FolderCoverage::Complete,
+                warnings: Vec::new(),
+            };
+            // The fingerprint of the listing AS A REAL WALK WOULD REPORT IT — a walk never
+            // fingerprints an entry with no mtime, because it drops that entry first. THEN the
+            // entry's own lstat is made unavailable, which is the sole difference between the two
+            // folders.
+            let hash = snapshot.hash().expect("fingerprint the listing");
+            if stat_failed {
+                snapshot
+                    .entries
+                    .first_mut()
+                    .expect("one audio entry")
+                    .stat
+                    .modified = Err(crate::storage::StatUnavailable);
+            }
+            CapturedFolder { snapshot, hash }
+        };
+        let token = CancelToken::new();
+
+        let failed = ingest_folder_snapshot(
+            &store,
+            &job_for("album/stat-failed"),
+            &captured_for("album/stat-failed", true),
+            &token,
+        )
+        .expect("Go returns entry, nil, so the ingest succeeds");
+        assert_eq!(
+            failed.tag_failures.len(),
+            1,
+            "one degradation, Go's sendWarning"
+        );
+        let failure = failed.tag_failures.first().expect("one failure");
+        assert_eq!(
+            failure.kind,
+            TagFailureKind::QuickScanStatFailed,
+            "the quick-scan filter's own arm, not the folder-level tag abort"
+        );
+        assert_eq!(
+            failure.path,
+            Some("album/stat-failed/known.mp3".to_string()),
+            "the file whose Info() failed stays attributable"
+        );
+        let source = crate::storage::StatUnavailable;
+        assert_eq!(
+            failure.message,
+            format!("Error getting file info for album/stat-failed/known.mp3: {source}"),
+            "Go's `:259` PER-FILE spelling: the folder plus `af.Name()`"
+        );
+        assert!(
+            !failure.message.contains("Error loading tags from files in"),
+            "`:277`'s folder-only text belongs to the other arm, got {}",
+            failure.message
+        );
+        assert_eq!(
+            failed.audio_count, 1,
+            "the file was listed, then not imported"
+        );
+        assert_eq!(failed.new_media_count, 0, "no track is imported");
+        assert!(failed.album_ids.is_empty(), "no album draft");
+        assert_eq!(failed.tag_count, 0, "no tag dictionary rows");
+        assert_eq!(
+            failed.committed.missing_rows_marked, 0,
+            "`:270` never ran, so MarkMissing affected nothing"
+        );
+        assert_eq!(
+            failed.committed.touched_album_ids.len(),
+            0,
+            "and the album Touch leg is skipped together with it"
+        );
+
+        // The folder row itself IS committed, carrying this scan's facts.
+        let failed_id = folder_ids.first().expect("stat-failed folder id");
+        assert_eq!(
+            scalar(
+                &store,
+                &format!("SELECT hash FROM folder WHERE id = '{failed_id}'")
+            ),
+            failed.hash,
+            "folder.hash carries the fingerprint the ingest computed, so the persist really ran"
+        );
+        assert_eq!(
+            scalar(
+                &store,
+                &format!("SELECT updated_at FROM folder WHERE id = '{failed_id}'")
+            ),
+            nd_db::time::to_text(&scan_stamp),
+            "folder.updated_at is the scan stamp, which is what `isOutdated` compares next time"
+        );
+        assert!(
+            !failed.committed.folder_inserted,
+            "its row already existed, so the Put took the UPDATE leg"
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM media_file WHERE missing = 1"),
+            0,
+            "no row anywhere is flagged missing"
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM album"),
+            0,
+            "no album row from the degraded folder"
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM artist"),
+            0,
+            "no artist row from it either"
+        );
+        assert_eq!(
+            count(&store, "SELECT COUNT(*) FROM media_file"),
+            4,
+            "the four seeded rows are all there is: nothing was inserted or deleted"
+        );
+
+        // Non-vacuity: the sibling differs ONLY in its entry having an mtime. It skips the import
+        // (`:261`) yet reaches `:270`, so the same kind of vanished child IS marked.
+        let sibling = ingest_folder_snapshot(
+            &store,
+            &job_for("album/stat-available"),
+            &captured_for("album/stat-available", false),
+            &token,
+        )
+        .expect("the sibling's ingest is a clean quick pass");
+        assert!(
+            sibling.tag_failures.is_empty(),
+            "no degradation on the sibling: {:?}",
+            sibling.tag_failures
+        );
+        assert_eq!(
+            sibling.committed.missing_rows_marked, 1,
+            "the same missing leg DOES mark the vanished child once `:270` is reached"
+        );
+        assert_eq!(
+            count(
+                &store,
+                "SELECT missing FROM media_file WHERE path = 'album/stat-available/gone.mp3'"
+            ),
+            1,
+            "the sibling's vanished child is flagged by the real repository write"
+        );
+        assert_eq!(
+            count(
+                &store,
+                "SELECT missing FROM media_file WHERE path = 'album/stat-failed/gone.mp3'"
+            ),
+            0,
+            "and the stat-failed folder's identical child is untouched"
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(&db);
+    }
+
+    /// L1: the scanner's storage policy is INJECTED, so the per-folder job the controller builds
+    /// for each walked folder carries the CALLER's values rather than Go's defaults. Hard-coding
+    /// `true` inside `folder_job` still passes the default case and fails the overridden one, which
+    /// is the drift this pins: a caller with `FollowSymlinks = false` must not have its folders
+    /// ingested under a link the walker refused to enter.
+    #[test]
+    fn folder_jobs_carry_the_injected_scanner_policy() {
+        let mapping =
+            nd_mapping::config::MappingContext::new(nd_mapping::config::MappingOptions::default());
+        let root = std::env::temp_dir();
+        let stamp = chrono::DateTime::from_timestamp(1_751_000_000, 0).expect("scan stamp");
+        let path = LogicalPath::parse("album/one").expect("logical path");
+
+        let scan = LibraryScan::quick(1, root.as_os_str().to_os_string(), stamp, stamp, &mapping);
+        assert!(
+            scan.follow_symlinks && scan.ignore_dot_folders,
+            "a quick scan starts from Go's configured defaults (`conf/configuration.go:1071-1072`)"
+        );
+        let job = scan.folder_job(&path);
+        assert!(job.follow_symlinks && job.ignore_dot_folders);
+
+        let mut scan = scan;
+        scan.follow_symlinks = false;
+        scan.ignore_dot_folders = false;
+        let job = scan.folder_job(&path);
+        assert!(
+            !job.follow_symlinks,
+            "a scan with following disabled must not hand its folders a job that follows links"
+        );
+        assert!(
+            !job.ignore_dot_folders,
+            "dot folders are the caller's policy too"
+        );
     }
 }
