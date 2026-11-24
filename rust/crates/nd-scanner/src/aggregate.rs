@@ -488,9 +488,14 @@ pub fn album_draft(
         catalog_num,
         mbz_album_id,
         // `a.MbzAlbumArtistID = m.MbzAlbumArtistID` / `a.MbzAlbumComment =
-        // m.MbzAlbumComment` (`:356-357`): the mapping never fills either field on a
-        // `MediaFile` (`model/metadata/*.go` has no assignment), so Go's zero is what
-        // phase 1 writes — carried per member, and every member carries Go's zero.
+        // m.MbzAlbumComment` (`:355-357`) are Go's LAST-WINS legs, but this aggregate's
+        // input is the mapping DTO (`nd_mapping::MediaFile`), which has no artist-id or
+        // comment field at all, and Go's mapping side never fills them either
+        // (`model/metadata/*.go` has no assignment; the only non-test writer is
+        // `plugins/host_matcher.go:125`). So Go's zero is what phase 1 writes here.
+        // NOT a general parity waiver: phase 3 aggregates hydrated rows, where
+        // `nd-db/src/hydrate.rs:2734,2736` supplies real values and Go propagates them —
+        // see `decisions.md` D-SC04-MBZ, which makes last-wins an SC-08 obligation.
         mbz_album_artist_id: String::new(),
         mbz_album_type,
         mbz_album_comment: String::new(),

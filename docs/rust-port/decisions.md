@@ -1022,3 +1022,29 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   changed, so the separately-approved model-owner lane for DTO *equality* is still required and
   still unopened. Verification: `nd-model` 57/0, rustdoc warnings unchanged at 3 (all pre-existing,
   in `criteria`/`fields`, none in the edited lines).
+
+- **D-SC04-MBZ — the mbz album last-wins gap is real but NOT SC-04's to fix; it is an SC-08
+  obligation (PARENT DECIDED 2026-11-25).** `aggregate.rs:494-496` hardcodes
+  `mbz_album_artist_id` and `mbz_album_comment` to empty, while Go's `ToAlbum` assigns them
+  **last-wins per member** (`model/mediafile.go:355,357`, executed in
+  `~/.paseo/docs/evidence/sc04/output-mbz-lastwins.txt`: two members -> the LAST member's
+  artist-id and comment). Neither field carries `hash:"ignore"` (`model/album.go:65-67`), so an
+  album rebuilt with hardcoded empties compares **unequal** to a Go-built one — a refresh that
+  Go performs could be skipped.
+  * **Why no SC-04 change:** `album_draft` takes `&[&nd_mapping::MediaFile]`, and the mapping DTO
+    has only five mbz fields — recording, release-track, album, release-group, **type**
+    (`nd-mapping/src/mdfile.rs`); there is no artist-id and no comment field, so implementing the
+    last-wins legs does not compile. Go's mapping side never fills them either
+    (`model/metadata/map_mediafile.go` has no assignment; the only non-test writer in the whole
+    repo is `plugins/host_matcher.go:125`). Phase 1 therefore produces Go's zero either way, and
+    the existing comment's claim is correct **for its input type**.
+  * **Where it bites:** phase 3 calls `ToAlbum` on **hydrated** rows
+    (`scanner/phase_3_refresh_albums.go:91`), and hydration does read both columns
+    (`nd-db/src/hydrate.rs:2734,2736`). So SC-08's phase-3 aggregate must carry last-wins for
+    these two fields (or feed `ToAlbum` a record that does), not reuse SC-04's hardcoded-empty
+    arm. Any pre-existing or plugin-written value would otherwise be silently erased from the
+    comparison.
+  * **Consequence:** SC-08's item 2/contract must cite `mediafile.go:355-357` and add a
+    non-vacuity test that seeds a hydrated media row with a non-empty `mbz_album_comment` and
+    requires the refreshed album to carry the last member's value. SC-04's comment now points at
+    this decision instead of implying the empty is Go's only possible value.
