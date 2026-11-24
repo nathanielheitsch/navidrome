@@ -940,3 +940,54 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   transition; the non-UTF-8 capture arm is executable only on Linux (macOS pins `EILSEQ`); `Phase1Error::Hash`/`Bridge` are
   pinned at the arm, not end-to-end; captured-fact folder-hash parity against a **Go-computed** hash is unpinned; the fatal
   listing class has no end-to-end test (`ENOTDIR` is deterministically reachable but maps to the warn class).
+
+## SC-04 landing decisions, brief erratum, and evidence handling (PARENT DECIDED 2026-11-25)
+
+- **D-SC04-RETIRE — `ProjectionError::MultiTrackGroup` is retired, and editing SC-05's files for
+  it is approved (PARENT DECIDED 2026-11-25, before implementation).** The brief flagged this as
+  needing parent approval because the variant is matched by landed SC-05 code
+  (`nd-scanner/src/phase1.rs` module docs, `tests/phase1_faults.rs` asserting a 2-track group
+  returns it). Approval granted as a **required consequence** of SC-04, not scope creep:
+  `phase1_faults.rs` now asserts that a 2-track folder **projects** one album row with summed
+  `size`/`duration`, and `ProjectionError`'s remaining variants keep their error kinds. The
+  brief's SC-04-unknown-1 is closed by this decision.
+- **D-SC04-DTO — aggregation output is `nd_db::album_repo::AlbumRecord`, not `nd_model::Album`
+  (PARENT DECIDED 2026-11-25).** Confirms D-SC04's scanner-local placement on the DTO question:
+  `AlbumRecord` is the only write-side DTO in this tree and every Go-hashed album field is
+  present on it (audit `aa397de6`; `album_repo.rs:512-660`, incl. `discs`, `folder_ids`,
+  `catalog_num`, all five `mbz_*`, sort/order names). `nd_model::Album` remains a scaffolded
+  skeleton with zero callers and ID-only `equals` — still an external `nd-model` defect
+  (`subplans/scanner.md:29`), not scanner debt.
+- **D-SC04-TIMEFACTS — album aggregation resolves per-member facts, and that was SC-04's own
+  obligation (PARENT DECIDED 2026-11-25, correcting the planner's scope reading).** The brief
+  filed the stat-keyed birth lookup as an SC-05 follow-up; audit `34c5a9df` established the real
+  defect is in SC-04's own contract: `album_draft_from_track` set `created_at: birth` /
+  `updated_at: stat.modified` from a **single** track and `album_drafts` only ever consulted
+  `group[0]`, while Go reduces over the group (`model/mediafile.go:389-390`, `older()` ignoring
+  zeros; Go's `model/mediafile_test.go:109` expects the oldest of `{08:30, 08:30, 07:30}`). A
+  per-album birth cannot express it. `album_drafts` therefore takes one
+  `facts_for: Fn(&MediaFile) -> Result<TrackFacts, AggregateError>` per **member**, path-keyed,
+  and the previous `unwrap_or_default()` miss-arm became `AggregateError::MissingTrackFacts`.
+  Severity note: `created_at` is excluded from the album UPDATE set (`album_repo.rs:1017`) and
+  propagated by `CopyAttributes` (`:1538-1611`), so a wrong first write is never repaired.
+- **D-SC04-ERRATUM — the brief's tag-order rule is withdrawn (PARENT RECORDED 2026-11-25).**
+  `subplans/SC-04-go-truth-brief.md` §D claimed "tags value reordering within a name → unequal".
+  Executed against the real `model` package: `Tags.Hash` collects `Tags.IDs()` and `slices.Sort`s
+  it (`model/tag.go:131-132`), so `{genre:[Rock,Pop]}` and `{genre:[Pop,Rock]}` hash identically
+  (`3b8f9c3160aa3f26`) and `MediaFile.Equals` returns **true**; duplicates
+  (`[Rock,Pop,Pop]`), drops, and cross-name splits still differ because the sort preserves
+  multiplicity. The port implemented the corrected rule. Anyone working from §D must use the §8
+  erratum. The brief's §D line is left in place as dated history with the correction appended as
+  §8, and all seven unknowns are dispositioned in §9.
+- **D-SC04-EVIDENCE — the SC-04 Go probes stay local evidence, not repo fixtures (PARENT
+  DECIDED 2026-11-25, following H4/H6).** Three `/tmp` harnesses produced the duration,
+  floor-divergence, and tag-order findings. They are captured under
+  `~/.paseo/docs/evidence/sc04/` (sources + captured output + a README with re-run
+  instructions, against navidrome `f5aa4cca`) so the claims stay re-runnable without trusting
+  prose. They are **not** added to the repository's `testdata`: a durable tracked Go oracle
+  requires the EVID-02 authorization (`subplans/README.md` "Oracle harness"), and SC-04 is not
+  the lane to grant it. Consequence: the two behaviors they proved are pinned by **Rust** tests
+  (`aggregate.rs::duration_accumulates_float32_not_f64`,
+  `widening_a_float32_sum_is_exact`, `compare.rs::tags_ids_are_sorted_so_within_name_order_is_irrelevant`)
+  with the Go citation inline, and remain **boolean** equivalence claims, not Go hash-byte
+  parity.

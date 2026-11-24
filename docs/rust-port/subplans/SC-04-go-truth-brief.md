@@ -362,7 +362,7 @@ Integration guards:
 - `go test ./scanner/ -ginkgo.focus="filterUnmodified"` → 3 PASS
 - `cargo test --locked -p nd-scanner --test projection_singleton --test mapping_bridge` → 4 PASS, 16 PASS
 
-## 8. ERRATUM (executed by the parent 2026-11-25, port already correct)
+## 8. ERRATUM (executed by the parent 2026-11-25, port already correct; `decisions.md` D-SC04-ERRATUM)
 
 §D's line "tags value **reordering within a name → unequal**" is **WRONG**. Re-executed
 against the real `model` package (`/tmp/sc04tag`, navidrome at `f5aa4cca`):
@@ -388,10 +388,10 @@ to match the executed verdict.
 
 | unknown | outcome | evidence |
 |---|---|---|
-| 1 `MultiTrackGroup` retirement | **DECIDED + DELIVERED** — parent approved editing SC-05's files; variant retired, `phase1_faults.rs` now asserts a 2-track folder **projects** | `c0b2952e`, `phase1_faults.rs` |
+| 1 `MultiTrackGroup` retirement | **DECIDED + DELIVERED** — parent approved editing SC-05's files (`decisions.md` D-SC04-RETIRE); variant retired, `phase1_faults.rs` now asserts a 2-track folder **projects** | `c0b2952e`, `phase1_faults.rs` |
 | 2 `AlbumRecord` field coverage | **CLOSED** — every Go-hashed album field is present, incl. `discs`, `folder_ids`, `catalog_num`, all five `mbz_*`, sort/order names; `description` present but correctly excluded (`hash:"ignore"`) | audit `aa397de6`, `album_repo.rs:512-660` |
 | 3 no `Tags::hash` port | **CLOSED by design** — comparator compares tag-ID **sequences**, no hash crate added; sequence rule is the sorted-ID form, see §8 | `compare.rs:272-295` |
 | 4 float32 vs f64 duration | **CLOSED with executed evidence** — accumulate `f32` in path order then widen; `{300.9999999,300.9999999,143.99999}` → 746 (f32) vs 745.9999898 (f64); 848/2,000,000 floor divergences | `/tmp/sc04dur`, `2b360d38` |
-| 5 birth-time keying | **CLOSED, and it was in SC-04's scope** — `album_drafts` takes per-member `TrackFacts`; `created_at` = oldest non-zero birth across members, `updated_at` = newest; the `unwrap_or_default()` miss-arm became `AggregateError::MissingTrackFacts` | audit `34c5a9df`, `album_drafts_resolves_times_per_member` |
+| 5 birth-time keying | **CLOSED, and it was in SC-04's scope** (`decisions.md` D-SC04-TIMEFACTS) — `album_drafts` takes per-member `TrackFacts`; `created_at` = oldest non-zero birth across members, `updated_at` = newest; the `unwrap_or_default()` miss-arm became `AggregateError::MissingTrackFacts` | audit `34c5a9df`, `album_drafts_resolves_times_per_member` |
 | 6 `Discs`/`FolderIDs` marshalling | **CLOSED** — nil≠empty survives both legs (TEXT `"null"` vs `"{}"`/`"[]"`); `rg_*` NULL vs `0.0` distinguishable | audit `aa397de6`, `runtime_album_writes.rs:1002,1017` |
 | 7 read-side genre for media comparison | **OPEN, scoped to SC-05/SC-06** — the hydrated read path exists (`row_to_mediafile` → `into_record`, `hydrate.rs:2832-2834` derives genre); what is missing is an executed test driving `media_equals` on DB-read rows, and a production caller. SC-04 ships the comparator + the documented input requirement | audit `3a540032` pending |

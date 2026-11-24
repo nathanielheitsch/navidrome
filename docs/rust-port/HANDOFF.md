@@ -137,8 +137,9 @@ targets (exit 0)**, and the lane's own rustdoc warnings are **zero**. Two review
 `ignore.rs:435`, which this lane never touched). **Done: the signed commit and durable receipt** (`decisions.md` D-SC05-INT step 4), the **fast-forward of `master` to this branch
 line** (D-SC05-MERGE), and the reword of the stale
 `SC.phase1-fixture` / `SC.mapping-bridge` / `BOOT.configured-library-caller` gate text in
-`nd-db/tests/runtime_scanner_persistence_contract.rs:584-658` with statuses left at U (D-SC05-GATEWORD). **SC-04 is launchable independently** (prereq SC-03 met;
-placement decided by `decisions.md` D-SC04); **SC-06 remains unauthorized** and must not be launched on
+`nd-db/tests/runtime_scanner_persistence_contract.rs:584-658` with statuses left at U (D-SC05-GATEWORD). **SC-04 is LANDED ON THIS BRANCH** at `c0b2952e`+`7c92e4cf`
+(prereq SC-03 met; placement per `decisions.md` D-SC04, landing decisions D-SC04-RETIRE/-DTO/-TIMEFACTS/-ERRATUM/-EVIDENCE;
+**not yet fast-forwarded into `master`** and awaiting its review verdict); **SC-06 remains unauthorized** and must not be launched on
 `decisions.md` D-SC05-SLICE.
 
 **Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state`, now at the

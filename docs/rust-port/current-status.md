@@ -91,7 +91,9 @@ NEW `tests/compare.rs` (1225 + parent additions, 13 tests); modified `lib.rs`
 delegates to `aggregate::album_draft`, `MultiTrackGroup` retired), `phase1.rs` (facts
 lookup), `tests/projection_singleton.rs`, `tests/phase1_faults.rs`.
 
-**Two parent decisions** (recorded before implementation, not re-litigated by the lane):
+**Two parent decisions** (recorded before implementation in `decisions.md` as **D-SC04-RETIRE**
+and **D-SC04-DTO**, plus **D-SC04-TIMEFACTS**, **D-SC04-ERRATUM** and **D-SC04-EVIDENCE** from
+the audit round; not re-litigated by the lane):
 (a) `ProjectionError::MultiTrackGroup` is **retired** — deleting it required edits into
 SC-05's files, which is an approved consequence; `phase1_faults.rs` now asserts a 2-track
 folder **projects** one album row with summed size/duration instead of refusing.
@@ -150,6 +152,12 @@ split still differ, because the sort preserves multiplicity. Re-executed against
 `model` package (`/tmp/sc04tag`, navidrome at `f5aa4cca`). `compare.rs` had already implemented
 the corrected rule (documented deviation 2 at `:98-99`); the brief now carries the correction
 as §8 and a resolution ledger for all seven unknowns as §9.
+
+**Go probes are local evidence only** (`decisions.md` D-SC04-EVIDENCE, following H4/H6): the
+duration, floor-divergence and tag-order harnesses plus their captured output live in
+`~/.paseo/docs/evidence/sc04/` with re-run instructions; they are deliberately NOT repo
+testdata, since a tracked Go oracle needs the EVID-02 authorization. The behaviors they proved
+are pinned by Rust tests instead.
 
 **Still open**: integration into `master` (parent-owned, needs a fresh reviewer); SC-05's
 remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does

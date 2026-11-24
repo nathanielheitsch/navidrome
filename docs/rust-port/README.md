@@ -108,5 +108,6 @@ scanner-local, `nd-model` untouched), **D-SC05-MANIFEST** (`nd-utils` runtime + 
 an explicit open item), plus the durable **SC-03 birth-time ruling** and **SC-05 acceptance status**. Earlier: **SC-01 ratified
 NARROW** (the five SC-05 seams plus the authorized `nd-scanner` `nd-db` manifest delta; progress sink, watcher, remote storage and
 `MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified) and **EXECUTED at `6d6938b1`**, so
-**SC-04** is the next launchable scanner package (prereq SC-03 is met) and **BOOT-01** the next launchable boot package; SC-06
-remains unauthorized.
+**SC-04 is LANDED on this branch** (`c0b2952e`+`7c92e4cf`, awaiting review and integration into `master`), so the next launchable
+scanner package is **SC-06 — still unauthorized**; **BOOT-01** is the next launchable boot package. Parent decision records
+2026-11-25 (`decisions.md`): **D-SC04-RETIRE**, **D-SC04-DTO**, **D-SC04-TIMEFACTS**, **D-SC04-ERRATUM**, **D-SC04-EVIDENCE**.
