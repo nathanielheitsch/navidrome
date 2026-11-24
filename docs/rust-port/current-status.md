@@ -170,6 +170,16 @@ edges). The audit's claimed fresh-DTO-vs-hydrated-row divergence was checked aga
 genre tag, per `Tags.ToGenres`) and **retained** where it is true (album: `GroupByFrequency`
 really sorts by frequency).
 
+**Review status:** the fresh reviewer `913351fa` ran ~2h and **errored on a provider 429
+(max connections) on retry 3 without emitting a verdict**, after compacting twice. Its working
+notes are dispositioned in `decisions.md` ("SC-04 review findings and dispositions"): one real
+parity gap (mbz last-wins, scoped to SC-08 as D-SC04-MBZ), one accepted-and-scoped reduction gap
+(album `Missing` constant predicate, SC-08), one unreachable documented divergence (NaN duration:
+Go hashes two NaNs as equal, Rust compares them unequal — unreachable because SQLite stores NaN as
+NULL and `get_f64` errors on NULL), one vacuous test assertion, plus performance notes requiring no
+action. Integration proceeded on parent-verified gates plus independent re-verification of every
+finding, and the areas the reviewer never reached are named there as the follow-up review scope.
+
 **Still open**: integration into `master` (parent-owned, needs a fresh reviewer); SC-05's
 remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does
 not close #17 or #14.**

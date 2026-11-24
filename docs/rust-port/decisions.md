@@ -1048,3 +1048,52 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
     non-vacuity test that seeds a hydrated media row with a non-empty `mbz_album_comment` and
     requires the refreshed album to carry the last member's value. SC-04's comment now points at
     this decision instead of implying the empty is Go's only possible value.
+
+## SC-04 review findings and dispositions (PARENT RECORDED 2026-11-25)
+
+Reviewer `913351fa` ran ~2h against an older HEAD, compacted twice, then **errored on a provider
+429 (max connections) on retry 3 without emitting a verdict**. Its working notes (228k output
+tokens, recovered from the session log) are dispositioned here rather than discarded; each item
+was re-checked by the parent against Go, not accepted on the reviewer's word.
+
+- **Accepted as parity debt, scoped to SC-08 — album `Missing` reduction.** Go sets
+  `a.Missing = true` (`model/mediafile.go:341`) then `a.Missing = a.Missing && m.Missing` (`:391`),
+  so an album is missing only when **every** member is. The port's reduction is faithful in shape
+  (`aggregate.rs:361,431`) but its predicate is constant: `track_is_missing(_track) -> false`
+  (`:847`), because `nd_mapping::MediaFile` has no `missing` field at all. So phase 1 always
+  produces `Missing = false`, which is Go's answer for a track read from disk (the missing flag is
+  only ever set by the missing-state pass, `scanner/phase_1_folders.go:446-456`). It is **not** a
+  phase-1 bug, but `AlbumRecord.missing` IS hashed by `album_equals` (`compare.rs:188`), so a
+  phase-3 aggregate fed hydrated rows must read the column instead of reusing the constant —
+  same class of gap as D-SC04-MBZ. SC-08 carries both.
+- **Accepted as a documented, unreachable divergence — NaN duration.** Executed: Go's
+  `Equals` on two `NaN` durations returns **true** (hashstructure hashes NaN as a value, so two
+  NaNs hash equal) while Rust's `floored_duration` yields NaN and `NaN == NaN` is **false**, so
+  the verdicts genuinely differ. Unreachable in practice: SQLite stores NaN as **NULL** (executed —
+  `insert into t values (0e0/0e0)` reads back `typeof(d) = null`), and `RowGet::get_f64` errors on
+  NULL rather than yielding NaN (`hydrate.rs:505-509`, Go's `convert.go:521-532` float arm), so a
+  hydrated row can never carry NaN; the mapping side produces `Duration::as_secs_f64()`
+  (`nd-tagreader/src/backend.rs:116`), which is finite. No change; recorded so a future
+  float-carrying path does not silently inherit it. `+Inf` is *not* NaN and does survive as a real
+  cell, so it is the value worth watching in a float path.
+- **Accepted as test-quality debt, Low — one vacuous assertion.**
+  `tests/aggregate.rs::sums_are_checked_instead_of_wrapping` asserts
+  `i32::try_from(i64::from(i32::MAX) + 1).is_err()`, which tests `std`, not the port; the size arm
+  of the same test does exercise `album_draft`. A 2^31-member group cannot be built in a test, so
+  the honest fix is to drop the std assertion and say why the song-count arm is structurally
+  untestable rather than leave a green assertion that proves nothing.
+- **Noted, no action — performance shapes.** `merge_credits`/`album_draft` clone ~9 strings per
+  member and the facts lookup is O(group × folder tracks). Both were already O(n²) before the
+  per-member facts change and folder sizes are small; no measurable regression.
+- **Confirmed correct by the reviewer and independently by the parent** — `album_equals` covers all
+  36 Go-hashed album fields; `AlbumLevelTags()` key sets match (11 == 11); tag-ID lowercasing
+  matches Go's `NewTag`/`tagID`; the hashstructure-vs-field-wise question is closed by executed
+  evidence (`~/.paseo/docs/evidence/sc04/output-hashstructure.txt`, see D-SC04-GENRE context).
+  Areas it did NOT get to before the error: ToAlbum in-place mutation, `minMax` arms,
+  `firstArtPath`, `fixAlbumArtist` arms, `GroupByFrequency` vectors, `Discs` nil-vs-{} and
+  `FolderIDs` nil-vs[] at the comparator level.
+
+Consequence: **SC-04 integration proceeds without a clean review verdict.** The parent-verified
+gates and the independently-re-checked findings above are the basis; the un-reviewed areas are
+listed as the scope of the follow-up review below, and none of them is a blocker discovered after
+the fact.
