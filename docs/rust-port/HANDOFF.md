@@ -145,7 +145,8 @@ same tip as `master` — docs-only commits above the integrated code boundary `3
 isolated worktree `~/.paseo/worktrees/0xo97qr3/boot00` on branch `boot00-manifest-pins-scaffold` (commit `6d6938b1`, BOOT-00 work
 already integrated) was **archived at the user's request on 2026-11-24** — `paseo workspace archive wks_929b07163c95a811`, which
 removed the worktree and archived its agent. Verified beforehand: 0 porcelain entries, 0 stashes, and the branch an ancestor of
-`master`; the branch is **kept** locally and on origin, so nothing was lost. After that removal `git worktree list` matches the
+`master`; the branch is **kept locally** (it was never pushed to `origin` — `git ls-remote --heads origin` shows no `boot00*`
+ref), so nothing was lost. After that removal `git worktree list` matches the
 on-disk directories exactly and `git worktree prune -n` reports nothing stale
 for navidrome and for every other registered repo; the only truly dangling artifact found earlier — an empty
 `~/.paseo/worktrees/29g9rl3m/` directory whose three `pi_agent_rust` workspaces were archived on 2026-11-11 — was removed after

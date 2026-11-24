@@ -880,7 +880,8 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   with 4 warnings, all pre-existing**. Cleanup with the user's approval: `paseo workspace archive wks_929b07163c95a811` archived the
   BOOT-00 workspace and Paseo removed its owned worktree `~/.paseo/worktrees/0xo97qr3/boot00` — verified beforehand to have 0
   porcelain entries, 0 stashes, and a branch that is an ancestor of `master`; the branch `boot00-manifest-pins-scaffold`
-  (`6d6938b1`) is **kept** locally and on origin, and `git worktree prune -n` reports nothing stale. The 19 finished children of
+  (`6d6938b1`) is **kept locally** — it was never pushed to `origin`, so `git ls-remote --heads origin` shows no `boot00*` ref — and
+  remains an ancestor of `master`; `git worktree prune -n` reports nothing stale. The 19 finished children of
   this issue were archived (soft-deleted; Pi session JSONL retained and re-importable via `paseo agent import`); detachment was
   left to the user. Not removed: any branch, any session data, or the `1h64owvv` worktree roots belonging to other projects'
   live workspaces.

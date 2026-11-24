@@ -183,7 +183,7 @@ absent on the final verified worktree/ref check (external cleanup during this re
 **Sibling worktree cleanup executed 2026-11-24 with the user's approval:** `~/.paseo/worktrees/0xo97qr3/boot00` on branch
 `boot00-manifest-pins-scaffold` (commit `6d6938b1`, BOOT-00 work already integrated into this branch line) was archived via
 `paseo workspace archive wks_929b07163c95a811`; Paseo removed the owned worktree and archived its agent, the branch is kept
-locally and on origin as an ancestor of `master`, and `git worktree prune -n` reports nothing stale.
+locally (never pushed to `origin`) as an ancestor of `master`, and `git worktree prune -n` reports nothing stale.
 
 **LANDED since that row, partial scopes:** **DB-11 `52b04064`** (executed typed scanner reads, the D-CURSOR cursor
 contract, `ScannerScope`/`UserScope`, `get_visible_media`; 21 executed tests; no production scanner caller, no
