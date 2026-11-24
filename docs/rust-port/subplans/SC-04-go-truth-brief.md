@@ -288,7 +288,7 @@ per track (stat-keyed birth lookup noted as weak at `:1637-1640`).
   `rg_gain_none_vs_zero_not_equal`.
 - `media_equals_ignored_included` tables;
   `genre_is_included_in_media_equality`;
-  `tags_hash_order_sensitive_but_id_case_insensitive`;
+  `tags_ids_are_sorted_so_within_name_order_is_irrelevant` (renamed after the §8 erratum);
   `participants_hash_ignores_names`;
   `empty_tags_vs_nil` (`Tags{} == nil`, `{"genre":[]} != nil`);
   `is_equivalent_basename_matrix`.
@@ -361,3 +361,37 @@ Integration guards:
 - `go test ./model/ -ginkgo.focus="GroupByFrequency|Hash"` → 12 PASS
 - `go test ./scanner/ -ginkgo.focus="filterUnmodified"` → 3 PASS
 - `cargo test --locked -p nd-scanner --test projection_singleton --test mapping_bridge` → 4 PASS, 16 PASS
+
+## 8. ERRATUM (executed by the parent 2026-11-25, port already correct)
+
+§D's line "tags value **reordering within a name → unequal**" is **WRONG**. Re-executed
+against the real `model` package (`/tmp/sc04tag`, navidrome at `f5aa4cca`):
+`Tags.Hash` (`model/tag.go:127-136`) collects `Tags.IDs()` and calls `slices.Sort(ids)`
+(`:131-132`) before hashing, so
+
+- `{genre:[Rock,Pop]}` vs `{genre:[Pop,Rock]}` → hashes `3b8f9c3160aa3f26` on **both**
+  sides → **EQUAL** (`MediaFile.Equals` → true).
+- `{genre:[Rock,Pop]}` vs `{GENRE:[pop,Rock]}` → **EQUAL** (IDs lowercase name *and* value).
+- `{genre:[Rock,Pop]}` vs `{genre:[Rock,Pop,Pop]}` → **UNEQUAL** (sorting preserves
+  multiplicity, so duplicates still change the sequence).
+- `{genre:[Rock,Pop]}` vs `{genre:[Rock], mood:[Pop]}` → **UNEQUAL**.
+- `Tags{}` → nil hash (contributes nothing); `{genre:[]}` → a **non-nil** hash, so
+  nil ≠ a present-but-empty name.
+
+`nd-scanner/src/compare.rs` already implements the corrected rule (deviation 2 documented
+at `:98-99`) and `tests/compare.rs` pins it as T1-T5. Anyone implementing from §D must use
+this erratum, not the original line. The Rustdoc test name
+`tags_hash_order_sensitive_but_id_case_insensitive` predates the correction and is renamed
+to match the executed verdict.
+
+## 9. RESOLUTION LEDGER (parent, 2026-11-25 — all seven closed or scoped)
+
+| unknown | outcome | evidence |
+|---|---|---|
+| 1 `MultiTrackGroup` retirement | **DECIDED + DELIVERED** — parent approved editing SC-05's files; variant retired, `phase1_faults.rs` now asserts a 2-track folder **projects** | `c0b2952e`, `phase1_faults.rs` |
+| 2 `AlbumRecord` field coverage | **CLOSED** — every Go-hashed album field is present, incl. `discs`, `folder_ids`, `catalog_num`, all five `mbz_*`, sort/order names; `description` present but correctly excluded (`hash:"ignore"`) | audit `aa397de6`, `album_repo.rs:512-660` |
+| 3 no `Tags::hash` port | **CLOSED by design** — comparator compares tag-ID **sequences**, no hash crate added; sequence rule is the sorted-ID form, see §8 | `compare.rs:272-295` |
+| 4 float32 vs f64 duration | **CLOSED with executed evidence** — accumulate `f32` in path order then widen; `{300.9999999,300.9999999,143.99999}` → 746 (f32) vs 745.9999898 (f64); 848/2,000,000 floor divergences | `/tmp/sc04dur`, `2b360d38` |
+| 5 birth-time keying | **CLOSED, and it was in SC-04's scope** — `album_drafts` takes per-member `TrackFacts`; `created_at` = oldest non-zero birth across members, `updated_at` = newest; the `unwrap_or_default()` miss-arm became `AggregateError::MissingTrackFacts` | audit `34c5a9df`, `album_drafts_resolves_times_per_member` |
+| 6 `Discs`/`FolderIDs` marshalling | **CLOSED** — nil≠empty survives both legs (TEXT `"null"` vs `"{}"`/`"[]"`); `rg_*` NULL vs `0.0` distinguishable | audit `aa397de6`, `runtime_album_writes.rs:1002,1017` |
+| 7 read-side genre for media comparison | **OPEN, scoped to SC-05/SC-06** — the hydrated read path exists (`row_to_mediafile` → `into_record`, `hydrate.rs:2832-2834` derives genre); what is missing is an executed test driving `media_equals` on DB-read rows, and a production caller. SC-04 ships the comparator + the documented input requirement | audit `3a540032` pending |

@@ -938,11 +938,14 @@ fn genre_is_included_in_media_equality() {
     );
 }
 
-/// `Tags.Hash` (`model/tag.go:127-136`): the ID sequence is sorted, so ordering is not
-// significant, IDs are lowercased in BOTH name and value, and the empty-vs-nil rule has
-/// three distinct outcomes. Executed `T1`-`T10`, `M14`, `M15`, `D5`.
+/// `Tags.Hash` (`model/tag.go:127-136`): the ID sequence is **sorted**, so within-name
+/// order is NOT significant, IDs are lowercased in BOTH name and value, duplicates are
+/// preserved by the sort so they DO change the sequence, and the empty-vs-nil rule has
+/// three distinct outcomes. Executed `T1`-`T10`, `M14`, `M15`, `D5`; the sorted-order
+/// verdict is re-executed in `/tmp/sc04tag` and supersedes the brief's §D reorder line
+/// (`SC-04-go-truth-brief.md` §7b erratum).
 #[test]
-fn tags_hash_order_sensitive_but_id_case_insensitive() {
+fn tags_ids_are_sorted_so_within_name_order_is_irrelevant() {
     let with = |tags: DbTags| {
         let mut m = media();
         m.tags = tags;
