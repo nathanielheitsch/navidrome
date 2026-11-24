@@ -806,6 +806,28 @@ fn fix_album_artist_both_arms() {
     assert_eq!(album.album_artist, "Album Artist");
     assert_eq!(album.album_artist_id, "aa-1");
 
+    // Arm 1d: AlbumArtist is EMPTY while AlbumArtistID is not. Go's guard is on the ID
+    // alone (`fixAlbumArtist` returns as soon as `a.AlbumArtistID != ""`,
+    // `model/mediafile.go:486-491`), so neither field is touched — the empty name is NOT
+    // backfilled from the artist role. Reviewer probe `f9788a02` arm 3; previously
+    // unasserted on either side.
+    let mut a1d = track("a.mp3");
+    a1d.album_artist = String::new();
+    a1d.album_artist_id = "aa-1".to_string();
+    a1d.compilation = false;
+    let mut credits = RoleCredits::default();
+    credits.add(ROLE_ARTIST, [credit("artist-1", "Track Artist")]);
+    a1d.participants = credits;
+    let album = aggregate(&[&a1d], &[("a.mp3", facts(1, None, None))]);
+    assert_eq!(
+        album.album_artist_id, "aa-1",
+        "a non-empty id takes Go's early return"
+    );
+    assert_eq!(
+        album.album_artist, "",
+        "the empty name is NOT backfilled once the id is non-empty"
+    );
+
     // Arm 2: compilation with two distinct album-artist ids → Various Artists (executed
     // `{X1,X2} → "Various Artists"`).
     let mut c = track("a.mp3");
@@ -831,6 +853,31 @@ fn fix_album_artist_both_arms() {
     assert_eq!(
         album.album_artist, "X",
         "one distinct id is not Various Artists"
+    );
+    assert_eq!(album.album_artist_id, "X1");
+
+    // Arm 2c: the SAME id under two different sub-roles is still ONE distinct id.
+    // Go counts `slice.Unique(map(Participants[RoleAlbumArtist], p.ID))`
+    // (`model/mediafile.go:493-496`), so sub-roles do not add artists; `Merge`'s
+    // `ID + SubRole` dedup (`model/participants.go:135-147`) keeps both entries, which is
+    // exactly why the count must come from the IDs and not the entries. Reviewer probe
+    // `f9788a02` arm 6; previously unasserted.
+    let mut d2c = track("a.mp3");
+    d2c.album_artist = "X".to_string();
+    d2c.album_artist_id = "X1".to_string();
+    d2c.compilation = true;
+    // `add` deliberately blanks sub_role (Go's `Participants.Add`,
+    // `model/participants.go:100-102`), so the sub-role must come through
+    // `add_with_sub_role` (`:105-110`) or the two credits collapse into one entry and the
+    // assertion below proves nothing.
+    let mut credits = RoleCredits::default();
+    credits.add(ROLE_ALBUM_ARTIST, [credit("X1", "X")]);
+    credits.add_with_sub_role(ROLE_ALBUM_ARTIST, "feat", [credit("X1", "X")]);
+    d2c.participants = credits;
+    let album = aggregate(&[&d2c], &[("a.mp3", facts(1, None, None))]);
+    assert_eq!(
+        album.album_artist, "X",
+        "two entries sharing one id are not Various Artists"
     );
     assert_eq!(album.album_artist_id, "X1");
 }

@@ -774,6 +774,13 @@ pub fn flatten_all(tags: &nd_mapping::mdfile::Tags) -> Vec<(String, String)> {
 ///
 /// Executed: `{Punk}` + `{Rock}` + `{Alternative, Rock}` → `[Rock, Punk, Alternative]`;
 /// `{synthwave}` + `{Synthwave}` → `[Synthwave]`; a same-track duplicate collapses.
+///
+/// Input contract: the names in `flat` must ALREADY be lowercased. Go keys its `Tags` map
+/// by `NewTag(...).TagName`, which lowercases at construction (`model/tag.go:59-65`), while
+/// `DbTags` is keyed by the name as given — so a caller passing a verbatim `("Genre", …)`
+/// would produce a key Go never produces, and the emitted name is what reaches the album's
+/// `tags` column and the `tag_ids` comparison (`compare.rs:288-299`), where a case
+/// difference is a real inequality. [`flatten_all`] is the producer that satisfies this.
 #[must_use]
 pub fn group_by_frequency(flat: &[(String, String)]) -> DbTags {
     // `grouped[name][id] = frequency`, plus the first-seen index and the last display

@@ -1125,3 +1125,54 @@ the fact.
     re-verified against Go by the parent and dispositioned; the areas it never reached are
     re-queued as a fresh scoped review rather than treated as approved. Integration is therefore
     reversible from `f5aa4cca` if that review finds a blocker.
+
+## SC-04 follow-up review verdict (PARENT RECORDED 2026-11-25)
+
+Scoped reviewer `f9788a02` (fresh, read-only, workspace `wks_f8d2b72072a890ce`) reviewed HEAD
+`7f062efd` on exactly the four areas the earlier reviewer never reached, and **delivered a
+verdict: APPROVE / APPROVE / APPROVE / APPROVE-WITH-FINDINGS, no Critical/High/Medium.** SC-04's
+integration at `7f062efd` is therefore reviewed, not merely parent-verified.
+
+- **Area 1 `sort_by_path_copy` — APPROVE.** Port sorts a copy (`aggregate.rs:558-563`) where Go
+  sorts the receiver (`mediafile.go:327`); no caller depends on Go's in-place mutation. Verified
+  against all three Go `ToAlbum` call sites (`phase_1_folders.go:329-335`,
+  `phase_3_refresh_albums.go:78-91`, `core/maintenance.go:231-238`) and both port callers
+  (`projection.rs:361-380`, `phase1.rs:1629-1657`) — nothing reads the refs positionally.
+- **Area 2 `min_max_year` / `all_or_nothing` — APPROVE.** Executed 9 year vectors and 8
+  `allOrNothing` vectors against Go; identical. The empty-slice arm differs in kind (Go panics on
+  `items[0]`, port returns `(0,0)`) but is unreachable, since `ToAlbum` returns early on an empty
+  group (`mediafile.go:321-323`). The dropped count is what Go itself discards (`_ =` at
+  `mediafile.go:397,398,399,402`).
+- **Area 3 `fix_album_artist` — APPROVE.** All 11 arms identical to Go.
+- **Area 4 `group_by_frequency` / `album_tags` — APPROVE-WITH-FINDINGS.** 7 vectors identical;
+  tie order is a total order so Rust's stable sort cannot disagree with Go's unstable `SortFunc`;
+  album-level name set pinned at 11 == 11 against an independent YAML parse.
+
+Fixes selected from its Low findings (applied by the parent, each mutation-verified):
+- **Two missing `fix_album_artist` arms pinned** (`tests/aggregate.rs::fix_album_artist_both_arms`):
+  arm 1d — `AlbumArtist` empty while `AlbumArtistID` is not, where Go's guard is on the ID alone
+  (`mediafile.go:486-491`) so the empty name is *not* backfilled; arm 2c — the same ID under two
+  sub-roles is still one distinct artist, because Go counts `slice.Unique(IDs)`
+  (`mediafile.go:493-496`) while `add`'s dedup key is `ID+SubRole` (`participants.go:135-147`).
+  Mutation-checked: guarding on the name instead of the ID fails 1d; counting entries instead of
+  distinct IDs fails 2c. **Correction to the reviewer's own draft**: its arm-6 vector is vacuous
+  as written, because `RoleCredits::add` blanks `sub_role` (Go `Participants.Add`,
+  `participants.go:100-102`); the credits must go through `add_with_sub_role` (`:105-110`) or the
+  two entries collapse and the assertion proves nothing. Applied that way.
+- **`group_by_frequency` input contract documented** (`aggregate.rs:778`): names must already be
+  lowercased, because Go keys `Tags` by `NewTag(...).TagName` (`tag.go:59-65`) while `DbTags` is
+  keyed by the given name — and the emitted name reaches the album `tags` column and the
+  `tag_ids` comparison, where case is a real inequality.
+- **One finding REJECTED as wrong**: the reviewer reported the `all_or_nothing` doc citing
+  `mediafile.go:412-421` as off by one; Go's `allOrNothing` does span 412-421 (the closing brace),
+  so the citation is correct and unchanged.
+- **Not applied:** a Go-generated golden for the `album: true` name set. The reviewer's own note
+  explains why it cannot be built in a scratch binary (`conf.AddHook` never runs, so runtime
+  `AlbumLevelTags()` returns empty, `tag_mappings.go:385-397`) — a durable oracle has to live
+  inside Navidrome, which is the EVID-02 authorization gate, not SC-04's to open. Carried to the
+  evidence lane.
+
+Parent re-measured after the fixes: fmt clean · clippy `--workspace --all-targets --all-features
+-D warnings` clean · nd-scanner 264/0 · workspace 2484/0 · rustdoc baselines unchanged (nd-db 21,
+nd-model 3, nd-scanner 4). Test totals are unchanged because both new arms are assertions inside
+an existing test — which is exactly why they were mutation-checked rather than counted.

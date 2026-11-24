@@ -170,8 +170,13 @@ edges). The audit's claimed fresh-DTO-vs-hydrated-row divergence was checked aga
 genre tag, per `Tags.ToGenres`) and **retained** where it is true (album: `GroupByFrequency`
 really sorts by frequency).
 
-**Review status:** the fresh reviewer `913351fa` ran ~2h and **errored on a provider 429
-(max connections) on retry 3 without emitting a verdict**, after compacting twice. Its working
+**Review status:** the first reviewer `913351fa` ran ~2h and **errored on a provider 429
+(max connections) on retry 3 without emitting a verdict**, after compacting twice. A scoped
+follow-up reviewer `f9788a02` then covered the four areas it never reached and **returned APPROVE
+on all four with no Critical/High/Medium** (`decisions.md` "SC-04 follow-up review verdict"); its
+two Low coverage gaps are pinned and mutation-checked (`fix_album_artist` arms 1d and 2c), its
+`group_by_frequency` lowercasing contract is documented, and one Low finding was rejected as
+incorrect. Its working
 notes are dispositioned in `decisions.md` ("SC-04 review findings and dispositions"): one real
 parity gap (mbz last-wins, scoped to SC-08 as D-SC04-MBZ), one accepted-and-scoped reduction gap
 (album `Missing` constant predicate, SC-08), one unreachable documented divergence (NaN duration:
