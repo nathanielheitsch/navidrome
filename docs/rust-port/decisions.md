@@ -816,12 +816,12 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   outdated/empty-skip policy, image-changes collector, missing-folder finalizer — D-SC05-SLICE), and `phase1::scan_folder` has
   **no production caller** (only the test harness `tests/common/mod.rs:533`; `nd-cli/src/main.rs:36` is an empty `fn main()`), so
   mainline still performs no production scan — that is SC-06 scope and stays unauthorized. The DB-21 U-ledger
-  entries `SC.mapping-bridge` and `SC.phase1-fixture` therefore stay **U even after the merge**: `SC.mapping-bridge`'s text also pins the distinct
-  MediaFile DTO storage-field gate, and `SC.phase1-fixture` keeps one true clause — "has no scanner entrypoint" — even though its
-  SC-01-ratification and manifest-delta clauses are now satisfied. Its gate **wording** is now stale — it still claims `nd-scanner` declares no `nd-db` dependency and that the
-  manifest delta is missing, both false since SC-03 `cb59a973` and `5c463aa1` — and rewording that DB-21-owned test is a
-  separate DB micro-lane, not SC-05 scope.
-  Executed ledger of record: `nd-db/tests/runtime_scanner_persistence_contract.rs:583-601` (asserted Unmet by test).
+  entries `SC.mapping-bridge` and `SC.phase1-fixture` stay **U even after the merge**, but for the reasons now recorded in
+  D-SC05-GATEWORD: `SC.mapping-bridge` is open on SC-04 multi-track aggregation plus production-caller evidence (NOT on the
+  MediaFile DTO storage-field clause, which SC-03/SC-05 satisfy via `TrackStat` → `MediaFileRecord`), and `SC.phase1-fixture`
+  stays open on the missing production scanner entrypoint and D-SC05-SLICE's items — its SC-01-ratification, manifest-delta and
+  "no tag-to-DB ingest" clauses were satisfied and are no longer asserted as owed.
+  Executed ledger of record: `nd-db/tests/runtime_scanner_persistence_contract.rs:584-666` (asserted Unmet by test).
 
 - **D-SC05-PATH — the raw path identity is what must reach the DB; UTF-8 name text is an SC-02 encoding boundary, not a
   semantic precondition of this ingest (PARENT DECIDED 2026-11-23).** What must survive to the database is the folder's
@@ -885,6 +885,37 @@ Commit/branch IDs are pinned boundaries, not claims that a later diff behaves th
   this issue were archived (soft-deleted; Pi session JSONL retained and re-importable via `paseo agent import`); detachment was
   left to the user. Not removed: any branch, any session data, or the `1h64owvv` worktree roots belonging to other projects'
   live workspaces.
+
+- **D-SC05-GATEWORD — DB-21 U-ledger gate wording reworded, statuses unchanged (PARENT EXECUTED 2026-11-24, following an
+  independent read-only audit).** The five `ConsumerHandoff` entries in
+  `nd-db/tests/runtime_scanner_persistence_contract.rs` asserted clauses that had become false, so the ledger read as if its gates
+  were met while every status stayed `Unmet`. Audit verdict per entry, each verified against source rather than docs:
+  `SC.mapping-bridge` **STALE** — SC-01 was ratified NARROW (this file's "SC-01 seams ratification", 2026-11-21) and the bridge is
+  delivered (`nd-scanner/src/mapping_bridge.rs:344 bridge_media_file`, called from `phase1.rs:1189`); storage facts are supplied
+  (`mapping_bridge.rs:216 TrackStat` → `MediaFileRecord` `size`/`birth_time`/`updated_at` at `:463-466`, cross-checked by
+  `checked_storage_size`), so "storage fields absent until SC supplies them" no longer describes the lane; the DTO keeps those
+  fields `Option` by design (`nd-mapping/src/mdfile.rs:134-139`).
+  `SC.phase1-fixture` **PARTIALLY STALE** — "nd-scanner declares no nd-db dependency" is false (`nd-scanner/Cargo.toml:33 nd-db`,
+  `:45 nd-utils`, `:51` dev `nd-dbschema`) and "no tag-to-DB ingest" is false (`visit_media_in_folder` `phase1.rs:568`,
+  `persist_folder_delta` `:1681`, `tests/phase1_fixture.rs`); "has no scanner entrypoint" stays TRUE only read as *no production*
+  entrypoint (`scan_folder` `phase1.rs:1740` reached solely from `tests/common/mod.rs:533`).
+  `BOOT.configured-library-caller` **PARTIALLY STALE** — it called BOOT-01 "BLOCKED on" BOOT-00/EXT-DB-CONNECTION/EXT-DB-LIBRARY,
+  all now met (`6d6938b1`, D-OPEN `4a8aac9f`, DB-05 `60be7534`), and cited stale ranges (`boot-api.md:151-167` is BOOT-00's LANDED
+  block; BOOT-01 is `:185-193`, BOOT-00's header is `:147`); its core claim about the empty `main` remains true.
+  `production_full_finalize_db_contract` and `db_internal_contract` **ACCURATE**.
+  **What changed:** `pending_gate` prose only, plus two assertion bodies that had themselves become stale —
+  `:4226-4232` previously required the fixture entry to contain "nd-scanner manifest delta adding an nd-db", i.e. it pinned a
+  *satisfied* clause, so it now asserts "production scanner entrypoint" + "D-SC05-SLICE"; a new assertion requires the
+  mapping-bridge entry to name `SC-04`. Status/id/order/count assertions (`:4164-4195`) were left untouched, so **the ledger still
+  asserts all five Unmet** and nothing about acceptance moved. `BOOT-01`'s `nd-cli/src/{bootstrap.rs,state.rs}` +
+  `nd-cli/tests/bootstrap.rs` are now labeled PROPOSED, since none exist.
+  **Safety:** `CONSUMER_HANDOFF` has no consumer outside this file (repo-wide grep for `CONSUMER_HANDOFF|ConsumerHandoff|pending_gate`
+  returns zero other hits), and the only text-reading assertions are the three in this test.
+  **Gates measured by the parent after the edit:** `-p nd-db --test runtime_scanner_persistence_contract` 7/7 pass, `-p nd-db`
+  **1079 / 0 / 0 across 50 targets**, `cargo fmt --all -- --check` exit 0,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings` exit 0, `git diff --check` clean, and
+  `cargo test --workspace --locked` exit 0 = **2444 / 0 / 1 across 129 targets** — byte-identical to the `342afd12` baseline, which
+  is what a wording-only change must produce.
 - **D-SC05-REVIEW — dispositions of the second SC-05 review, incl. the rustdoc baseline ruling (PARENT DECIDED 2026-11-23).
   Reviewer `c5ead1e6-92fa-4b18-b271-14d7bfce283a`, read-only, same issue workspace; verdict APPROVE-WITH-FIXES, no High
   findings.** Accepted and fixed in the tree: (a) the `listing_failure_warning` doc cited Go ranges that do not support the

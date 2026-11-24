@@ -585,31 +585,52 @@ pub const CONSUMER_HANDOFF: [ConsumerHandoff; 5] = [
     ConsumerHandoff {
         id: "SC.mapping-bridge",
         status: ConsumerAcceptance::Unmet,
-        pending_gate: "SC-01 ratification: the nd-mapping bridge is not ratified, and the \
-                       distinct MediaFile DTO (map_mediafile.rs:24, mdfile.rs:37,131-165) still \
-                       has storage fields absent until SC supplies them",
+        pending_gate: "SC-04 aggregation + production-caller evidence: SC-01 seam 5 is \
+                       ratified NARROW (decisions.md, PARENT DECIDED 2026-11-21) and the \
+                       bridge is DELIVERED at cb59a973 (nd-scanner/src/mapping_bridge.rs:344 \
+                       bridge_media_file, called from the ingest path at phase1.rs:1189). \
+                       Storage facts are supplied now via TrackStat (mapping_bridge.rs:216) \
+                       into MediaFileRecord size/birth_time/updated_at at :463-466 and \
+                       cross-checked by checked_storage_size, so the earlier 'storage fields \
+                       absent until SC supplies them' clause no longer describes this lane; \
+                       the nd-mapping DTO keeps those fields Option by design \
+                       (nd-mapping/src/mdfile.rs:134-139). Still owed here: Go ToAlbum \
+                       multi-track aggregation (projection.rs:77 refuses any group > 1 track \
+                       with ProjectionError::MultiTrackGroup, SC-04, decisions.md D-SC04) \
+                       plus production-caller evidence, which this DB-side file is not.",
         owner: "SC (mapping bridge)",
     },
     ConsumerHandoff {
         id: "SC.phase1-fixture",
         status: ConsumerAcceptance::Unmet,
-        pending_gate: "SC-01 ratification + an nd-scanner manifest delta adding an nd-db \
-                       dependency (manifest authority is SC-01's; nd-scanner declares no nd-db \
-                       dependency, has no scanner entrypoint and no tag-to-DB ingest)",
+        pending_gate: "SC-05 as a production consumer. Already satisfied, so no longer \
+                       owed: SC-01 is ratified NARROW and the nd-scanner manifest delta \
+                       adding an nd-db dependency is landed (nd-scanner/Cargo.toml:33 nd-db, \
+                       :45 nd-utils, :51 dev nd-dbschema; cb59a973, 5c463aa1), and tag-to-DB \
+                       ingest exists and is executed (scanner_queries::visit_media_in_folder \
+                       at phase1.rs:568, scanner_writes::persist_folder_delta at :1681, \
+                       tests/phase1_fixture.rs). Still owed: a production scanner entrypoint \
+                       (pub fn scan_folder at phase1.rs:1740 is reached only from \
+                       tests/common/mod.rs:533; nd-cli/src/main.rs:36 is an empty main), and \
+                       SC-05's open acceptance items - multi-track aggregation (SC-04), \
+                       outdated/empty-skip policy, image-changes collector, missing-folder \
+                       finalizer (decisions.md D-SC05-SLICE).",
         owner: "SC (phase-1 fixture + manifest)",
     },
     ConsumerHandoff {
         id: "BOOT.configured-library-caller",
         status: ConsumerAcceptance::Unmet,
-        pending_gate: "BOOT-01 is the IMPLEMENTING package (boot-api.md:151-167, \
-                       `nd-cli/src/{bootstrap.rs,state.rs}` + `nd-cli/tests/bootstrap.rs`: \
-                       'Fresh DB, configured library, secrets and transactional setup'), which \
-                       itself is BLOCKED on its prerequisites BOOT-00 (approve \
-                       construction/dependency/launch deltas — boot-api.md:127, DECISION \
-                       REQUIRED), EXT-DB-CONNECTION and EXT-DB-LIBRARY. BOOT-00 approves \
+        pending_gate: "BOOT-01 is the IMPLEMENTING package (subplans/boot-api.md:185-193; \
+                       PROPOSED files that do not exist yet: `nd-cli/src/bootstrap.rs`, \
+                       `nd-cli/src/state.rs` and `nd-cli/tests/bootstrap.rs` - 'Fresh DB, \
+                       configured library, secrets and transactional setup'). Its \
+                       prerequisites are MET rather than blocking: BOOT-00 LANDED 6d6938b1 \
+                       (boot-api.md:147), EXT-DB-CONNECTION by D-OPEN 4a8aac9f, and \
+                       EXT-DB-LIBRARY's DB half by DB-05 60be7534. BOOT-00 approves \
                        construction/dependency deltas only; it is NOT delivered caller \
-                       evidence. Today nd-cli `main.rs` is an empty main, so no boot path \
-                       creates the configured library through the DB-05 typed put.",
+                       evidence. Today nd-cli `main.rs` is an empty main (:36) with no \
+                       bootstrap module and no tests/, so no boot path creates the \
+                       configured library through the DB-05 typed put.",
         owner: "BOOT",
     },
     ConsumerHandoff {
@@ -617,16 +638,21 @@ pub const CONSUMER_HANDOFF: [ConsumerHandoff; 5] = [
         status: ConsumerAcceptance::Unmet,
         pending_gate: "DB-16..DB-20 landed + SC.full-phase-contract + \
                        SC.playlist-import-contract (the FULL-SCANNER-DB exit, explicitly out of \
-                       this P1-DB package)",
+                       this P1-DB package): DB-16 7d022a02 and DB-17 b3dee0a6 are landed, \
+                       DB-18/19/20 outstanding (DB-18 is gated on D-STATS, which still has no \
+                       canonical decisions.md record).",
         owner: "DB spine (DB-16..DB-20), then DB-21(FULL-SCANNER-DB)",
     },
     ConsumerHandoff {
         id: "db_internal_contract",
         status: ConsumerAcceptance::Unmet,
         pending_gate: "not a consumer gate: scanner_writes::persist_folder_delta_in_tx is \
-                       pub(crate) by D-BATCH and CANNOT be compile-pinned from an integration \
-                       test; pinning it needs a crate-internal test or a recorded D-BATCH \
-                       widening when SC-05 consumes it",
+                       pub(crate) by D-BATCH (scanner_writes.rs:669) and CANNOT be \
+                       compile-pinned from an integration test; pinning it needs a \
+                       crate-internal test or a recorded D-BATCH widening. SC-05 consumes the \
+                       public wrapper persist_folder_delta (scanner_writes.rs:627, reached at \
+                       nd-scanner/src/phase1.rs:1681), not the in-tx fn, and no widening is \
+                       recorded.",
         owner: "DB (D-BATCH widening / SC-05 consumer)",
     },
 ];
@@ -4197,12 +4223,27 @@ fn consumer_handoff_ledger_is_all_unmet() {
         .iter()
         .find(|e| e.id == "SC.phase1-fixture")
         .expect("SC fixture entry present");
+    // Reworded 2026-11-24: SC-01 is ratified NARROW and the nd-scanner manifest delta adding
+    // an nd-db dependency is LANDED (cb59a973, 5c463aa1), so pinning that clause as still owed
+    // asserted a satisfied gate. The entry must instead name what is genuinely open.
     assert!(
         fixture
             .pending_gate
-            .contains("nd-scanner manifest delta adding an nd-db"),
+            .contains("production scanner entrypoint")
+            && fixture.pending_gate.contains("D-SC05-SLICE"),
         "{}",
         fixture.pending_gate
+    );
+    // The mapping-bridge entry must name its implementing package (SC-04), not the
+    // ratification/DTO clauses it no longer depends on.
+    assert!(
+        CONSUMER_HANDOFF
+            .iter()
+            .find(|e| e.id == "SC.mapping-bridge")
+            .expect("SC mapping-bridge entry present")
+            .pending_gate
+            .contains("SC-04"),
+        "mapping-bridge entry must name SC-04 as the open gate"
     );
     let full = CONSUMER_HANDOFF
         .iter()

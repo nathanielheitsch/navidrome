@@ -134,9 +134,10 @@ unreachable `unwrap_or_else` fallback. `nd-scanner` is now **224/0 across 12 tar
 targets (exit 0)**, and the lane's own rustdoc warnings are **zero**. Two review suggestions were **declined** with reasons in
 `decisions.md` D-SC05-REVIEW: the 4 pre-existing rustdoc `-D warnings` failures (they fail identically at integrated
 `cb59a973`, so they are a baseline gate, not SC-05 scope) and the latent `to_string_lossy` ancestor split (it lives in
-`ignore.rs:435`, which this lane never touched). **Done: the signed commit and durable receipt** (`decisions.md` D-SC05-INT step 4).
-**Still open: whether to fast-forward `master` to this branch**, and a DB-owned micro-lane to reword the stale
-`SC.phase1-fixture` gate text in `nd-db/tests/runtime_scanner_persistence_contract.rs:596-598`. **SC-04 is launchable independently** (prereq SC-03 met;
+`ignore.rs:435`, which this lane never touched). **Done: the signed commit and durable receipt** (`decisions.md` D-SC05-INT step 4), the **fast-forward of `master` to this branch
+line** (D-SC05-MERGE), and the reword of the stale
+`SC.phase1-fixture` / `SC.mapping-bridge` / `BOOT.configured-library-caller` gate text in
+`nd-db/tests/runtime_scanner_persistence_contract.rs:584-658` with statuses left at U (D-SC05-GATEWORD). **SC-04 is launchable independently** (prereq SC-03 met;
 placement decided by `decisions.md` D-SC04); **SC-06 remains unauthorized** and must not be launched on
 `decisions.md` D-SC05-SLICE.
 
