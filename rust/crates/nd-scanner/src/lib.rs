@@ -21,6 +21,9 @@
 //! - [`aggregate`] — SC-04's pure `MediaFiles.ToAlbum` loop over an album group: path-
 //!   sorted aggregation of duration/size/discs/tags/participants/artwork/times, with no
 //!   I/O and no database access.
+//! - [`compare`] — SC-04's semantic equality: which fields of an album or media record
+//!   Go's `Equals` actually considers. Boolean equivalence on the used field domain, not
+//!   Go hash bytes.
 //!
 //! ## Explicitly not here
 //!
@@ -41,6 +44,9 @@ pub mod contract;
 // SC-04: pure multi-track album aggregation (Go `MediaFiles.ToAlbum`) and the semantic
 // equality the refresh phases need. No I/O, no DB writes.
 pub mod aggregate;
+// SC-04: semantic equality (Go `Album.Equals`, `MediaFile.Hash/Equals/IsEquivalent`) —
+// pure structural comparison, no hash crate, no I/O.
+pub mod compare;
 pub mod folder;
 pub mod ignore;
 // SC-03: the tag→record bridge and the singleton folder projection.
