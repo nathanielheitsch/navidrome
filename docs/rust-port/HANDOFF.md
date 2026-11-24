@@ -140,8 +140,8 @@ targets (exit 0)**, and the lane's own rustdoc warnings are **zero**. Two review
 placement decided by `decisions.md` D-SC04); **SC-06 remains unauthorized** and must not be launched on
 `decisions.md` D-SC05-SLICE.
 
-**Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state` at
-`342afd12`), the
+**Worktree note:** besides this worktree (`wizardly-elephant`, branch `resuscitate-dead-agent-capture-worktree-state`, now at the
+same tip as `master` — docs-only commits above the integrated code boundary `342afd12`), the
 isolated worktree `~/.paseo/worktrees/0xo97qr3/boot00` on branch `boot00-manifest-pins-scaffold` (commit `6d6938b1`, BOOT-00 work
 already integrated) was **archived at the user's request on 2026-11-24** — `paseo workspace archive wks_929b07163c95a811`, which
 removed the worktree and archived its agent. Verified beforehand: 0 porcelain entries, 0 stashes, and the branch an ancestor of

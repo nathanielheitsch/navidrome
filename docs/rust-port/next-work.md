@@ -105,8 +105,9 @@ the SC-01/BOOT-00 docs record `f3bb81b2`, DB-11 `52b04064` and DB-15 runtime `96
 `master` code HEAD `e3e0770a`), **DB-10, the DB-12 executed subset, DB-22, the SC-02 partial, SC-03, DB-11, DB-15's runtime half,
 DB-14, DB-21(P1-DB), DB-16, DB-17 and BOOT-00 are LANDED**. **SC-05 is LANDED AND INTEGRATED — `5c463aa1`, fast-forwarded into
 `master` at `342afd12` and pushed** — see the row below.
-Verified `git worktree list` and branch refs 2026-11-24: `master` and this worktree are both at **`342afd12`** (`master`
-fast-forwarded from `2b3fa921`, old tip recoverable there), `origin/master` pushed and in sync, and
+Verified `git worktree list` and branch refs 2026-11-24: `master` and this worktree share the same tip (**`6a3f0af7`**; the
+integrated SC-05 code boundary is `342afd12`, the commits above it are docs-only), `master` fast-forwarded from `2b3fa921` with
+the old tip recoverable there, `origin/master` pushed and in sync, and
 `resuscitate-dead-agent-capture-worktree-state` is now identical to `master` (0 ahead / 0 behind) — a spent branch whose deletion
 is the user's call, since nothing on it is unique. The former DB-10/DB-12 and `rust-sc02-local-walker`
 worktrees/branches are absent (parent-controlled merges, then cleanup). **Sibling cleanup executed 2026-11-24:**
