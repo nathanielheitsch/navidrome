@@ -136,11 +136,20 @@ report):
 **Parent gates EXECUTED in this worktree** (branch
 `resuscitate-dead-agent-capture-worktree-state`): `cargo fmt --all -- --check` clean ·
 `cargo clippy --locked -p nd-scanner --all-targets --all-features -- -D warnings` clean ·
-`cargo test --locked -p nd-scanner` **261 / 0 across 13 targets** (lib 35, `aggregate` 18,
+`cargo test --locked -p nd-scanner` **263 / 0 across 13 targets** (lib 35, `aggregate` 20,
 `compare` 13, `mapping_bridge` 16 **unchanged**, `projection_singleton` 4, `phase1_faults` 15,
 `phase1_fixture` 19, `phase1_slice` 12, `walk_policy` 45, `folder_hash` 17, `local_storage` 34,
-`ignore_policy` 24, `storage_seam` 9) · `cargo test --locked --workspace` **2481 / 0** ·
+`ignore_policy` 24, `storage_seam` 9) · `cargo test --locked --workspace` **2483 / 0** ·
 `cargo doc --locked --no-deps` baselines unchanged (`nd-db` 21, `nd-scanner` 4).
+
+**Brief erratum, corrected (`6a0ad575`):** the brief's §D line "tags value reordering within a
+name → unequal" is **wrong**. `Tags.Hash` collects `Tags.IDs()` and `slices.Sort`s it
+(`model/tag.go:131-132`), so `{genre:[Rock,Pop]}` and `{genre:[Pop,Rock]}` produce identical
+hashes and `MediaFile.Equals` returns **true**; duplicates (`[Rock,Pop,Pop]`) and a cross-name
+split still differ, because the sort preserves multiplicity. Re-executed against the real
+`model` package (`/tmp/sc04tag`, navidrome at `f5aa4cca`). `compare.rs` had already implemented
+the corrected rule (documented deviation 2 at `:98-99`); the brief now carries the correction
+as §8 and a resolution ledger for all seven unknowns as §9.
 
 **Still open**: integration into `master` (parent-owned, needs a fresh reviewer); SC-05's
 remaining acceptance items; production scanner entrypoint (SC-06, unauthorized). **SC-04 does
