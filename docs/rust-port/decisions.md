@@ -1176,3 +1176,51 @@ Parent re-measured after the fixes: fmt clean · clippy `--workspace --all-targe
 -D warnings` clean · nd-scanner 264/0 · workspace 2484/0 · rustdoc baselines unchanged (nd-db 21,
 nd-model 3, nd-scanner 4). Test totals are unchanged because both new arms are assertions inside
 an existing test — which is exactly why they were mutation-checked rather than counted.
+
+## SC-06 launch decisions (PARENT DECIDED 2026-11-25, user-authorized launch)
+
+Based on the SC-06 scout `c79e804f` memo (`~/.paseo/docs/sc06-scout-memo.md`), whose load-bearing
+claims the parent re-verified in source (`persist_folder_delta_in_tx` is `pub(crate)` at
+`scanner_writes.rs:669`; `tag_and_bridge` at `phase1.rs:1128` imports every `Audio` entry with no
+`mtime > updated_at` / `missing` arms; `LibraryRepo::get` is `pub` at `library_repo.rs:1481`).
+
+- **D-SC06-SLICE — SC-06 is authorized as a NARROW, non-destructive slice, not its exit.** In
+  scope: multi-folder postorder traversal over the existing walker, change detection
+  (`get_folder_update_info` + hash/empty), Go's import-selection arms (`phase_1_folders.go:247-262`),
+  re-import of known tracks through `albumIDMap` transitions, per-folder persist unchanged, and
+  per-folder missing-marking + `Touch` inside the same folder tx (`:446-456`). Deferred: the
+  global `finalize` unvisited->missing pass, image-changes collector, `EnqueueIfMissing`
+  full-scan arm, selective-target scoping + `markFailed`, PID-rescan->full, progress sink,
+  `ScanBegin`/`ScanEnd`, multi-library orchestration, phases 2/3/4 and GC. Deliverable label:
+  **phase-1 multi-folder import slice**. It does not close #17 and does not satisfy
+  `SC.phase1-fixture` / `SC.full-phase-contract` — those stay **U**, not partial, because the
+  destructive finalizer and artwork legs are what the gates name.
+- **D-SC06-FINALIZE — inaccessible-vs-deleted stays DEFERRED, deliberately.** Chosen option (d)
+  from the scout: no finalizer in this slice, so the policy question is not answered implicitly.
+  Rationale: Go marks an unreadable subtree missing (`walk_dir_tree.go:153,300-312` -> stays in
+  `job.lastUpdates` -> `phase_1_folders.go:534-541`), which is destructive behavior on an
+  operator-visible I/O failure; pinning it now would make Rust's typed
+  `DirectoryUnreadable`/`DirectoryEnumerationFailed` warnings (`contract.rs:405-477`) cosmetic
+  while silently deleting rows. The gate stays open and must be decided before any
+  destructive-finalization claim.
+- **D-SC06-TX — the multi-folder finalize tx seam stays CLOSED for now.** `persist_folder_delta_in_tx`
+  remains `pub(crate)` per D-BATCH; no `nd-db` edit is authorized in this slice. If the slice
+  needs a Go-shaped global tx it must stop and report rather than widen the seam.
+- **D-SC06-GC — `D-GC` is confirmed NOT phase-1-blocking.** Go's purge is phase-2 finalize
+  (`phase_2_missing_tracks.go:340-357`), global and admin-only
+  (`persistence/mediafile_repository.go:433-440`); `album_repo.rs:1453` keeps the global predicate
+  on purpose. Mark-missing is not delete, so this slice takes no GC position.
+- **D-SC06-TIEORDER — deterministic tie order is NOT an SC-06 gate.** It is a SC-07 obligation
+  (Go `ORDER BY pid` alone does not total-order equal candidates); no SC-06 test asserts a tie.
+  Adjacent determinism is already settled (tag dedupe `BTreeMap`, participant multisets,
+  tag-frequency total order).
+- **B5 WITHDRAWN — no seam ratification needed.** `LibraryRepo::get` (`library_repo.rs:1481`) is
+  already `pub` and `LibraryRecord` carries `last_scan_at`, `last_scan_started_at`,
+  `full_scan_in_progress`, `pid_album`/`pid_track`, `scanned_pid_album`/`scanned_pid_track`
+  (`:152-186`). The scout's uncertainty came from grepping for accessor *functions*; these are
+  public fields. The slice takes scan mode as injected parameters AND may read the library row
+  through the existing public `get`.
+- **Gate-wording pass authorized (parent's own act, not the writer's).** `scanner.md:310` requires
+  SC-05's outstanding items reviewed-and-fixed; that is code-satisfied since `eaff4c11`/`12b25637`,
+  but `runtime_scanner_persistence_contract.rs:612-618` still lists them as owed and asserts the
+  strings at `:4225-4243`. Rewording must stay paired with those assertions (D-SC05-GATEWORD).

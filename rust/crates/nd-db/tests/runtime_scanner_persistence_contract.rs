@@ -613,9 +613,10 @@ pub const CONSUMER_HANDOFF: [ConsumerHandoff; 5] = [
                        tests/phase1_fixture.rs). Still owed: a production scanner entrypoint \
                        (pub fn scan_folder at phase1.rs:1740 is reached only from \
                        tests/common/mod.rs:533; nd-cli/src/main.rs:36 is an empty main), and \
-                       SC-05's open acceptance items - multi-track aggregation (SC-04), \
-                       outdated/empty-skip policy, image-changes collector, missing-folder \
-                       finalizer (decisions.md D-SC05-SLICE).",
+                       SC-06's open phase-1 items - outdated/empty-skip policy, image-changes \
+                       collector, missing-folder finalizer (decisions.md D-SC05-SLICE, \
+                       D-SC06-SLICE). Multi-track aggregation is NOT owed: SC-04 landed \
+                       at c0b2952e+7c92e4cf and is integrated on master (D-SC04-MERGE).",
         owner: "SC (phase-1 fixture + manifest)",
     },
     ConsumerHandoff {
