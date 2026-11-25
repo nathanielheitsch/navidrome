@@ -44,10 +44,16 @@
 //! only) with a re-validated typed budget, plus a shared cloneable
 //! `TranscodeLimiter`. No cleanup timer, request, ffmpeg process, listener or
 //! scanner.
+//!
+//! The BOOT-01 composition slice adds [`service_ready`]: `prepare` runs the shared
+//! pre-write validation, one `initialize`, then builds the shared `StreamState`
+//! and `AuthState` (committing signing secrets move only into the authenticator),
+//! returning `ServiceReady` with non-secret metadata. No listener or scanner.
 
 pub mod bootstrap;
 pub mod database;
 pub mod preflight;
+pub mod service_ready;
 pub mod signing_keys;
 pub mod startup;
 pub mod state;

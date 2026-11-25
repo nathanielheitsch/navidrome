@@ -164,13 +164,16 @@ impl StreamState {
         global_limit: i64,
         user_limit: i64,
     ) -> Result<Self, StreamStateError> {
-        // --- Pre-checks: no side effect may happen before these pass. ---
+        // The cache dir must already be absolute (startup anchored it). The cap
+        // and budget policy lives in `validate_config`, the single source of truth
+        // composition also runs before any write.
         if !cache_dir.is_absolute() {
             return Err(StreamStateError::RelativeCacheDir);
         }
-        let global_limit = checked_cap(global_limit)?;
-        let user_limit = checked_cap(user_limit)?;
-        let cache_size_bytes = checked_budget(budget)?;
+        let validated = validate_config(budget, global_limit, user_limit)?;
+        let cache_size_bytes = validated.cache_size_bytes;
+        let global_limit = validated.global_limit;
+        let user_limit = validated.user_limit;
 
         // The root is the existing constant joined to the resolved cache dir; the
         // raw spelling is what TranscodeCache's own parser expects.
@@ -210,6 +213,33 @@ impl StreamState {
     pub fn shares_cache(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.cache, &other.cache)
     }
+}
+
+/// The result of the shared stream-config validation, so `StreamState::new` and
+/// `service_ready::prepare` apply the identical policy from one place.
+pub(crate) struct ValidatedStreamConfig {
+    pub(crate) cache_size_bytes: u64,
+    pub(crate) global_limit: i32,
+    pub(crate) user_limit: i32,
+}
+
+/// Validate the typed budget and the two concurrency caps, with no side effect.
+///
+/// This is the *single* expression of the pre-write stream policy: both
+/// [`StreamState::new`] and the composition in `service_ready::prepare` call it,
+/// so there is no duplicated rule and no public testing-only hook. Returns the
+/// converted values so callers construct from the same checked numbers they
+/// validated.
+pub(crate) fn validate_config(
+    budget: &ByteSizeField,
+    global_limit: i64,
+    user_limit: i64,
+) -> Result<ValidatedStreamConfig, StreamStateError> {
+    Ok(ValidatedStreamConfig {
+        cache_size_bytes: checked_budget(budget)?,
+        global_limit: checked_cap(global_limit)?,
+        user_limit: checked_cap(user_limit)?,
+    })
 }
 
 /// Checked conversion of a launch cap into the limiter's `i32` width.
