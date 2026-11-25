@@ -891,6 +891,7 @@ dependencies = [
  "nd-conf",
  "nd-db",
  "nd-dbschema",
+ "nd-ffmpeg",
  "nd-id",
  "nd-stream",
  "rand",

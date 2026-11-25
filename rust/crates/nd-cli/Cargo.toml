@@ -61,6 +61,10 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 # interval) and the shareable `TranscodeLimiter`. An existing workspace crate, so
 # Cargo.lock gains only the nd-cli -> nd-stream edge, no new package.
 nd-stream = { path = "../nd-stream" }
+# BOOT-01 B2 CLI integration: inject the loaded FFmpegPath into the nd-ffmpeg
+# resolver before filesystem setup. An existing workspace crate (nd-stream already
+# depends on it), so Cargo.lock gains only the nd-cli -> nd-ffmpeg edge.
+nd-ffmpeg = { path = "../nd-ffmpeg" }
 
 [dev-dependencies]
 tempfile = "^3"
