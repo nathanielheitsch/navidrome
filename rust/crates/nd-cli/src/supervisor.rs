@@ -70,6 +70,16 @@ pub enum ServeError {
     /// Shutdown did not complete within the deadline, or the accept task was
     /// never joined. Reported as nonzero/incomplete.
     IncompleteShutdown(String),
+    /// A signal handler could not be installed, so no stop source exists. The
+    /// run is refused **before** any bind or filesystem write. tokio's own text
+    /// names only a signal number, so no configuration value or secret crosses
+    /// this boundary.
+    SignalSource {
+        /// The signal the port tried to register (`"SIGTERM"`, …).
+        name: &'static str,
+        /// Why registration failed.
+        reason: String,
+    },
 }
 
 /// A configured capability that this stage refuses to run.
@@ -105,6 +115,10 @@ impl fmt::Display for ServeError {
             ServeError::IncompleteShutdown(reason) => {
                 write!(f, "shutdown incomplete: {reason}")
             }
+            ServeError::SignalSource { name, reason } => write!(
+                f,
+                "could not install a handler for {name}: {reason}; refusing to start,                  because a process that cannot observe a stop signal cannot report a                  graceful shutdown"
+            ),
         }
     }
 }
@@ -327,6 +341,142 @@ impl fmt::Debug for ServeEnv<'_> {
     }
 }
 
+/// The termination signals this port listens for — exactly Go's `mainContext`
+/// set (`cmd/root.go:114-121`). SIGQUIT and SIGPIPE are deliberately **not**
+/// included, because Go does not register them; matching that set is fidelity,
+/// not an omission.
+///
+/// `SIGABRT` has no `SignalKind::abort()` in tokio, so its raw signum comes from
+/// `libc` (already locked via tokio's unix dependency).
+#[cfg(unix)]
+pub const SIGNAL_KINDS: [(&str, tokio::signal::unix::SignalKind); 4] = [
+    ("SIGINT", tokio::signal::unix::SignalKind::interrupt()),
+    ("SIGHUP", tokio::signal::unix::SignalKind::hangup()),
+    ("SIGTERM", tokio::signal::unix::SignalKind::terminate()),
+    (
+        "SIGABRT",
+        tokio::signal::unix::SignalKind::from_raw(libc::SIGABRT),
+    ),
+];
+
+/// The registered signal sources. Held as a struct rather than a `Vec` so the
+/// wait selects over all of them without a `futures` dependency, and so
+/// "registration completed" is a type: this value exists only if every handler in
+/// [`SIGNAL_KINDS`] was installed.
+///
+/// Non-unix platforms get an empty type, because there is no set to register;
+/// [`register_signal_sources`] reports the missing source instead.
+#[cfg(unix)]
+pub struct UnixSignalSources {
+    /// Registered `SIGINT` source.
+    pub interrupt: tokio::signal::unix::Signal,
+    /// Registered `SIGHUP` source.
+    pub hangup: tokio::signal::unix::Signal,
+    /// Registered `SIGTERM` source.
+    pub terminate: tokio::signal::unix::Signal,
+    /// Registered `SIGABRT` source.
+    pub abort: tokio::signal::unix::Signal,
+}
+
+#[cfg(not(unix))]
+pub struct UnixSignalSources;
+
+/// Register a handler for one signal, synchronously.
+///
+/// Registration is not a promise: `tokio::signal::unix::signal` calls
+/// `signal_enable` (`tokio-1.54.1/src/signal/unix.rs:266-289`), which runs
+/// `signal_hook_registry::register` before returning. A handler is therefore
+/// installed by the time this returns `Ok` — no polling and no spawned task is
+/// involved, which is why calling it is itself the evidence of registration.
+///
+/// # Errors
+/// [`ServeError::SignalSource`] if the runtime refuses the signal (tokio rejects
+/// forbidden numbers such as `SIGKILL`).
+#[cfg(unix)]
+pub fn register_one(
+    name: &'static str,
+    kind: tokio::signal::unix::SignalKind,
+) -> Result<tokio::signal::unix::Signal, ServeError> {
+    tokio::signal::unix::signal(kind).map_err(|err| ServeError::SignalSource {
+        name,
+        reason: err.to_string(),
+    })
+}
+
+/// Install every handler in [`SIGNAL_KINDS`], synchronously and in order.
+///
+/// [`run`] calls this **before** preflight, bootstrap, bind, and readiness — the
+/// same position Go's `signal.NotifyContext` occupies (`cmd/root.go:60-61`,
+/// which precedes `ExecuteContext`, where cobra then loads configuration in
+/// `preRun`). A stop signal arriving during bootstrap is therefore observed
+/// rather than missed, and a registration failure ends the run before anything
+/// is written or bound.
+///
+/// # Errors
+/// [`ServeError::SignalSource`] naming the first signal that could not be
+/// registered.
+#[cfg(unix)]
+pub fn register_signal_sources() -> Result<UnixSignalSources, ServeError> {
+    let mut interrupt = None;
+    let mut hangup = None;
+    let mut terminate = None;
+    let mut abort = None;
+    for (name, kind) in SIGNAL_KINDS {
+        let signal = register_one(name, kind)?;
+        match name {
+            "SIGINT" => interrupt = Some(signal),
+            "SIGHUP" => hangup = Some(signal),
+            "SIGTERM" => terminate = Some(signal),
+            "SIGABRT" => abort = Some(signal),
+            other => unreachable!("SIGNAL_KINDS contains an unknown name {other}"),
+        }
+    }
+    Ok(UnixSignalSources {
+        interrupt: interrupt.expect("SIGINT registered"),
+        hangup: hangup.expect("SIGHUP registered"),
+        terminate: terminate.expect("SIGTERM registered"),
+        abort: abort.expect("SIGABRT registered"),
+    })
+}
+
+/// No unix signal set exists on this platform, so there is no stop source. The
+/// run is refused before preflight and bind rather than serving unsignalled and
+/// later claiming a graceful shutdown.
+#[cfg(not(unix))]
+pub fn register_signal_sources() -> Result<UnixSignalSources, ServeError> {
+    Err(ServeError::SignalSource {
+        name: "SIGTERM",
+        reason: "this platform has no unix signal set to register".to_string(),
+    })
+}
+
+/// Wait for any registered source to deliver a stop, as [`StopReason::Signalled`].
+///
+/// `Signal::recv` is documented cancel-safe (`tokio-1.54.1/src/signal/unix.rs:422-426`):
+/// a delivery that arrives while a different branch is being polled is not
+/// consumed, so a stop issued during bootstrap, the bind, or the readiness
+/// emission is still observed here and terminates the run. Nothing else polls
+/// these streams, so no delivery can be consumed and then dropped.
+#[cfg(unix)]
+pub async fn wait_for_registered_signals(mut sources: UnixSignalSources) -> StopReason {
+    tokio::select! {
+        got = sources.interrupt.recv() => got.map(|_| StopReason::Signalled),
+        got = sources.hangup.recv() => got.map(|_| StopReason::Signalled),
+        got = sources.terminate.recv() => got.map(|_| StopReason::Signalled),
+        got = sources.abort.recv() => got.map(|_| StopReason::Signalled),
+    }
+    .unwrap_or(StopReason::NoSignalSource)
+}
+
+/// No registered sources exist on this platform, so no stop can ever be observed.
+/// Kept for symmetry with [`register_signal_sources`]: if it is ever reached, it
+/// reports a missing source, which the supervisor turns into a nonzero outcome
+/// rather than a claimed graceful shutdown.
+#[cfg(not(unix))]
+pub async fn wait_for_registered_signals(_: UnixSignalSources) -> StopReason {
+    StopReason::NoSignalSource
+}
+
 /// Resolution stages that must pass **before** any filesystem write: the
 /// scanner capability gate and the flag overrides (revalidated through the same
 /// `validate_boot_values` the preflight uses).
@@ -452,7 +602,8 @@ pub async fn serve_with(mut env: ServeEnv<'_>) -> ServeOutcome {
         inactive: InactiveServices::for_bootstrap_stage(),
     };
 
-    // 6. Serve until an external stop is requested, then stop and join.
+    // 5. Start the accept loop on the bound socket, then serve until a stop is
+    //    requested.
     let shutdown = nd_http::Shutdown::new();
     // The injected router is a placeholder until API-02 supplies the real API
     // router. It carries Go's `http.NotFound` wire as its fallback
@@ -476,20 +627,15 @@ pub async fn serve_with(mut env: ServeEnv<'_>) -> ServeOutcome {
             });
         }
     };
-    // The readiness claim is the socket the accept loop actually holds. If the
-    // address ever disagreed with the socket we bound, reporting it would name a
-    // port nothing is listening on, so it is checked and refused rather than
-    // assumed — and refused as a bind failure (exit 1), not a panic.
-    if running.local_addr() != local_addr {
-        return ServeOutcome::Failed(ServeError::Bind {
-            reason: "accept loop reports a different socket than the one bound".to_string(),
-        });
-    }
-
-    // 5. Readiness is announced only after the accept loop is running on the
+    // 6. Readiness is announced only after the accept loop is running on the
     // socket we bound (`subplans/boot-api.md:249`): banner to stdout, the ready
     // line and the inactive-service list to stderr. Nothing here names a secret,
     // a DSN, a music root, or a credential-bearing address.
+    //
+    // `Running::local_addr` is the address stored from the same `BoundListener`
+    // this loop took (`nd-http/src/server.rs:164-189`), so it cannot disagree
+    // with `local_addr`; an equality guard here would be unreachable code that
+    // implies an uncertainty the type does not have.
     if env.emit_diagnostics {
         if !env.options.no_banner {
             print!("{}", crate::args::banner_text());
@@ -551,20 +697,26 @@ pub async fn serve_with(mut env: ServeEnv<'_>) -> ServeOutcome {
     }
 }
 
-/// The process-level entry used by `main`: preflight → resolution gate →
-/// bootstrap → bind → ready line → serve until SIGINT/SIGTERM.
+/// The process-level entry used by `main`.
 ///
-/// Signal selection follows Go's `mainContext` (`cmd/root.go:114-121`), which
-/// listens for `SIGINT`, `SIGHUP`, `SIGTERM`, and `SIGABRT`; `SIGQUIT` and
-/// `SIGPIPE` are **deliberately excluded** — Go does not listen for them, so
-/// matching that set is fidelity rather than an accident.
-///
-/// On platforms with no unix signals this returns
-/// [`ServeError::IncompleteShutdown`] rather than pretending to handle them.
+/// Order: **register the termination signal sources first**, then preflight →
+/// resolution gate → bootstrap → bind → ready line → serve until a registered
+/// signal arrives → bounded stop-and-join. Registration is synchronous, so it
+/// is complete before any of that work starts (Go does the same:
+/// `signal.NotifyContext` at `cmd/root.go:60` precedes configuration loading in
+/// `preRun`). A registration failure returns before preflight, so nothing is
+/// written and no socket is bound.
 ///
 /// Always returns the outcome; the caller maps it to an exit code with
 /// [`ServeOutcome::exit_code`] and prints [`ServeOutcome::failure_reason`].
 pub async fn run(options: &ServeOptions, real_env: bool) -> ServeOutcome {
+    // Eager, synchronous registration. The constructed streams are moved into
+    // the awaited future below, so the handlers outlive every stage of startup.
+    let sources = match register_signal_sources() {
+        Ok(sources) => sources,
+        Err(err) => return ServeOutcome::Failed(err),
+    };
+
     let env = ServeEnv {
         env: if real_env {
             Some(Box::new(|key| std::env::var(key).ok()))
@@ -575,81 +727,9 @@ pub async fn run(options: &ServeOptions, real_env: bool) -> ServeOutcome {
         effective_uid: None,
         allow_zero_port: false,
         graceful_deadline: None,
-        stop_signal: Some(Box::pin(wait_for_process_signal())),
+        stop_signal: Some(Box::pin(wait_for_registered_signals(sources))),
         emit_diagnostics: true,
         options,
     };
     serve_with(env).await
-}
-
-/// Wait for a process termination signal, forwarding it as
-/// [`StopReason::Signalled`].
-///
-/// The listened set is Go's `mainContext` set — SIGINT, SIGHUP, SIGTERM,
-/// SIGABRT (`cmd/root.go:114-121`). SIGQUIT and SIGPIPE are deliberately **not**
-/// listened for, because Go does not register them; matching that set is
-/// fidelity, not an omission.
-///
-/// Returns [`StopReason::NoSignalSource`] when no handler could be installed, so
-/// the caller reports nonzero instead of exiting as though it had been signalled.
-///
-/// Forwarder tasks are owned by the channel: when this future returns its sender
-/// is dropped, every forwarder's `send` fails, and they exit — no task outlives
-/// the run.
-#[cfg(unix)]
-pub async fn wait_for_process_signal() -> StopReason {
-    let kinds: [(&'static str, tokio::signal::unix::SignalKind); 4] = [
-        ("SIGINT", tokio::signal::unix::SignalKind::interrupt()),
-        ("SIGHUP", tokio::signal::unix::SignalKind::hangup()),
-        ("SIGTERM", tokio::signal::unix::SignalKind::terminate()),
-        // tokio exposes no `SignalKind::abort()`, so the raw signum is used —
-        // still the same signal Go registers (`cmd/root.go:120`).
-        (
-            "SIGABRT",
-            tokio::signal::unix::SignalKind::from_raw(raw_abort()),
-        ),
-    ];
-
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<&'static str>(4);
-    let mut installed = 0usize;
-    for (name, kind) in kinds {
-        match tokio::signal::unix::signal(kind) {
-            Ok(mut signal) => {
-                installed += 1;
-                let tx = tx.clone();
-                tokio::spawn(async move {
-                    while signal.recv().await.is_some() {
-                        if tx.send(name).await.is_err() {
-                            // Receiver gone: the run is over.
-                            return;
-                        }
-                    }
-                });
-            }
-            Err(err) => eprintln!("could not install handler for {name}: {err}"),
-        }
-    }
-    // Drop our own sender so `recv` returns None once every forwarder is gone.
-    drop(tx);
-
-    if installed == 0 {
-        return StopReason::NoSignalSource;
-    }
-    match rx.recv().await {
-        Some(_name) => StopReason::Signalled,
-        None => StopReason::NoSignalSource,
-    }
-}
-
-/// `SIGABRT` for the current platform, from `libc` (already locked via tokio).
-#[cfg(unix)]
-fn raw_abort() -> std::os::raw::c_int {
-    libc::SIGABRT
-}
-
-/// Non-unix platforms have no Go signal set to port; report the missing source
-/// rather than serving unsignalled forever and claiming a graceful exit.
-#[cfg(not(unix))]
-pub async fn wait_for_process_signal() -> StopReason {
-    StopReason::NoSignalSource
 }

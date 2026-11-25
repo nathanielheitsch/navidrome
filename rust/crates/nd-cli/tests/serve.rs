@@ -403,6 +403,35 @@ fn subprocess_serves_ping_then_exits_zero_on_sigterm_and_releases_the_port() {
     assert_port_free(addr);
 }
 
+/// Terminate **immediately** after the readiness line, with no request in
+/// between. Signal handlers are registered before startup work begins, so a stop
+/// issued at the first instant of readiness must still produce a joined drain and
+/// release the port — not a hang, and not an exit that pretends to be graceful.
+#[test]
+fn terminate_immediately_after_ready_line_drains_cleanly() {
+    let sandbox = Sandbox::new("stop-at-ready");
+    let config = sandbox.file("serve.toml", &serve_toml(&sandbox));
+    let mut child = spawn(&config, &["--port", "0"]);
+    let tap = StderrTap::new(child.take_stderr());
+
+    // The readiness line is the synchronization point: nothing is requested and
+    // nothing is slept — the stop is sent the moment the socket is reported.
+    let addr = wait_ready(&tap);
+    let code = child.terminate_and_reap(Signal::TERM);
+    tap.join();
+
+    assert_eq!(
+        code, 0,
+        "a stop at the first moment of readiness still drains"
+    );
+    assert_port_free(addr);
+    // The run was real: bootstrap completed, so the data directory exists.
+    assert!(
+        sandbox.join("data").exists(),
+        "bootstrap ran before readiness"
+    );
+}
+
 /// `SIGINT` is in the listened set (`cmd/root.go:114-121`) and drains the same way.
 #[test]
 fn sigint_also_drains_gracefully() {
