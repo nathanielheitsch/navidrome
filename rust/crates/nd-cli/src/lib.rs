@@ -19,8 +19,15 @@
 //! already-open, already-migrated `nd_db::store::SQLStore`. No process boot: no
 //! config load, no directory creation, no database open or migration, no
 //! listener and no scanner.
+//!
+//! BOOT-01 increment D adds the synchronous database assembly ([`database`]):
+//! step 3's open/migrate/pool boundary — a Go-style DB input becomes an open,
+//! migrated, fully pooled `SQLStore`, and a memory target that would give the
+//! pool independent handles is refused before anything opens. No config load, no
+//! directory creation, no auth, no listener, no async wiring and no scanner.
 
 pub mod bootstrap;
+pub mod database;
 pub mod preflight;
 pub mod signing_keys;
 

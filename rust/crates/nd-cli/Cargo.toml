@@ -41,6 +41,13 @@ aes-gcm = { workspace = true }
 # needs no system SQLite.
 nd-db = { path = "../nd-db" }
 nd-auth = { path = "../nd-auth" }
+# BOOT-01 increment D (database assembly): `nd-dbschema` is a LIBRARY dependency
+# here, not only a dev one — `src/database.rs` classifies the DB input with
+# `schema::parse_open_input` before opening and runs the single fresh migration
+# through `migrate::ensure_fresh_migration`, so a plain `cargo check -p nd-cli`
+# must compile it. It is an existing workspace crate, so Cargo.lock gains no
+# package: the edge already exists (nd-db depends on nd-dbschema).
+nd-dbschema = { path = "../nd-dbschema" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 # Library stamps are `DateTime<Utc>`, the workspace-wide timestamp convention.
 chrono = { workspace = true }
@@ -53,6 +60,6 @@ tempfile = "^3"
 base64 = { workspace = true }
 # Real migrated temporary databases: the schema comes from the same
 # `apply_fresh_schema` the production path uses, and `nd-id` names isolated
-# in-memory databases (as nd-db's own tests do).
-nd-dbschema = { path = "../nd-dbschema" }
+# in-memory databases (as nd-db's own tests do). `nd-dbschema` is now a library
+# dependency (increment D), so only `nd-id` remains test-only here.
 nd-id = { path = "../nd-id" }
