@@ -2,27 +2,49 @@
 
 //! HTTP transport seam for the Navidrome Rust port.
 //!
-//! **BOOT-00 gate scope, not the HTTP stack.** This module materializes only
-//! the BOOT-00 D1 dependency boundary and its executed acceptance test
+//! ## BOOT-03 shell-only increment (`server.rs`, `shell.rs`, `peer.rs`, `shutdown.rs`)
+//!
+//! A callable TCP HTTP shell exists: bind-before-ready exposing the actual
+//! bound address, an explicit route manifest with an exact (not
+//! prefix-confusable) `BasePath` mount, the public ping, transport-derived peer
+//! recording, and explicit shutdown with an observed join. It serves **no**
+//! protected mount and no CLI wiring: `nd-cli` still has no listener (`fn
+//! main() {}`), and authentication, proxy trust, CORS/security headers,
+//! compression, in-flight drain observability, static UI, TLS, and Unix
+//! sockets are all later increments. The shell accepts `&nd_conf::Config` for
+//! bind parameters only; it does not re-resolve configuration.
+//!
+//! ## BOOT-00 gate scope (unchanged)
+//!
+//! The BOOT-00 D1 dependency boundary and its executed acceptance test
 //! (`dependency_graph_has_no_http_api_cycle`, subplans/boot-api.md:156,
-//! decisions.md:517-541). It claims NO production behavior: there is no
-//! listener, no router construction, and no request handling here. Real boot
-//! and mounting are BOOT-01+; the `serve_started` transport contract,
-//! SinkAdapter deletion, and axum/hyper wiring are API-04/API-05 work under
-//! the B3-ratified Candidate B (Send-Axum owner channels,
-//! decisions.md:502-516).
+//! decisions.md:517-541) still hold, and the shell does not weaken them:
+//! the API router is injected by the caller, never reached through an
+//! `nd-api` type. The `serve_started` transport contract, SinkAdapter
+//! deletion, and full axum/hyper wiring remain API-04/API-05 work under the
+//! B3-ratified Candidate B (Send-Axum owner channels, decisions.md:502-516).
 //!
 //! ## D1 dependency boundary (PARENT DECIDED 2026-11-21, decisions.md:521)
 //!
 //! `nd-http` depends on `nd-conf` and `nd-auth` **only** (plus `axum`, locked
-//! at 0.7.9 via nd-auth, solely for the injection type below). There is
+//! at 0.7.9 via nd-auth, and `tokio` for the listener runtime; both already
+//! locked, so they add dependency edges and no new lock entries). There is
 //! deliberately **no `nd-http → nd-api` edge**: the API router is *injected*
 //! into the HTTP seam by `nd-cli` at construction — see [`RouterInjection`].
 //! A direct edge would make the boot-api.md:156 cycle acceptance
 //! unsatisfiable, so this crate must never declare `nd-api` in any
 //! dependency table (`[dependencies]`, `[dev-dependencies]`, build deps).
+pub mod peer;
+pub mod server;
+pub mod shell;
+pub mod shutdown;
+
 use nd_auth::middleware::MiddlewareState;
 use nd_conf::Config;
+pub use peer::AcceptedPeer;
+pub use server::{BoundListener, Running, DEFAULT_GRACEFUL_DEADLINE};
+pub use shell::{BindError, UnsupportedTransport};
+pub use shutdown::{Shutdown, ShutdownOutcome};
 
 /// Router-injection signature (D1): the fully constructed API router —
 /// built by `nd-api` (#27) and wired by `nd-cli` (#33) — is handed to the

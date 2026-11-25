@@ -988,6 +988,7 @@ dependencies = [
  "axum",
  "nd-auth",
  "nd-conf",
+ "tokio",
 ]
 
 [[package]]

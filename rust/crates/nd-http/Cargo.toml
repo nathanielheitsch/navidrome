@@ -11,7 +11,11 @@ workspace = true
 # BOOT-00 D1 boundary (decisions.md:521): nd-conf + nd-auth only. axum is
 # declared here solely for the RouterInjection type; axum 0.7.9 is already
 # locked via nd-auth, so this adds a dependency EDGE and no new lock entry.
+# BOOT-03 shell adds `tokio` for the TCP listener runtime (`axum::serve` needs
+# tokio net/rt), already locked at 1.54.1 with `full` via the workspace, so it
+# likewise adds an edge and no new lock entry.
 [dependencies]
 nd-conf = { path = "../nd-conf" }
 nd-auth = { path = "../nd-auth" }
 axum = { workspace = true }
+tokio = { workspace = true }
