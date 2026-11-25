@@ -1,0 +1,14 @@
+{
+  "case_id": "song_detail_no_session",
+  "request_method": "GET",
+  "request_path": "/api/song/fixture-song-library-one",
+  "auth_mode": "no-session",
+  "status": 401,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"error\":\"Not authenticated\"}",
+  "body_length": 29,
+  "body_sha256": "4c9f9643d38f4f2c6dc4dbaba7f8b1a012fa042b680ede1f57af066a4af16f1e",
+  "behavior": "song detail without credentials"
+}

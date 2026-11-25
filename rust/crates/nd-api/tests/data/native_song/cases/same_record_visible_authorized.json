@@ -1,0 +1,14 @@
+{
+  "case_id": "same_record_visible_authorized",
+  "request_method": "GET",
+  "request_path": "/api/song/fixture-song-library-two",
+  "auth_mode": "signed-session",
+  "status": 200,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"bookmarkPosition\":0,\"id\":\"fixture-song-library-two\",\"libraryId\":2,\"libraryPath\":\"fixturetwo:///music\",\"libraryName\":\"Fixture Library Two\",\"folderId\":\"49qBlj37eW267KS3g87WpZ\",\"path\":\"Fixture Artist/Restricted Album/01 Track.mp3\",\"title\":\"Restricted Fixture Song\",\"album\":\"Restricted Album\",\"artistId\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"artist\":\"Fixture Artist\",\"albumArtistId\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"albumArtist\":\"Fixture Artist\",\"albumId\":\"53FLsUDl20bwaTrcb35Rhl\",\"hasCoverArt\":false,\"trackNumber\":1,\"discNumber\":0,\"year\":2024,\"date\":\"2024\",\"originalYear\":0,\"releaseYear\":2024,\"releaseDate\":\"2024\",\"size\":8000000,\"suffix\":\"mp3\",\"duration\":199,\"bitRate\":320,\"sampleRate\":44100,\"bitDepth\":16,\"channels\":2,\"codec\":\"\",\"genre\":\"\",\"orderTitle\":\"restricted fixture song\",\"orderAlbumName\":\"restricted album\",\"orderArtistName\":\"fixture artist\",\"orderAlbumArtistName\":\"fixture artist\",\"compilation\":false,\"lyrics\":\"[]\",\"bpm\":99,\"explicitStatus\":\"\",\"rgAlbumGain\":null,\"rgAlbumPeak\":null,\"rgTrackGain\":null,\"rgTrackPeak\":null,\"participants\":{\"albumartist\":[{\"id\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"name\":\"Fixture Artist\",\"missing\":false}],\"artist\":[{\"id\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"name\":\"Fixture Artist\",\"missing\":false}]},\"missing\":false,\"birthTime\":\"2024-01-02T03:04:05Z\",\"createdAt\":\"2024-01-02T03:04:05Z\",\"updatedAt\":\"2024-01-02T03:04:05Z\"}",
+  "body_length": 1319,
+  "body_sha256": "e9e2d64a24e2e754a8364c8e8e919872060d9a17c38dd4e3baf5a7780029b9c3",
+  "behavior": "authorized same-record control"
+}
