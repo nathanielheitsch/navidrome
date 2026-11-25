@@ -58,42 +58,108 @@ fn look_path(name: String) -> (String, bool) {
     (name, false)
 }
 
-/// Go's `sync.Once` for the ffmpeg lookup (`ffmpeg.go:604-622`): the
-/// resolved `(path, ok)` pair, computed at most once per process.
-static FFMPEG_ONCE: std::sync::OnceLock<(String, bool)> = std::sync::OnceLock::new();
+/// One synchronized resolution record for the whole resolver, replacing the two
+/// independent `OnceLock`s (`FFMPEG_ONCE`, `PROBE_ONCE`). It holds the loaded
+/// configured path, the resolved ffmpeg pair, and the probe-availability cache in
+/// a single locked value, so configuration injection, ffmpeg resolution, and probe
+/// availability can never disagree across threads or across a second `initialize`.
+///
+/// Recursion safety: the guard is held only across filesystem lookups
+/// ([`look_path`], [`nd_ffmpeg::args::ffprobe_path`] is pure string work). It is
+/// **never** held while calling a public resolver function, [`version`], or
+/// anything in `encoder_probe` (`has`/`encoders_for`), because those either
+/// re-enter `ffmpeg_cmd` or spawn a child process.
+struct Resolution {
+    /// The resolved `(path, ok)` pair — Go's `ffmpegPath, ffmpegErr`.
+    ffmpeg: (String, bool),
+    /// Probe-sibling availability, computed lazily on first
+    /// [`is_probe_available`] (Go's `probeOnce`). `None` = not yet computed.
+    probe: Option<bool>,
+    /// Which configuration produced this resolution, so a repeat or conflicting
+    /// `initialize_from_loaded_config` can be classified without silent overwrite.
+    source: Source,
+}
 
-/// Go's `sync.Once` + `probeAvail` globals (`ffmpeg.go:604-622`, used by
-/// `IsProbeAvailable`).
-static PROBE_ONCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// Where a [`Resolution`] came from.
+enum Source {
+    /// Resolved lazily by the legacy call path (empty config +
+    /// `ND_TEST_FFMPEG_PATH` override + `PATH`), before any config was injected.
+    LazyEmpty,
+    /// Resolved from a loaded config with this `ffmpeg_path` (possibly empty).
+    Loaded(String),
+}
 
-/// `ffmpegCmd` (`ffmpeg.go:604-622`): config-set `ffmpeg_path` wins, else
-/// PATH lookup of "ffmpeg", with the ErrDot retry on the literal "./ffmpeg".
-pub fn ffmpeg_cmd() -> (String, bool) {
-    if let Some(v) = FFMPEG_ONCE.get().cloned() {
-        return v;
-    }
+/// The single resolver state. `None` = nothing resolved yet.
+static RESOLVER: std::sync::Mutex<Option<Resolution>> = std::sync::Mutex::new(None);
 
-    let configured = nd_conf::Config::default().ffmpeg_path;
+/// Why [`initialize_from_loaded_config`] refused. Every variant is static text:
+/// no path, no `Config`, no environment value, and no competing configured path
+/// ever crosses this boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FfmpegConfigError {
+    /// A resolution was already produced by the legacy lazy path, and the config
+    /// now being injected names a binary (non-empty `FFmpegPath`). The lazy
+    /// winner is kept; the configured path is **not** silently ignored — the
+    /// caller is told to inject config before any resolver call.
+    #[error("ffmpeg binary was already resolved before config was injected")]
+    LateInitialization,
+    /// The resolver is already initialized from a **different** loaded
+    /// `FFmpegPath`. Boot config is set exactly once; a conflicting path is
+    /// refused rather than swapped.
+    #[error("ffmpeg config was already initialized from a different path")]
+    ConflictingConfig,
+    /// The resolver lock was poisoned by a panicking holder. Fail closed: this is
+    /// reported rather than recovered, and no panic text is surfaced.
+    #[error("ffmpeg resolver is in an inconsistent state")]
+    Poisoned,
+}
+
+/// The legacy lazy resolution — the empty-config path, byte-for-byte the prior
+/// behavior: `ND_TEST_FFMPEG_PATH` override, else `PATH` lookup of `ffmpeg`, else
+/// the `ErrDot` retry on the literal `./ffmpeg`. Filesystem only; spawns nothing.
+fn resolve_legacy() -> (String, bool) {
     let test_override = env(ND_TEST_FFMPEG_PATH.to_string());
-    let configured = if configured.is_empty() {
-        test_override
-    } else {
-        configured
-    };
-
-    let mut r: (String, bool);
-    if !configured.is_empty() {
-        r = look_path(configured);
-    } else {
-        r = look_path("ffmpeg".to_string());
-        if !r.clone().1 {
-            // Go's `errors.Is(ffmpegErr, exec.ErrDot)`: found only in cwd '.'.
-            r = look_path("./ffmpeg".to_string());
-        }
+    if !test_override.is_empty() {
+        return look_path(test_override);
     }
+    let r = look_path("ffmpeg".to_string());
+    if r.1 {
+        return r;
+    }
+    // Go's `errors.Is(ffmpegErr, exec.ErrDot)`: found only in cwd '.'.
+    look_path("./ffmpeg".to_string())
+}
 
-    let _ = FFMPEG_ONCE.set(r.clone());
-    r
+/// Resolve an explicitly configured binary path. A non-empty path is checked
+/// **only** at that path — `look_path` performs no `PATH` fallback for a
+/// path-shaped or bare configured value that misses. This is what makes a
+/// configured-but-missing binary report unavailable instead of silently using a
+/// default-path ffmpeg (`decisions.md` B2). Filesystem only.
+fn resolve_configured(path: &str) -> (String, bool) {
+    look_path(path.to_string())
+}
+
+/// `ffmpegCmd` (`ffmpeg.go:604-622`): the memoized resolved `(path, ok)` pair.
+/// If a resolution already exists it is returned verbatim; otherwise the legacy
+/// lazy path is computed and cached under the same guard.
+///
+/// Lock poisoning fails **closed**: a poisoned lock returns an unavailable pair
+/// `("", false)` rather than panicking or surfacing panic text.
+pub fn ffmpeg_cmd() -> (String, bool) {
+    let mut guard = match RESOLVER.lock() {
+        Ok(g) => g,
+        Err(_) => return (String::new(), false),
+    };
+    if let Some(resolution) = guard.as_ref() {
+        return resolution.ffmpeg.clone();
+    }
+    let pair = resolve_legacy();
+    *guard = Some(Resolution {
+        ffmpeg: pair.clone(),
+        probe: None,
+        source: Source::LazyEmpty,
+    });
+    pair
 }
 
 /// `CmdPath` (`ffmpeg.go:590-592`): the resolved path, or
@@ -104,34 +170,112 @@ pub fn cmd_path() -> Result<String, FFmpegError> {
     if ok {
         return Ok(path);
     }
-
     Err(FFmpegError::NotAvailable(path))
 }
 
 /// `IsAvailable` (`ffmpeg.go:303-306`): the ffmpeg binary resolved.
 pub fn is_available() -> bool {
-    let (_, ok) = ffmpeg_cmd();
-    ok
+    ffmpeg_cmd().1
 }
 
-/// `IsProbeAvailable` (`ffmpeg.go:308-319`): ffmpeg must resolve, and the
-/// ffprobe sibling derived from the resolved path
-/// ([`args::ffprobe_path`]) must resolve too — memoised in its own `OnceLock`
-/// exactly as Go's `probeOnce.Do` does.
+/// `IsProbeAvailable` (`ffmpeg.go:308-319`): ffmpeg must resolve, and the ffprobe
+/// sibling derived from the resolved path ([`args::ffprobe_path`]) must resolve
+/// too. Cached inside the same [`Resolution`] record, so it always reflects the
+/// currently resolved binary and never a superseded one.
+///
+/// Runs only filesystem lookups under the guard. Poisoning fails closed to
+/// `false`.
 pub fn is_probe_available() -> bool {
-    let (path, ok) = ffmpeg_cmd();
-    if !ok {
+    let mut guard = match RESOLVER.lock() {
+        Ok(g) => g,
+        Err(_) => return false,
+    };
+    // Ensure a resolution exists (legacy lazy path) before deriving the sibling.
+    if guard.is_none() {
+        let pair = resolve_legacy();
+        *guard = Some(Resolution {
+            ffmpeg: pair,
+            probe: None,
+            source: Source::LazyEmpty,
+        });
+    }
+    let resolution = guard.as_mut().expect("resolution just ensured");
+    if !resolution.ffmpeg.1 {
         return false;
     }
-
-    if let Some(v) = PROBE_ONCE.get().cloned() {
-        return v;
+    if let Some(avail) = resolution.probe {
+        return avail;
     }
-
-    let probe = ffprobe_path(&path);
-    let (_, avail) = look_path(probe);
-    let _ = PROBE_ONCE.set(avail);
+    let probe = ffprobe_path(&resolution.ffmpeg.0);
+    let avail = look_path(probe).1;
+    resolution.probe = Some(avail);
     avail
+}
+
+/// Inject the loaded configuration exactly once (BOOT-01 boot-once seam).
+///
+/// This replaces the `Config::default()` read that made a configured
+/// `FFMPEGPath` invisible at runtime (`decisions.md` B2). It resolves ffmpeg from
+/// `config.ffmpeg_path` using the preserved precedence rules and records the
+/// result; existing free-function callers then observe the configured binary.
+///
+/// Precedence is preserved exactly as the legacy path: a non-empty loaded
+/// `FFmpegPath` wins; a missing configured binary resolves to **unavailable with
+/// no `PATH` fallback**; an empty loaded config falls back to the same legacy
+/// resolution (`ND_TEST_FFMPEG_PATH`, then `PATH`).
+///
+/// Repeat/compatibility rules (never silent):
+/// * identical loaded path → accepted (`Ok`), no re-resolve;
+/// * empty loaded config against a prior empty-config legacy resolution → accepted
+///   (same resolution, compatible);
+/// * a configured (non-empty) path after a lazy lookup → [`LateInitialization`];
+/// * a loaded path differing from the already-loaded one → [`ConflictingConfig`].
+///
+/// **Availability decision (reported):** `initialize` records the resolution and
+/// returns `Ok` even when the configured binary is missing — matching Go's
+/// `sync.Once`, which never errors on a lookup miss. Availability is then surfaced
+/// by `cmd_path()` returning [`FFmpegError::NotAvailable`] and `is_available()`
+/// returning `false`. A later CLI/BOOT-01 integration is expected to require
+/// availability explicitly; init itself does not fail on a missing binary.
+///
+/// Only `config.ffmpeg_path` is read; the `Config` is never formatted, so secret
+/// config fields are never disclosed.
+///
+/// # Errors
+/// [`FfmpegConfigError`] with static text. A poisoned lock returns
+/// [`FfmpegConfigError::Poisoned`] and leaves the resolver unusable rather than
+/// recovering it.
+pub fn initialize_from_loaded_config(config: &nd_conf::Config) -> Result<(), FfmpegConfigError> {
+    let mut guard = match RESOLVER.lock() {
+        Ok(g) => g,
+        Err(_) => return Err(FfmpegConfigError::Poisoned),
+    };
+    let path = config.ffmpeg_path.clone();
+    match guard.as_ref() {
+        None => {
+            let (ffmpeg, source) = if path.is_empty() {
+                (resolve_legacy(), Source::LazyEmpty)
+            } else {
+                (resolve_configured(&path), Source::Loaded(path))
+            };
+            *guard = Some(Resolution {
+                ffmpeg,
+                probe: None,
+                source,
+            });
+            Ok(())
+        }
+        Some(resolution) => match &resolution.source {
+            // Already loaded: identical path is compatible, a differing one is a
+            // conflict.
+            Source::Loaded(prev) if *prev == path => Ok(()),
+            // Lazy legacy resolution: compatible only with an empty config that
+            // reuses the same resolution; a configured path cannot be retrofitted.
+            Source::LazyEmpty if path.is_empty() => Ok(()),
+            Source::LazyEmpty => Err(FfmpegConfigError::LateInitialization),
+            Source::Loaded(_) => Err(FfmpegConfigError::ConflictingConfig),
+        },
+    }
 }
 
 /// `Version` (`ffmpeg.go:321-337`): run `<resolved ffmpeg> -version` and
