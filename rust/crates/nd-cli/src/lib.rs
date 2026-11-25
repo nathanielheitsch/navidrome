@@ -32,12 +32,19 @@
 //! one `spawn_blocking` chain, returning an initialized store plus the outcome
 //! that committed. No `main`, no CLI arguments, no listener, no auth/cache/limiter
 //! wiring and no scanner.
+//!
+//! BOOT-01 step 7 adds the shared auth state ([`state`]): `AuthState::new`
+//! consumes an initialized state and the three checked launch values, building an
+//! `Authenticator` from the committed secret winners with `previous = None` and a
+//! single `Arc<GuardedLimiter>` shared by every clone over the existing pool. No
+//! cache, transcode, listener, routes or scanner.
 
 pub mod bootstrap;
 pub mod database;
 pub mod preflight;
 pub mod signing_keys;
 pub mod startup;
+pub mod state;
 
 /// Scaffold marker: the public surface authored by #33 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 33;
