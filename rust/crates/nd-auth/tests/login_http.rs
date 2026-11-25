@@ -11,9 +11,10 @@ use nd_auth::credentials::{Authenticator, SigningSecrets};
 use nd_auth::login::{create_admin, login, login_from_headers, HeaderLoginState, LoginState};
 use nd_auth::middleware::{authenticate, AuthGate, AuthenticatedUser, MiddlewareState, ProxyPeer};
 use nd_auth::refresh::refresh;
-use nd_auth::setup_store::run_initial_setup;
+use nd_auth::setup_store::{run_initial_setup, setup_in_tx, DevAdmin, SetupStoreError};
 use nd_auth::verifier::ResolutionConfig;
 use nd_db::pool::{Pool, PoolConfig};
+use nd_db::property_repo::{get_sql, put_sql};
 use nd_db::store::SQLStore;
 use nd_db::user_repo::UserRepo;
 use nd_dbschema::schema::apply_fresh_schema;
@@ -1144,4 +1145,484 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64
+}
+
+// ---------------------------------------------------------------------------
+// #13 setup-store refactor: the narrow synchronous helper (`setup_in_tx`).
+//
+// Everything below uses a synthetic temp DB, a synthetic password hash and a
+// synthetic library row. The helper is executed *inside a caller-owned
+// transaction* to prove it performs the real writes — including
+// `UserRepo::put`'s admin grant leg — while contributing no transaction control
+// of its own. Hashing placement is NOT asserted here by timing; it is proved
+// deterministically by the counting-hash tests in `setup_store`'s own module.
+// ---------------------------------------------------------------------------
+
+/// A temp store whose pool has exactly one connection, so any nested checkout
+/// by `setup_in_tx` would block forever rather than silently succeed.
+fn setup_single_connection() -> (SQLStore, std::path::PathBuf) {
+    let path =
+        std::path::PathBuf::from(nd_utils::files::temp_file_name("nd-auth-setup-tx-", ".db"));
+    let dsn = format!("file:{}?mode=rwc&_foreign_keys=on", path.display());
+    let (pool, first) = Pool::new(&PoolConfig::with_size(dsn, 1)).unwrap();
+    apply_fresh_schema(&first).unwrap();
+    pool.put_back(first).expect("return configured handle");
+    (SQLStore::new(pool), path)
+}
+
+const SYNTHETIC_HASH: &str = "$argon2id$v=19$m=19,t=2,p=1$c29tZS1zeW50aGV0aWM$fake-hash-for-tests";
+
+fn marker_value(store: &SQLStore) -> Option<String> {
+    store
+        .with_connection_sync(|conn| {
+            nd_db::execution::query_optional(
+                conn,
+                &get_sql(nd_auth::initial_setup::INITIAL_SETUP_FLAG_KEY),
+                |row| row.get::<_, String>(0),
+            )
+        })
+        .unwrap()
+}
+
+/// Seed a synthetic library row, committed outside any setup transaction. It
+/// exists so `UserRepo::put`'s admin auto-assign
+/// (`user_repository.go:150-156`, run by `setup_in_tx`) has something to grant:
+/// with no library rows the grant leg is a no-op and the assertion would be
+/// vacuous.
+fn seed_library(store: &SQLStore, name: &str, path: &str) -> i64 {
+    store
+        .with_connection_sync(|conn| {
+            conn.execute(
+                "INSERT INTO library (name, path) VALUES (?, ?)",
+                rusqlite::params![name, path],
+            )?;
+            conn.query_row("SELECT id FROM library WHERE name = ?", [name], |row| {
+                row.get::<_, i64>(0)
+            })
+        })
+        .expect("seed a synthetic library")
+}
+
+/// The actual `(user_id, library_id)` grant rows, read directly from the table.
+fn grant_rows(store: &SQLStore) -> Vec<(String, i64)> {
+    store
+        .with_connection_sync(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT user_id, library_id FROM user_library ORDER BY user_id, library_id",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("read grant rows")
+}
+
+/// The same read inside a caller-owned transaction, so a grant written by the
+/// helper can be observed before the transaction is rolled back.
+fn grant_rows_in_tx(tx: &rusqlite::Transaction<'_>, user_id: &str) -> Vec<i64> {
+    let mut statement = tx
+        .prepare("SELECT library_id FROM user_library WHERE user_id = ?")
+        .expect("prepare grant read");
+    statement
+        .query_map([user_id], |row| row.get::<_, i64>(0))
+        .expect("query grants")
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .expect("read grants in tx")
+}
+
+fn user_rows(store: &SQLStore) -> (i64, Option<String>) {
+    store
+        .with_connection_sync(|conn| {
+            let repo = UserRepo::new(conn);
+            Ok((
+                repo.count_all().unwrap(),
+                repo.find_by_username(nd_auth::initial_setup::DEV_INITIAL_USER_NAME)
+                    .ok()
+                    .map(|user| user.password),
+            ))
+        })
+        .unwrap()
+}
+
+#[tokio::test]
+async fn helper_writes_then_forced_rollback_leaves_nothing_behind() {
+    // Pool size 1: the outer transaction holds the only connection, so a
+    // checkout inside `setup_in_tx` could not even be admitted. The outer tx
+    // inserts a synthetic sentinel, runs the REAL helper, then forces a
+    // rollback; nothing from either the sentinel or the helper may survive.
+    let (store, path) = setup_single_connection();
+    assert_eq!(
+        store.idle_count().unwrap(),
+        1,
+        "pool is exactly one connection"
+    );
+    // A seeded library makes the admin grant leg real rather than vacuous.
+    let library_id = seed_library(&store, "synthetic-library", "/tmp/synthetic-library");
+
+    let stamp: &str = "2024-01-01T00:00:00Z";
+    let sentinel_key: &str = "synthetic-sentinel";
+    let wrote = store
+        .with_tx(move |tx| -> Result<bool, rusqlite::Error> {
+            let sentinel = put_sql(sentinel_key, "sentinel-value");
+            if nd_db::execution::execute(tx, &sentinel.update).unwrap() == 0 {
+                nd_db::execution::execute(tx, &sentinel.insert).unwrap();
+            }
+            // The real helper, on the caller's borrowed transaction.
+            let wrote = setup_in_tx(
+                tx,
+                Some(&DevAdmin {
+                    password_hash: SYNTHETIC_HASH,
+                }),
+                stamp,
+            )
+            .unwrap();
+            // Proving the helper DID write, inside this transaction, before
+            // anything is rolled back.
+            assert!(
+                wrote,
+                "setup was not completed, so the helper must report true"
+            );
+            let repo = UserRepo::new(tx);
+            assert_eq!(
+                repo.count_all().unwrap(),
+                1,
+                "the helper must have inserted the dev admin inside the tx"
+            );
+            assert_eq!(
+                repo.find_first_admin().unwrap().password,
+                SYNTHETIC_HASH,
+                "the helper must store the caller's prepared hash verbatim"
+            );
+            assert_eq!(
+                nd_db::execution::query_optional(
+                    tx,
+                    &get_sql(nd_auth::initial_setup::INITIAL_SETUP_FLAG_KEY),
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap()
+                .as_deref(),
+                Some(stamp),
+                "the helper must have written the marker inside the tx"
+            );
+            assert_eq!(
+                nd_db::execution::query_optional(tx, &get_sql(sentinel_key), |row| row
+                    .get::<_, String>(0),)
+                .unwrap()
+                .as_deref(),
+                Some("sentinel-value"),
+                "the caller's sentinel must be visible in the same tx"
+            );
+            // `UserRepo::put` assigns every library to an admin
+            // (`user_repository.go:150-156`), so the helper's insert also
+            // produced a concrete grant row — observed inside this tx.
+            let admin_id = repo.find_first_admin().unwrap().id;
+            assert_eq!(
+                grant_rows_in_tx(tx, &admin_id),
+                vec![library_id],
+                "the helper's admin must hold the seeded grant inside the caller's tx"
+            );
+            // Forced failure AFTER the helper wrote: rusqlite rolls the tx back.
+            Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE),
+                Some("forced rollback after helper wrote".to_owned()),
+            ))
+        })
+        .await
+        .unwrap_err();
+    assert!(wrote
+        .to_string()
+        .contains("forced rollback after helper wrote"));
+
+    assert_eq!(
+        store.idle_count().unwrap(),
+        1,
+        "the lease came back to the size-1 pool"
+    );
+    let (users, password) = user_rows(&store);
+    assert_eq!(users, 0, "rolled-back helper insert must leave no user row");
+    assert_eq!(password, None, "no dev admin may survive the rollback");
+    assert_eq!(
+        marker_value(&store),
+        None,
+        "rolled-back marker write must leave no setup flag"
+    );
+    assert_eq!(
+        store
+            .with_connection_sync(|conn| nd_db::execution::query_optional(
+                conn,
+                &get_sql(sentinel_key),
+                |row| row.get::<_, String>(0),
+            ))
+            .unwrap(),
+        None,
+        "the caller's sentinel must be rolled back too"
+    );
+    // The grant written by `UserRepo::put`'s admin leg rolls back with
+    // everything else, while the pre-existing seeded library row is untouched.
+    assert_eq!(
+        grant_rows(&store),
+        Vec::new(),
+        "a rolled-back helper must leave no grant row"
+    );
+    assert_eq!(
+        store
+            .with_connection_sync(|conn| {
+                Ok(conn.query_row("SELECT count(*) FROM library", [], |row| {
+                    row.get::<_, i64>(0)
+                }))
+            })
+            .unwrap()
+            .unwrap(),
+        1,
+        "the seeded library row must survive the rollback"
+    );
+
+    // A later real setup still succeeds: the aborted attempt consumed nothing.
+    assert!(
+        run_initial_setup(&store, "dev-password", "2024-01-02T00:00:00Z")
+            .await
+            .unwrap(),
+        "a rolled-back attempt must not have consumed the one-shot setup flag"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn helper_committed_by_caller_persists_marker_user_and_grant() {
+    // The successful path of the same shape: the caller commits, so the helper's
+    // writes survive — proving the helper performs real writes and that its
+    // rollback behavior above came from the caller's transaction, not itself.
+    let (store, path) = setup_single_connection();
+    let stamp: &str = "2024-01-01T00:00:00Z";
+    let library_id = seed_library(&store, "committed-library", "/tmp/committed-library");
+    let wrote = store
+        .with_tx(move |tx| {
+            setup_in_tx(
+                tx,
+                Some(&DevAdmin {
+                    password_hash: SYNTHETIC_HASH,
+                }),
+                stamp,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(wrote);
+    let (users, password) = user_rows(&store);
+    assert_eq!(users, 1);
+    assert_eq!(password.as_deref(), Some(SYNTHETIC_HASH));
+    assert_eq!(marker_value(&store).as_deref(), Some(stamp));
+    // Committing the caller's tx makes the helper's grant durable, against the
+    // same seeded library id.
+    let admin_id = store
+        .with_connection_sync(|conn| Ok(UserRepo::new(conn).find_first_admin().unwrap().id))
+        .unwrap();
+    assert_eq!(
+        grant_rows(&store),
+        vec![(admin_id.clone(), library_id)],
+        "the committed helper write must persist the exact (admin_id, library_id) grant"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn helper_rechecks_marker_in_tx_and_never_replaces_an_existing_admin() {
+    let (store, path) = setup_single_connection();
+    let stamp: &str = "2024-01-01T00:00:00Z";
+    // Seed a library first, so the pre-existing admin acquires a real grant
+    // through `UserRepo::put`'s admin leg and the preservation assertions below
+    // have something to preserve.
+    let library_id = seed_library(&store, "preexisting-library", "/tmp/preexisting-library");
+    // A pre-existing regular user, and separately a pre-existing admin, both
+    // committed before the helper runs.
+    store
+        .with_tx(move |tx| {
+            UserRepo::new(tx)
+                .put(
+                    &nd_db::user_repo::UserPutValues {
+                        id: "existing-admin",
+                        user_name: nd_auth::initial_setup::DEV_INITIAL_USER_NAME,
+                        name: "Existing",
+                        email: "",
+                        password: Some("existing-hash"),
+                        is_admin: true,
+                        last_login_at: None,
+                        last_access_at: None,
+                        created_at: stamp,
+                        updated_at: stamp,
+                        scrobble_filter: "",
+                    },
+                    stamp,
+                    false,
+                )
+                .unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let wrote = store
+        .with_tx(move |tx| {
+            setup_in_tx(
+                tx,
+                Some(&DevAdmin {
+                    password_hash: SYNTHETIC_HASH,
+                }),
+                stamp,
+            )
+        })
+        .await
+        .unwrap();
+    assert!(wrote, "a missing marker still completes setup");
+    let (users, password) = user_rows(&store);
+    assert_eq!(users, 1, "the existing admin must not be duplicated");
+    assert_eq!(
+        password.as_deref(),
+        Some("existing-hash"),
+        "the existing admin's credential must never be replaced"
+    );
+    assert_eq!(marker_value(&store).as_deref(), Some(stamp));
+    // The helper skipped the insert, so it also skipped the grant leg: the
+    // pre-existing admin keeps exactly its own grant.
+    assert_eq!(
+        grant_rows(&store),
+        vec![("existing-admin".to_owned(), library_id)],
+        "the skipped-insert path must leave the pre-existing grant untouched"
+    );
+
+    // With the marker present, the in-tx recheck short-circuits: `false` and no
+    // writes at all.
+    let again = store
+        .with_tx(move |tx| {
+            setup_in_tx(
+                tx,
+                Some(&DevAdmin {
+                    password_hash: "a-different-hash",
+                }),
+                "2024-02-01T00:00:00Z",
+            )
+        })
+        .await
+        .unwrap();
+    assert!(
+        !again,
+        "the marker check inside the transaction must short-circuit"
+    );
+    let (users, password) = user_rows(&store);
+    assert_eq!(users, 1);
+    assert_eq!(password.as_deref(), Some("existing-hash"));
+    assert_eq!(
+        marker_value(&store).as_deref(),
+        Some(stamp),
+        "marker value is not overwritten"
+    );
+
+    // The marker-present short-circuit must not disturb existing grants either:
+    // no re-grant, no re-insert, no credential change.
+    assert_eq!(
+        grant_rows(&store),
+        vec![("existing-admin".to_owned(), library_id)],
+        "the marker-present path must preserve pre-existing grants"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn helper_without_dev_admin_writes_only_the_marker() {
+    // The no-password arm (`server/initial_setup.go:26-27`): marker only, no user.
+    let (store, path) = setup_single_connection();
+    let stamp: &str = "2024-01-01T00:00:00Z";
+    let wrote = store
+        .with_tx(move |tx| setup_in_tx(tx, None, stamp))
+        .await
+        .unwrap();
+    assert!(wrote);
+    let (users, password) = user_rows(&store);
+    assert_eq!(users, 0, "no password means no user row");
+    assert_eq!(password, None);
+    assert_eq!(marker_value(&store).as_deref(), Some(stamp));
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn busy_classification_and_error_surface_match_the_store_policy() {
+    // The API adds no retry policy of its own: retryability is the store's
+    // classification, and extended busy codes are included (`persistence.go:207-228`,
+    // `db/db.go:128-140`). Only the exhausted outcome is the retryable signal.
+    assert!(nd_db::store::is_busy(&rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        None,
+    )));
+    assert!(nd_db::store::is_busy(&rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY_SNAPSHOT),
+        None,
+    )));
+    assert!(!nd_db::store::is_busy(&rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_LOCKED),
+        None,
+    )));
+
+    let exhausted: SetupStoreError = nd_db::store::StoreError::BusyRetriesExhausted {
+        attempts: 4,
+        cause: "database is locked".to_owned(),
+    }
+    .into();
+    assert!(matches!(
+        exhausted,
+        SetupStoreError::Store(nd_db::store::StoreError::BusyRetriesExhausted { .. })
+    ));
+
+    // Scope of this claim: `SetupStoreError::Store` is `#[error(transparent)]`
+    // over the store failure and the module adds no payload of its own, so
+    // *nothing this module contributes* can name the hash, the password or the
+    // field. SQLite's own diagnostic text (constraint names, SQL) is passed
+    // through verbatim and is SQLite's business, not a guarantee made here.
+    let text = format!("{exhausted} | {exhausted:?}");
+    assert!(text.contains("database is locked"));
+    assert!(!text.contains(SYNTHETIC_HASH));
+    assert!(!text.contains("dev-password"));
+    assert!(!text.contains("password_hash"));
+}
+
+#[tokio::test]
+async fn a_not_busy_failure_through_the_helper_surfaces_immediately_and_writes_nothing() {
+    // A not-busy SQL failure (`persistence.go:218`) is not retried, so one
+    // attempt runs and nothing commits. Busy exhaustion is covered deterministically
+    // in `setup_store`'s own tests, which drive the store's retry loop directly.
+    let (store, path, _) = setup();
+    let stamp: &str = "2024-01-01T00:00:00Z";
+    let error = store
+        .with_tx_retry_sync(move |tx| -> Result<bool, rusqlite::Error> {
+            setup_in_tx(
+                tx,
+                Some(&DevAdmin {
+                    password_hash: SYNTHETIC_HASH,
+                }),
+                stamp,
+            )?;
+            Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_LOCKED),
+                Some("forced not-busy failure".to_owned()),
+            ))
+        })
+        .expect_err("SQLITE_LOCKED is not busy-class, so the attempt fails immediately");
+    // `StoreError::Other` is the store's "not busy, fail immediately" arm.
+    assert!(matches!(error, nd_db::store::StoreError::Other(_)));
+    let mapped: SetupStoreError = error.into();
+    assert!(!matches!(
+        mapped,
+        SetupStoreError::Store(nd_db::store::StoreError::BusyRetriesExhausted { .. })
+    ));
+    assert!(!format!("{mapped}").contains(SYNTHETIC_HASH));
+    let (users, marker) = (user_rows(&store).0, marker_value(&store));
+    assert_eq!(users, 0, "a failed attempt commits no user row");
+    assert_eq!(marker, None, "a failed attempt commits no marker");
+    drop(store);
+    let _ = std::fs::remove_file(path);
 }
