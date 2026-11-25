@@ -109,5 +109,23 @@ an explicit open item), plus the durable **SC-03 birth-time ruling** and **SC-05
 NARROW** (the five SC-05 seams plus the authorized `nd-scanner` `nd-db` manifest delta; progress sink, watcher, remote storage and
 `MusicFS`/`ReadTags` stay unratified) and **BOOT-00 D1-D3** recorded (D4 already B3-ratified) and **EXECUTED at `6d6938b1`**, so
 **SC-04 is INTEGRATED into `master` at `eaff4c11`** (`decisions.md` D-SC04-MERGE; code increments `c0b2952e`+`7c92e4cf`), so the next launchable
-scanner package is **SC-06 — still unauthorized**; **BOOT-01** is the next launchable boot package. Parent decision records
+scanner package was **SC-06 — since INTEGRATED at `543ebdf6` (`decisions.md` D-SC06-MERGE)**; **BOOT-01 was the next launchable boot package and is now LANDED below (2026-11-25)**. Parent decision records
 2026-11-25 (`decisions.md`): **D-SC04-RETIRE**, **D-SC04-DTO**, **D-SC04-TIMEFACTS**, **D-SC04-ERRATUM**, **D-SC04-EVIDENCE**.
+
+**Amended 2026-11-25 (BOOT-01 LANDED — callable initialization only, NOT a running server).** The BOOT-01 sequence landed on the
+`resuscitate-dead-agent-capture-worktree-state` line at `f2289d8b` (a strict descendant of the SC-06 integration `543ebdf6`/`7ca5322d`):
+`nd-cli::preflight::preflight` and `nd-cli::service_ready::ServiceReady::prepare` are exported callable initialization — config
+resolution (explicit path → `ND_CONFIGFILE` → default, existing-file rule), auth-number/stream validation, ffmpeg-config injection
+before filesystem setup, one blocking-worker startup (dirs/open/migrate/bootstrap commit), auth state and shared transcode cache.
+**No listener, no router, no API, no production scan caller**: `nd-cli/src/main.rs` is still `fn main() {}`. BOOT-03/BOOT-04 and the
+actual forced-transcode gate are NOT delivered. The two BOOT-01-owned gaps are now closed — `ND_CONFIGFILE` resolution (`preflight.rs:89`
+`CONFIGFILE_ENV`) and **B2** ffmpeg-config injection (`845b98cb` seam + `f2289d8b` wiring) — so neither is outstanding (see `decisions.md`
+B2, superseded 2026-11-25). Launch decisions **not** secretly resolved: scanner-`true` launch policy and the public
+`PasswordEncryptionKey` default (`SHA-256("just for obfuscation")`). Parent gates on `f2289d8b` (authoritative `/tmp/boot01-b2-wiring-parent.log`,
+EXECUTED): `cargo fmt --all -- --check` clean · clippy `--all-targets --all-features -D warnings` clean · `cargo test --locked --workspace
+--all-targets --all-features` **exit 0** (0 failed). Known early returns in that run, stated explicitly: the non-UTF8 config-path test
+`non_utf8_config_path_is_refused_instead_of_loading_the_sibling` is a loud runtime skip on macOS/APFS when the filesystem refuses to create
+the name, and the two `#[ignore]`d ffmpeg subprocess child runners (`child_runner`, `child_scenario_runner`) are driven by their parent
+scenario tests, not skipped assertions. Next launchable lane: `API-00` native capture is launchable (no longer blocked on BOOT-00);
+`BOOT-03` (HTTP shell/listener) becomes launchable after `API-01` + the `API-04` transport work — the forced-transcode `API-05/06` gate stays
+blocked until real scan (`EXT-SC-REAL-SCAN`) and external ffmpeg/ffprobe evidence exist.
