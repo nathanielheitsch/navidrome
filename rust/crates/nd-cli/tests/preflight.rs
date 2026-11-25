@@ -2,14 +2,20 @@
 //!
 //! Everything runs against synthetic temp roots with an injected environment
 //! and an injected startup cwd, so no test touches the real process cwd, the
-//! real environment, or a production data directory.
+//! real environment, or a production data directory. No test calls
+//! `std::env::set_current_dir`, so the suite stays parallel-safe.
 //!
 //! Coverage against `boot-api.md:202` (the music-root half of the matrix) and
 //! `boot01-scout-memo.md` §2:
 //! * `ND_CONFIGFILE` resolution: explicit flag > env > loader defaults; an
 //!   env-named **existing** file's keys apply; an env-named **missing** file
 //!   is skipped exactly like Go's `os.Stat` guard (`conf/configuration.go:1201`).
-//! * invalid config is fatal before any filesystem creation.
+//! * the single cwd anchor: relative flag/env config paths, the music root and
+//!   the data folder all resolve against the injected startup cwd, which
+//!   differs from the real process cwd; a missing flag target is fatal.
+//! * invalid config is fatal before any filesystem creation, and reported
+//!   structurally: an allowlisted class plus a numeric location, never raw
+//!   config text (`Display`, `Debug`, and the source chain are all asserted).
 //! * music root: missing / regular-file / unreadable / symlink / Unicode /
 //!   relative / trailing-slash; a missing root stays absent afterwards.
 //! * secrets never appear in error messages or `Debug`.
@@ -19,7 +25,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use nd_cli::preflight::{
-    preflight, resolve_config_file, ConfigSource, PreflightError, PreflightOptions,
+    preflight, resolve_config_file, ConfigErrorClass, ConfigSource, PreflightError,
+    PreflightOptions,
 };
 
 /// An isolated, per-test temp tree. `tempfile::TempDir` creates the directory
@@ -83,20 +90,33 @@ fn canonical(p: &Path) -> PathBuf {
     std::fs::canonicalize(p).unwrap_or_else(|e| panic!("canonicalize {p:?}: {e}"))
 }
 
-fn run<'a>(
-    config_file: Option<&'a str>,
-    cwd: Option<&'a Path>,
+/// Runs a preflight with the single cwd anchor injected, so the real process
+/// cwd is never consulted.
+fn run(
+    config_file: Option<&str>,
+    startup_cwd: Option<&Path>,
     pairs: &[(&str, &str)],
 ) -> Result<nd_cli::preflight::PreflightOutcome, PreflightError> {
-    let map = env_of(pairs);
     let options = PreflightOptions {
         config_file,
-        env: Some(Box::new(lookup(map))),
-        startup_cwd: cwd,
+        env: Some(Box::new(lookup(env_of(pairs)))),
+        startup_cwd,
         effective_uid: Some(1000),
         allow_zero_port: false,
     };
     preflight(options)
+}
+
+/// Renders an error and its whole source chain, for disclosure assertions.
+fn full_text(err: &PreflightError) -> String {
+    let mut text = err.to_string();
+    let mut src = std::error::Error::source(err);
+    while let Some(e) = src {
+        text.push_str(" | ");
+        text.push_str(&e.to_string());
+        src = e.source();
+    }
+    text
 }
 
 // ------------------------------------------------------ ND_CONFIGFILE rule
@@ -193,6 +213,7 @@ fn configfile_env_must_be_a_regular_file() {
     let result = resolve_config_file(
         None,
         Some(&lookup(env_of(&[("ND_CONFIGFILE", dir.to_str().unwrap())]))),
+        sb.root(),
     );
     let err = match result {
         Err(e) => e,
@@ -224,6 +245,261 @@ fn empty_flag_value_falls_through_to_env_then_defaults() {
     assert_eq!(out.config.port, 4533);
 }
 
+/// A flag-named path that does not exist is fatal (Go fatals at
+/// `viper.ReadInConfig` when `cfgFile` is set), and the target must stay
+/// absent — a fatal startup must not leave a config file behind.
+#[test]
+fn missing_flag_config_path_is_fatal_and_stays_absent() {
+    let sb = Sandbox::new("flagmissing");
+    sb.dir("music");
+    let ghost = sb.join("nope.toml");
+    assert!(!ghost.exists());
+
+    let err = run(Some(ghost.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("an explicitly requested config file that cannot be read must be fatal");
+    assert!(
+        matches!(err, PreflightError::ConfigFileUnreadable { .. }),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("cannot be read"));
+    assert!(
+        !ghost.exists(),
+        "resolution must not create the missing config file"
+    );
+}
+
+/// A flag-named directory is fatal with the same class, and no `ND_CONFIGFILE`
+/// fallback is attempted.
+#[test]
+fn flag_config_path_must_be_a_regular_file() {
+    let sb = Sandbox::new("flagdir");
+    let dir = sb.dir("not-a-file");
+    let music = sb.dir("music");
+    let real = sb.file("real.toml", &toml_with(music.to_str().unwrap(), 4700));
+
+    let err = run(
+        Some(dir.to_str().unwrap()),
+        Some(sb.root()),
+        &[("ND_CONFIGFILE", real.to_str().unwrap())],
+    )
+    .expect_err("a directory cannot be an explicitly requested config file");
+    assert!(
+        matches!(err, PreflightError::ConfigFileUnreadable { .. }),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("not a regular file"));
+}
+
+// ----------------------------------------- one cwd anchor for every path
+
+/// The injected startup cwd differs from the real process cwd, and the config
+/// file inside it has a name that exists nowhere else: a **relative flag**
+/// value must select that file and its non-default setting must apply.
+#[test]
+fn relative_flag_path_is_selected_from_the_injected_startup_cwd() {
+    let sb = Sandbox::new("anchorflag");
+    let startup = sb.dir("startup");
+    // Uniquely named so a fall-through to the real process cwd cannot succeed.
+    let name = "nd-cli-anchor-flag-only.toml";
+    sb.file(
+        &format!("startup/{name}"),
+        &toml_with(sb.dir("startup/music").to_str().unwrap(), 4711),
+    );
+    assert!(!Path::new(name).exists(), "test premise: unique name");
+
+    let out = run(Some(name), Some(&startup), &[])
+        .expect("relative flag path must resolve against the injected startup cwd");
+
+    assert_eq!(out.config_source, ConfigSource::Flag);
+    assert_eq!(
+        out.config.port, 4711,
+        "the anchored file's setting must apply"
+    );
+    assert_eq!(
+        PathBuf::from(&out.config.config_file),
+        canonical(&startup.join(name)),
+        "the flag file must be the one under the startup cwd"
+    );
+    assert_eq!(out.startup_cwd, canonical(&startup));
+}
+
+/// Same anchor for a **relative `ND_CONFIGFILE`** value: it selects the
+/// uniquely named file under the injected startup cwd, its setting applies, and
+/// the relative music root inside it resolves against that same anchor.
+#[test]
+fn relative_env_path_is_selected_from_the_injected_startup_cwd() {
+    let sb = Sandbox::new("anchorenv");
+    let startup = sb.dir("startup");
+    let name = "nd-cli-anchor-env-only.toml";
+    sb.file(
+        &format!("startup/{name}"),
+        "MusicFolder = \"music\"\nPort = 4722\n",
+    );
+    sb.dir("startup/music");
+    assert!(!Path::new(name).exists(), "test premise: unique name");
+
+    let out = run(None, Some(&startup), &[("ND_CONFIGFILE", name)])
+        .expect("relative ND_CONFIGFILE must resolve against the injected startup cwd");
+
+    assert_eq!(out.config_source, ConfigSource::Env);
+    assert_eq!(
+        out.config.port, 4722,
+        "the anchored file's setting must apply"
+    );
+    assert_eq!(
+        PathBuf::from(&out.config.config_file),
+        canonical(&startup.join(name)),
+        "the env file must be the one under the startup cwd"
+    );
+    assert_eq!(out.music_root, canonical(&startup.join("music")));
+}
+
+/// The anchor is shared with the music root: a relative root resolves under the
+/// startup cwd, and a root that exists nowhere under it is reported missing and
+/// never created.
+#[test]
+fn relative_music_root_resolves_from_the_same_anchor() {
+    let sb = Sandbox::new("anchorroot");
+    let startup = sb.dir("startup");
+    let cfg = sb.file("startup/conf.toml", "MusicFolder = \"music\"\n");
+    let music = sb.dir("startup/music");
+
+    let out = run(Some(cfg.to_str().unwrap()), Some(&startup), &[])
+        .expect("the root must resolve from the startup cwd");
+    assert_eq!(out.music_root, canonical(&music));
+
+    let empty = sb.dir("startup-empty");
+    let cfg2 = sb.file("startup-empty/conf.toml", "MusicFolder = \"music\"\n");
+    let err = run(Some(cfg2.to_str().unwrap()), Some(&empty), &[])
+        .expect_err("no music root under the startup cwd must be fatal");
+    assert!(
+        matches!(err, PreflightError::MusicRootMissing { .. }),
+        "{err:?}"
+    );
+    assert!(!empty.join("music").exists(), "the root is never created");
+}
+
+/// An unresolvable startup cwd is fatal and names that cwd.
+#[test]
+fn unresolved_startup_cwd_is_fatal() {
+    let sb = Sandbox::new("cwdunresolved");
+    let missing = sb.join("no-such-dir");
+
+    let err = run(Some("conf.toml"), Some(&missing), &[])
+        .expect_err("an unresolvable startup cwd must be fatal");
+    match err {
+        PreflightError::StartupCwdUnresolved { path, .. } => {
+            assert_eq!(path, missing.to_string_lossy());
+        }
+        other => panic!("expected StartupCwdUnresolved, got {other:?}"),
+    }
+}
+
+/// A path whose name carries invalid UTF-8 bytes must never reach the loader
+/// through a lossy conversion: `to_string_lossy` rewrites the bad byte to
+/// U+FFFD, so a sibling directory *literally named* with that character would
+/// be loaded instead of failing. Both tiers must refuse, and neither config may
+/// be read.
+///
+/// Some filesystems (macOS/APFS) reject non-UTF8 names outright with
+/// `EILLEGAL_BYTE_SEQUENCE`, so creation is the precondition; when the platform
+/// refuses to create the directory the case degrades to an explicit, loud skip
+/// rather than a silent pass.
+#[cfg(unix)]
+#[test]
+fn non_utf8_config_path_is_refused_instead_of_loading_the_sibling() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let sb = Sandbox::new("nonutf8");
+    let bad = sb.root().join(std::ffi::OsStr::from_bytes(b"cfg-\xff-dir"));
+    if let Err(e) = std::fs::create_dir(&bad) {
+        if e.raw_os_error() == Some(41 /* EILLEGAL_BYTE_SEQUENCE */) || e.raw_os_error() == Some(92)
+        {
+            eprintln!(
+                "SKIP non_utf8_config_path_is_refused: this filesystem refuses to \
+                 create non-UTF8 names ({}); the checked conversion stays uncovered here",
+                e
+            );
+            return;
+        }
+        panic!("create invalid-byte directory: {e}");
+    }
+
+    // The config inside the invalid-byte directory, and the sibling a lossy
+    // conversion would silently name — each with a distinct non-default port so
+    // loading either one is observable.
+    std::fs::write(
+        bad.join("conf.toml"),
+        "MusicFolder = \"music\"\nPort = 4788\n",
+    )
+    .unwrap();
+    std::fs::create_dir(bad.join("music")).unwrap();
+
+    let lossy = sb.root().join("cfg-\u{fffd}-dir");
+    assert!(
+        lossy != bad,
+        "test premise: the lossy name is a different path"
+    );
+    std::fs::create_dir(&lossy).expect("create replacement-character sibling");
+    std::fs::write(
+        lossy.join("conf.toml"),
+        "MusicFolder = \"music\"\nPort = 4799\n",
+    )
+    .unwrap();
+    std::fs::create_dir(sb.root().join("cfg-\u{fffd}-dir/music")).unwrap();
+
+    // The invalid-byte directory is itself a usable startup cwd: it exists and
+    // canonicalizes, so the refusal must come from the path conversion.
+    let err = run(Some("conf.toml"), Some(&bad), &[])
+        .expect_err("a flag path with invalid bytes must be refused");
+    assert!(
+        matches!(
+            err,
+            PreflightError::ConfigPathNotUtf8 {
+                tier: "--config flag"
+            }
+        ),
+        "{err:?}"
+    );
+    let text = format!("{} | {:?}", full_text(&err), err);
+    assert!(
+        !text.contains("4788"),
+        "the refused config must not be read: {text}"
+    );
+    assert!(
+        !text.contains("4799"),
+        "the lossy sibling must not be loaded: {text}"
+    );
+    assert!(
+        !text.contains('\u{fffd}'),
+        "lossy path text must not be reported: {text}"
+    );
+
+    let err = run(None, Some(&bad), &[("ND_CONFIGFILE", "conf.toml")])
+        .expect_err("an env path with invalid bytes must be refused");
+    assert!(
+        matches!(
+            err,
+            PreflightError::ConfigPathNotUtf8 {
+                tier: "ND_CONFIGFILE"
+            }
+        ),
+        "{err:?}"
+    );
+    let text = format!("{} | {:?}", full_text(&err), err);
+    assert!(
+        !text.contains("4788"),
+        "the refused config must not be read: {text}"
+    );
+    assert!(
+        !text.contains("4799"),
+        "the lossy sibling must not be loaded: {text}"
+    );
+
+    // Refusing must not read, create, or remove anything.
+    assert!(bad.join("conf.toml").exists() && lossy.join("conf.toml").exists());
+}
+
 // ------------------------------------------------------ invalid config first
 
 /// Unknown keys are fatal, and the failure precedes any filesystem creation.
@@ -233,10 +509,9 @@ fn invalid_config_is_fatal_before_any_creation() {
     let data = sb.join("data");
     let cfg = sb.file("conf.toml", "[Whatever]\nFoo = \"bar\"\n");
 
-    let map = env_of(&[]);
     let out = preflight(PreflightOptions {
         config_file: Some(cfg.to_str().unwrap()),
-        env: Some(Box::new(lookup(map))),
+        env: Some(Box::new(lookup(env_of(&[])))),
         startup_cwd: Some(sb.root()),
         effective_uid: Some(1000),
         allow_zero_port: false,
@@ -244,8 +519,8 @@ fn invalid_config_is_fatal_before_any_creation() {
     .expect_err("unknown key must be fatal");
 
     match &out {
-        PreflightError::ConfigLoad { message, .. } => {
-            assert!(message.contains("whatever"), "got {message}");
+        PreflightError::ConfigLoad { class, .. } => {
+            assert_eq!(*class, ConfigErrorClass::UnknownKey, "got {out:?}");
         }
         other => panic!("expected ConfigLoad, got {other:?}"),
     }
@@ -255,9 +530,10 @@ fn invalid_config_is_fatal_before_any_creation() {
     );
 }
 
-/// A malformed line carrying a credential must not echo the credential.
+/// A malformed line carrying a credential must not echo the credential, but
+/// must still name the class and a numeric byte offset from the parse span.
 #[test]
-fn malformed_config_error_does_not_leak_the_offending_value() {
+fn malformed_config_error_reports_class_and_location_not_the_line() {
     let sb = Sandbox::new("secretline");
     // Unquoted value on a password line: toml renders that line in its error.
     let cfg = sb.file(
@@ -274,43 +550,227 @@ fn malformed_config_error_does_not_leak_the_offending_value() {
     })
     .expect_err("unquoted TOML value must be fatal");
 
-    let text = err.to_string();
     assert!(matches!(err, PreflightError::ConfigLoad { .. }));
+    let text = full_text(&err);
     assert!(
         !text.contains("s3cret-not-a-literal"),
         "config error must not quote the source line: {text}"
     );
     assert!(
-        text.contains("invalid string") && text.contains("column 30"),
-        "position and rule still reported: {text}"
+        !text.contains("DevAutoCreateAdminPassword"),
+        "the offending key name must not be echoed either: {text}"
+    );
+    assert!(
+        text.contains("not valid TOML"),
+        "class still reported: {text}"
+    );
+    assert!(
+        text.contains("at byte offset 29"),
+        "offset from the parse span still reported: {text}"
+    );
+    assert!(
+        !text.contains(" at line") && !text.contains("column"),
+        "no line/column is derived, since that would require re-reading: {text}"
+    );
+    assert!(
+        text.contains("conf.toml"),
+        "which file failed is still reported: {text}"
+    );
+    assert!(
+        std::error::Error::source(&err).is_none(),
+        "no source: the upstream toml error must not be reachable"
     );
 }
 
-/// A validation error that echoes a configured URL must not leak its
-/// userinfo (Go prints the whole BaseURL/LogoutURL on rejection).
+/// A **wrong-type numeric password** is the canonical leak canary: `nd-conf`
+/// reports it as `Invalid` with the raw value embedded, so a forwarding
+/// sanitizer would print the credential.
 #[test]
-fn url_error_scrubs_userinfo() {
+fn wrong_type_numeric_password_is_not_echoed() {
+    let sb = Sandbox::new("numsecret");
+    // A TOML integer: the loader reaches its serde type check and embeds the
+    // raw value in `ConfigError::Invalid`, which is the leak being prevented.
+    let canary = "4242424242";
+    let cfg = sb.file(
+        "conf.toml",
+        &format!("MusicFolder = \"/tmp\"\nDevAutoCreateAdminPassword = {canary}\n"),
+    );
+
+    let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("a numeric password is a type error and must be fatal");
+    let class = match &err {
+        PreflightError::ConfigLoad { class, .. } => *class,
+        other => panic!("expected ConfigLoad, got {other:?}"),
+    };
+    assert_eq!(class, ConfigErrorClass::InvalidValue);
+
+    // Display, Debug and the source chain are all checked: a nested source
+    // would re-expose the loader's raw text.
+    for rendered in [full_text(&err), format!("{err:?}")] {
+        assert!(!rendered.contains(canary), "canary leaked in {rendered}");
+        assert!(
+            !rendered.contains("dev_auto_create_admin_password"),
+            "field name leaked: {rendered}"
+        );
+    }
+    assert!(err.to_string().contains("failed validation"));
+    assert!(std::error::Error::source(&err).is_none());
+}
+
+/// The same canary on the secret-bearing `LastFM` fields, whose values `Config`
+/// also derives `Debug` over.
+#[test]
+fn wrong_type_secret_fields_are_not_echoed() {
+    let sb = Sandbox::new("numlastfm");
+    let cfg = sb.file(
+        "conf.toml",
+        concat!(
+            "MusicFolder = \"/tmp\"\n",
+            "[LastFm]\n",
+            "ApiKey = 99887766\n",
+            "Secret = 55443322\n",
+        ),
+    );
+
+    let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("numeric API key/secret must be fatal");
+    let text = format!("{} | {:?}", full_text(&err), err);
+    for value in ["99887766", "55443322", "last_fm.api_key", "last_fm.secret"] {
+        assert!(!text.contains(value), "leaked {value} in {text}");
+    }
+}
+
+/// An **invalid env value** is the other leak path: `ND_*` values flow into the
+/// same `Invalid` message, so an injected credential-bearing env value must
+/// never surface.
+#[test]
+fn invalid_env_value_is_not_echoed() {
+    let sb = Sandbox::new("badenv");
+    let music = sb.dir("music");
+    let cfg = sb.file("conf.toml", &toml_with(music.to_str().unwrap(), 4650));
+    let canary = "canary-purge-value-not-printed";
+
+    let err = run(
+        Some(cfg.to_str().unwrap()),
+        Some(sb.root()),
+        &[("ND_SCANNER_PURGEMISSING", canary)],
+    )
+    .expect_err("an invalid Scanner.PurgeMissing must be fatal");
+    let class = match &err {
+        PreflightError::ConfigLoad { class, .. } => *class,
+        other => panic!("expected ConfigLoad, got {other:?}"),
+    };
+    assert_eq!(class, ConfigErrorClass::InvalidValue);
+
+    let text = format!("{} | {:?}", full_text(&err), err);
+    assert!(
+        !text.contains(canary),
+        "env value leaked into the error: {text}"
+    );
+    assert!(std::error::Error::source(&err).is_none());
+}
+
+/// A validation error whose upstream text embeds a full URL with credentials
+/// must report only the class — the previous userinfo-scrubbing sanitizer is
+/// replaced by withholding the value entirely.
+#[test]
+fn url_with_userinfo_is_not_echoed_at_all() {
     let sb = Sandbox::new("userinfo");
     let cfg = sb.file(
         "conf.toml",
         "[ExtAuth]\nLogoutURL = \"ftp://user:pw@example.com\"\n",
     );
 
-    let err = preflight(PreflightOptions {
-        config_file: Some(cfg.to_str().unwrap()),
-        env: Some(Box::new(lookup(env_of(&[])))),
-        startup_cwd: Some(sb.root()),
-        effective_uid: Some(1000),
-        allow_zero_port: false,
-    })
-    .expect_err("a non-http LogoutURL must be fatal");
-
-    let text = err.to_string();
+    let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("a non-http LogoutURL must be fatal");
     assert!(matches!(err, PreflightError::ConfigLoad { .. }));
-    assert!(!text.contains("pw@example"), "userinfo leaked: {text}");
+    let text = format!("{} | {:?}", full_text(&err), err);
+    for secret in ["pw@", "user:", "ftp://", "example.com"] {
+        assert!(
+            !text.contains(secret),
+            "URL material leaked {secret}: {text}"
+        );
+    }
     assert!(
-        text.contains("***@example"),
-        "scrubbed authority expected: {text}"
+        text.contains("failed validation"),
+        "class still useful: {text}"
+    );
+}
+
+/// The same for `BaseURL`, whose rejection text embeds the whole value —
+/// including userinfo when the scheme is missing.
+#[test]
+fn base_url_with_userinfo_is_not_echoed() {
+    let sb = Sandbox::new("baseurl");
+    let cfg = sb.file(
+        "conf.toml",
+        "MusicFolder = \"/tmp\"\nBaseURL = \"canaryuser:canarypw@canary.example\"\n",
+    );
+
+    let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("an invalid BaseURL must be fatal");
+    let text = format!("{} | {:?}", full_text(&err), err);
+    assert!(
+        !text.contains("canarypw") && !text.contains("canaryuser"),
+        "userinfo leaked: {text}"
+    );
+}
+
+/// An invalid crontab schedule and an invalid byte size both quote their value
+/// upstream; neither may surface.
+#[test]
+fn schedule_and_byte_size_values_are_not_echoed() {
+    let sb = Sandbox::new("schedbytes");
+    let cases: [(&str, &str); 2] = [
+        (
+            "sched.toml",
+            "MusicFolder = \"/tmp\"\n[Scanner]\nSchedule = \"canary-not-cron\"\n",
+        ),
+        (
+            "bytes.toml",
+            "MusicFolder = \"/tmp\"\nMaxImageSize = \"canary-bogus\"\n",
+        ),
+    ];
+    for (name, contents) in cases {
+        let cfg = sb.file(name, contents);
+        let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[]).unwrap_err();
+        let class = match &err {
+            PreflightError::ConfigLoad { class, .. } => *class,
+            other => panic!("{name}: expected ConfigLoad, got {other:?}"),
+        };
+        assert_eq!(class, ConfigErrorClass::InvalidValue, "{name}");
+        let text = format!("{} | {:?}", full_text(&err), err);
+        assert!(
+            !text.contains("canary-not-cron") && !text.contains("canary-bogus"),
+            "{name} leaked its value: {text}"
+        );
+    }
+}
+
+/// The config file path is still reported when the default tier ran, and the
+/// A root-level `ND_` duplicate is reported as its own class, and neither key
+/// name is echoed.
+#[test]
+fn duplicate_nd_key_class_is_reported_without_key_text() {
+    let sb = Sandbox::new("dupnd");
+    let cfg = sb.file("conf.toml", "Port = 1\nND_Port = 2\n");
+
+    let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("a canonical key alongside its ND_ spelling must be fatal");
+    match &err {
+        PreflightError::ConfigLoad { class, path, .. } => {
+            assert_eq!(*class, ConfigErrorClass::DuplicateNdKey);
+            assert_eq!(path, cfg.to_str().unwrap(), "file still named");
+        }
+        other => panic!("expected ConfigLoad, got {other:?}"),
+    }
+    assert!(err.to_string().contains("ND_-prefixed"));
+    // The loader's upstream text names both keys (`'ND_PORT'` and `'Port'`);
+    // neither may survive here.
+    let text = format!("{} | {:?}", full_text(&err), err);
+    assert!(
+        !text.contains("ND_PORT") && !text.contains("'Port'"),
+        "leaked: {text}"
     );
 }
 
@@ -467,9 +927,45 @@ fn tls_and_unix_socket_are_refused_before_listening() {
     let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
         .expect_err("a unix socket address cannot be silently served over TCP");
     assert!(
-        matches!(err, PreflightError::UnsupportedUnixSocket { .. }),
+        matches!(err, PreflightError::UnsupportedUnixSocket),
         "{err:?}"
     );
+}
+
+/// The unsupported-socket error carries no address at all, so neither a
+/// URL-shaped address nor its userinfo can reach `Display` or `Debug`.
+#[test]
+fn unix_socket_error_carries_no_address() {
+    let sb = Sandbox::new("addrsecret");
+    let music = sb.dir("music");
+    let cfg = sb.file(
+        "unix.toml",
+        &format!(
+            "MusicFolder = \"{}\"\nAddress = \"unix://addruser:addrpw@host/x?token=socket-canary\"\n",
+            music.to_str().unwrap()
+        ),
+    );
+
+    let err = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[])
+        .expect_err("a unix address must be refused");
+    assert!(
+        matches!(err, PreflightError::UnsupportedUnixSocket),
+        "{err:?}"
+    );
+    let text = format!("{} | {:?}", full_text(&err), err);
+    assert!(
+        !text.contains("addrpw") && !text.contains("addruser"),
+        "address userinfo leaked: {text}"
+    );
+    assert!(
+        !text.contains("socket-canary"),
+        "address query value leaked: {text}"
+    );
+    assert!(
+        !text.contains("host/x") && !text.contains("unix://"),
+        "the raw address must not be carried at all: {text}"
+    );
+    assert!(text.contains("unix socket"), "class still reported: {text}");
 }
 
 // ----------------------------------------------------- root-user restriction
@@ -570,11 +1066,11 @@ fn relative_root_resolves_from_supplied_cwd() {
     assert_eq!(out.startup_cwd, canonical(sb.root()));
 }
 
-/// The process cwd is never consulted when a cwd is supplied — a relative
-/// root must resolve under the injected cwd even though the real cwd has no
-/// such directory.
+/// The real process cwd is never consulted for the music root: the relative
+/// root resolves under the injected anchor even though the real cwd has no such
+/// directory.
 #[test]
-fn relative_root_never_uses_the_process_cwd() {
+fn relative_root_resolves_from_anchor_not_process_cwd() {
     let sb = Sandbox::new("proccwd");
     let music = sb.dir("deep/music");
     let cfg = sb.file("conf.toml", "MusicFolder = \"deep/music\"\n");
@@ -793,6 +1289,26 @@ fn unicode_root_roundtrips() {
     assert_eq!(out.music_root, canonical(&rel));
 }
 
+/// A Unicode path component survives the anchor, so relative config paths and
+/// relative roots behave identically under non-ASCII names.
+#[test]
+fn unicode_anchor_roundtrips() {
+    let sb = Sandbox::new("unicodecwd");
+    let startup = sb.dir("startup-é");
+    std::fs::write(
+        startup.join("conf.toml"),
+        "MusicFolder = \"music\"\nPort = 4733\n",
+    )
+    .unwrap();
+    let music = sb.dir("startup-é/music");
+
+    let out = run(None, Some(&startup), &[("ND_CONFIGFILE", "conf.toml")])
+        .expect("Unicode relative config path must resolve from the Unicode startup cwd");
+    assert_eq!(out.config.port, 4733);
+    assert_eq!(out.music_root, canonical(&music));
+    assert!(out.config.config_file.contains("startup-é"));
+}
+
 /// An empty configured root is refused before any path work.
 #[test]
 fn empty_music_folder_is_refused() {
@@ -843,6 +1359,34 @@ fn outcome_exposes_paths_and_checked_seconds() {
     );
 }
 
+/// A relative `DataFolder` resolves against the same anchor, and the loader's
+/// relative `db_path` string is handed on verbatim.
+#[test]
+fn relative_data_folder_resolves_from_the_anchor() {
+    let sb = Sandbox::new("reldata");
+    let startup = sb.dir("startup");
+    let cfg = sb.file(
+        "startup/conf.toml",
+        "MusicFolder = \"music\"\nDataFolder = \"data\"\n",
+    );
+    sb.dir("startup/music");
+
+    let out = run(Some(cfg.to_str().unwrap()), Some(&startup), &[])
+        .expect("relative DataFolder must resolve from the anchor");
+    assert_eq!(out.data_folder, canonical(&startup).join("data"));
+    // `db_path` is the loader's verbatim string: a relative DataFolder yields a
+    // relative SQLite string, and D-OPEN owns that resolution.
+    assert!(
+        out.db_path.starts_with("data"),
+        "db_path is the loader's verbatim string: {}",
+        out.db_path
+    );
+    assert!(
+        !out.data_folder.exists(),
+        "the data folder is reported, never created"
+    );
+}
+
 /// `Debug` on the outcome must not expose secret-bearing config fields.
 #[test]
 fn debug_never_exposes_secret_config_fields() {
@@ -875,6 +1419,10 @@ fn debug_never_exposes_secret_config_fields() {
     }
     assert!(text.contains("music_root"), "non-secret facts still shown");
     assert!(
+        !text.contains("address"),
+        "Debug must omit the caller-supplied address entirely: {text}"
+    );
+    assert!(
         text.contains("config_source"),
         "resolution facts still shown"
     );
@@ -893,6 +1441,81 @@ fn debug_never_exposes_secret_config_fields() {
         "options Debug must not print env values"
     );
     assert!(text.contains("<injected lookup>"));
+}
+
+/// `DbPath` is a caller-supplied SQLite URI whose query can carry credentials
+/// (`DbPath = "file:x.db?password=…"`). `Debug` omits `db_path` entirely
+/// rather than printing part of it, while the field itself stays verbatim for
+/// D-OPEN.
+#[test]
+fn outcome_debug_omits_db_path_entirely() {
+    let sb = Sandbox::new("dburi");
+    let music = sb.dir("music");
+    let data = sb.dir("data");
+    let cfg = sb.file(
+        "conf.toml",
+        &format!(
+            "MusicFolder = \"{}\"\nDataFolder = \"{}\"\n",
+            music.to_str().unwrap(),
+            data.to_str().unwrap()
+        ),
+    );
+
+    let out = run(
+        Some(cfg.to_str().unwrap()),
+        Some(sb.root()),
+        &[("ND_DBPATH", "file:/tmp/nd.db?password=db-canary-pw")],
+    )
+    .unwrap_or_else(|e| panic!("a configured DbPath must preflight: {e:?}"));
+
+    // The verbatim URI is still handed to later bootstrap (D-OPEN contract).
+    assert!(
+        out.db_path.contains("password=db-canary-pw"),
+        "db_path must stay verbatim: {}",
+        out.db_path
+    );
+
+    let text = format!("{out:?}");
+    assert!(
+        !text.contains("db-canary-pw"),
+        "Debug leaked the DB URI query: {text}"
+    );
+    assert!(
+        !text.contains("db_path"),
+        "Debug must not print the db_path field at all: {text}"
+    );
+    assert!(
+        !text.contains("/tmp/nd.db"),
+        "Debug must not print even the path half of the URI: {text}"
+    );
+}
+
+/// `Config` itself derives `Debug` over secrets and over `DbPath`, so this
+/// documents the boundary the preflight must respect: the outcome's `Debug` is
+/// the only redacted view, and callers must not print `config` directly.
+#[test]
+fn config_debug_is_the_unredacted_boundary_documented_by_the_module() {
+    let sb = Sandbox::new("configdebug");
+    let music = sb.dir("music");
+    let cfg = sb.file(
+        "conf.toml",
+        &format!(
+            "MusicFolder = \"{}\"\nDbPath = \"file:/tmp/nd.db?password=db-canary-pw\"\n",
+            music.to_str().unwrap()
+        ),
+    );
+
+    let out = run(Some(cfg.to_str().unwrap()), Some(sb.root()), &[]).unwrap();
+    // The outcome is safe…
+    assert!(
+        !format!("{out:?}").contains("db-canary-pw"),
+        "outcome Debug must withhold the query"
+    );
+    // …while `Config` is not, which is why the outcome never delegates to it.
+    assert!(
+        format!("{:?}", out.config).contains("db-canary-pw"),
+        "test premise: Config's derived Debug is unredacted"
+    );
 }
 
 /// A successful preflight leaves the filesystem exactly as it found it:
@@ -916,6 +1539,30 @@ fn successful_preflight_creates_nothing() {
         out.data_folder.exists(),
         "default DataFolder is the cwd, which exists"
     );
+}
+
+/// A failed config load also creates nothing, and reports the default tier as
+/// `(defaults)` rather than an empty path, so the log line stays actionable.
+#[test]
+fn failed_default_tier_load_names_the_tier_and_creates_nothing() {
+    let sb = Sandbox::new("defaultsfail");
+    let before = count_entries(sb.root());
+
+    let err = run(
+        None,
+        Some(sb.root()),
+        &[("ND_SCANNER_PURGEMISSING", "canary-value")],
+    )
+    .expect_err("an invalid env value must be fatal");
+    match &err {
+        PreflightError::ConfigLoad { path, class, .. } => {
+            assert_eq!(path, "(defaults)", "tier named rather than blank: {err:?}");
+            assert_eq!(*class, ConfigErrorClass::InvalidValue);
+        }
+        other => panic!("expected ConfigLoad, got {other:?}"),
+    }
+    assert!(!full_text(&err).contains("canary-value"));
+    assert_eq!(count_entries(sb.root()), before, "read-only on failure too");
 }
 
 fn count_entries(root: &Path) -> usize {
