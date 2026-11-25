@@ -9,8 +9,13 @@
 //! boot-value validation, startup-cwd capture, music-root validation) with no
 //! side effects. `main.rs` stays empty: the binary entrypoint belongs to
 //! BOOT-03/BOOT-04.
+//!
+//! BOOT-01 increment B adds the signing-property codec ([`signing_keys`]): the
+//! Go-compatible ciphertext wire format for `JWTSecret`/`JWTPublicSecret` only.
+//! No database, property table, or boot wiring is involved.
 
 pub mod preflight;
+pub mod signing_keys;
 
 /// Scaffold marker: the public surface authored by #33 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 33;

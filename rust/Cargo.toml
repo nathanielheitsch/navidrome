@@ -67,6 +67,15 @@ chrono = "0.4"
 uuid = { version = "^1", features = ["v4"] }
 base64 = "0.22"
 md5 = "^0.1"
+# BOOT-01 increment B (signing-property codec): `sha2` backs the Go `getEncKey`
+# derivation (`core/auth/auth.go:198-205`); already locked via nd-utils/nd-db.
+sha2 = "^0.10"
+# BOOT-01 increment B: vetted AES-256-GCM for the signing-property wire format
+# (docs/rust-port/credentials.md §3). `getrandom` is off: nonces come from
+# `rand::rngs::OsRng`, whose getrandom is already locked via rand/rand_core, so
+# the AEAD crate adds no entropy dependency of its own. nd-cli is the only
+# consumer for now.
+aes-gcm = { version = "^0.11", default-features = false, features = ["aes", "alloc"] }
 # Safe killpg wrapper for the ffmpeg process-group kill (#07/#15). Already in
 # Cargo.lock via tempfile; the `process` feature gates rustix::process.
 rustix = { version = "^1", features = ["process"] }

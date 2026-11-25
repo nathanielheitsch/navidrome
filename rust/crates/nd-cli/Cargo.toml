@@ -22,6 +22,21 @@ nd-conf = { path = "../nd-conf" }
 thiserror = { workspace = true }
 # geteuid for the EnforceNonRootUser check (`process` feature, already locked).
 rustix = { workspace = true }
+# BOOT-01 increment B (signing-property codec): `sha2`, `base64` and `rand` are
+# already locked through nd-utils/nd-auth/nd-id, so `--locked` builds gain only
+# the AES-GCM subtree documented in the workspace manifest — no new entropy or
+# hashing package. `rand::rngs::OsRng` (fallible OS entropy, via rand's already
+# enabled `os_rng` feature) supplies nonces and generated candidates. Version
+# spelled like the other consumers do (nd-utils/Cargo.toml:12,
+# nd-db/Cargo.toml:34), since sha2 is not a workspace dependency.
+sha2 = "^0.10"
+base64 = { workspace = true }
+rand = { workspace = true }
+aes-gcm = { workspace = true }
 
 [dev-dependencies]
 tempfile = "^3"
+# The signing-property tests assert the exact StdEncoding wire format, so they
+# decode/encode with the same crate the library uses rather than a hand-rolled
+# base64 implementation that could itself be wrong.
+base64 = { workspace = true }
