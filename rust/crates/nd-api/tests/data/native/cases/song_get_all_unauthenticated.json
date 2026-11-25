@@ -1,0 +1,23 @@
+{
+  "case_id": "song_get_all_unauthenticated",
+  "origin": "in-process Go native router capture (net/http/httptest recorder; no listener, no network, no production binary)",
+  "behavior_class": "auth middleware (unauthenticated protected collection)",
+  "request_method": "GET",
+  "request_path": "/api/song",
+  "auth_mode": "none",
+  "status": 401,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body_kind": "json-object",
+  "body_length": 29,
+  "body_sha256": "4c9f9643d38f4f2c6dc4dbaba7f8b1a012fa042b680ede1f57af066a4af16f1e",
+  "body": "{\"error\":\"Not authenticated\"}",
+  "provenance": {
+    "route_registration": "server/nativeapi/native_api.go:71 (rx(r, \"/song\", api.ds.MediaFile(), false)) inside the protected Group at :66; rx() itself is native_api.go:106-121 (r.Get(\"/\") -\u003e rest.GetAll, /{id} -\u003e rest.Get)",
+    "auth_middleware": "server/auth.go:272-283 Authenticator -\u003e rest.RespondWithError(401, \"Not authenticated\") at :277; outer server.JWTVerifier is server/auth.go:186-188 (jwtauth.Verify with tokenFromHeader :190-197)",
+    "error_envelope": "github.com/deluan/rest@v1.0.1 render.go:9-12 RespondWithError -\u003e {\"error\": message}; RespondWithJSON (Content-Type application/json) at render.go:15-24",
+    "assertion_basis": "server/nativeapi/native_api_song_test.go:163-168 'returns unauthorized' (unauthenticated GET /song)"
+  },
+  "verdict": "observed-matches-source-derived-spec"
+}

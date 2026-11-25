@@ -1,0 +1,44 @@
+{
+  "kind": "api00-native-corpus-first-slice",
+  "origin": "in-process Go native router capture (net/http/httptest recorder; no listener, no network, no production binary)",
+  "behavior": "auth middleware + unknown route only (NOT authenticated song behavior)",
+  "production_binary_run": false,
+  "listener_opened": false,
+  "authenticated": false,
+  "network_used": false,
+  "corpus_scope": "first-slice",
+  "provenance": {
+    "source_ref": "b95e12ed5ff4ea8661edb1752c6e8507cc8fbbb2",
+    "source_ref_tree": "9b0f7c36857fa4a383eec5ab72367b6f0d9f9ced",
+    "go_source_sha256": "2f392437582502dfd6f2bdcf8b9acf72c5eefd36c4cc1fc6683dda40050905ab",
+    "go_version": "go1.27.4",
+    "build_tags": "netgo sqlite_fts5",
+    "sqlite_runtime": "3.53.4",
+    "os": "darwin",
+    "arch": "arm64",
+    "toolchain": "darwin/arm64 go1.27.4",
+    "module_pins": [
+      "go.mod: github.com/deluan/rest v1.0.1",
+      "go.sum: github.com/deluan/rest v1.0.1 h1:Enuzzfd88C1/lG6Jqr2NgRreJoClaFuWcOuspeKWHZ8=",
+      "go.mod: github.com/go-chi/chi/v5 v5.3.2",
+      "go.sum: github.com/go-chi/chi/v5 v5.3.2 h1:5YQkICvTCSZ25hoRsyJazN0scjzKGiu4VAUc7H1o1nY=",
+      "go.mod: github.com/go-chi/jwtauth/v5 v5.4.0",
+      "go.sum: github.com/go-chi/jwtauth/v5 v5.4.0 h1:Ieh0xMJsFvqylqJ02/mQHKzbbKO9DYNBh4DPKCwTwYI=",
+      "go.mod: github.com/lestrrat-go/jwx/v3 v3.3.0",
+      "go.sum: github.com/lestrrat-go/jwx/v3 v3.3.0 h1:OXcYvQOQ7cxWzeZ/Q9sYk8ABe/kCSI371WmuACiCT+4=",
+      "go.mod: github.com/mattn/go-sqlite3 v1.14.52",
+      "go.sum: github.com/mattn/go-sqlite3 v1.14.52 h1:wVbm2Qnf4OXkqhBTSPuCRZDRnxfbVrrmiCEroVdog8U=",
+      "go.mod: github.com/pressly/goose/v3 v3.28.0",
+      "go.sum: github.com/pressly/goose/v3 v3.28.0 h1:D2M+iL31GmpZxSHOhX8mqyqAT3CXnokUmm0eKoSP+Vc="
+    ],
+    "go_mod_sha256": "489cfe450381d569da03d68865be3b47105d1f87f51d0043fa23bba2a62c65e0",
+    "go_sum_sha256": "cedfbf4aeb3e89d0a9382a59bad5623d48e2931a739867eee09fd5e618bacdb9",
+    "synthetic_config_sha256": "a400adf6497e9544a617e1b7db64c60852fb5ca36a9a8fd8036d5d5a2bc7e6db"
+  },
+  "cases": [
+    "invalid_auth_token",
+    "song_get_all_unauthenticated",
+    "song_get_one_unauthenticated",
+    "unknown_route_unauthenticated"
+  ]
+}

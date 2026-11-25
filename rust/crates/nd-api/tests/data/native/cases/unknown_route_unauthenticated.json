@@ -1,0 +1,22 @@
+{
+  "case_id": "unknown_route_unauthenticated",
+  "origin": "in-process Go native router capture (net/http/httptest recorder; no listener, no network, no production binary)",
+  "behavior_class": "unknown route (unregistered native path)",
+  "request_method": "GET",
+  "request_path": "/api/no-such-route",
+  "auth_mode": "none",
+  "status": 404,
+  "response_headers": {
+    "content-type": "text/plain; charset=utf-8",
+    "x-content-type-options": "nosniff"
+  },
+  "body_kind": "text",
+  "body_length": 19,
+  "body_sha256": "b16e15764b8bc06c5c3f9f19bc8b99fa48e7894aa5a6ccdad65da49bbf564793",
+  "body": "404 page not found\n",
+  "provenance": {
+    "route_registration": "chi router with no matching pattern; the auth Group is entered only for registered prefixes, so an unregistered path never reaches Authenticator",
+    "delta_note": "Deliberate delta: an unknown native route yields plain-text 404, not the rest JSON error envelope."
+  },
+  "verdict": "observed-matches-source-derived-spec"
+}

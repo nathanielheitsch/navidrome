@@ -1,0 +1,21 @@
+{
+  "case_id": "invalid_auth_token",
+  "origin": "in-process Go native router capture (net/http/httptest recorder; no listener, no network, no production binary)",
+  "behavior_class": "auth middleware (unverifiable token)",
+  "request_method": "GET",
+  "request_path": "/api/song",
+  "auth_mode": "invalid_token",
+  "status": 401,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body_kind": "json-object",
+  "body_length": 29,
+  "body_sha256": "4c9f9643d38f4f2c6dc4dbaba7f8b1a012fa042b680ede1f57af066a4af16f1e",
+  "body": "{\"error\":\"Not authenticated\"}",
+  "provenance": {
+    "auth_middleware": "server/auth.go:186-188 JWTVerifier fails verification of the unsigned bearer (jwtauth.Verify -\u003e error in context, no panic), then server/auth.go:272-283 Authenticator finds no username via UsernameFromToken (:199-210) -\u003e ErrUnauthenticated -\u003e rest.RespondWithError(401, \"Not authenticated\") at :277",
+    "assertion_basis": "server/nativeapi/native_api_song_test.go:163-168"
+  },
+  "verdict": "observed-matches-source-derived-spec"
+}

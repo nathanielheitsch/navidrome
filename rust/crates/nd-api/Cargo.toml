@@ -7,3 +7,17 @@ license.workspace = true
 
 [lints]
 workspace = true
+
+# Dispatch 0 (docs/rust-port/subplans/post-api-00-queue.md): the native-corpus
+# integrity gate is test-only and adds no runtime dependency. Every crate below
+# is already locked in this workspace and already used by other members
+# (serde/serde_json via nd-db and nd-mapping, sha2 via nd-utils and nd-db,
+# tempfile via nd-cli and nd-utils), so `cargo test --locked` adds only
+# dependency edges for nd-api: Cargo.lock gains no new [[package]] entry.
+# The gate reads only the tracked corpus, so it needs no Git or Go inputs and
+# no sha1 (git-blob hashing lives in capture.sh, not here).
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "^0.10"
+tempfile = "^3"

@@ -1,0 +1,22 @@
+{
+  "case_id": "song_get_one_unauthenticated",
+  "origin": "in-process Go native router capture (net/http/httptest recorder; no listener, no network, no production binary)",
+  "behavior_class": "auth middleware (unauthenticated protected item)",
+  "request_method": "GET",
+  "request_path": "/api/song/capture-song-0000000000000000000000000001",
+  "auth_mode": "none",
+  "status": 401,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body_kind": "json-object",
+  "body_length": 29,
+  "body_sha256": "4c9f9643d38f4f2c6dc4dbaba7f8b1a012fa042b680ede1f57af066a4af16f1e",
+  "body": "{\"error\":\"Not authenticated\"}",
+  "provenance": {
+    "route_registration": "server/nativeapi/native_api.go:112-114 (rx() /{id} group -\u003e r.Get(\"/\") = rest.Get(repo))",
+    "auth_middleware": "server/auth.go:272-283 Authenticator -\u003e rest.RespondWithError(401, \"Not authenticated\") at :277",
+    "assertion_basis": "server/nativeapi/native_api_song_test.go:207-212 'returns unauthorized' (unauthenticated GET /song/{id})"
+  },
+  "verdict": "observed-matches-source-derived-spec"
+}

@@ -1,0 +1,79 @@
+{
+  "$schema_note": "Machine-readable request spec for capture.sh. This is a SPEC, not a capture: results land in rust/crates/nd-api/tests/data/native/cases/<case_id>.json. Cases here are the first slice of the API-00 corpus (docs/rust-port/subplans/boot-api.md:171-183), not the full corpus.",
+  "corpus_scope": "first-slice",
+  "route_prefix": "/api",
+  "oracle": "Go-native",
+  "source_ref": "b95e12ed5ff4ea8661edb1752c6e8507cc8fbbb2",
+  "source_ref_note": "Pinned ORIGINAL Go ref: the last commit touching the captured Go build inputs (server, core, persistence, conf, consts, model, utils, db, adapters, resources, ui, log, scheduler, plugins, go.mod, go.sum). It is NOT the harness/branch commit; HEAD moving on Rust/docs-only commits must not change it. Verified against the on-disk build inputs at run time.",
+  "behavior": "auth middleware + unknown route only (NOT authenticated song behavior)",
+  "requests": [
+    {
+      "case_id": "song_get_all_unauthenticated",
+      "method": "GET",
+      "path": "/api/song",
+      "auth": "none",
+      "expect_status": 401,
+      "expect_content_type": "application/json",
+      "provenance": {
+        "route_registration": "server/nativeapi/native_api.go:71 (rx(r, \"/song\", api.ds.MediaFile(), false)) inside the protected Group at :66; rx() itself is native_api.go:106-121 (r.Get(\"/\") -> rest.GetAll, /{id} -> rest.Get)",
+        "auth_middleware": "server/auth.go:272-283 Authenticator -> rest.RespondWithError(401, \"Not authenticated\") at :277; outer server.JWTVerifier is server/auth.go:186-188 (jwtauth.Verify with tokenFromHeader :190-197)",
+        "error_envelope": "github.com/deluan/rest@v1.0.1 render.go:9-12 RespondWithError -> {\"error\": message}; RespondWithJSON (Content-Type application/json) at render.go:15-24",
+        "assertion_basis": "server/nativeapi/native_api_song_test.go:163-168 'returns unauthorized' (unauthenticated GET /song)"
+      },
+      "behavior_class": "auth middleware (unauthenticated protected collection)"
+    },
+    {
+      "case_id": "song_get_one_unauthenticated",
+      "method": "GET",
+      "path": "/api/song/capture-song-0000000000000000000000000001",
+      "auth": "none",
+      "expect_status": 401,
+      "expect_content_type": "application/json",
+      "provenance": {
+        "route_registration": "server/nativeapi/native_api.go:112-114 (rx() /{id} group -> r.Get(\"/\") = rest.Get(repo))",
+        "auth_middleware": "server/auth.go:272-283 Authenticator -> rest.RespondWithError(401, \"Not authenticated\") at :277",
+        "assertion_basis": "server/nativeapi/native_api_song_test.go:207-212 'returns unauthorized' (unauthenticated GET /song/{id})"
+      },
+      "behavior_class": "auth middleware (unauthenticated protected item)"
+    },
+    {
+      "case_id": "unknown_route_unauthenticated",
+      "method": "GET",
+      "path": "/api/no-such-route",
+      "auth": "none",
+      "expect_status": 404,
+      "expect_content_type": "text/plain; charset=utf-8",
+      "provenance": {
+        "route_registration": "chi router with no matching pattern; the auth Group is entered only for registered prefixes, so an unregistered path never reaches Authenticator",
+        "delta_note": "Deliberate delta: an unknown native route yields plain-text 404, not the rest JSON error envelope."
+      },
+      "behavior_class": "unknown route (unregistered native path)"
+    },
+    {
+      "case_id": "invalid_auth_token",
+      "method": "GET",
+      "path": "/api/song",
+      "auth": "invalid_token",
+      "expect_status": 401,
+      "expect_content_type": "application/json",
+      "provenance": {
+        "auth_middleware": "server/auth.go:186-188 JWTVerifier fails verification of the unsigned bearer (jwtauth.Verify -> error in context, no panic), then server/auth.go:272-283 Authenticator finds no username via UsernameFromToken (:199-210) -> ErrUnauthenticated -> rest.RespondWithError(401, \"Not authenticated\") at :277",
+        "assertion_basis": "server/nativeapi/native_api_song_test.go:163-168"
+      },
+      "behavior_class": "auth middleware (unverifiable token)"
+    }
+  ],
+  "not_in_this_slice": [
+    "GET /song/{id} authenticated success (requires a scanner-driven scan: media_file rows are only written by the scanner, so a hand-seeded media_file would be an unauthorized seed.sql)",
+    "GET /album, /artist, /genre, /tag, /scrobble, /translation and the persistable /player, /share, /playlist repositories",
+    "playlist/player owner/write/revoke, user create/update, login race, missing-files, queue, insights, quick-connect, insights and admin-only routes",
+    "non-persistable 405/404 variants on trailing slash and BasePath prefixes",
+    "empty-body response refresh, malformed JSON/query bodies, /api/v1 and stream routes",
+    "the full corpus; this file lists nine cases covering auth, empty-collection, missing-id, and method-allowed classes",
+    "GET /api/song (song_get_all_authenticated_empty_library): requires an authenticated request; this slice performs no login and mints no token (source-derived expectation kept for the later authenticated slice: status 200)",
+    "GET /api/song/capture-song-does-not-exist (song_get_one_authenticated_missing_id): requires an authenticated request; this slice performs no login and mints no token (source-derived expectation kept for the later authenticated slice: status 404)",
+    "PUT /api/song (song_collection_method_not_allowed): requires an authenticated request; this slice performs no login and mints no token (source-derived expectation kept for the later authenticated slice: status 405)",
+    "DELETE /api/song (song_collection_delete_not_allowed): requires an authenticated request; this slice performs no login and mints no token (source-derived expectation kept for the later authenticated slice: status 405)",
+    "PUT /api/song/capture-song-0000000000000000000000000001 (song_item_put_not_allowed): requires an authenticated request; this slice performs no login and mints no token (source-derived expectation kept for the later authenticated slice: status 405)"
+  ]
+}
