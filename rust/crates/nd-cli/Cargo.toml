@@ -56,6 +56,11 @@ chrono = { workspace = true }
 # exactly the boundary nd-db already uses. Features spell out `rt` + `sync`
 # (like nd-db/Cargo.toml:36), so no new tokio feature is added to the lock.
 tokio = { workspace = true, features = ["rt", "sync"] }
+# BOOT-01 stream-state slice: `nd-stream` supplies the transcoding cache
+# (`TranscodeCache`, `TRANSCODING_CACHE_DIR`, the fixed item budget and cleanup
+# interval) and the shareable `TranscodeLimiter`. An existing workspace crate, so
+# Cargo.lock gains only the nd-cli -> nd-stream edge, no new package.
+nd-stream = { path = "../nd-stream" }
 
 [dev-dependencies]
 tempfile = "^3"

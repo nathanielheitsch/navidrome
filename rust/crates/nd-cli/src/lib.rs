@@ -37,7 +37,13 @@
 //! consumes an initialized state and the three checked launch values, building an
 //! `Authenticator` from the committed secret winners with `previous = None` and a
 //! single `Arc<GuardedLimiter>` shared by every clone over the existing pool. No
-//! cache, transcode, listener, routes or scanner.
+//! listener, routes or scanner.
+//!
+//! The BOOT-01 stream-state slice adds [`stream_state`]: `StreamState::new` builds
+//! one `Arc<TranscodeCache>` rooted at `cache_dir/transcoding` (existing constants
+//! only) with a re-validated typed budget, plus a shared cloneable
+//! `TranscodeLimiter`. No cleanup timer, request, ffmpeg process, listener or
+//! scanner.
 
 pub mod bootstrap;
 pub mod database;
@@ -45,6 +51,7 @@ pub mod preflight;
 pub mod signing_keys;
 pub mod startup;
 pub mod state;
+pub mod stream_state;
 
 /// Scaffold marker: the public surface authored by #33 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 33;

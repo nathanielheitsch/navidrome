@@ -892,6 +892,7 @@ dependencies = [
  "nd-db",
  "nd-dbschema",
  "nd-id",
+ "nd-stream",
  "rand",
  "rusqlite",
  "rustix",
