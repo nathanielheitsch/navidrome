@@ -897,13 +897,16 @@ name = "nd-cli"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "axum",
  "base64",
  "chrono",
+ "libc",
  "nd-auth",
  "nd-conf",
  "nd-db",
  "nd-dbschema",
  "nd-ffmpeg",
+ "nd-http",
  "nd-id",
  "nd-stream",
  "rand",

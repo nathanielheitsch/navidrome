@@ -49,7 +49,16 @@
 //! pre-write validation, one `initialize`, then builds the shared `StreamState`
 //! and `AuthState` (committing signing secrets move only into the authenticator),
 //! returning `ServiceReady` with non-secret metadata. No listener or scanner.
+//!
+//! BOOT-04 adds the bootstrap-only CLI wiring: [`args`] parses the approved
+//! surface (`--configfile/-c`, `--nobanner/-n`, `--address`, `--port`, `--help`,
+//! `--version`) and **rejects** unimplemented Go flags and subcommands rather
+//! than accepting and ignoring them, and [`supervisor`] composes
+//! preflight → resolution gate → BOOT-01 bootstrap → bind → readiness on the
+//! bound socket → serve → bounded stop-and-join. The `nd-api` router is not
+//! injected yet (API-02 supplies it); this stage serves the public shell only.
 
+pub mod args;
 pub mod bootstrap;
 pub mod database;
 pub mod preflight;
@@ -58,6 +67,7 @@ pub mod signing_keys;
 pub mod startup;
 pub mod state;
 pub mod stream_state;
+pub mod supervisor;
 
 /// Scaffold marker: the public surface authored by #33 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 33;

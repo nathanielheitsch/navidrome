@@ -55,7 +55,11 @@ chrono = { workspace = true }
 # `tokio::task::spawn_blocking` and reports its worker thread over a oneshot —
 # exactly the boundary nd-db already uses. Features spell out `rt` + `sync`
 # (like nd-db/Cargo.toml:36), so no new tokio feature is added to the lock.
-tokio = { workspace = true, features = ["rt", "sync"] }
+# BOOT-04 adds `signal` for the process termination set Go registers
+# (`cmd/root.go:114-121`); `libc`/`signal-hook-registry`/`mio` are already in the
+# lock via tokio's own `full` feature elsewhere in the workspace, so this adds a
+# feature edge and no new package.
+tokio = { workspace = true, features = ["rt", "sync", "signal"] }
 # BOOT-01 stream-state slice: `nd-stream` supplies the transcoding cache
 # (`TranscodeCache`, `TRANSCODING_CACHE_DIR`, the fixed item budget and cleanup
 # interval) and the shareable `TranscodeLimiter`. An existing workspace crate, so
@@ -65,6 +69,18 @@ nd-stream = { path = "../nd-stream" }
 # resolver before filesystem setup. An existing workspace crate (nd-stream already
 # depends on it), so Cargo.lock gains only the nd-cli -> nd-ffmpeg edge.
 nd-ffmpeg = { path = "../nd-ffmpeg" }
+# BOOT-04 CLI wiring: `nd-http` supplies the TCP listener and public shell, and
+# nd-cli is the D1 injection point (`decisions.md:521`) — the direction is
+# nd-cli -> nd-http, never nd-http -> nd-api, so the BOOT-00 cycle acceptance
+# still holds. Both are existing workspace crates, so Cargo.lock gains only the
+# nd-cli -> nd-http and nd-cli -> axum edges, no new package. `axum` is named
+# because `Running::start` takes the router value being injected.
+nd-http = { path = "../nd-http" }
+axum = { workspace = true }
+# SIGABRT for the Go signal set (`cmd/root.go:120`): tokio has no `SignalKind::abort()`,
+# so the raw signum comes from libc. `libc` is already in Cargo.lock (tokio's unix
+# dependency), so this adds an edge and no new package.
+libc = "^0.2"
 
 [dev-dependencies]
 tempfile = "^3"
