@@ -12,3 +12,16 @@ workspace = true
 [[bin]]
 name = "nd-cli"
 path = "src/main.rs"
+
+# BOOT-01 increment A: the startup preflight needs the existing config loader
+# only. No new third-party package is introduced — `rustix` (euid check) and
+# `tempfile` (isolated test roots) are already in Cargo.lock via nd-ffmpeg /
+# nd-utils, and the workspace pins their features.
+[dependencies]
+nd-conf = { path = "../nd-conf" }
+thiserror = { workspace = true }
+# geteuid for the EnforceNonRootUser check (`process` feature, already locked).
+rustix = { workspace = true }
+
+[dev-dependencies]
+tempfile = "^3"

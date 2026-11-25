@@ -804,6 +804,12 @@ dependencies = [
 [[package]]
 name = "nd-cli"
 version = "0.1.0"
+dependencies = [
+ "nd-conf",
+ "rustix",
+ "tempfile",
+ "thiserror 1.0.69",
+]
 
 [[package]]
 name = "nd-conf"
