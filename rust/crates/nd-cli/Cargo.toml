@@ -33,6 +33,17 @@ sha2 = "^0.10"
 base64 = { workspace = true }
 rand = { workspace = true }
 aes-gcm = { workspace = true }
+# BOOT-01 increment C (caller transaction over the migrated store): existing
+# workspace crates only. `nd-db` supplies the pool/transaction runtime and the
+# library/property repositories; `nd-auth` supplies `setup_in_tx` and argon2id
+# hashing. `rusqlite` is named directly because this module matches on extended
+# SQLite result codes, and `bundled` matches nd-db/nd-auth so a locked build
+# needs no system SQLite.
+nd-db = { path = "../nd-db" }
+nd-auth = { path = "../nd-auth" }
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Library stamps are `DateTime<Utc>`, the workspace-wide timestamp convention.
+chrono = { workspace = true }
 
 [dev-dependencies]
 tempfile = "^3"
@@ -40,3 +51,8 @@ tempfile = "^3"
 # decode/encode with the same crate the library uses rather than a hand-rolled
 # base64 implementation that could itself be wrong.
 base64 = { workspace = true }
+# Real migrated temporary databases: the schema comes from the same
+# `apply_fresh_schema` the production path uses, and `nd-id` names isolated
+# in-memory databases (as nd-db's own tests do).
+nd-dbschema = { path = "../nd-dbschema" }
+nd-id = { path = "../nd-id" }

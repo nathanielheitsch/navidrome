@@ -13,7 +13,14 @@
 //! BOOT-01 increment B adds the signing-property codec ([`signing_keys`]): the
 //! Go-compatible ciphertext wire format for `JWTSecret`/`JWTPublicSecret` only.
 //! No database, property table, or boot wiring is involved.
+//!
+//! BOOT-01 increment C adds the caller-transaction bootstrap ([`bootstrap`]):
+//! `boot-api.md` §BOOT-01 steps 4–6 executed as ONE retryable transaction on an
+//! already-open, already-migrated `nd_db::store::SQLStore`. No process boot: no
+//! config load, no directory creation, no database open or migration, no
+//! listener and no scanner.
 
+pub mod bootstrap;
 pub mod preflight;
 pub mod signing_keys;
 
