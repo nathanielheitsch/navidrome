@@ -1,0 +1,14 @@
+{
+  "case_id": "song_detail_authorized",
+  "request_method": "GET",
+  "request_path": "/api/song/fixture-song-library-one",
+  "auth_mode": "signed-session",
+  "status": 200,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"bookmarkPosition\":0,\"id\":\"fixture-song-library-one\",\"libraryId\":1,\"libraryPath\":\"fixtureone:///music\",\"libraryName\":\"Fixture Library One\",\"folderId\":\"7Je1RM1TbJEG3FkqN4cEdf\",\"path\":\"Fixture Artist/Visible Album/01 Track.mp3\",\"title\":\"Visible Fixture Song\",\"album\":\"Visible Album\",\"artistId\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"artist\":\"Fixture Artist\",\"albumArtistId\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"albumArtist\":\"Fixture Artist\",\"albumId\":\"1mLJv2ZUPNEKVNAefDJztY\",\"hasCoverArt\":false,\"trackNumber\":1,\"discNumber\":0,\"year\":2024,\"date\":\"2024\",\"originalYear\":0,\"releaseYear\":2024,\"releaseDate\":\"2024\",\"size\":8000000,\"suffix\":\"mp3\",\"duration\":199,\"bitRate\":320,\"sampleRate\":44100,\"bitDepth\":16,\"channels\":2,\"codec\":\"\",\"genre\":\"\",\"orderTitle\":\"visible fixture song\",\"orderAlbumName\":\"visible album\",\"orderArtistName\":\"fixture artist\",\"orderAlbumArtistName\":\"fixture artist\",\"compilation\":false,\"lyrics\":\"[]\",\"bpm\":123,\"explicitStatus\":\"\",\"rgAlbumGain\":null,\"rgAlbumPeak\":null,\"rgTrackGain\":null,\"rgTrackPeak\":null,\"participants\":{\"albumartist\":[{\"id\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"name\":\"Fixture Artist\",\"missing\":false}],\"artist\":[{\"id\":\"3fqn6fOUD3F7Tlqh8xKJ61\",\"name\":\"Fixture Artist\",\"missing\":false}]},\"missing\":false,\"birthTime\":\"2024-01-02T03:04:05Z\",\"createdAt\":\"2024-01-02T03:04:05Z\",\"updatedAt\":\"2024-01-02T03:04:05Z\"}",
+  "body_length": 1305,
+  "body_sha256": "e49542b85cad7b54ff7505159ee30f8fe038f6252f03f09bd313d14e6633dcd5",
+  "behavior": "authorized scanner-produced detail"
+}

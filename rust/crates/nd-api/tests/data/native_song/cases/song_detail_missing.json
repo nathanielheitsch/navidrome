@@ -1,0 +1,14 @@
+{
+  "case_id": "song_detail_missing",
+  "request_method": "GET",
+  "request_path": "/api/song/no-such-song-api00",
+  "auth_mode": "signed-session",
+  "status": 404,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"error\":\"MediaFile(id:no-such-song-api00) not found\"}",
+  "body_length": 54,
+  "body_sha256": "c4616f71783a74836661bc767dec1d795b6f57fe64b31f9ed7a8b3c5b47f522a",
+  "behavior": "authenticated missing ID"
+}

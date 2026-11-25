@@ -1,0 +1,14 @@
+{
+  "case_id": "song_detail_denied_library",
+  "request_method": "GET",
+  "request_path": "/api/song/fixture-song-library-two",
+  "auth_mode": "signed-session",
+  "status": 404,
+  "response_headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"error\":\"MediaFile(id:fixture-song-library-two) not found\"}",
+  "body_length": 60,
+  "body_sha256": "f5e465db21e34cf6775f34e219ff91f6c419166d043f5366bab14a921687e514",
+  "behavior": "same record outside granted library"
+}
