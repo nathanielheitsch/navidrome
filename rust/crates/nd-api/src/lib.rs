@@ -15,13 +15,24 @@
 //!   transports) are frozen by API-00 **before** any handler exists
 //!   (boot-api.md §2/§3); axum/hyper wiring is API-04/API-05 under the
 //!   B3-ratified Candidate B transport (decisions.md:502-516).
-//! * This crate keeps zero dependencies at BOOT-00. API-00+ may add workspace
-//!   path deps (`nd-db`, `nd-auth`, `nd-stream`, `nd-conf`, `nd-id`) and the
+//! * This crate kept zero dependencies at BOOT-00. API-00+ adds workspace path
+//!   deps (`nd-db`, `nd-auth`, `nd-stream`, `nd-conf`, `nd-id`) and the
 //!   already-locked `axum`/`hyper-util`/`http-body-util`/`bytes` — each still
 //!   needs its own D2 check that it adds no new `Cargo.lock` entry.
+//!
+//! ## API-01a — non-HTTP principal and current library access
+//!
+//! [`principal`] resolves a native API key into an immutable, server-owned
+//! principal and reads the owner's CURRENT library grants per operation, reusing
+//! the existing `nd-db` repositories (`PlayerRepo::find_by_api_key`,
+//! `UserRepo::get`) and the `scanner_queries` scope layer. It opens no listener,
+//! mounts no router, mints no token, and maps nothing to HTTP: failures stay
+//! typed (denial vs operational) so the transport layer owns error mapping.
 
 /// Scaffold marker: the public surface authored by #27 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 27;
+
+pub mod principal;
 
 #[cfg(test)]
 mod scaffold_tests {

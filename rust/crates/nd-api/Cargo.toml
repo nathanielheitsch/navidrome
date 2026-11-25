@@ -16,7 +16,33 @@ workspace = true
 # dependency edges for nd-api: Cargo.lock gains no new [[package]] entry.
 # The gate reads only the tracked corpus, so it needs no Git or Go inputs and
 # no sha1 (git-blob hashing lives in capture.sh, not here).
+
+# API-01a (docs/rust-port/subplans/post-api-00-queue.md dispatch 1, boot-api.md
+# §API-01): the non-HTTP API-key principal and current library access reuse the
+# existing production paths — `PlayerRepo::find_by_api_key`, `UserRepo::get` and
+# `scanner_queries` scope — so `nd-db` is the only runtime dependency. It is an
+# existing workspace crate that does NOT depend on nd-api, so the D1 no-cycle
+# rule (decisions.md:525) still holds and Cargo.lock gains only the nd-api ->
+# nd-db edge, no new package. nd-api declares no `rusqlite` of its own: the
+# principal layer never builds a database error.
+[dependencies]
+nd-db = { path = "../nd-db" }
+
 [dev-dependencies]
+# Real migrated temp databases for the principal tests: the schema comes from the
+# same `apply_fresh_schema` the production path uses, `nd_utils` names isolated
+# temp files and `nd_id` supplies generated keys/player ids (as nd-db's tests do).
+nd-dbschema = { path = "../nd-dbschema" }
+nd-utils = { path = "../nd-utils" }
+nd-id = { path = "../nd-id" }
+# `#[tokio::test]` over the async resolver, same feature list nd-db's and
+# nd-cli's dev-dependencies already use.
+tokio = { workspace = true, features = ["rt", "macros", "sync", "test-util"] }
+# The integration tests run raw fixture statements on a leased connection, so
+# they name `rusqlite` directly (as nd-cli's tests do). `bundled` matches nd-db
+# so a locked build needs no system SQLite and adds no package to Cargo.lock.
+# The LIBRARY (src/principal.rs) declares no rusqlite and builds no DB error.
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "^0.10"

@@ -857,10 +857,16 @@ version = "0.1.0"
 name = "nd-api"
 version = "0.1.0"
 dependencies = [
+ "nd-db",
+ "nd-dbschema",
+ "nd-id",
+ "nd-utils",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
