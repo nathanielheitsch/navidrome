@@ -40,6 +40,23 @@ impl Dir {
         }
     }
 
+    /// The permissions [`Dir::path`] applies **when it creates** the directory.
+    ///
+    /// Read-only: there is deliberately no setter, so a value that reached a
+    /// `Config` reports exactly the permissions it was constructed with.
+    /// `with_perm(.., 0)` is normalized to [`DEFAULT_PERM`] at construction, so
+    /// this never returns 0 and a caller can hand the value straight back to
+    /// [`Dir::with_perm`] without re-deriving the default. Go's counterpart is the
+    /// unexported `perm` field, which only `Dir.Path()` consults
+    /// (`conf/dir.go:44`); the Rust port needs a getter because a caller that
+    /// re-anchors a relative path (BOOT-01 startup) must preserve the permissions a
+    /// callable preflight carried rather than reconstructing the value with
+    /// defaults.
+    #[must_use]
+    pub fn permissions(&self) -> u32 {
+        self.perm
+    }
+
     /// Returns the raw path without creating the directory.
     pub fn as_str(&self) -> &str {
         &self.path
@@ -115,6 +132,36 @@ mod tests {
         // Idempotent: second call succeeds without error.
         assert!(dir.path().is_ok());
         assert!(tmp.join("a/b").is_dir());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn permissions_reports_custom_default_and_zero_normalization() {
+        // `Dir::new` carries the default (`conf/dir.go:22`, os.ModePerm).
+        assert_eq!(Dir::new("/tmp/x").permissions(), 0o777);
+        // An explicit permission is reported exactly as given.
+        assert_eq!(Dir::with_perm("/tmp/x", 0o700).permissions(), 0o700);
+        // A perm of 0 is normalized at construction, so the getter never returns 0
+        // and re-anchoring with it cannot silently drop the permission.
+        assert_eq!(Dir::with_perm("/tmp/x", 0).permissions(), 0o777);
+        // Round-trip: a value rebuilt from the getter keeps its permission.
+        let original = Dir::with_perm("/tmp/x", 0o750);
+        assert_eq!(
+            Dir::with_perm(original.as_str(), original.permissions()).permissions(),
+            0o750
+        );
+    }
+
+    #[test]
+    fn permissions_is_not_changed_by_path() {
+        // `path()` only consumes the permission when it creates, and never mutates
+        // the value.
+        let tmp = std::env::temp_dir().join(format!("nd-conf-dir-perm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let dir = Dir::with_perm(tmp.join("private").to_str().unwrap(), 0o700);
+        assert_eq!(dir.permissions(), 0o700);
+        assert!(dir.path().unwrap().is_dir());
+        assert_eq!(dir.permissions(), 0o700, "creating must not change perm");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

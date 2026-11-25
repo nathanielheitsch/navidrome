@@ -25,11 +25,19 @@
 //! migrated, fully pooled `SQLStore`, and a memory target that would give the
 //! pool independent handles is refused before anything opens. No config load, no
 //! directory creation, no auth, no listener, no async wiring and no scanner.
+//!
+//! BOOT-01 increment E adds the startup assembly ([`startup`]): `initialize`
+//! consumes a preflight outcome and runs steps 2–6 — data/cache directory
+//! creation, database open/migrate and the committed bootstrap transaction — as
+//! one `spawn_blocking` chain, returning an initialized store plus the outcome
+//! that committed. No `main`, no CLI arguments, no listener, no auth/cache/limiter
+//! wiring and no scanner.
 
 pub mod bootstrap;
 pub mod database;
 pub mod preflight;
 pub mod signing_keys;
+pub mod startup;
 
 /// Scaffold marker: the public surface authored by #33 replaces this constant.
 pub const OWNED_BY_ISSUE: u8 = 33;
